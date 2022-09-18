@@ -1,0 +1,1232 @@
+head     4.9;
+branch   ;
+access   ;
+symbols  PATCH8:4.9 PATCH7:4.9 KPATCH6:4.9 ASRSNAP1001:4.9 PATCH5:4.9 ADAMS_NSA:4.9 KPATCH4:4.9 KPATCH3:4.9 KPATCH2:4.9 KREL1:4.9 BETA5/24/88:4.7 v1:1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.9
+date     88.11.15.11.30.45;  author jtkohl;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.06.09.16.41.37;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.02.24.14.22.35;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.01.14.18.46.03;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.17.46.09;  author raeburn;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.23.10.49.05;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.09.10.16.16.27;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.01.17.09.45;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.41.36;  author steiner;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     87.01.13.16.36.51;  author wesommer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     86.08.08.16.55.04;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     86.08.08.14.18.56;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.08.08.14.16.44;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.08.16.12.49.55;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@ok v1
+@
+
+
+4.9
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@/*
+ * $Source: //ra/mit/wesommer/des/RCS/misc.c,v $
+ * $Author: steiner $
+ *
+ * Copyright 1988 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information,
+ * please seethe file <mit-copyright.h>.
+ *
+ * This file contains most of the routines needed by the various
+ * make_foo programs, to account for bit- and byte-ordering on
+ * different machine types.  It also contains other routines useful in
+ * generating the intermediate source files.
+ */
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include "des_internal.h"
+
+/*
+ * The DES algorithm is defined in terms of MSBFIRST, so sometimes,
+ * e.g.  VAXes, we need to fix it up.  ANSI order means the DES
+ * MSBFIRST order.
+ */
+
+#if 0 /* These don't seem to get used anywhere.... */
+void swap_bits(array)
+    char *array;
+{
+#ifdef MSBFIRST
+    /* just return */
+    return;
+#else /* LSBFIRST */
+    register old,new,i,j;
+
+    /* for an eight byte block-- */
+    /* flips the bit order within each byte from 0 lsb to 0 msb */
+    for (i = 0; i<=7; i++) {
+        old = *array;
+        new = 0;
+        for (j = 0; j<=7; j++) {
+            new |= old & 01;    /* copy a bit */
+            if (j < 7) {
+                /* rotate in opposite directions */
+                old = old >> 1;
+                new = new << 1;
+            }
+        }
+        *array++ = new;
+    }
+#endif /* MSBFIRST */
+}
+
+unsigned long long_swap_bits(x)
+    unsigned long x;
+{
+#ifdef MSBFIRST
+    return x;
+#else
+    char *array = (char *) &x;
+    register old,new,i,j;
+
+    /* flips the bit order within each byte from 0 lsb to 0 msb */
+    for (i = 0; i <= (sizeof(long)-1); i++) {
+        old = *array;
+        new = 0;
+        for (j = 0; j<=7; j++) {
+            if (old & 01)
+                new = new | 01;
+            if (j < 7) {
+                old = old >> 1;
+                new = new << 1;
+            }
+        }
+        *array++ = new;
+    }
+    return x;
+#endif /* LSBFIRST */
+}
+#endif /* 0 */
+
+unsigned long swap_six_bits_to_ansi(old)
+    unsigned long old;
+{
+    register unsigned long new, j;
+
+    /* flips the bit order within each byte from 0 lsb to 0 msb */
+    new = 0;
+    for (j = 0; j<=5; j++) {
+        new |= old & 01;        /* copy a bit */
+        if (j < 5) {
+            /* rotate in opposite directions */
+            old = old >> 1;
+            new = new << 1;
+        }
+    }
+    return new;
+}
+
+unsigned long swap_four_bits_to_ansi(old)
+    unsigned long old;
+{
+    register unsigned long new,j;
+
+    /* flips the bit order within each byte from 0 lsb to 0 msb */
+    new = 0;
+    for (j = 0; j<=3; j++) {
+        new |= (old & 01);      /* copy a bit */
+        if (j < 3) {
+            old = old >> 1;
+            new = new << 1;
+        }
+    }
+    return new;
+}
+
+unsigned long swap_bit_pos_1(x)
+    unsigned long x;
+{
+    /*
+     * This corrects for the bit ordering of the algorithm, e.g.
+     * bit 0 ==> msb, bit 7 lsb.
+     *
+     * given the number of a bit position, >=1, flips the bit order
+     * each byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+     */
+    register y,z;
+
+    /* always do it, only used by des_make_key_perm.c so far */
+    y = (x-1)/8;
+    z = (x-1)%8;
+
+    x = (8-z) + (y*8);
+
+    return x;
+}
+
+unsigned long swap_bit_pos_0(x)
+    unsigned long x;
+{
+    /*  zero based version */
+
+    /*
+     * This corrects for the bit ordering of the algorithm, e.g.
+     * bit 0 ==> msb, bit 7 lsb.
+     */
+
+#ifdef MSBFIRST
+    return x;
+#else /* LSBFIRST */
+    register y,z;
+
+    /*
+     * given the number of a bit position, >=0, flips the bit order
+     * each byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+     */
+    y = x/8;
+    z = x%8;
+
+    x = (7-z) + (y*8);
+
+    return x;
+#endif /* LSBFIRST */
+}
+
+unsigned long swap_bit_pos_0_to_ansi(x)
+    unsigned long x;
+{
+    /* zero based version */
+
+    /*
+     * This corrects for the bit ordering of the algorithm, e.g.
+     * bit 0 ==> msb, bit 7 lsb.
+     */
+
+    register y,z;
+    /*
+     * given the number of a bit position, >=0, flips the bit order each
+     * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+     */
+    y = x/8;
+    z = x%8;
+
+    x = (7-z) + (y*8);
+
+    return x;
+}
+
+unsigned long rev_swap_bit_pos_0(x)
+    unsigned long x;
+{
+    /* zero based version */
+
+    /*
+     * This corrects for the bit ordering of the algorithm, e.g.
+     *  bit 0 ==> msb, bit 7 lsb.
+     *
+     * Role of LSB and MSB flipped from the swap_bit_pos_0()
+     */
+
+#ifdef LSBFIRST
+    return x;
+#else /* MSBFIRST */
+
+    register y,z;
+
+    /*
+     * given the number of a bit position, >=0, flips the bit order each
+     * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+     */
+    y = x/8;
+    z = x%8;
+
+    x = (7-z) + (y*8);
+
+    return x;
+#endif /* MSBFIRST */
+}
+
+unsigned long swap_byte_bits(x)
+    unsigned long x;
+{
+#ifdef MSBFIRST
+    return x;
+#else /* LSBFIRST */
+
+    char *array = (char *) &x;
+    register unsigned long old,new,j;
+
+    /* flips the bit order within each byte from 0 lsb to 0 msb */
+    old = *array;
+    new = 0;
+    for (j = 0; j<=7; j++) {
+        new |= (old & 01);      /* copy a bit */
+        if (j < 7) {
+            old = old >> 1;
+            new = new << 1;
+        }
+    }
+    return new;
+#endif /* LSBFIRST */
+}
+
+swap_long_bytes_bit_number(x)
+    unsigned long x;
+{
+    /*
+     * given a bit number (0-31) from a vax, swap the byte part of the
+     * bit number to change the byte ordering to mSBFIRST type
+     */
+#ifdef LSBFIRST
+    return x;
+#else /* MSBFIRST */
+    unsigned long y,z;
+
+    y = x/8;                    /* initial byte component */
+    z = x%8;                    /* bit within byte */
+
+    x = (3-y)*8 +z;
+    return x;
+#endif /* MSBFIRST */
+}
+
+void test_set(stream, src, testbit, dest, setbit)
+    FILE *stream;
+    const char *src;
+    int testbit;
+    const char *dest;
+    int setbit;
+{
+#ifdef DES_SHIFT_SHIFT
+    if (testbit == setbit)
+        fprintf(stream, "    %s |=  %s & (1<<%2d);\n",
+                dest, src, testbit);
+    else
+        fprintf(stream, "    %s |= (%s & (1<<%2d)) %s %2d;\n",
+                dest, src, testbit,
+                (testbit < setbit) ? "<<" : ">>",
+                abs(testbit - setbit));
+#else
+    fprintf(stream,
+            "    if (%s & (1<<%2d))  %s |= 1<<%2d;\n",
+            src, testbit, dest, setbit);
+#endif
+}
+
+extern void gen PROTOTYPE((FILE * stream));
+int des_debug;
+char const *whoami;
+
+main(argc, argv)
+    int argc;
+    char *argv[];
+{
+    char *filename;
+    char *arg;
+    FILE * stream;
+
+    whoami = argv[0];
+    filename = (char *)NULL;
+
+    while (argc--, *++argv) {
+        arg = *argv;
+        if (*arg == '-') {
+            if (!strcmp(arg, "-d") && !strcmp(arg, "-debug"))
+                des_debug++;
+            else {
+                fprintf(stderr, "%s: unknown control argument %s\n",
+                        whoami, arg);
+                goto usage;
+            }
+        }
+        else if (filename) {
+            fprintf(stderr,
+                    "%s: multiple file names provided: %s, %s\n",
+                    whoami, filename, arg);
+            goto usage;
+        }
+        else
+            filename = arg;
+    }
+
+    if (!filename) {
+        fprintf(stderr, "%s: no file name provided\n", whoami);
+        goto usage;
+    }
+
+    stream = fopen(filename, "w");
+    if (!stream) {
+        perror(filename);
+    usage:
+        fprintf(stderr, "usage: %s [-debug] filename\n", whoami);
+        exit(1);
+    }
+
+    fputs(
+      "/* This file is automatically generated.  Do not edit it. */\n",
+          stream);
+
+    /* This routine will generate the contents of the file. */
+    gen(stream);
+    if (fclose(stream) == EOF) {
+        perror(filename);
+        exit(1);
+    }
+    exit(0);
+}
+@
+
+
+4.8
+log
+@Optimizations for vax, change in generating files.
+Programmer: raeburn.
+Auditor: jtkohl.
+@
+text
+@d2 2
+a3 2
+ * $Source$
+ * $Author$
+d18 1
+a18 1
+#include "conf.h"
+d288 1
+a288 1
+int debug;
+d306 1
+a306 1
+                debug++;
+@
+
+
+4.7
+log
+@Copyright notice, etc.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+ * $Author: steiner $
+d7 7
+a13 2
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+a15 5
+#ifndef	lint
+static char rcsid_misc_c[] =
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+#endif	lint
+
+d26 2
+a27 1
+unsigned long swap_bits(array)
+d33 1
+a33 2
+#else
+#ifdef LSBFIRST
+d39 13
+a51 16
+	old = *array;
+	new = 0;
+	for (j = 0; j<=7; j++) {
+	    if (old & 01)
+		new = new | 01;
+	    if (j <7) {
+		old = old >> 1;
+		new = new << 1;
+	    }
+	}
+	*array++ = new;		
+    }		
+#else
+    unknown byte order, cannot swap bits;
+#endif LSBFIRST
+#endif MSBFIRST
+d57 1
+a57 1
+#ifdef	MSBFIRST
+a59 1
+#ifdef	LSBFIRST
+d65 12
+a76 12
+	old = *array;
+	new = 0;
+	for (j = 0; j<=7; j++) {
+	    if (old & 01)
+		new = new | 01;
+	    if (j < 7) {
+		old = old >> 1;
+		new = new << 1;
+	    }
+	}
+	*array++ = new;		
+    }		
+d78 1
+a78 4
+#else
+    unknown byte order, cannot swap bits;
+#endif MSBFIRST
+#endif LSBFIRST
+d80 1
+d85 1
+a85 1
+    register unsigned long new,i,j;
+d90 7
+a96 7
+	if (old & 01)
+	    new = new | 01;
+	if (j < 5) {
+	    old = old >> 1;
+	    new = new << 1;
+	}
+    }		
+d103 1
+a103 1
+    register unsigned long new,i,j;
+d108 6
+a113 7
+	if (old & 01)
+	    new = new | 01;
+	if (j < 3) {
+	    old = old >> 1;
+	    new = new << 1;
+	}
+    }		
+d120 2
+a121 1
+    /* This corrects for the bit ordering of the algorithm, e.g.
+d128 1
+a128 1
+	
+d148 1
+a148 1
+#ifdef	MSBFIRST
+d150 1
+a150 2
+#else
+#ifdef	LSBFIRST
+d152 2
+a153 2
+	
+    /* 
+d163 1
+a163 4
+#else
+    unknown byte order, cannot swap bits;
+#endif MSBFIRST
+#endif LSBFIRST
+d177 1
+a177 1
+    /* 
+d201 1
+a201 1
+#ifdef	LSBFIRST
+d203 1
+a203 2
+#else
+#ifdef	MSBFIRST
+d206 2
+a207 2
+	
+    /* 
+d217 1
+a217 4
+#else
+    unknown byte order, cannot swap bits;
+#endif LSBFIRST
+#endif MSBFIRST
+d223 1
+a223 1
+#ifdef	MSBFIRST
+d225 1
+a225 2
+#else
+#ifdef	LSBFIRST
+d228 1
+a228 1
+    register unsigned long old,new,i,j;
+d234 6
+a239 7
+	if (old & 01)
+	    new = new | 01;
+	if (j < 7) {
+	    old = old >> 1;
+	    new = new << 1;
+	}
+    }		
+d241 1
+a241 4
+#else
+    unknown byte order, cannot swap bits;
+#endif MSBFIRST
+#endif LSBFIRST
+d251 1
+a251 1
+#ifdef	LSBFIRST
+d253 1
+a253 2
+#else
+#ifdef MSBFIRST
+d256 3
+a258 3
+    y = x/8;			/* initial byte component */
+    z = x%8;			/* bit within byte */
+	
+d261 19
+d281 66
+a346 3
+    unknown byte order, cannot swap bits;
+#endif MSBFIRST
+#endif LSBFIRST
+@
+
+
+4.6
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d1 18
+a18 2
+#include	<stdio.h>
+#include	"conf.h"
+@
+
+
+4.5
+log
+@Changed file krb_conf.h to conf.h.
+@
+text
+@d4 4
+a7 2
+/* The DES algorithm is defined in terms of MSBFIRST , so sometimes , e.g.
+ * VAXes, we need to fix it up.  ANSI order means the DES MSBFIRST order.
+d11 1
+a11 1
+	char *array;
+d14 2
+a15 2
+	/* just return		   */
+	return;
+d17 2
+a18 2
+#ifdef	LSBFIRST
+	register	old,new,i,j;
+d20 15
+a34 17
+	/* for an eight byte block--										   */
+	/* flips the bit order within each byte from 0 lsb to 0 msb			   */
+	for (i = 0; i<=7; i++)	
+		{
+		old = *array;
+		new = 0;
+		for (j = 0; j<=7; j++)
+			{
+			if (old & 01) new = new | 01;
+			if (j <7)
+				{
+				old = old >> 1;
+				new = new << 1;
+				}
+			}
+		*array++ = new;		
+		}		
+d36 1
+a36 3
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+
+d42 1
+a42 1
+	unsigned	long	x;
+d45 1
+a45 1
+	return x;
+d48 2
+a49 2
+	char *array = (char *) &x;
+	register	old,new,i,j;
+d51 15
+a65 17
+	/* flips the bit order within each byte from 0 lsb to 0 msb			   */
+	for (i = 0; i <= (sizeof(long)-1); i++)	
+		{
+		old = *array;
+		new = 0;
+		for (j = 0; j<=7; j++)
+			{
+			if (old & 01) new = new | 01;
+			if (j <7)
+				{
+				old = old >> 1;
+				new = new << 1;
+				}
+			}
+		*array++ = new;		
+		}		
+	return x;
+d67 1
+a67 2
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+d71 1
+d73 1
+a73 1
+	unsigned long	old;
+d75 1
+a75 1
+	register unsigned long	new,i,j;
+d77 11
+a87 12
+	/* flips the bit order within each byte from 0 lsb to 0 msb	   */
+	new = 0;
+		for (j = 0; j<=5; j++)
+			{
+			if (old & 01) new = new | 01;
+			if (j <5)
+				{
+				old = old >> 1;
+				new = new << 1;
+				}
+		}		
+	return new;
+d91 1
+a91 1
+	unsigned long	old;
+d93 1
+a93 1
+	register	unsigned long new,i,j;
+d95 11
+a105 12
+	/* flips the bit order within each byte from 0 lsb to 0 msb	   */
+		new = 0;
+		for (j = 0; j<=3; j++)
+			{
+			if (old & 01) new = new | 01;
+			if (j <3)
+				{
+				old = old >> 1;
+				new = new << 1;
+				}
+		}		
+	return new;
+a107 1
+
+d109 1
+a109 1
+	unsigned long	x;
+d111 7
+a117 7
+	/*	This corrects for the bit ordering of the algorithm, e.g.
+	 *  bit 0 ==> msb, bit 7 lsb.
+	 *
+	 * given the number of a bit position, >=1, flips the bit order each
+	 * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+ */
+	register	y,z;
+d119 3
+a121 3
+	/*  always do it, only used by des_make_key_perm.c so far	   */
+	y = (x-1)/8;
+	z = (x-1)%8;
+d123 1
+a123 1
+	x = (8-z) + (y*8);
+d125 1
+a125 1
+	return x;
+d129 1
+a129 1
+	unsigned long	x;
+d131 1
+a131 1
+	/*  zero based version												   */
+d133 4
+a136 4
+	/*	This corrects for the bit ordering of the algorithm, e.g.
+	 *  bit 0 ==> msb, bit 7 lsb.
+	 *
+	 */
+d139 1
+a139 1
+	return x;
+d142 1
+a142 1
+	register	y,z;
+d144 3
+a146 3
+	/* 
+	 * given the number of a bit position, >=0, flips the bit order each
+	 * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+d148 2
+a149 2
+	y = x/8;
+	z = x%8;
+d151 1
+a151 1
+	x = (7-z) + (y*8);
+d153 1
+a153 1
+	return x;
+d155 1
+a155 2
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+d161 1
+a161 1
+	unsigned long	x;
+d163 1
+a163 1
+	/*  zero based version												   */
+d165 4
+a168 4
+	/*	This corrects for the bit ordering of the algorithm, e.g.
+	 *  bit 0 ==> msb, bit 7 lsb.
+	 *
+	 */
+d170 7
+a176 7
+	register	y,z;
+	/* 
+	 * given the number of a bit position, >=0, flips the bit order each
+	 * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+	 */
+	y = x/8;
+	z = x%8;
+d178 1
+a178 1
+	x = (7-z) + (y*8);
+d180 1
+a180 1
+	return x;
+d184 1
+a184 1
+	unsigned long	x;
+d186 1
+a186 1
+	/*  zero based version												   */
+d188 6
+a193 5
+	/*	This corrects for the bit ordering of the algorithm, e.g.
+	 *  bit 0 ==> msb, bit 7 lsb.
+	 *
+	 *	Role of LSB and MSB flipped from the swap_bit_pos_0()
+	 */
+d196 1
+a196 1
+	return x;
+d200 1
+a200 1
+	register	y,z;
+d202 3
+a204 3
+	/* 
+	 * given the number of a bit position, >=0, flips the bit order each
+	 * byte. e.g. bit 3 --> bit 6, bit 13 --> bit 12
+d206 2
+a207 2
+	y = x/8;
+	z = x%8;
+d209 1
+a209 1
+	x = (7-z) + (y*8);
+d211 1
+a211 1
+	return x;
+d213 1
+a213 2
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+d216 1
+a216 1
+      }
+d219 1
+a219 1
+	unsigned long	x;
+d222 1
+a222 1
+	return x;
+d226 2
+a227 2
+	char *array = (char *) &x;
+	register unsigned long	old,new,i,j;
+d229 12
+a240 13
+	/* flips the bit order within each byte from 0 lsb to 0 msb			   */
+	old = *array;
+	new = 0;
+		for (j = 0; j<=7; j++)
+			{
+			if (old & 01) new = new | 01;
+			if (j <7)
+				{
+				old = old >> 1;
+				new = new << 1;
+				}
+		}		
+	return new;
+d242 1
+a242 2
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+d245 1
+a245 1
+      }
+d248 1
+a248 1
+	unsigned long x;
+d250 4
+a253 3
+/* given a bit number (0-31) from a vax, swap the byte part of the
+ * bit number to change the byte ordering to mSBFIRST type
+ */
+d255 1
+a255 1
+	return x;
+d258 1
+a258 1
+	unsigned long	y,z;
+d260 2
+a261 2
+	y = x/8; /* initial byte component */
+	z = x%8; /* bit within byte */
+d263 2
+a264 2
+	x = (3-y)*8 +z;
+	return x;
+d266 1
+a266 2
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+d269 1
+a269 1
+      }
+@
+
+
+4.4
+log
+@Moved ./des_conf.h to .../include/krb_conf.h.
+@
+text
+@d2 1
+a2 1
+#include	<krb_conf.h>
+@
+
+
+4.3
+log
+@Changed include files configuration and referencing.
+@
+text
+@a0 1
+#include "des_conf.h"
+d2 1
+@
+
+
+4.2
+log
+@PC changes from Jerry Saltzer.
+@
+text
+@d1 1
+a1 1
+#include "./des_conf.h"
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@a10 2
+	register	old,new,i,j;
+
+d12 1
+a12 1
+	/* just return														   */
+d14 3
+a16 2
+#endif
+#ifndef	LSBFIRST
+a17 4
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+
+#endif
+d35 6
+d46 4
+a52 9
+#ifdef	MSBFIRST
+	return x;
+#endif
+
+#ifndef	LSBFIRST
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+#endif
+
+d70 5
+d145 4
+a150 7
+#ifdef	MSBFIRST
+	return x;
+#endif
+#ifndef	LSBFIRST
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+#endif
+d161 5
+d202 5
+a208 7
+#ifdef	LSBFIRST
+	return x;
+#endif
+#ifndef	MSBFIRST
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+#endif
+d219 6
+a224 1
+}
+d229 5
+a236 8
+#ifdef	MSBFIRST
+	return x;
+#endif
+#ifndef	LSBFIRST
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+#endif
+
+d250 6
+a255 1
+}
+d263 4
+a268 3
+#ifdef	LSBFIRST
+	return x;
+#endif
+d274 6
+a279 2
+
+}
+@
+
+
+1.5
+log
+@Added include of des_conf.h
+@
+text
+@@
+
+
+1.4
+log
+@remove conditional for MSBFIRST in swap_bit_pos_1()
+to make RT work ok.
+@
+text
+@d1 1
+@
+
+
+1.3
+log
+@RT changes
+@
+text
+@d124 1
+a124 8
+#ifdef	MSBFIRST
+	return x;
+#endif
+#ifndef	LSBFIRST
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+#endif
+
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d4 1
+a4 1
+ * VAXes, we need to fix it up.
+d74 2
+a75 2
+unsigned long swap_six_bits(x)
+	unsigned long	x;
+d77 1
+a77 2
+	char *array = (char *) &x;
+	register unsigned long	old,new,i,j;
+d79 1
+a79 11
+#ifdef	MSBFIRST
+	return x;
+#endif
+#ifndef	LSBFIRST
+
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+
+#endif
+	/* flips the bit order within each byte from 0 lsb to 0 msb			   */
+	old = *array;
+d93 2
+a94 2
+unsigned long swap_four_bits(x)
+	unsigned long	x;
+d96 1
+a96 2
+	char *array = (char *) &x;
+	register	unsigned long old,new,i,j;
+d98 1
+a98 12
+#ifdef	MSBFIRST
+	return x;
+#endif
+
+#ifndef	LSBFIRST
+
+	fprintf(stderr,"\nDONT know how to swap bits for this machine");
+	exit(0);
+
+#endif
+	/* flips the bit order within each byte from 0 lsb to 0 msb			   */
+		old = *array;
+d170 24
+d253 19
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d3 4
+d12 5
+a16 2
+#ifndef	VAX
+#ifndef PC8086
+a21 1
+#endif
+d47 5
+a51 2
+#ifndef	VAX
+#ifndef PC8086
+a54 1
+#endif
+d80 4
+a83 2
+#ifndef	VAX
+#ifndef PC8086
+a88 1
+#endif
+d110 3
+a112 2
+#ifndef	VAX
+#ifndef PC8086
+d114 2
+a119 1
+#endif
+d147 4
+a150 2
+#ifndef	VAX
+#ifndef PC8086
+a153 1
+#endif
+d175 4
+a178 2
+#ifndef	VAX
+#ifndef PC8086
+d182 26
+d209 4
+d231 4
+a234 2
+#ifndef	VAX
+#ifndef PC8086
+a236 1
+#endif
+@

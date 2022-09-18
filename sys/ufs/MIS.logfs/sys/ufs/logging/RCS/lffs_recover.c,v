@@ -1,0 +1,522 @@
+head	1.2;
+access;
+symbols;
+locks
+	margo:1.2; strict;
+comment	@ * @;
+
+
+1.2
+date	94.10.11.17.04.42;	author margo;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	94.10.11.11.26.50;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@First rev of recovery code.  Prior to adding delete handling.
+@
+
+
+1.2
+log
+@Add ALLOC recovery code and more of REMOVE recovery code.
+@
+text
+@#include <stddef.h>
+#include <db.h>
+#include <assert.h>
+#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/signal.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
+#include <sys/tty.h>
+#include <sys/proc.h>
+#include <sys/dirent.h>
+#include <ufs/ufs/dir.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ffs/fs.h>
+#include <fsck.h>
+#include "queue.h"
+#include "lffs.h"
+#include "lffs_auto.h"
+#include "lffs_roll.h"
+#include "lffs_globs.h"
+
+#define FATAL_DADDR	-1
+
+int adddir_space(DB *dbp, struct dinode *dip);
+int check_for_abort(DB *dbp, u_long op, ino_t ino, long gen);
+void recover_fail(void);
+
+/*
+ * When we encounter a logical block allocation, we create
+ * an entry on the logical block list so that we can correctly
+ * pair up the logical allocation with the physical allocation.
+ */
+struct logical_block {
+	TAILQ_ENTRY(logical_block) links;
+	ino_t	inum;
+	int	op;
+	daddr_t	lbn;
+};
+TAILQ_HEAD(lhead, logical_block) logical_head;
+
+/*
+ * Inode allocation is recorded so that it can be associated with the
+ * correct create operation.
+ */
+struct ialloc_block {
+	TAILQ_ENTRY(ialloc_block) links;
+	ino_t inum;
+};
+TAILQ_HEAD(ihead, ialloc_block) ialloc_head;
+
+/*
+ * Directory creations are recorded so that we can perform removal
+ * of deleted directories if the system crashed after the rmdir, but
+ * before the actual directory has been removed.
+ */
+struct mkdir_entry {
+	TAILQ_ENTRY(mkdir_entry) links;
+	ino_t	dot_ino;
+	ino_t	dot_dot_ino;
+};
+TAILQ_HEAD(dhead, mkdir_entry) mkdir_head;
+
+/*
+ * Deletions are recorded in a list so that if the corresponding
+ * deallocation operations are not present in the log, we can
+ * process them correctly.
+ */
+struct unlink_entry {
+	TAILQ_ENTY(unlink_entry) links;
+	ino_t	unlink_ino;
+	long	unlink_gen;
+	struct dinode din;
+};
+TAILQ_HEAD(uhead, unlink_entry) unlink_head;
+
+void
+init_recovery()
+{
+	TAILQ_INIT(&logical_head);
+	TAILQ_INIT(&ialloc_head);
+}
+
+void
+CREATE_RECOVER(DB *dbp, CREATE_args *argp)
+{
+	struct bufarea *bp;
+	struct mkdir_entry *mp;
+	struct slot freedir;
+	struct dirent *dp;
+	int undo, len;
+	ino_t ino;
+	struct dinode *dip;
+
+	ino = argp->new_inum;
+	undo =  check_for_abort(dbp, argp->type, ino,  argp->new_gen);
+
+	/* First, remove corresponding IALLOC and set bitmap. */
+	remove_ialloc(argp->new_inum);
+
+	lffs_inode_setclr(ino, argp->type == LFFS_MKDIR, !undo);
+
+	/* Now get the new inode */
+	dip = ginode(argp->new_inum);
+	if (dip->di_gen < argp->new_gen && !undo) {
+		clearinode(dip);
+		dip->di_mode = argp->new_mode;
+		dip->di_nlink = argp->type == LFFS_MKDIR ? 2 : 1;;
+		TIMEVAL_TO_TIMESPEC(&argp->time, &dip->di_atime);
+		TIMEVAL_TO_TIMESPEC(&argp->time, &dip->di_mtime);
+		TIMEVAL_TO_TIMESPEC(&argp->time, &dip->di_ctime);
+		dip->di_gen = argp->new_gen;
+		dip->di_uid = argp->new_uid;
+		dip->di_gid = argp->new_gid;
+		inodirty();
+
+		if (argp->type == LFFS_MKDIR) {
+			mp = (void *) malloc(sizeof(struct mkdir_entry));
+			if (mp == NULL)
+				recover_fail();
+			mp->dot_ino = argp->new_inum;
+			mp->dot_dot_ino = argp->dir_inum;
+			TAILQ_INSERT_TAIL(&mkdir_head, mp, links);
+		}
+	}
+
+	/* Now fix the parent directory inode */
+	dip = ginode(argp->dir_inum);
+	if (dip->di_gen == argp->new_gen && !undo &&
+	    (dip->di_ctime.ts_sec > argp->time.tv_sec ||
+	    dip->di_ctime.ts_sec == argp->time.tv_sec &&
+	    (dip->di_ctime.ts_nsec * 1000) > argp->time.tv_usec)) {
+		dip->di_nlink += argp->type == LFFS_MKDIR ? 1 : 0;
+		TIMEVAL_TO_TIMESPEC(&argp->time, &dip->di_ctime);
+		inodirty();
+	}
+
+	/* Finally fix the parent directory */
+	len = strlen(argp->new_name);
+	dp = finddir(dip, argp->new_name, len, &freedir);
+	if (!dp && add_entry(dip, argp->new_inum, argp->new_name, len, 
+	    argp->new_mode, &freedir)) {
+		/*
+		 * The entry was not found and we were unable to add it
+		 * easily.
+		 */
+		if (!adddir_space(dbp, dip))
+			recover_fail();
+		last_lbn = lblkno(fs, dip->di_size - 1);
+		if(add_entry(dip, argp->new_inum, argp->new_name, len, 
+		    argp->new_mode, &freedir)))
+			recover_fail();
+	}
+
+
+	free(argp);
+}
+
+void
+IALLOC_RECOVER(DB *dbp, IALLOC_args *argp)
+{
+	struct ialloc_block *iap;
+
+	iap = (void *)malloc(sizeof(struct ialloc_block));
+	if (iap == NULL)
+		recover_fail();
+
+	iap->inum = argp->new_inum;
+	TAILQ_INSERT_TAIL(&ialloc_head, iap, links);
+	free(argp);
+}
+
+void
+REMOVE_RECOVER(DB *dbp, REMOVE_args *argp)
+{
+	struct dirent *dirp;
+	ino_t ino;
+	int undo;
+
+	ino = argp->new_inum;
+	undo =  check_for_abort(dbp, argp->type, ino,  argp->new_gen);
+
+	/* First update the inode bitmap. */
+	lffs_inode_setclr(ino, argp->type == LFFS_MKDIR, undo);
+
+	/* Now get the deleted inode */
+	dip = ginode(argp->new_inum);
+
+	/* Remove the entry from the parent directory. */
+	dirp = finddir(dip, argp->rem_name, strlen(argp->rem_name), NULL);
+	if (dirp && dirp->d_fileno == argp->rem_dip.di_num)
+		remdir(dirp); /*** MIS NEED TO IMPLEMENT ***/
+
+	/*** MIS YOU ARE HERE ***/
+
+}
+void
+LINK_RECOVER(DB *dbp, LINK_args *argp)
+{
+/* RECOVERY CODE GOES HERE */
+	if (check_for_abort(dbp, argp->type, argp->link_inum, argp->link_gen))
+		return;
+
+}
+void
+SYMLINK_RECOVER(DB *dbp, SYMLINK_args *argp)
+{
+/* RECOVERY CODE GOES HERE */
+
+}
+void
+RENAME_RECOVER(DB *dbp, RENAME_args *argp)
+{
+/* RECOVERY CODE GOES HERE */
+	if (check_for_abort(dbp, argp->type, argp->ren_inum, argp->ren_gen))
+		return;
+
+}
+void
+ALLOC_RECOVER(DB *dbp, ALLOC_args *argp)
+{
+	struct unlink_entry *uap;
+	struct dinode *dip;
+
+	/* If this is a DIRALLOC, we've already handled it. */
+	if (argp->type != LFFS_DIRALLOC) {
+		/* Update bitmaps for this block. */
+		lffs_frag_setclr(argp->pbn, argp->nfrags,
+		    argp->type != LFFS_DEALLOC)
+
+		/*
+		 * Verify that the inode is still valid and if so,
+		 * zero out the block pointer.
+		 */
+		dip = ginode(argp->new_inum);
+		if (argp->type != LFFS_FEXTEND && dip->di_gen == argp->gen)
+			bindex(dip, argp->lbn, 0);
+	}
+
+
+	/* If this is the deallocation for block 0, check for a delete. */
+	if (argp->type == LFFS_DEALLOC && argp->lbn == 0) {
+		for (uap = unlink_head.tqh_first; uap != NULL; 
+		    uap = uap->links.tqe_next)
+			if (uap->inum == argp->inum && uap->gen == argp->gen) {
+				TAILQ_REMOVE(&unlink_head, uap, links);
+				break;
+			}
+	}
+
+	free(argp);
+
+}
+void
+ABORT_RECOVER(DB *dbp, ABORT_args *argp)
+{
+/* RECOVERY CODE GOES HERE */
+	return;
+}
+void
+LOGICAL_RECOVER(DB *dbp, LOGICAL_args *argp)
+{
+/* RECOVERY CODE GOES HERE */
+	struct logical_block *lbp;
+
+	if (argp->type == LFFS_LOGICAL) {
+		lbp = (struct logical_block *)malloc(sizeof(struct logical_block));
+		if (lbp == NULL)
+			recover_fail();
+
+		lbp->inum =  argp->inum;
+		lbp->lbn = argp->lbn;
+		lbp->op = argp->type;
+		TAILQ_INSERT_TAIL(&logical_head, lbp, links);
+	}
+
+	/*
+	 * If type is DIRLOGICAL, this has already been
+	 * recovered in the preceding DIRECTORY op.
+	 */
+
+	free(argp);
+}
+
+void
+lffs_apply_record(DB *dbp, long type, void *rp)
+{
+	switch(type) {
+		case REC_CREATE:
+			CREATE_RECOVER(dbp, rp);
+			return;
+		case REC_IALLOC:
+			IALLOC_RECOVER(dbp, rp);
+			return;
+		case REC_REMOVE:
+			REMOVE_RECOVER(dbp, rp);
+			return;
+		case REC_LINK:
+			LINK_RECOVER(dbp, rp);
+			return;
+		case REC_SYMLINK:
+			SYMLINK_RECOVER(dbp, rp);
+			return;
+		case REC_RENAME:
+			RENAME_RECOVER(dbp, rp);
+			return;
+		case REC_ALLOC:
+			ALLOC_RECOVER(dbp, rp);
+			return;
+		case REC_ABORT:
+			ABORT_RECOVER(dbp, rp);
+			return;
+		case REC_LOGICAL:
+			LOGICAL_RECOVER(dbp, rp);
+			return;
+	}
+}
+
+/* CUSTOM CODE HERE */
+
+int
+check_for_abort(DB *dbp, u_long op, ino_t ino, long gen)
+{
+	struct preop pop;
+	DBT key, data;
+	int stat;
+
+	pop.gen = gen;
+	pop.ino = ino;
+	pop.op = op;
+	pop.lbn = 0;
+	key.data = &pop;
+	key.size = sizeof(struct preop);
+	data.data = NULL;
+	data.size = 0;
+
+	stat = (dbp->get)(dbp, &key, &data, 0);
+	if (stat < 0) {
+		perror("Internal hash error");
+		return(1);
+	} else if (stat == 0)	{
+		/* Op aborted */
+		if (verbose) 
+			printf("%s op aborted: %d 0x%x\n",
+			    log_names[op], ino, gen);
+		return(1);
+	}
+	return(0);
+}
+
+int
+remove_ialloc(ino_t inum)
+{
+	struct ialloc_block *iap;
+
+	for (iap = ialloc_head.tqh_first; iap != NULL; 
+	    iap = iap->links.tqe_next)
+		if (iap->inum == inum) {
+			TAILQ_REMOVE(&ialloc_head, iap, links);
+			return(1);
+		}
+	return(0);
+}
+
+daddr_t
+get_lbn(ino_t inum, int op)
+{
+	struct logical_block *lbp;
+	daddr_t lbn;
+
+	for (lbp = logical_head.tqh_first; lbp != NULL; 
+	    lbp = lbp->links.tqe_next)
+		if (lbp->inum == inum && lbp->op == op) {
+			TAILQ_REMOVE(&logical_head, lbp, links);
+			lbn = lbp->lbn;
+			free(lbp);
+			return(lbn);
+		}
+	return(FATAL_DADDR);
+}
+
+void
+recover_fail(void)
+{
+	printf("Fatal recovery error\n");
+	exit(1);
+}
+
+int
+adddir_space(DB *dbp, struct dinode *dip)
+{
+	DBT data, key;
+	struct preop pop;
+	struct dirop dop;
+	struct dirinfo *dirinfop;
+	daddr_t alloc_bn, last_lbn, bn;
+	int blksize;
+	int frags;
+	int stat;
+	/*
+	 * There are two possibilities.  If the allocation
+	 * messages made it to disk, we should have entries
+	 * in the hash table that tell us what blocks to
+	 * allocate.  If not, then we will have to do the
+	 * allocation manually.
+	 */
+
+	alloc_bn = lblkno(fs, dip->di_size + 1);
+
+	data.data = NULL;
+	data.size = 0;
+	key.data = &pop;
+	key.size = sizeof(struct preop);
+
+	pop.gen = dip->di_gen;
+	pop.op = LFFS_DIRALLOC;
+	pop.ino = dip->di_inumber;
+	pop.lbn = alloc_bn;
+	stat = (dbp->get)(dbp, &data, &key, 0);
+	if (stat < 0)
+		recover_fail();
+	if (stat == 0) {
+		/* Record the allocation. */
+		assert(data.size == sizeof(struct dirop));
+		bcopy(data.data, &dop, sizeof(struct dirop));
+		lffs_frag_setclr(dop.pbn, dop.nfrags, 1);
+		bn = dop.pbn;
+	} else {
+		/*
+		 * The allocation never got in the log.  We'll have
+		 * to allocate it.
+		 * There are three cases to check:
+		 * 1. Add fragment in place.
+		 * 2. Move fragments to new place.
+		 * 3. Find a brand new block.
+		 */
+
+		last_lbn = lblkno(fs, dip->di_size - 1);
+		dip->di_size += DIRBLKSIZ;
+		if ((bn = bmap(dip, last_lbn)) == 0)
+			recover_fail();
+		if ((blksize = dblksize(fs, dip, last_lbn)) != fs->fs_bsize) {
+
+			/* Allocating a fragment. */
+			frags = numfrags(fs, blksize);
+			if (fragnum(fs, bn) != fragnum(fs, bn + 1) ||
+			    !lffs_checkfrag(1, bn + 1)) {
+				/* Case 1: can allocate next frag. */
+				lffs_frag_setclr(bn + 1, 1, 1);
+			} else {
+				/* Case 2: Need to move fragments. */
+				lffs_frag_setclr(bn, frags, 0);
+				bn = lffs_findblock(frags + 1, bn);
+				lffs_frag_setclr(bn, frags + 1, 1);
+				bn = bindex(dip, last_lbn, bn);
+			}
+		} else {
+			/*
+			 * Case 3: Need to begin a new block.  Find
+			 * a large enough block, then update the inode.
+			 */
+			last_lbn++;
+			bn = lffs_findblock(fragnum(fs,
+			    dblksize(fs, dip, last_lbn)), bn);
+			bn = bindex(dip, last_lbn, bn);
+		}
+
+	}
+	return(bn != 0);
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d30 5
+d43 4
+d53 5
+d65 13
+d177 1
+d189 6
+d223 16
+a238 2
+/* RECOVERY CODE GOES HERE */
+	if (argp->type != LFFS_DIRALLOC && argp->type != LFFS_FEXTEND) {
+d241 10
+a250 1
+	/* If this is a DIRALLOC, we've already handled it. */
+@

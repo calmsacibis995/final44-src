@@ -1,0 +1,127 @@
+From parmelee@wayback.cs.cornell.edu  Mon Mar  6 04:01:16 1989
+Date: Mon, 6 Mar 89 07:00:53 -0500
+From: parmelee@wayback.cs.cornell.edu (Larry Parmelee)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Sendmail 5.61 "queue" mode MAJOR security hole!
+Index: usr.lib/sendmail/src 4.3BSD
+
+Description:
+	ACKNOWLEDGEMENT:  For what it's worth, the first inklings of
+	this bug were found by William Reeder <reeder@emx.utexas.edu>
+	and reported in the USENET newsgroup comp.mail.sendmail, articles
+	<10821@ut-emx.UUCP> and <10798@ut-emx.UUCP>.  His machine is
+	an Encore Multimax, mine are Vaxen running 4.3 Mt Xinu UNIX +
+	Sun NFS (MR of Dec 87).  William has analyzed a bit of what
+	sendmail is doing internally, see his articles mentioned above
+	for more info.
+
+	When sendmail is configured with "queue only" as the
+	default delivery mode and a RECIPIENT has a .forward file
+	which pipes mail to a program,  the program will
+	be run as some other user:  If the mail was sent on
+	the local host, the program will be run with the SENDER's
+	uid and gid.  If the mail was received from a remote host,
+	the program will be run with the default mailer uid and gid.
+
+	NOTE:  This situation may also occur if your mailer is set
+	up to queue messages for later delivery under heavy load 
+	conditions, so this bug is NOT restricted to sites using
+	"queue only" delivery modes.
+
+	This is wrong!  The program ALWAYS** should be run as the 	
+	RECIPIENT.  **: Certainly "ALWAYS" if the program came from
+	a .forward file.  I suspect the problem also exists with
+	aliases from /usr/lib/aliases that specify a program,
+	and things are less clear in that case, probably should
+	run as the default mailer uid and gid.
+
+	THIS IS A HOLE!!!  It's trivial to write a program (or
+	shell script even) which will notice when it's being run
+	by someone interesting, and in that case take time out to
+	create a suid/sgid shell.  You can probably get "root"
+	to send you a message, then you've got it made!  Failing that,
+	it's trivial to get a message sent from a remote host, and
+	thereby get a shell as the default mailer uid and gid, which
+	is usually daemon, which gives you write permissions in a lot
+	of other interesting places, from which it's probably easy to
+	get to root....
+
+Repeat-By:
+	Change /usr/lib/sendmail.cf to specify the default delivery
+	mode as "queue only"  (Odq).  To see the effects on local
+	mail, it is necessary to change the .cf file rather than
+	just restarting sendmail with an "-odq" option on the command
+	line.  Rebuild the .fc file if appropriate and restart sendmail.
+
+	Compile the following little C program, call it "whosit" and
+	put it in your home directory:  This program prints the real and
+	effective user and group ids of whomever runs it.
+
+------ File whosit. c ---- BEGIN
+#include <pwd.h>
+#include <grp.h>
+
+int getgid();
+int getegid();
+int getuid();
+int geteuid();
+
+
+whosit()
+{
+	register struct passwd *p;
+	register struct group *g;
+	register n;
+
+	n = getuid();
+	p = getpwuid(n);
+	printf("RealUser: %d (%s)\n",n,p?p->pw_name:"???");
+	 
+	n = geteuid();
+	p = getpwuid(n);
+	printf("Eff.User: %d (%s)\n",n,p?p->pw_name:"???");
+
+	n = getgid();
+	g = getgrgid(n);
+	printf("RealGroup: %d (%s)\n",n,g?g->gr_name:"???");
+
+	n = getegid();
+	g = getgrgid(n);
+	printf("Eff.Group: %d (%s)\n",n,g?g->gr_name:"???");
+}
+
+
+main()
+{
+whosit();
+}
+-----------File whosit. c ---- END
+
+	Also, put the following shell script in your home directory in a
+	file called "doit".  In the following, you'll need to change,
+	"HOME" to be the full pathname to your home directory.
+
+-----------File doit ------- BEGIN
+/HOME/whosit > /HOME/X/f.$$
+/bin/cat >> /HOME/X/f.$$
+-----------File doit ------- END
+
+	Your home directory should have at least permissions 0755,
+	and "whosit" and "doit" should also both have permissions 0755.
+	In your home directory, create a directory called "X" with
+	permissions 0777.
+
+	Lastly, put "|/HOME/doit" (omit the "s) in your .forward
+	file (Replace "HOME" with the path to your home directory,
+	as before.)
+
+	Send yourself mail, get other people on the local machine
+	to send you mail, get someone on a remote machine to send you 
+	mail, and observe the files created in X when the mail arrives.
+	(you may want to force a queue run after some mail for you has
+	accumulated).
+
+-Larry Parmelee
+parmelee@cs.cornell.edu		postmaster@cs.cornell.edu
+
+

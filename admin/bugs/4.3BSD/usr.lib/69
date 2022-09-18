@@ -1,0 +1,143 @@
+Path: seismo!uunet!seismo!sundc!pitstop!sun!amdcad!ames!ll-xn!husc6!necntc!ima!haddock!trb
+From: trb@haddock.ISC.COM (Andrew Tannenbaum)
+Newsgroups: comp.bugs.4bsd
+Subject: lpq +n memory faults +FIX
+Index: usr.lib/lpr/lpq 4.3BSD Fix
+
+Description:
+	Lpq has an option +n (where n is the number of seconds to
+	sleep between screen updates) which tells it to loop until the
+	queue is empty.  I am not surprised that this option is rarely
+	used.  I hacked it up by adding a -f (forever, a la tail)
+	option which would let it loop forever, so that I could run it
+	as a status job on a screen in our printer room.
+
+	Upon adding the -f option, I found that lpq would memory fault
+	within a few minutes.  Turns out that it was calling code to
+	initialize the printcap data in a loop, using a walking buffer
+	pointer that was not initialized before each use.  (That's
+	how I can say confidently above that this is a rarely used
+	option).
+
+Repeat-By:
+	 The following command will memory fault inside of 50 iterations
+	 if there are jobs in the queue.
+	 % lpq +1
+Fix:
+	Below is a context diff which may be run through patch.
+	Most of it is the code for the -f option.  I have taken the
+	liberty of checking the printer name string in the printcap
+	init code so that it doesn't do an extra file i/o to
+	reinitialize the printcap strings unnecessarily.
+
+	The simplest sufficient patch is to just add the line
+
+	bp = pbuf;
+
+	at the top of displayq.c, the rest is gravy.
+
+	Andrew Tannenbaum   Interactive   Boston, MA   +1 617 247 1155
+
+<<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>>
+*** lpq.c.orig	Sat Jan 11 14:42:19 1986
+--- lpq.c	Tue Nov  3 15:11:28 1987
+***************
+*** 29,34 ****
+--- 29,35 ----
+  int	users;			/* # of users in user array */
+  int	requ[MAXREQUESTS];	/* job number of spool entries */
+  int	requests;		/* # of spool requests */
++ int	fflag;			/* forever output option */
+  static int	repeat;		/* + flag indicator */
+  static int	slptime = 30;	/* pause between screen refereshes */
+***************
+*** 82,87 ****
+--- 83,93 ----
+  				}
+  				break;
++ 			case 'f':		/* forever output */
++ 				fflag++;	/* trb@ima 11/87 */
++ 				repeat++;
++ 				break;
++ 
+  			case 'l':		/* long output */
+  				lflag++;
+  				break;
+***************
+*** 118,126 ****
+  				tputs(tgoto(CM, 0, 0), 0, putch);
+  			}
+  #endif
+! 			if ((n = displayq(lflag)) > 0)
+  				sleep(slptime);
+! 		} while (n > 0);
+  #ifdef TERMCAP
+  		if (!dumb) {
+  			standout(stdout, "Hit return to continue");
+--- 124,132 ----
+  				tputs(tgoto(CM, 0, 0), 0, putch);
+  			}
+  #endif
+! 			if ((n = displayq(lflag)) > 0 || fflag)
+  				sleep(slptime);
+! 		} while (n > 0 || fflag);
+  #ifdef TERMCAP
+  		if (!dumb) {
+  			standout(stdout, "Hit return to continue");
+<<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>>
+*** displayq.c.orig	Sat Jan 11 14:41:33 1986
+--- displayq.c	Tue Nov  3 15:23:33 1987
+***************
+*** 25,30 ****
+--- 25,31 ----
+  extern int	users;		/* # of users in user array */
+  extern int	requ[];		/* job number of spool entries */
+  extern int	requests;	/* # of spool requests */
++ extern int	fflag;		/* forever output option */
+  int	lflag;		/* long output option */
+  char	current[40];	/* current file being printed */
+***************
+*** 50,60 ****
+--- 51,65 ----
+  	struct queue **queue;
+  	struct stat statb;
+  	FILE *fp;
++ 	static char lastprinter[64];
+  	lflag = format;
+  	totsize = 0;
+  	rank = -1;
++ 	if (strcmp(lastprinter, printer)){
++ 	strcpy(lastprinter, printer);
++ 	bp = pbuf;
+  	if ((i = pgetent(line, printer)) < 0)
+  		fatal("cannot open printer description file");
+  	else if (i == 0)
+***************
+*** 70,75 ****
+--- 75,81 ----
+  	if ((ST = pgetstr("st", &bp)) == NULL)
+  		ST = DEFSTAT;
+  	RM = pgetstr("rm", &bp);
++ 	}
+  	/*
+  	 * Figure out whether the local machine is the same as the remote 
+***************
+*** 167,172 ****
+--- 173,188 ----
+  				printf("%s: ", host);
+  			printf("Warning: %s queue is turned off\n", printer);
+  		}
++ 	}
++ 	if (fflag) {
++ 		static int ff=1;
++ 		long tval;
++ 
++ 		if (nitems == 0 && (ff = !ff))
++ 			printf("\n\n");	/* screen saver */
++ 
++ 		time(&tval);
++ 		printf(ctime(&tval));
+  	}
+  	if (nitems == 0) {
+  		if (!sendtorem)
+

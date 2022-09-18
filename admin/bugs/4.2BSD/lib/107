@@ -1,0 +1,103 @@
+Return-Path: <@seismo.ARPA:elsie!ado@seismo.ARPA>
+Date: Sat, 12 Jan 85 05:13:21 EST
+From: elsie!ado@seismo.ARPA
+Subject: bum unsigned to double conversion in 4.?bsd C compiler (with fix)
+Index: lib/pcc/table.c 4.2BSD Fix
+
+Description:
+	A variable of type unsigned (or unsigned int, or unsigned long) is
+	misconverted to type double (or float) if the variable's high-order
+	bit is on.
+
+Repeat-By:
+	Compile the following:
+		#include <stdio.h>
+
+		unsigned	u;
+		double		d;
+
+		main() {
+			u = ~0;
+			d = u;
+			printf("%f\n", d);
+		}
+	Note the output:
+		-1.000000
+
+Fix:
+	As is so often true, AT&T's corporate secretiveness precludes a clearer
+	posting.  Note also that other folks almost surely have better fixes for
+	this bug.  These fixes are for the 4.1bsd versions of the relevant
+	files.
+
+	Dealing with the bug involves three additions.
+	The first two are used to get the C compiler to generate correct code.
+	First is an addition to "cmd/pcc/table.c":
+
+	ed table.c
+	/#ifdef FORT/;/endif/a
+
+	#ifndef OLDVERSION
+	SCONV,	INTAREG|FORCC,
+		SAREG|AWD,	TUNSIGNED|TULONG,
+		SANY,	TFLOAT,
+			NAREG|NASL,	RESC1|RESCC,
+			"	cvtld	AL,-(sp)\nZG\ncvtdf	(sp)+,A1\n",
+	
+	SCONV,	INTAREG|FORCC,
+		SAREG|AWD,	TUNSIGNED|TULONG,
+		SANY,	TDOUBLE,
+			NAREG|NASL,	RESC1|RESCC,
+			"	cvtld	AL,-(sp)\nZG\nmovd	(sp)+,A1\n",
+	#endif
+	.
+	w
+	q
+
+	Second is an addition to "local2.c":
+
+	ed local2.c
+	/^zzcode/;/switch/a
+	#ifndef OLDVERSION
+		case 'G':
+			/*
+			** Just did a cvtld ..., -(sp).
+			** If negative, correct (sp).
+			*/
+			cbgen( GE, m=getlab(), 'I' );
+			printf("	addd2	$0d4.294967296e+09, (sp)\n");
+			deflab( m );
+			return;
+	#endif
+
+	.
+	w
+	q
+
+	Lastly. . .just a minute.  Will someone please tap the 'n' key on Doug
+	Gwyn's terminal?  All done?  Thank you.  :-)  Lastly, a change to "lint"
+	so that if you "lint -p" you'll get a warning about code that's not
+	portable to sites with the distributed 4.1bsd or 4.2bsd compiler.
+	The change is to "lint.c" in the "lint" source directory; you might
+	want to put this change in even if you're NOT a 4.1bsd or 4.2bsd site
+	if you'd like warnings about code that won't port to 4.?bsd sites.
+
+	ed lint.c
+	/^clocal/;/case SCONV/;/tl =/a
+	#ifndef OLDVERSION
+			if ( (t == FLOAT || t == DOUBLE) &&
+				(tl == UNSIGNED || tl == ULONG) )
+					if ( ((float) ((unsigned) ~0)) < 0 )
+	werror( "unsigned to float conversion fails on your system" );
+					else if (pflag)
+	werror( "unsigned to float conversion fails on Berkeley systems" );
+	#endif
+	.
+	w
+	q
+--
+Bugs is a Warner Brothers trademark.
+NASL is a North American Soccer League abbreviation.
+--
+	..decvax!seismo!elsie!ado	(country code 1)(301) 496-5688
+	DEC, VAX and Elsie are Digital Equipment and Borden trademarks

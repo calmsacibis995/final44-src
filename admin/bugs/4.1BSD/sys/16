@@ -1,0 +1,65 @@
+Return-Path: <allegra!princeton!astro>
+Date: 12 Jun 83 21:16:40 PDT (Sun)
+From: ralph
+
+Date: June 12,1983
+Subject: bug in paging kernel concerning raw dma devices
+Index:  sys/sys/vmpage.c  4.1BSD Fix
+
+Description:
+  There is a paging routine bug in 4.1 BSD that affects the locking of memory
+  for dma on Raw I/O devices.  This bug can cause a process to hang at priority
+  -24 (PSWP+1).  The problem occurs when an attempt is made to lock a page that
+  is in the process of being swapped out.  The call in mlock in pagin() will
+  block if this is the case.  However anything can happen during this block.
+  In particular some other process can have grabbed that page.  Pagein() really
+  should start the processing of that page fault again from the beginning.
+
+  The comments in mlock() and munlock() (in vmmem.c) in our source say something
+  to the effect "THIS ROUTINE SHOULD TAKE A CMAP STRUCTURE AS AN ARGUMENT".
+  Personally, for mlock() I think this would be a bad idea, as I think it is
+  impossible after a block to guarantee that a page still belongs to the process
+  that requested the mlock().
+
+  This bug tends to mainly show up on large transfers when a system is busy.
+  It first turned up on our versatec.  It is my theory that many poor innocent
+  devices have been falsely suspected of losing interrupts due to this bug.
+
+Repeat-By:
+  Do large transfers (>8k) when system paging load is high on the special
+  character file of a device that uses direct memory access.  This happens
+  extremely intermittently.
+Fix:
+  Here are the fixes to sys/vmpage.c
+  119,120c119,129
+< 				if (p->p_flag & SDLYU)
+< 					mlock(pte->pg_pfnum);
+---
+> 				if (p->p_flag & SDLYU) {
+> 	/* BUG FIX (WLS) */
+> 					c = &cmap[pgtocm(pte->pg_pfnum)];
+> 					if (c->c_lock) {
+> 						c->c_want = 1 ;
+> 						sleep( (caddr_t)c, PSWP+1);
+> 						goto restart;
+> 					}
+> 					c->c_lock = 1;
+> 	/* END BUG FIX (WLS) */
+> 				}
+150,151c159,169
+< 		if (p->p_flag & SDLYU)
+< 			mlock(pte->pg_pfnum);
+---
+> 		if (p->p_flag & SDLYU) {
+> 	/* BUG FIX (WLS) */
+> 			c = &cmap[pgtocm(pte->pg_pfnum)];
+> 			if (c->c_lock) {
+> 				c->c_want = 1 ;
+> 				sleep( (caddr_t)c, PSWP+1);
+> 				goto restart;
+> 			}
+> 			c->c_lock = 1;
+> 	/* END BUG FIX (WLS) */
+> 		}
+
+

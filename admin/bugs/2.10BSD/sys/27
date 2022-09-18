@@ -1,0 +1,109 @@
+From sms@WLV.IMSD.CONTEL.COM  Sat Aug 26 23:13:29 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA14052; Sat, 26 Aug 89 23:13:29 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA27477; Sat, 26 Aug 89 23:20:46 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA01049; Sat, 26 Aug 89 23:19:49 -0700
+Date: Sat, 26 Aug 89 23:19:49 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8908270619.AA01049@WLV.IMSD.CONTEL.COM>
+Subject: Q22 support for Emulex CS02
+Index: 	sys/dh.c,dmreg.h 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	There were major problems with DH/DM-11 type devices on
+	the QBUS (Q22) 11/73 (presumably 11/53 also) systems.
+
+Repeat-By:
+	Observation.
+
+Fix:
+	Thanks to Paul Taylor (taylor@oswego.oswego.edu) for sending the
+	following patches to /sys/pdpuba/{dh.c,dmreg.h}:
+
+*** dh.c.old	Fri Aug  4 22:42:08 1989
+--- dh.c	Sat Aug 26 23:11:29 1989
+***************
+*** 3,9 ****
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)dh.c	1.1 (2.10BSD Berkeley) 12/1/86
+   */
+  
+  /*
+--- 3,9 ----
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)dh.c	1.2 (2.10.1BSD Berkeley) 8/25/89
+   */
+  
+  /*
+***************
+*** 410,418 ****
+--- 410,424 ----
+  #else
+  				{
+  				ubadr_t car;
++ #if defined(Q22)
++ 				struct dmdevice *dmaddr = (struct dmdevice *)dminfo[dh].ui_addr;
+  
++ 				car = (ubadr_t)addr->dhcar;
++ 				car |= ((ubadr_t)(dmaddr->dmlst_h&077) << 16);
++ #else
+  				car = (ubadr_t) addr->dhcar
+  				    | (ubadr_t)(addr->dhsilo & 0300) << 10;
++ #endif defined(Q22)
+  				cntr = car - cpaddr(tp->t_outq.c_cf);
+  				ndflush(&tp->t_outq, cntr);
+  				}
+***************
+*** 495,503 ****
+--- 501,517 ----
+  		addr->dhcar = (u_short)cpaddr(tp->t_outq.c_cf);
+  #else
+  		ubadr_t uba;
++ #if defined(Q22)
++ 		struct dmdevice *dmaddr = (struct dmdevice *)dminfo[dh].ui_addr;
++ #endif
+  
+  		uba = cpaddr(tp->t_outq.c_cf);
++ #if defined(Q22)
++                 addr->un.dhcsrl = (unit&017) | DH_IE;
++                 dmaddr->dmlst_h = hiint(uba) & 077;
++ #else
+  		addr->un.dhcsrl = (unit&017) | DH_IE | ((hiint(uba)<<4)&060);
++ #endif defined(Q22)
+  		addr->dhcar = loint(uba);
+  #endif
+  		{ short word = 1 << unit;
+*** dmreg.h.old	Sat Jan 10 14:31:49 1987
+--- dmreg.h	Sat Aug 26 23:01:07 1989
+***************
+*** 11,18 ****
+   */
+  struct dmdevice {
+  	short	dmcsr;		/* control status register */
+! 	short	dmlstat;	/* line status register */
+! 	short	dmpad1[2];
+  };
+  
+  /* bits in dm csr */
+--- 11,24 ----
+   */
+  struct dmdevice {
+  	short	dmcsr;		/* control status register */
+! 	union	{               /* Q22:Need to access high byte independently */
+! 		short dmlst_w;
+! 		char dmlst_b[2];
+! 		} cs02un;
+! #define dmlstat cs02un.dmlst_w        /* line status register */
+! #define dmlst_l cs02un.dmlst_b[0]     /* low byte */
+! #define dmlst_h cs02un.dmlst_b[1]     /* high byte */
+! 	short   dmpad1[2];
+  };
+  
+  /* bits in dm csr */

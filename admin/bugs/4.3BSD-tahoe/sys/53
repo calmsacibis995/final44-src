@@ -1,0 +1,151 @@
+From tef@cgl.ucsf.EDU  Tue May  1 12:21:02 1990
+Date: Tue, 1 May 90 12:21:29 PDT
+From: tef@cgl.ucsf.EDU
+Subject: Qbus ethernet driver has ring buffer logic flaw
+Index: 	/sys/vaxif/if_qe.c 4.3tahoe BSD
+Index: sys 4.3BSD-tahoe
+
+Problem:
+	It is possbile for the ring of receive buffers used by the
+	DELQA and DEQNA microcode to get "out of sync" with the host's
+	device driver.  When this happens the device driver doesn't
+	notice that a received packet has come in until it loops around
+	the ring a complete revolution.  Symptoms are that ping response
+	times go to hell and become very unpredictable (unpredictable
+	because they depend on how much traffic is arriving on the
+	interface and thus how often you loop around the receive ring).
+	Ping response packets also arrive out of sequence.  Once the
+	ring gets out of sync, there is no way for it to get back in
+	sync short of rebooting the machine.
+
+Repeat-by:
+	Difficult at best.  Perhaps the most reasonable approach
+	is to get an large empty white board, fill it with all the
+	possible scenarios of the DEQNA filling the ring as the host
+	empties the ring and convince yourself that the handshake
+	protocol used by the DEQNA is not adequate for all possible
+	combinations of different speeds of filling and empting
+	of the ring buffers.  The logic for this approach is presented
+	below.
+
+	Note that a similar scenario is possible with the xmit ring
+	and a long comment at the start of qestart() explains that this
+	is why no more than NXMT-1 buffers are ever queued for transmission.
+	The same technique cannot be used with receive buffers however.
+
+	Another approach is to add test code to qerint() that always
+	inspects the whole receive ring and prints a message if the start
+	of the ring has QE_NOTYET set but some other buffer later in
+	the ring has this bit cleared.  Then run the test code and
+	try to overrun the receive ring by having a fast device send lots
+	of small packets while the local host is busy with other work.
+	Sooner or later an "out of sync" message will get logged.  With
+	this approach we found that we got the message about once per month
+	on one of our microvax 3200's that is used as a gateway.
+
+	The DEQNA ring buffer logic flaw works as follows:
+
+	a)	The device driver is in the midst of servicing a
+		receive-packet interrupt and/or a xmit packet interrupt
+		and going around the ring(s).
+
+	b)	Meanwhile lots of packets are being received by the
+		device and filling the ring.  If the device receives
+		a new packet just before the driver has finished
+		processing an old packet, the index used to point to
+		the front of the ring can wind up having the QE_NOTYET
+		bit set, incorrrectly indicating that the head of the
+		ring has no valid data, and thus that the rest of the
+		ring has no valid data either.
+
+	For example, consider the following:
+
+	State of the ring:
+
+		Slot	State			Additional information
+		====	=====			======================
+		S	Filled by device	Next slot to be processed
+						by device driver
+		S+1	Filled by device
+		S+2	Filled by device
+		...
+		S-2	Filled by device
+		S-1	Empty			Next slot to be filled by
+						device
+
+	Device receives a packet and fills in S-1.
+	Device driver starts to process the ring and locks S.
+	Device receives another packet and looks for an available slot;
+	   since S is locked, it finds S+1.
+	Device driver processes both S and S+1.
+	Device fills in S+1.
+	Device driver processes S+2 through S-1.  (Note that it will
+	   not process S since it is now empty.)
+
+	After this sequence of events, the state of the ring is
+
+		Slot	State			Additional information
+		====	=====			======================
+		S	Empty			Next slot to be processed
+						by device driver
+		S+1	Filled by device
+		S+2	Filled by device
+		S+3	Empty			Next slot to be filled by
+						device
+		...
+		S-2	Empty
+		S-1	Empty
+
+	Slots S+1 and S+2 will not be processed until S+3 through S are
+	filled because the device driver currently works using the loop
+
+		for (; next_slot_is_full; advance_slot)
+			...
+
+	This also explains the symptom of having ping packets come out of
+	sequence or with long delays (the time to fill S+3 through S).
+	Also, the performance of a single connection or ping session is
+	quite variable because it depends on the *total* traffic to the
+	host.
+
+	(Credit is due to Conrad Huang for deducing this complex scenario).
+
+
+Fix:
+	Add code that checks to see if the buffer at the head of the ring
+	contains valid data when an interrupt is received.  If there is
+	valid data proceed as the driver previously did.  If the head buffer
+	is not valid, trace around the ring trying to find a valid packet.
+	If one is found before you get back to the beginning of the ring,
+	then the ring was out of sync and so print a message (the ring
+	will automatically be back in sync by act of traversing around
+	the ring during inspection process).  If you get back to the
+	beginning of the ring without finding valid data, then the data
+	which caused the interrupt in the first place has already been
+	processed during a previous interrupt and there's nothing more
+	to do.
+
+	The code to do this follows.  It goes at the beginning of qerint().
+
+
+	register int nrcv = 0;
+
+	while (sc->rring[sc->rindex].qe_status1 == QE_NOTYET && nrcv < NRCV) {
+		/*
+		 * We got an interrupt but did not find an input packet
+		 * where we expected one to be, probably because the ring
+		 * was overrun.
+		 * We search forward to find a valid packet and start
+		 * processing from there.  If no valid packet is found it
+		 * means we processed all the packets during a previous
+		 * interrupt and that the QE_RCV_INT bit was set while
+		 * we were processing one of these earlier packets.  In
+		 * this case we can safely ignore the interrupt (by dropping
+		 * through the code below).
+		 */
+		sc->rindex = (sc->rindex + 1) % NRCV;
+		nrcv++;
+	}
+	if (nrcv && nrcv < NRCV)
+		log(LOG_ERR, "qe%d: ring overrun, resync'd by skipping %d\n",
+			unit, nrcv);

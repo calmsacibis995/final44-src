@@ -1,0 +1,94 @@
+Return-Path: <decwrl!qubix!msc>
+Date: Wed, 11 Jul 84 15:59:33 pdt
+From: decwrl!qubix!msc (Mark Callow)
+Subject: tip can't remove lock file from mode 755 directory
+Index: usr.bin/tip/tip.c 4.2BSD Fix
+
+Description:
+	If you set you /usr/spool/uucp directory to mode 755 then tip can't
+	remove the lock file it creates there for the dialer.
+Repeat-By:
+	chmod 755 /usr/spool/uucp.  Run tip and exit from it.  Look in
+	/usr/spool/uucp and find LCK..cul0 (or whatever) is still there.
+Fix:
+	The problem is that after creating the lock file tip reverts to
+	the real uid and gid and so can't delete anything from the spool
+	directory which is owned by uucp.
+
+	I chose to have tip fork a new process before it switches to the
+	real uid and gid that waits for tip to finihs and then removes
+	the lock file.  An identical fix is needed in the alternative cu.c
+	frontend.  This is not a very elegant fix.
+	come up with.
+
+	Here are the changes to tip.c.
+
+	2c2,3
+	< static char sccsid[] = "@(#)tip.c	4.16 (Berkeley) 6/28/83";
+	---
+	> static char rcsid[] =
+	> "$Header: tip.c,v 1.2 84/07/11 14:43:23 root Rel $ QGSI";
+	5a7,10
+	>  * From: "@(#)tip.c	4.16 (Berkeley) 6/28/83"; 
+	>  */
+	> 
+	> /*
+	34a40,42
+	> #ifdef FORK
+	> 	int child_id;
+	> #endif
+	95a104,121
+	> #ifdef FORK
+	> 	/*
+	> 	 * Fork a process to remain around with the effective uid and gid.
+	> 	 * This process removes the lock file when tip finishes.
+	> 	 */
+	> 	if ((child_id = fork()) < 0)
+	> 		perror( argv[0] );
+	> 	if (child_id != 0)
+	> 	{
+	> 		int ex_status;
+	> 
+	> 		while (child_id != wait(&ex_status))
+	> 			;
+	> 		/* child has died now remove the lock file. */
+	> 		delock(uucplock);
+	> 		exit( ex_status >> (sizeof( int ) / 2) );
+	> 	}
+	> #endif FORK
+
+	Here are the changes to cu.c.
+
+	2c2,3
+	< static char sccsid[] = "@(#)cu.c	4.6 (Berkeley) 6/28/83";
+	---
+	> static char rcsid[] =
+	> "$Header: cu.c,v 1.2 84/07/11 14:45:10 root Rel $ QGSI";
+	4a6,9
+	> /*
+	>  * From: "@(#)cu.c	4.6 (Berkeley) 6/28/83";
+	>  */
+	> 
+	17a23,25
+	> #ifdef FORK
+	> 	int child_id;
+	> #endif
+	83a92,109
+	> #ifdef FORK
+	> 	/*
+	> 	 * Fork a process to remain around with the effective uid and gid.
+	> 	 * This process removes the lock file when tip finishes.
+	> 	 */
+	> 	if ((child_id = fork()) < 0)
+	> 		perror( argv[0] );
+	> 	if (child_id != 0)
+	> 	{
+	> 		int ex_status;
+	> 
+	> 		while (child_id != wait(&ex_status))
+	> 			;
+	> 		/* child has died now remove the lock file. */
+	> 		delock(uucplock);
+	> 		exit( ex_status >> (sizeof( int ) / 2) );
+	> 	}
+	> #endif FORK

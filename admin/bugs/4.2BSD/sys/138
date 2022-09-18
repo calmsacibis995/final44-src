@@ -1,0 +1,46 @@
+Return-Path: <mogul@Gregorio>
+Date: Tue, 20 Nov 84 12:32:24 pst
+From: Jeff Mogul <mogul@Gregorio>
+Subject: icmp_input() improperly handles packets in multiple mbufs
+Index: sys/netinet/ip_icmp.c 4.2BSD Fix
+
+Description:
+	If an ICMP packet "arrives" as 2 mbufs, it may get interpreted
+	improperly.
+Repeat-By:
+	Send a short ICMP (e.g., an ECHOME with no additional data)
+	to "localhost" or to your own 10Mbit ethernet address.  It
+	will not be answered, and will probably show up in netstat -s
+	reports as an ICMP type code #0.
+Fix:
+	icmp_input() calls m_pullup() to make sure that the ICMP
+	header is in a contiguous buffer.  The calculation for how
+	long the buffer must be should include the the IP header, but
+	because ip->ip_len has been adjusted in ip_intr() to not count
+	the header length, the call to m_pullup() is given a short
+	length.
+
+	A diff -c listing shows the change.
+***************
+*** 129,135
+  		goto free;
+  	}
+  	/* THIS LENGTH CHECK STILL MISSES ANY IP OPTIONS IN ICMP_IP */
+! 	i = MIN(icmplen, ICMP_ADVLENMIN + hlen);
+   	if ((m->m_off > MMAXOFF || m->m_len < i) &&
+   		(m = m_pullup(m, i)) == 0)  {
+  		icmpstat.icps_tooshort++;
+
+--- 134,140 -----
+  		goto free;
+  	}
+  	/* THIS LENGTH CHECK STILL MISSES ANY IP OPTIONS IN ICMP_IP */
+! 	i = MIN(icmplen + hlen, ICMP_ADVLENMIN + hlen);
+   	if ((m->m_off > MMAXOFF || m->m_len < i) &&
+   		(m = m_pullup(m, i)) == 0)  {
+  		icmpstat.icps_tooshort++;
+
+
+Actually, one could better re-write the expression as
+ 	i = MIN(icmplen, ICMP_ADVLENMIN) + hlen;
+(saving several additions during evaluation of the expression.)

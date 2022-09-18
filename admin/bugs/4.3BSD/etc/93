@@ -1,0 +1,134 @@
+From chris@mimsy.umd.edu  Thu Sep 10 21:13:52 1987
+Date: Thu, 10 Sep 87 23:11:03 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+Subject: finger daemon does not get along with others
+Index: etc/fingerd.c 4.3BSD Fix
+
+Description:
+	The finger daemon does not cooperate well with some other
+	systems, notably some Multics systems.
+
+Repeat-By:
+	% finger "user1/w user2/w"@4.3bsdhost
+
+Fix:
+	This change also allows people to do things like
+
+		finger "-m chris"@mimsy.umd.edu
+
+	if they happen to know that mimsy.umd.edu understands `-m'.
+	This is a side effect, but is probably worth documenting.
+
+RCS file: RCS/fingerd.c,v
+retrieving revision 1.2
+retrieving revision 1.3
+diff -c2 -r1.2 -r1.3
+*** /tmp/,RCSt1016787	Fri Sep 11 00:06:09 1987
+--- /tmp/,RCSt2016787	Fri Sep 11 00:06:10 1987
+***************
+*** 32,36 ****
+  {
+  	register char *sp;
+! 	char line[512];
+  	struct sockaddr_in sin;
+  	int i, p[2], pid;
+--- 32,36 ----
+  {
+  	register char *sp;
+! 	char line[1024];
+  	struct sockaddr_in sin;
+  	int i, p[2], pid;
+***************
+*** 37,41 ****
+  	union wait status;
+  	FILE *fp;
+! 	char *av[4];
+  
+  	i = sizeof (sin);
+--- 37,41 ----
+  	union wait status;
+  	FILE *fp;
+! 	char *av[100], *index();
+  
+  	i = sizeof (sin);
+***************
+*** 44,59 ****
+  	line[0] = '\0';
+  	(void) gets(line);
+! 	sp = line;
+  	av[0] = "finger";
+  	i = 1;
+! 	while (1) {
+  		while (isspace(*sp))
+  			sp++;
+! 		if (!*sp)
+  			break;
+- 		if (*sp == '/' && (sp[1] == 'W' || sp[1] == 'w')) {
+- 			sp += 2;
+- 			av[i++] = "-l";
+- 		}
+  		if (*sp && !isspace(*sp)) {
+  			av[i++] = sp;
+--- 44,72 ----
+  	line[0] = '\0';
+  	(void) gets(line);
+! 	if ((sp = index(line, '\r')) != NULL)
+! 		*sp = 0;
+  	av[0] = "finger";
+  	i = 1;
+! 
+! 	/*
+! 	 * Find /W (or /w) and add -l.  /W can appear anywhere, and
+! 	 * even more than once.  The only restriction we make is that
+! 	 * there can be no other / characters before all /Ws.
+! 	 */
+! 	while ((sp = index(line, '/')) != NULL && (sp[1] == 'w' ||
+! 		    sp[1] == 'W')) {
+! 		av[1] = "-l";
+! 		i = 2;
+! 		*sp++ = ' ';
+! 		*sp = ' ';
+! 	}
+! 
+! 	/* make argv */
+! 	sp = line;
+! 	for (;;) {
+  		while (isspace(*sp))
+  			sp++;
+! 		if (*sp == 0)
+  			break;
+  		if (*sp && !isspace(*sp)) {
+  			av[i++] = sp;
+***************
+*** 60,67 ****
+  			while (*sp && !isspace(*sp))
+  				sp++;
+! 			*sp = '\0';
+  		}
+  	}
+  	av[i] = 0;
+  	if (pipe(p) < 0)
+  		fatal(argv[0], "pipe");
+--- 73,84 ----
+  			while (*sp && !isspace(*sp))
+  				sp++;
+! 			if (*sp == 0)
+! 				break;
+! 			*sp++ = 0;
+  		}
+  	}
+  	av[i] = 0;
++ 
++ 	/* run finger, converting its output to network format */
+  	if (pipe(p) < 0)
+  		fatal(argv[0], "pipe");
+***************
+*** 72,76 ****
+--- 89,95 ----
+  			(void) close(p[1]);
+  		}
++ 		(void) dup2(1, 2);
+  		execv("/usr/ucb/finger", av);
++ 		perror("execv(/usr/ucb/finger)");
+  		_exit(1);
+  	}

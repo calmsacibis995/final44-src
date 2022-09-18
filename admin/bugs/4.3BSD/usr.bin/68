@@ -1,0 +1,274 @@
+Path: seismo!gatech!spaf
+From: spaf@gatech.edu (Gene Spafford)
+Newsgroups: comp.bugs.4bsd
+Subject: Hayes 2400 modem dialer module for uucp
+Index: usr.bin/uucp/aculib/hys24.c 4.3BSD
+
+I believe I contributed the original dialer code for Hayes 2400 baud
+modems in the 4.3 BSD beta uucp code.  That module was written after
+we'd had the modems only anout a month.  Since that time, we've had a
+lot of experience with heavy use of many of these modems, lots and lots
+of traffic, and lots and lots of problems with the code.  The following
+set of patches, when applied to /usr/src/usr.bin/uucp/aculib/hys24.c
+result in a module that behaves *much* better and provides almost
+completely trouble-free service.
+
+Note that the modem must be configured to drop the line and do
+a reset when DTR drops.
+
+*** hys24.c.orig	Thu Sep 18 22:12:31 1986
+--- hys24.c	Fri Jun  5 11:38:02 1987
+***************
+*** 15,20 ****
+--- 15,23 ----
+   *		CF_DIAL,CF_DEVICE  -  failed
+   */
++ #include <sys/file.h>
++ #include <sys/ioctl.h>
++ 
+  hyspopn24(telno, flds, dev)
+  char *telno, *flds[];
+  struct Devices *dev;
+***************
+*** 37,45 ****
+--- 40,52 ----
+  int toneflag;
+  {
+  	int	dh = -1;
++     int     result,
++             ix,
++             speed;
+  	char *ii;
+  	extern errno;
+  	char dcname[20];
++     char    resultbuf[16];
+  	sprintf(dcname, "/dev/%s", dev->D_line);
+  	DEBUG(4, "dc - %s\n", dcname);
+***************
+*** 46,52 ****
+  	if (setjmp(Sjbuf)) {
+  		logent(dcname, "TIMEOUT");
+  		if (dh >= 0)
+! 			hyscls24(dh);
+  		return CF_DIAL;
+  	}
+  	signal(SIGALRM, alarmtr);
+--- 53,59 ----
+  	if (setjmp(Sjbuf)) {
+  		logent(dcname, "TIMEOUT");
+  		if (dh >= 0)
+! 			hyscls24(dh, 0);
+  		return CF_DIAL;
+  	}
+  	signal(SIGALRM, alarmtr);
+***************
+*** 62,79 ****
+  	/* modem is open */
+  	next_fd = -1;
+  	if (dh >= 0) {
+  		fixline(dh, dev->D_speed);
+- 		write(dh, "\rATZH\r", 6);
+- 		sleep(2);
+  		if (dochat(dev, flds, dh)) {
+  			logent(dcname, "CHAT FAILED");
+! 			hyscls24(dh);
+  			return CF_DIAL;
+  		}
+! 		write(dh, "AT&F&D3&C1E0X1\r", 15);
+! 		if (expect("OK\r\n", dh) != 0) {
+  			logent(dcname, "HSM not responding OK");
+! 			hyscls24(dh);
+  			return CF_DIAL;
+  		}
+  		if (toneflag)
+--- 69,86 ----
+  	/* modem is open */
+  	next_fd = -1;
+  	if (dh >= 0) {
++ 		ioctl (dh, TIOCHPCL, 0);
+  		fixline(dh, dev->D_speed);
+  		if (dochat(dev, flds, dh)) {
+  			logent(dcname, "CHAT FAILED");
+! 			hyscls24(dh, 0);
+  			return CF_DIAL;
+  		}
+! 	hyscls24(dh, 1);	/* make sure the line is reset */
+! 	write (dh, "AT&F&D3&C1E0M0X3QV0Y\r", 21);
+! 	if (expect ("0\r", dh) != 0) {
+  			logent(dcname, "HSM not responding OK");
+! 			hyscls24(dh, 0);
+  			return CF_DIAL;
+  		}
+  		if (toneflag)
+***************
+*** 83,96 ****
+  		write(dh, telno, strlen(telno));
+  		write(dh, "\r", 1);
+! 		if (expect("CONNECT", dh) != 0) {
+! 			logent("HSM no carrier", _FAILED);
+  			strcpy(devSel, dev->D_line);
+! 			hyscls24(dh);
+  			return CF_DIAL;
+  		}
+  	}
+  	if (dh < 0) {
+  		logent(dcname, "CAN'T OPEN");
+  		return dh;
+--- 90,174 ----
+  		write(dh, telno, strlen(telno));
+  		write(dh, "\r", 1);
+! 	if (setjmp(Sjbuf)) {
+! 		logent(dcname, "Modem Hung");
+! 		if (dh >= 0)
+! 			hyscls24(dh, 0);
+! 		return CF_DIAL;
+! 	}
+! 	signal(SIGALRM, alarmtr);
+! 	alarm(120);
+! 	do {
+! 	    for (ix = 0; ix < 16; ix++) {
+! 		read (dh, resultbuf + ix, 1);
+! 		DEBUG (6, "character read = 0x%X \n", resultbuf[ix]);
+! 		if ((0x7f & resultbuf[ix]) == 0xd)
+! 		    break;
+! 	    }
+! 
+! 	    result = atol (resultbuf);
+! 	    switch (result) {
+! 		case 0: 
+! 		    logent ("HSM Spurious OK response", _FAILED);
+! 		    speed = 0;
+! 		    break;
+! 		case 1: 
+! 		    logent ("HSM connected at 300 baud!", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 2: 
+! 		    speed = 0;
+! 		    DEBUG(4, "Ringing", 0);
+! 		    break;
+! 		case 3: 
+! 		    logent ("HSM No Carrier", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 4: 
+! 		    logent ("HSM Error", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 5: 
+! 		    speed = 1200;
+! 		    break;
+! 		case 6: 
+! 		    logent ("HSM No dialtone", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 7: 
+! 		    logent ("HSM detected BUSY", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 8: 
+! 		    logent ("HSM No quiet answer", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 		case 10: 
+! 		    speed = 2400;
+! 		    break;
+! 		default: 
+! 		    logent ("HSM Unknown response", _FAILED);
+! 		    speed = -1;
+! 		    break;
+! 	    }
+! 
+! 	} while (speed == 0);
+! 
+! 	alarm(0);
+! 
+! 	if (speed < 0) {
+  			strcpy(devSel, dev->D_line);
+! 			hyscls24(dh, 0);
+  			return CF_DIAL;
+  		}
++ 	else
++ 	    if (speed != dev -> D_speed) {
++ 		DEBUG (4, "changing line speed to %d baud\n", speed);
++ 		fixline (dh, speed);
+  	}
++ 
++     }
+  	if (dh < 0) {
+  		logent(dcname, "CAN'T OPEN");
+  		return dh;
+***************
+*** 99,113 ****
+  	return dh;
+  }
+! hyscls24(fd)
+! int fd;
+  {
+  	char dcname[20];
+  	if (fd > 0) {
+  		sprintf(dcname, "/dev/%s", devSel);
+  		DEBUG(4, "Hanging up fd = %d\n", fd);
+- 		sleep(1);
+  /*
+   * Since we have a getty sleeping on this line, when it wakes up it sends
+   * all kinds of garbage to the modem.  Unfortunatly, the modem likes to
+--- 177,194 ----
+  	return dh;
+  }
+! hyscls24(fd, flag)
+! int fd, flag;
+  {
+  	char dcname[20];
++ 	int fff = FREAD;
+  	if (fd > 0) {
+  		sprintf(dcname, "/dev/%s", devSel);
++ 		if (flag)
++ 		    DEBUG(4, "Resetting fd = %d\n", fd);
++ 		else
+  		    DEBUG(4, "Hanging up fd = %d\n", fd);
+  /*
+   * Since we have a getty sleeping on this line, when it wakes up it sends
+   * all kinds of garbage to the modem.  Unfortunatly, the modem likes to
+***************
+*** 115,126 ****
+   * command was to dial the phone, so let's make the last command reset
+   * the modem.
+   */
+! 		write(fd, "\r+++", 4);
+  		sleep(2);
+  		write(fd, "\rATH\rATZ\r", 9);
+  		sleep(2);
+  		close(fd);
+  		delock(devSel);
+  	}
+  }
+  #endif HAYES2400
+--- 196,216 ----
+   * command was to dial the phone, so let's make the last command reset
+   * the modem.
+   */
+! 		if (!flag)
+! 		    fixline (fd, 2400);
+! 		write(fd,"\r", 1);
+  		sleep(2);
++ 		write(fd, "+++", 3);
++ 		sleep(3);
+  		write(fd, "\rATH\rATZ\r", 9);
+  		sleep (2);
++ 		ioctl (fd, TIOCFLUSH, &fff);
++ 
++ 		if (!flag)
++ 		{
+  		    close(fd);
+  		    delock(devSel);
++ 		}
+  	}
+  }
+  #endif HAYES2400
+-- 
+Gene Spafford
+Software Engineering Research Center (SERC), Georgia Tech, Atlanta GA 30332
+Internet:	spaf@gatech.gatech.edu
+uucp:	...!{decvax,hplabs,ihnp4,linus,rutgers,seismo}!gatech!spaf
+

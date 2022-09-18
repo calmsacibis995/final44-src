@@ -1,0 +1,46 @@
+Return-Path: <sun!nowicki@ucbvax.Berkeley.EDU>
+Date: Fri, 12 Sep 86 13:07:19 PDT
+From: sun!nowicki@ucbvax.Berkeley.EDU (Bill Nowicki)
+Subject: sendmail throws away mail with I/O errors
+Index: usr.lib/sendmail 4.2BSD and 4.3BSD
+
+Description:
+	If a mailer encounters an operating system or I/O error, 
+	sendmail silently throws the message away.  It should
+	either return the message with an error, or else
+	requeue the message for another attmept.
+
+Repeat-By:
+	The easiest way to do this is to create a /tmp directory
+	that is not writeable. For example, using NFS to mount
+	the /tmp from another machine:
+	  # mount machine:/usr/user/tmp /tmp
+	Then try to send mail coming in over SMTP.  Local mail seems
+	to be delivered OK, but incoming SMTP mail goes to a black
+	hole, with an "Operating system error" message in syslog.
+
+Fix:
+	The problem is that sysexits.c defines the error codes EX_OSERR
+	and EX_IOERR as "temporary" (4xx instead of 5xx), so when the
+	errors get produced by puterrmsg() in err.c, the EF_FATALERRS bit
+	is NOT set.  But the code in markfailure() in deliver.c only checks
+	explicitly for EX_TEMPFAIL when it sets the QQUEUEUP flag. There
+	are two fixes. If you want these to be treated as hard errors,
+	change the codes in sysexits.c to be 554 instead of 451.  We decided
+	instead to treat these as soft errors, so we changed deliver.c
+	(function markfailure) as follows. From:
+
+	if (rcode == EX_OK)
+		return;
+	else if (rcode != EX_TEMPFAIL)
+		q->q_flags |= QBADADDR;
+	else if (curtime() > e->e_ctime + TimeOut)
+
+To:
+
+	if (rcode == EX_OK)
+		return;
+	else if (rcode != EX_TEMPFAIL && rcode != EX_OSERR && 
+	         rcode !=EX_IOERR)
+		q->q_flags |= QBADADDR;
+	else if (curtime() > e->e_ctime + TimeOut)

@@ -1,0 +1,160 @@
+/* $XConsortium: archstr.pi,v 5.1 91/02/16 10:01:50 rws Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+## archstr.pi -
+## Test archive structure operation with different conflict
+## resolution flags: MAINTAIN,UPDATE,ABANDON
+##
+## Test in particular, that an archived structure remains intact
+## after an unrelated archive operation.
+##
+## Verify the structure identifiers in archive, the structure identifiers fr
+## in CSS after retrieval and the contents of the retrieved structures 
+##
+## Note: a->b means str a executes str b, ae means struct a is empty,
+##       a' means this str a has same name as str a, but different contents
+##
+## setup: 
+## 	in CSS:  	0->1->2  3
+##      in archive:	2' 3'	
+## operations: 
+##	archive 0&3, del all strs from CSS, retrieve all strs
+## expected results in CSS:
+##	maintain:	0->1e  2'  3'	
+##	abandon:	2' 3'
+##	update:		0->1e  2'  3  
+
+
+source macro.pi
+source armacro.pi
+
+
+# flag: 	archive conflict resolution flag
+# arN: 		number of archived structure 
+# arA-@arD:	structure ids in archive  
+# cssN: 	number of structure in CSS after the retrieve operation
+# cssA-@cssD:	structure ids in CSS
+# st0-st3:	structure state for str0-str3
+# ct0-ct3:	element type of the first element of structure 
+
+macro im_archive_strs_test(@flag,@flagstring,@arN,@arA,@arB,@arC,@arD,
+	@cssN,@cssA,@cssB,@cssC,@cssD,@st0,@ct0,@st1,@ct1,@st2,@ct2,@st3,@ct3)
+
+	# SETUP:
+	# create archive file
+	popen_ar_file(1,"archfile1");
+
+	# set up strs in archive
+	im_buildstr2_();
+	im_buildstr3_();
+	par_all_structs(1);
+	pdel_all_structs();
+
+	# set up strs in CSS
+	im_buildstr0();
+	im_buildstr1();
+	im_buildstr2();
+	im_buildstr3();
+
+	# set archive conflict resolution flag
+	pset_conf_res(@flag,PRES_UPD);
+
+	# OPERATION:
+	# archive strs 
+	par_structs(1,&arstrs);
+
+	# VERIFICATION:
+	# verify str ids in archive 
+	im_confirm_archive_strids(1,@arN,@arA,@arB,@arC,@arD,
+		"failed: struct ids in archive != expected after archiving with %s\n",@flagstring);
+
+	# del all strs from CSS, retrieve all strs
+	pdel_all_structs();
+	pret_all_structs(1);
+
+	# verify str ids in CSS 
+	im_confirm_CSS_strids(@cssN,@cssA,@cssB,@cssC,@cssD,
+		"failed: struct ids in CSS != expected after retrieving strs archived with %s\n",@flagstring);
+
+	# verify the contents of the retrieved strs
+	im_confirm_status_content(0,@st0,@ct0,@flagstring, 
+		"failed: after retrieving strs archived with %s, ");
+	im_confirm_status_content(1,@st1,@ct1,@flagstring,
+		"failed: after retrieving strs archived with %s, ");
+	im_confirm_status_content(2,@st2,@ct2,@flagstring,
+		"failed: after retrieving strs archived with %s, ");
+	im_confirm_status_content(3,@st3,@ct3,@flagstring,
+		"failed: after retrieving strs archived with %s, ");
+
+
+	# CLEANUP:
+	# delete all created structures
+	pdel_all_structs();
+
+	# close and remove created archive file
+	pclose_ar_file(1);
+	unlink("archfile1");
+endmacro
+
+tbegintest("archstr","archive structure with different conflict resolutions");
+
+# INITIALIZE: archive struct list and storage for inq str ids
+ia1 = IA_Pint(2,0,3);
+arstrs = I_Pint_list(2,ia1);
+
+buf = malloc(256)
+inqids = I_Pint_list(0,buf);
+
+# SETUP: remove existing error file and archive file, open phigs
+unlink("expected_error");
+unlink("archfile1");
+i_open_phigs("expected_error",PDEF_MEM_SIZE);
+
+# TEST begin:
+im_archive_strs_test(
+	PRES_MAINTAIN, "PRES_MAINTAIN", 3, 0, 2, 3,NULL,	4, 0, 1, 2, 3, 
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_EXEC_STRUCT, 
+	PSTRUCT_STATUS_EMPTY, NULL,
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_MARKER_TYPE, 
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_MARKER_TYPE);
+
+im_archive_strs_test(
+	PRES_ABANDON, "PRES_ABANDON", 2, 2, 3,NULL,NULL,	2, 2, 3,NULL,NULL, 
+	PSTRUCT_STATUS_NON_EXISTENT, NULL, 
+	PSTRUCT_STATUS_NON_EXISTENT, NULL,
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_MARKER_TYPE, 
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_MARKER_TYPE);
+
+im_archive_strs_test(
+	PRES_UPD, "PRES_UPD", 3, 0, 2, 3,NULL,		4, 0, 1, 2, 3, 
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_EXEC_STRUCT, 
+	PSTRUCT_STATUS_EMPTY, NULL,
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_MARKER_TYPE, 
+	PSTRUCT_STATUS_NON_EMPTY, PELEM_LABEL);
+
+tendtest();
+

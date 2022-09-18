@@ -1,0 +1,120 @@
+From sms@WLV.IMSD.CONTEL.COM  Tue Sep  5 22:22:49 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA19600; Tue, 5 Sep 89 22:22:49 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA08144; Tue, 5 Sep 89 22:24:03 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA16056; Tue, 5 Sep 89 22:22:46 -0700
+Date: Tue, 5 Sep 89 22:22:46 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8909060522.AA16056@WLV.IMSD.CONTEL.COM>
+Subject: Memory Leak in rcp -r
+Index: 	bin/rcp.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	rcp does not handle recursive directory copies correctly,
+	causing large amounts of memory to be malloc'd but never 
+	freed.  on sufficiently large copies 'rcp' complains about
+	"no memory".
+
+Repeat-By:
+	Do a "rcp -r" on a large directory hierarchy.
+
+	Or, inspect the code.  The old version used 'static' variables
+	rather than automatics to hold the size and address of the memory
+	malloc'd to hold pathnames.  Also, the 'cursize' variable was
+	never set, it remained at zero, causing a complete pathname
+	buffer to be allocated for EACH file transferred.
+
+Fix:
+	Apply this patch to rcp.c (version 5.20).
+
+*** rcp.c.old	Tue Sep  5 22:19:07 1989
+--- rcp.c	Tue Sep  5 09:10:53 1989
+***************
+*** 600,608 ****
+  	off_t i, j;
+  	char ch, *targ, *why;
+  	int amt, count, exists, first, mask, mode;
+! 	int ofd, setimes, targisdir, wrerr;
+  	off_t size;
+! 	char *np, *vect[1], buf[BUFSIZ], *malloc();
+  
+  #define	atime	tv[0]
+  #define	mtime	tv[1]
+--- 600,608 ----
+  	off_t i, j;
+  	char ch, *targ, *why;
+  	int amt, count, exists, first, mask, mode;
+! 	int ofd, setimes, targisdir, wrerr, cursize = 0;
+  	off_t size;
+! 	char *np, *vect[1], buf[BUFSIZ], *malloc(), *namebuf = NULL;
+  
+  #define	atime	tv[0]
+  #define	mtime	tv[1]
+***************
+*** 624,631 ****
+  		targisdir = 1;
+  	for (first = 1;; first = 0) {
+  		cp = buf;
+! 		if (read(rem, cp, 1) <= 0)
+  			return;
+  		if (*cp++ == '\n')
+  			SCREWUP("unexpected <newline>");
+  		do {
+--- 624,634 ----
+  		targisdir = 1;
+  	for (first = 1;; first = 0) {
+  		cp = buf;
+! 		if (read(rem, cp, 1) <= 0) {
+! 			if (namebuf)
+! 				free(namebuf);
+  			return;
++ 		}
+  		if (*cp++ == '\n')
+  			SCREWUP("unexpected <newline>");
+  		do {
+***************
+*** 645,650 ****
+--- 648,655 ----
+  		}
+  		if (buf[0] == 'E') {
+  			(void)write(rem, "", 1);
++ 			if (namebuf)
++ 				free(namebuf);
+  			return;
+  		}
+  
+***************
+*** 699,712 ****
+  		if (*cp++ != ' ')
+  			SCREWUP("size not delimited");
+  		if (targisdir) {
+- 			static char *namebuf;
+- 			static int cursize;
+  			int need;
+  
+  			need = strlen(targ) + strlen(cp) + 250;
+  			if (need > cursize) {
+  				if (!(namebuf = malloc((u_int)need)))
+  					error("out of memory\n");
+  			}
+  			(void)sprintf(namebuf, "%s%s%s", targ,
+  			    *targ ? "/" : "", cp);
+--- 704,718 ----
+  		if (*cp++ != ' ')
+  			SCREWUP("size not delimited");
+  		if (targisdir) {
+  			int need;
+  
+  			need = strlen(targ) + strlen(cp) + 250;
+  			if (need > cursize) {
++ 				if (namebuf)
++ 					free(namebuf);
+  				if (!(namebuf = malloc((u_int)need)))
+  					error("out of memory\n");
++ 				cursize = need;
+  			}
+  			(void)sprintf(namebuf, "%s%s%s", targ,
+  			    *targ ? "/" : "", cp);

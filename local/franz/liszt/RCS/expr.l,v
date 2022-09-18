@@ -1,0 +1,1414 @@
+head     1.13;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.13
+date     87.12.15.17.01.08;  author sklower;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     83.09.06.21.46.46;  author layer;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.08.28.17.13.59;  author layer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.08.22.22.58.13;  author layer;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.08.22.13.52.55;  author layer;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.08.17.00.10.49;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.08.15.19.22.31;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.08.12.02.46.58;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.08.04.01.41.49;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.06.30.18.53.08;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.04.06.16.42.47;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.23.20.51.05;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.14.06;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@expression handler, main compiler loop
+@
+
+
+1.13
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file expr
+   "$Header: /b/users/housel/lisp/liszt/RCS/expr.l,v 1.7 86/11/16 19:03:51 housel Exp $")
+
+;;; ----	e x p r				expression compilation
+;;;
+;;;				-[Fri Sep  2 22:10:20 1983 by layer]-
+
+
+;--- d-exp :: compile a lisp expression
+;	v-form : a lisp expression to compile
+; returns an IADR which tells where the value was located.
+;
+
+(defun d-exp (v-form)
+  (prog (first resloc tmp ftyp nomacrop)
+    begin
+	(if (atom v-form)
+	    then (setq tmp (d-loc v-form))		;locate vrble
+		 (if (null g-loc)
+		     then (if g-cc then (d-cmpnil tmp))
+		    else (d-move tmp g-loc)
+			 #+for-68k (if g-cc then (d-cmpnil tmp)))
+		 (d-handlecc)
+		 (return tmp)
+
+	 elseif (atom (setq first (car v-form)))
+	   then ; the form (*no-macroexpand* <expr>)
+		; turns into <expr>, and prevents <expr> from
+		; being macroexpanded (at the top level)
+		(if (eq '*no-macroexpand* first)
+		   then (setq v-form (cadr v-form)
+			      nomacrop t)
+			(go begin))
+		(if (and fl-xref (not (get first g-refseen)))
+		     then (Push g-reflst first)
+			  (putprop first t g-refseen))
+	         (setq ftyp (d-functyp first (if nomacrop then nil
+						else 'macros-ok)))
+		 ; if nomacrop is t, then under no circumstances
+		 ; permit the form to be macroexpanded
+		 (if (and nomacrop (eq ftyp 'macro))
+		     then (setq ftyp 'lambda))
+		 ; If the resulting form is type macro or cmacro,
+		 ; then call the appropriate function to macro-expand
+		 ; it.
+		 (if (memq ftyp '(macro cmacro))
+		    then (setq tmp v-form)	; remember original form
+			 (if (eq 'macro ftyp)
+			     then (setq v-form (apply first v-form))
+			   elseif (eq 'cmacro ftyp)
+			     then (setq v-form (apply (get first 'cmacro)
+						      v-form)))
+			  ; If the resulting form is the same as
+			  ; the original form, then we don't want to
+			  ; macro expand again.  We call d-functyp and tell
+			  ; it that we want a second opinion
+			  (if (and (eq (car v-form) first)
+				   (equal tmp v-form))
+			     then (setq ftyp (d-functyp first nil))
+			     else (go begin))) ; retry with what we have
+
+		 (if (and (setq tmp (get first 'if-fixnum-args))
+			      (d-allfixnumargs (cdr v-form)))
+		    then (setq v-form (cons tmp (cdr v-form)))
+			 (go begin)
+		  elseif (setq tmp (get first 'fl-exprcc))
+		    then (d-argnumchk 'hard)
+			 (return (funcall tmp))
+		  elseif (setq tmp (get first 'fl-exprm))
+		    then (d-argnumchk 'hard)
+			 (setq v-form (funcall tmp))
+			 (go begin)
+		  elseif (setq tmp (get first 'fl-expr))
+		    then (d-argnumchk 'hard)
+			 (funcall tmp)
+		  elseif (setq tmp (or (and (eq 'car first)
+					    '( a ))
+				       (and (eq 'cdr first)
+					    '( d ))
+				       (d-cxxr first)))
+		    then (d-argcheckit '(1 . 1) (length (cdr v-form)) 'hard)
+			 (return (cc-cxxr (cadr v-form) tmp))
+		   elseif (eq 'nlambda ftyp)
+		    then (d-argnumchk 'soft)
+			 (d-callbig first `(',(cdr v-form)) nil)
+		   elseif (or (eq 'lambda ftyp) (eq 'lexpr ftyp))
+		     then (setq tmp (length v-form))
+		     	  (d-argnumchk 'soft)
+			  (d-callbig first (cdr v-form) nil)
+		   elseif (eq 'array ftyp)
+		    then (d-handlearrayref)
+		  elseif (eq 'macro ftyp)
+		    then (comp-err "infinite macro expansion " v-form)
+		    else (comp-err "internal liszt err in d-exp" v-form))
+
+	 elseif (eq 'lambda (car first))
+	    then (c-lambexp)
+
+	 elseif (or (eq 'quote (car first)) (eq 'function (car first)))
+	    then (comp-warn "bizzare function name " (or first))
+		 (setq v-form (cons (cadr first) (cdr v-form)))
+		 (go begin)
+		
+	 else (comp-err "bad expression" (or v-form)))
+
+	(if (null g-loc)
+	    then (if g-cc then (d-cmpnil 'reg))
+	 elseif (memq g-loc '(reg #+(or for-vax for-tahoe) r0 #+for-68k d0))
+	    then (if g-cc then (d-cmpnil 'reg))
+	   else (d-move 'reg g-loc)
+		#+for-68k (if g-cc then (d-cmpnil 'reg)))
+	(if g-cc then (d-handlecc))))
+
+;--- d-exps :: compile a list of expressions
+;	- exps : list of expressions
+; the last expression is evaluated according to g-loc and g-cc, the others
+; are evaluated with g-loc and g-cc nil.
+;
+(defun d-exps (exps)
+  (d-exp (do ((ll exps (cdr ll))
+	      (g-loc nil)
+	      (g-cc  nil)
+	      (g-ret nil))
+	     ((null (cdr ll)) (car ll))
+	     (d-exp (car ll)))))
+
+
+;--- d-argnumchk :: check that the correct number of arguments are given
+; v-form (global) contains the expression to check
+; class: hard or soft, hard means that failure is an error, soft means
+;	warning
+(defun d-argnumchk (class)
+   (let ((info (car (get (car v-form) 'fcn-info)))
+	 (argsize (length (cdr v-form))))
+      (if info then (d-argcheckit info argsize class))))
+
+;--- d-argcheckit
+; info - arg information form:  (min# . max#)  max# of nil means no max
+; numargs - number of arguments given
+; class - hard or soft
+; v-form(global) - expression begin checked
+;
+(defun d-argcheckit (info numargs class)
+   (if (and (car info) (< numargs (car info)))
+      then (if (eq class 'hard)
+	      then (comp-err
+		      (difference (car info) numargs)
+		      " too few argument(s) given in this expression:" N
+		      v-form)
+	      else (comp-warn
+		      (difference (car info) numargs)
+		      " too few argument(s) given in this expression:" N
+		      v-form))
+    elseif (and (cdr info) (> numargs (cdr info)))
+      then (if (eq class 'hard)
+	      then (comp-err
+		      (difference numargs (cdr info))
+		      " too many argument(s) given in this expression:" N
+		      v-form)
+	      else (comp-warn
+		      (difference numargs (cdr info))
+		      " too many argument(s) given in this expression:" N
+		      v-form))))
+
+;--- d-pushargs :: compile and push a list of expressions
+;	- exps : list of expressions
+; compiles and stacks a list of expressions
+;
+(defun d-pushargs (args)
+   (if args then
+       (do ((ll args (cdr ll))
+	    (g-loc 'stack)
+	    (g-cc nil)
+	    (g-ret nil))
+	   ((null ll))
+	   (d-exp (car ll))
+	   (push nil g-locs)
+	   (incr g-loccnt))))
+
+;--- d-cxxr :: split apart a cxxr function name
+;	- name : a possible cxxr function name
+; returns the a's and d's between c and r in reverse order, or else
+;  returns nil if this is not a cxxr name
+;
+(defun d-cxxr (name)
+  (let ((expl (explodec name)))
+       (if (eq 'c (car expl))			; must begin with c
+	   then (do ((ll (cdr expl) (cdr ll))
+		     (tmp)
+		     (res))
+		    (nil)
+		    (setq tmp (car ll))
+		    (if (null (cdr ll))	
+			then (if (eq 'r tmp)	; must end in r
+				 then (return res)
+				 else (return nil))
+		     elseif (or (eq 'a tmp)	; and contain only a's and d's
+				(eq 'd tmp))
+			then (setq res (cons tmp res))
+		     else (return nil))))))
+
+
+;--- d-callbig :: call a local, global or bcd  function	
+;
+; name is the name of the function we are to call
+; args are the arguments to evaluate and call the function with
+; if bcdp is t then we are calling through a binary object and thus
+; name is ingored.
+;
+#+(or for-vax for-tahoe)
+(defun d-callbig (name args bcdp)
+  (let ((tmp (get name g-localf))
+	c)
+       (forcecomment `(calling ,name))
+       (if (d-dotailrecursion name args) thenret
+        elseif tmp then ;-- local function call
+		    (d-pushargs args)
+		    (e-quick-call (car tmp))
+		    (setq g-locs (nthcdr (setq c (length args)) g-locs))
+		    (setq g-loccnt (- g-loccnt c))
+	else (if bcdp 		;-- bcdcall
+		 then (d-pushargs args)
+		      (setq c (length args))
+		      (d-bcdcall c)
+	       elseif fl-tran	;-- transfer table linkage
+	         then (d-pushargs args)
+		    (setq c (length args))
+		    (d-calltran name c)
+		    (putprop name t g-stdref)	; remember we've called this
+	       else ;--- shouldn't get here
+		    (comp-err " bad args to d-callbig : "
+			      (or name args)))
+	     (setq g-locs (nthcdr c g-locs))
+	     (setq g-loccnt (- g-loccnt c)))
+       (d-clearreg)))
+
+#+for-68k
+(defun d-callbig (name args bcdp)
+  (let ((tmp (get name g-localf))
+	c)
+       (forcecomment `(calling ,name))
+       (if (d-dotailrecursion name args)
+	   thenret
+        elseif tmp then ;-- local function call
+		    (d-pushargs args)
+		    (setq c (length args))
+		    (if (null $global-reg$) then
+			(e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+			(e-move 'a5 '#.lbot-sym)
+			(e-move '#.np-reg '#.np-sym))
+		    (e-quick-call (car tmp))
+		    (setq g-locs (nthcdr c g-locs))
+		    (setq g-loccnt (- g-loccnt c))
+	else (if bcdp 		;-- bcdcall
+		 then (d-pushargs args)
+		      (setq c (length args))
+		      (d-bcdcall c)
+	       elseif fl-tran	;-- transfer table linkage
+	         then (d-pushargs args)
+		    (setq c (length args))
+		    (d-calltran name c)
+		    (putprop name t g-stdref)	; remember we've called this
+	       else ;--- shouldn't get here
+		    (comp-err " bad args to d-callbig : "
+			      (or name args)))
+	     (setq g-locs (nthcdr c g-locs))
+	     (setq g-loccnt (- g-loccnt c)))
+       (d-clearreg)))
+
+;--- d-calltran :: call a function through the transfer table
+;  name - name of function to call
+;  c - number of arguments to the function
+;
+#+(or for-vax for-tahoe)
+(defun d-calltran (name c)
+   (if $global-reg$
+       then (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-reg)
+       else (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+   #+for-vax (e-write3 'calls '$0 (concat "*trantb+" (d-tranloc name)))
+   #+for-tahoe (progn (e-write3 'movab (concat "trantb+" (d-tranloc name)) 'r2)
+		      (e-write3 'calls '$4 '"*(r2)"))
+   (if $global-reg$
+       then (e-move '#.lbot-reg '#.np-reg)
+       else (e-write3 'movab `(,(* -4 c) #.np-reg) '#.np-reg)))
+
+#+for-68k
+(defun d-calltran (name c)
+   (if $global-reg$
+       then (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-reg)
+       else (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+   (e-move (concat "trantb+" (d-tranloc name)) 'a5)
+   (e-quick-call '(0 a5))
+   (if $global-reg$
+       then (e-move '#.lbot-reg '#.np-reg)
+       else (e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg)))
+
+;--- d-calldirect :: call a function directly
+;
+;  name - name of a function in the C code (known about by fasl)
+;    c  - number of args
+;
+#+(or for-vax for-tahoe)
+(defun d-calldirect (name c)
+   (if $global-reg$
+       then (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-reg)
+       else (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+#+for-vax (e-write3 'calls '$0  name)
+#+for-tahoe (e-write3 'callf '$4  name)
+   (if $global-reg$
+       then (e-move '#.lbot-reg '#.np-reg)
+       else (e-write3 'movab `(,(* -4 c) #.np-reg) '#.np-reg)))
+
+#+for-68k
+(defun d-calldirect (name c)
+   (if $global-reg$
+       then (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-reg)
+       else (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+   (e-quick-call name)
+   (if $global-reg$
+       then (e-move '#.lbot-reg '#.np-reg)
+       else (e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg)))
+
+;--- d-bcdcall :: call a function through a binary data object
+;  
+; at this point the stack contains n-1 arguments and a binary object which
+; is the address of the compiled lambda expression to go to.  We set
+; up lbot right above the binary on the stack and call the function.
+;
+#+(or for-vax for-tahoe)
+(defun d-bcdcall (n)
+   (if $global-reg$
+       then (e-write3 'movab `(,(* -4 (- n 1)) #.np-reg) '#.lbot-reg)
+       else (e-write3 'movab `(,(* -4 (- n 1)) #.np-reg) '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+   (e-move  `(* ,(* -4 n) #.np-reg) 'r0)    ;get address to call to
+#+for-vax   (e-write3 'calls '$0 "(r0)")
+#+for-tahoe (e-write3 'calls '$4 "(r0)")
+   (if $global-reg$
+       then (e-write3 'movab '(-4 #.lbot-reg) '#.np-reg)
+       else (e-write3 'movab `(,(* -4 n) #.np-reg) '#.np-reg)))
+
+#+for-68k
+(defun d-bcdcall (n)
+   (if $global-reg$
+       then (e-write3 'lea `(,(* -4 (- n 1)) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-reg)
+       else (e-write3 'lea `(,(* -4 (- n 1)) #.np-reg) 'a5)
+	    (e-move 'a5 '#.lbot-sym)
+	    (e-move '#.np-reg '#.np-sym))
+   (e-move `(,(* -4 n) #.np-reg) 'a5)	; get address to call to
+   (e-move `(0 a5) 'a5)
+   (e-quick-call '(0 a5))
+   (if $global-reg$
+       then (e-move '#.lbot-reg 'a5)
+	    (e-write3 'lea '(-4 a5) '#.np-reg)
+       else (e-write3 'lea `(,(* -4 n) #.np-reg) '#.np-reg)))
+
+;--- d-dotailrecursion :: do tail recursion if possible
+; name - function name we are to call
+; args - arguments to give to function
+;
+; return t iff we were able to do tail recursion
+; We can do tail recursion if:
+;  g-ret is set indicating that the result of this call will be returned
+;	 as the value of the function we are compiling
+;  the function we are calling, name, is the same as the function we are
+;	 compiling, g-fname
+;  there are no variables shallow bound, since we would have to unbind
+;	 them, which may cause problems in the function.
+;
+(defun d-dotailrecursion (name args)
+   (prog (nargs lbot)
+       (if (null (and g-ret
+		      (eq name g-fname)
+		      (do ((loccnt 0)
+			   (ll g-locs (cdr ll)))
+			  ((null ll) (return t))
+			  (if (dtpr (car ll))
+			      then (if (or (eq 'catcherrset (caar ll))
+					   (greaterp (cdar ll) 0))
+				       then (return nil))
+			      else (incr loccnt)))))
+	   then (return nil))
+
+       (makecomment '(tail merging))
+       (comp-note g-fname ": Tail merging being done: " v-form)
+
+       (setq nargs (length args))
+       
+       ; evalate the arguments, putting them above the arguments to the
+       ; function we are executing...
+       (let ((g-locs g-locs)
+	     (g-loccnt g-loccnt))
+	   (d-pushargs args))
+
+       (if $global-reg$
+	   then (setq lbot #+for-68k 'a5 #+(or for-vax for-tahoe) '#.lbot-reg)
+		#+for-68k (e-move '#.lbot-reg lbot)
+	   else (setq lbot #+for-68k 'a5 #+(or for-vax for-tahoe) '#.fixnum-reg)
+		(e-move '#.lbot-sym lbot))
+
+       ; setup lbot-reg to point to the bottom of the original
+       ;args...
+       (if (eq 'lexpr g-ftype)
+	   then #+for-vax
+		(e-write4 'ashl '($ 2) '(* -4 #.olbot-reg) lbot)
+		#+for-tahoe
+		(e-write4 'shal '($ 2) '(* -4 #.olbot-reg) lbot)
+		#+for-68k
+		(progn
+		 (d-regused 'd6)
+		 (e-move '(* -4 #.olbot-reg) 'd6)
+		 (e-write3 'asll '($ 2) 'd6)
+		 (e-move 'd6 lbot))
+		(e-sub lbot '#.olbot-reg)
+		(e-sub3 '($ 4) '#.olbot-reg lbot)
+	   else (e-move '#.olbot-reg lbot))
+
+       ; copy the new args down into the place of the original ones...
+       (do ((i nargs (1- i))
+	    (off-top (* nargs -4) (+ off-top 4))
+	    (off-bot 0 (+ off-bot 4)))
+	   ((zerop i))
+	   (e-move `(,off-top #.np-reg) `(,off-bot ,lbot)))
+
+       ; setup np for the coming call...
+       (e-add3 `($ ,(* 4 nargs)) lbot '#.np-reg)
+
+       (e-goto g-topsym)
+       ;return t to indicate that tailrecursion was successful
+       (return t)))
+@
+
+
+1.12
+log
+@bug local function calls for $global-reg$ == nil
+@
+text
+@d3 1
+a3 1
+   "$Header: expr.l,v 1.11 83/08/28 17:13:59 layer Exp $")
+d109 1
+a109 1
+	 elseif (memq g-loc '(reg #+for-vax r0 #+for-68k d0))
+d211 1
+a211 1
+#+for-vax
+d275 1
+a275 1
+#+for-vax
+d281 3
+a283 1
+   (e-write3 'calls '$0 (concat "*trantb+" (d-tranloc name)))
+d307 1
+a307 1
+#+for-vax
+d313 2
+a314 1
+   (e-write3 'calls '$0  name)
+d338 1
+a338 1
+#+for-vax
+d345 2
+a346 1
+   (e-write3 'calls '$0 "(r0)")
+d406 1
+a406 1
+	   then (setq lbot #+for-68k 'a5 #+for-vax '#.lbot-reg)
+d408 1
+a408 1
+	   else (setq lbot #+for-68k 'a5 #+for-vax '#.fixnum-reg)
+d416 2
+@
+
+
+1.11
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.10 83/08/22 22:58:13 layer Exp $")
+d7 1
+a7 1
+;;;				-[Mon Aug 22 14:37:07 1983 by layer]-
+d253 1
+a253 3
+		    (if (null $global-reg$) then
+			(e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg))
+		    (setq g-locs (nthcdr (setq c (length args)) g-locs))
+@
+
+
+1.10
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.9 83/08/22 13:52:55 layer Exp $")
+a14 6
+;.. c-*catch, c-*throw, c-boole, c-cond, c-do, c-errset, c-funcall
+;.. c-internal-fixnum-box, c-prog, c-progv, c-return, c-rplaca
+;.. c-rplacd, c-setarg, cc-and, cc-arg, cc-cxxr, cc-eq
+;.. cc-function, cc-memq, cc-not, cc-oneminus, cc-oneplus, cc-or
+;.. cc-setq, cc-typep, d-exps, d-fixnumcode, d-fixop, d-lambbody
+;.. d-pushargs, d-supercxr, d-superrplacx, d-typecmplx, d-typesimp
+a119 1
+;.. c-cond, c-do
+a132 1
+;.. d-exp
+a143 1
+;.. d-argnumchk, d-exp
+a169 3
+;.. c-cons, c-do, c-funcall, c-get, c-internal-bind-vars
+;.. c-internal-unbind-vars, c-lambexp, c-list, c-prog, c-setarg
+;.. cc-equal, d-callbig, d-dostore, d-dotailrecursion
+a185 1
+;.. d-exp
+a210 1
+;.. c-bcdcall, c-boole, d-exp, d-fixop
+a276 1
+;.. c-Internal-bcdcall, cc-equal, d-callbig
+a306 1
+;.. c-internal-bind-vars, c-internal-unbind-vars
+a336 1
+;.. c-Internal-bcdcall, d-callbig
+a377 1
+;.. d-callbig
+@
+
+
+1.9
+log
+@(*no-macroexpand* form) indicates that form is NOT to be
+macro expanded in any way!
+and...
+bug fixes to 68000 tail merging code.
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.8 83/08/17 00:10:49 layer Exp $")
+d7 1
+a7 1
+;;;				-[Fri Aug 19 12:34:12 1983 by jkf]-
+d264 2
+a265 2
+			(e-write3 'movl 'a5 '#.lbot-sym)
+			(e-write3 'movl '#.np-reg '#.np-sym))
+d297 1
+a297 1
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+d300 1
+a300 1
+       then (e-write3 'movl '#.lbot-reg '#.np-reg)
+d307 1
+a307 1
+	    (e-write3 'movl 'a5 '#.lbot-reg)
+d309 3
+a311 3
+	    (e-write3 'movl 'a5 '#.lbot-sym)
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+   (e-write3 'movl (concat "trantb+" (d-tranloc name)) 'a5)
+d314 1
+a314 1
+       then (e-write3 'movl '#.lbot-reg '#.np-reg)
+d328 1
+a328 1
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+d331 1
+a331 1
+       then (e-write3 'movl '#.lbot-reg '#.np-reg)
+d338 1
+a338 1
+	    (e-write3 'movl 'a5 '#.lbot-reg)
+d340 2
+a341 2
+	    (e-write3 'movl 'a5 '#.lbot-sym)
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+d344 1
+a344 1
+       then (e-write3 'movl '#.lbot-reg '#.np-reg)
+d359 2
+a360 2
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+   (e-write3 'movl  `(* ,(* -4 n) #.np-reg) 'r0)    ;get address to call to
+d370 1
+a370 1
+	    (e-write3 'movl 'a5 '#.lbot-reg)
+d372 4
+a375 4
+	    (e-write3 'movl 'a5 '#.lbot-sym)
+	    (e-write3 'movl '#.np-reg '#.np-sym))
+   (e-write3 'movl `(,(* -4 n) #.np-reg) 'a5)	; get address to call to
+   (e-write3 'movl `(0 a5) 'a5)
+d378 1
+a378 1
+       then (e-write3 'movl '#.lbot-reg 'a5)
+@
+
+
+1.8
+log
+@more bugs in tail merging (I think I got it this time!).  Wasn't
+re-using the stack space from the previous call, so that infinite
+tail recursion would cause name stack overflow...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.7 83/08/15 19:22:31 layer Exp $")
+d7 1
+a7 1
+;;;				-[Tue Aug 16 23:54:08 1983 by layer]-
+d22 1
+a22 1
+  (prog (first resloc tmp ftyp)
+d34 8
+a41 1
+	   then (if (and fl-xref (not (get first g-refseen)))
+d44 6
+a49 1
+	         (setq ftyp (d-functyp first 'macros-ok))
+d397 1
+a397 1
+   (prog (bptr nargs)
+d413 1
+a413 2
+       (setq bptr #+for-vax '#.lbot-reg #+for-68k 'a5
+	     nargs (length args))
+d421 8
+d430 21
+a450 14
+	   then (e-move '(* -4 #.olbot-reg) '#.lbot-reg)
+		(e-write4 'ashl '($ 2) '#.lbot-reg '#.lbot-reg)
+		(e-sub '#.lbot-reg '#.olbot-reg)
+		(e-sub3 '($ 4) '#.olbot-reg '#.lbot-reg)
+		(do ((i nargs (1- i))
+		     (off-top (* nargs -4) (+ off-top 4))
+		     (off-bot 0 (+ off-bot 4)))
+		    ((zerop i))
+		    (e-move `(,off-top #.np-reg) `(,off-bot #.lbot-reg)))
+		(e-sub `($ ,(+ 8 (* 4 nargs))) '#.np-reg)
+	   else (e-sub3 `($ ,(* 4 nargs)) '#.np-reg '#.lbot-reg)
+		(do ((i nargs (1- i)))
+		    ((zerop i))
+		    (e-move '(- #.np-reg) `(- #.lbot-reg))))
+@
+
+
+1.7
+log
+@More bugs in tail merging for the 68000!
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.6 83/08/12 02:46:58 layer Exp $")
+d7 1
+a7 1
+;;;				-[Mon Aug 15 09:24:15 1983 by layer]-
+d178 1
+a178 1
+	   (Push g-locs nil)
+d385 1
+a385 1
+   (prog (arg-base nargs add2q-op loada-op)
+d401 1
+a401 3
+       (setq add2q-op #+for-68k 'addql #+for-vax 'addl2
+	     loada-op #+for-68k 'lea #+for-vax 'movab
+	     arg-base (if $global-reg$ then '#.olbot-reg else '#.lbot-sym)
+d404 2
+a405 2
+       ; evalate the arguments and pop them back to the location of
+       ; the original args.
+d408 1
+a408 1
+	   (d-pushargs args))     ; push then forget about
+d410 15
+a424 15
+       (do ((i nargs (1- i))
+	    (top (* nargs -4) (+ top 4))
+	    (bot 0 (+ bot 4)))
+	   ((zerop i))
+	   #+for-vax
+	   (e-move `(,top #.np-reg)
+		    (if $global-reg$
+			then `(,bot ,arg-base)
+			else (concat "*" arg-base "+" top)))
+	   #+for-68k
+	   (progn
+	       (if $global-reg$
+		   then (e-move `(,top #.np-reg) `(,bot ,arg-base))
+		   else (e-move (concat arg-base "+" top) 'a5)
+			(e-move `(,top #.np-reg) '(0 a5)))))
+a425 14
+       #+for-vax
+       (e-write3 loada-op
+		 (if $global-reg$
+		     then `(,(* 4 nargs) ,arg-base)
+		     else (concat "*" arg-base "+" (* 4 nargs)))
+		 '#.np-reg)
+       #+for-68k
+       (progn
+	   (if $global-reg$
+	       then (e-write3 loada-op `(,(* 4 nargs) ,arg-base) '#.np-reg)
+	       else (e-move (concat arg-base "+" (* 4 nargs)) 'a5)
+		    (e-write3 loada-op '(0 a5) '#.np-reg)))
+       
+       (e-move arg-base '#.lbot-reg)
+@
+
+
+1.6
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.5 83/08/04 01:41:49 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 15:57:55 1983 by layer]-
+d416 11
+a426 4
+	   (e-write3 'movl `(,top #.np-reg)
+		     (if $global-reg$
+			 then `(,bot ,arg-base)
+			 else `(* ,(concat top "+" arg-base)))))
+d428 1
+d432 1
+a432 1
+		     else `(* ,(concat (* 4 nargs) "+" arg-base)))
+d434 6
+d441 1
+a441 1
+       (e-write3 'movl arg-base '#.lbot-reg)
+@
+
+
+1.5
+log
+@cleanup time
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.4 83/06/30 18:53:08 layer Exp $")
+d7 1
+d24 1
+a24 1
+	(If (atom v-form)
+d26 2
+a27 2
+		 (If (null g-loc)
+		     then (If g-cc then (d-cmpnil tmp))
+d34 1
+a34 1
+	   then (If (and fl-xref (not (get first g-refseen)))
+d41 1
+a41 1
+		 (If (memq ftyp '(macro cmacro))
+d43 1
+a43 1
+			 (If (eq 'macro ftyp)
+d52 1
+a52 1
+			  (If (and (eq (car v-form) first)
+d57 1
+a57 1
+		 (If (and (setq tmp (get first 'if-fixnum-args))
+d101 2
+a102 2
+	(If (null g-loc)
+	    then (If g-cc then (d-cmpnil 'reg))
+d104 1
+a104 1
+	    then (If g-cc then (d-cmpnil 'reg))
+d107 1
+a107 1
+	(If g-cc then (d-handlecc))))
+d132 1
+a132 1
+      (If info then (d-argcheckit info argsize class))))
+d142 2
+a143 2
+   (If (and (car info) (< numargs (car info)))
+      then (If (eq class 'hard)
+d153 1
+a153 1
+      then (If (eq class 'hard)
+d171 9
+a179 8
+  (If args then (do ((ll args (cdr ll))
+		     (g-loc 'stack)
+		     (g-cc nil)
+		     (g-ret nil))
+		    ((null ll))
+		    (d-exp (car ll))
+		    (Push g-locs nil)
+		    (incr g-loccnt))))
+d189 1
+a189 1
+       (If (eq 'c (car expl))			; must begin with c
+d195 2
+a196 2
+		    (If (null (cdr ll))	
+			then (If (eq 'r tmp)	; must end in r
+d218 1
+a218 1
+       (If (d-dotailrecursion name args) thenret
+d221 1
+a221 1
+		    (e-write2 'jsb (car tmp))
+d224 1
+a224 1
+	else (If bcdp 		;-- bcdcall
+d245 2
+a246 1
+       (If (d-dotailrecursion name args) thenret
+d250 7
+a256 5
+		    (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+		    (e-write3 'movl 'a5 '#.lbot-sym)
+  		    (e-write3 'movl '#.np-reg '#.np-sym)
+		    (e-write2 'jbsr (car tmp))
+		    (e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg)
+d259 1
+a259 1
+	else (If bcdp 		;-- bcdcall
+d282 8
+a289 9
+  #-no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.np-reg '#.np-sym)
+  
+  (e-write3 'calls '$0 (concat "*trantb+" (d-tranloc name)))
+  
+  #-no-global-reg (e-write3 'movl '#.lbot-reg '#.np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.np-reg)
+  )
+d293 11
+a303 7
+  (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.lbot-sym)
+  (e-write3 'movl '#.np-reg '#.np-sym)
+  (makecomment `(calling ,name))
+  (e-write3 'movl (concat "trantb+" (d-tranloc name)) 'a5)
+  (e-write2 'jbsr `(0 a5))
+  (e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg))
+d313 8
+a320 9
+  #-no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.np-reg '#.np-sym)
+  
+  (e-write3 'calls '$0  name)
+  
+  #-no-global-reg (e-write3 'movl '#.lbot-reg '#.np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.np-reg) '#.np-reg)
+  )
+d324 10
+a333 5
+  (e-write3 'lea `(,(* -4 c) #.np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.lbot-sym)
+  (e-write3 'movl '#.np-reg '#.np-sym)
+  (e-write2 'jbsr name)
+  (e-write3 'lea `(,(* -4 c) #.np-reg) '#.np-reg))
+d344 9
+a352 10
+  #-no-global-reg (e-write3 'movab `(,(* -4 (- n 1)) #.np-reg) '#.lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 (- n 1)) #.np-reg) '#.lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.np-reg '#.np-sym)
+  
+  (e-write3 'movl  `(* ,(* -4 n) #.np-reg) 'r0)	; get address to call to
+  (e-write3 'calls '$0 "(r0)")
+  
+  #-no-global-reg (e-write3 'movab '(-4 #.lbot-reg) '#.np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 n) #.np-reg) '#.np-reg)
+  )
+d356 13
+a368 7
+  (e-write3 'lea `(,(* -4 (- n 1)) #.np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.lbot-sym)
+  (e-write3 'movl '#.np-reg '#.np-sym)
+  (e-write3 'movl `(,(* -4 n) #.np-reg) 'a5)	; get address to call to
+  (e-write3 'movl `(0 a5) 'a5)
+  (e-write2 'jbsr `(0 a5))
+  (e-write3 'lea `(,(* -4 n) #.np-reg) '#.np-reg))
+a383 1
+#+for-vax
+d385 12
+a396 50
+   (If (and g-ret
+	    (eq name g-fname)
+	    (do ((loccnt 0)
+		 (ll g-locs (cdr ll)))
+		((null ll) (return t))
+		(If (dtpr (car ll))
+		    then (If (or (eq 'catcherrset (caar ll))
+				 (greaterp (cdar ll) 0))
+			     then (return nil))
+		    else (incr loccnt))))
+       then ; evalate the arguments and pop them back to the location of
+	    ; the original args.
+	    (makecomment '(tail merging))
+	    (comp-note g-fname ": Tail merging being done: " v-form)
+	    (let ((g-locs g-locs)
+		  (g-loccnt g-loccnt))
+		(d-pushargs args))     ; push then forget about
+	    (let (base-reg nargs)
+		(If (eq g-ftype 'lexpr)
+		    then ;the beginning of the local variables
+			 ;has been stacked
+			 (e-write3 'addl2 '$4 'sp)	; pop off arg count
+			 #-no-global-reg
+			 (e-write4 'addl3 '$4 "(sp)" '#.lbot-reg)
+			 #+no-global-reg
+			 (e-write4 'addl3 '$4 "(sp)" '#.lbot-sym)
+		    else #-no-global-reg
+			 (e-write3 'movl '#.olbot-reg '#.lbot-reg)
+			 #+no-global-reg
+			 (e-write3 'movl '#.olbot-reg '#.lbot-sym)
+		)
+		#-no-global-reg (setq base-reg '#.lbot-reg)
+		#+no-global-reg (setq base-reg '#.lbot-sym)
+		(setq nargs (length args))
+		(do ((i nargs (1- i))
+		     (top (* nargs -4) (+ top 4))
+		     (bot 0 (+ bot 4)))
+		    ((zerop i))
+		    #-no-global-reg
+		    (e-write3 'movl `(,top #.np-reg) `(,bot ,base-reg))
+		    #+no-global-reg
+		    (e-write3 'movl `(,top #.np-reg)
+				    (concat "*" top "+" base-reg)))
+		#-no-global-reg (e-write3 'movab
+				     `(,(* 4 nargs) ,base-reg) '#.np-reg)
+		#+no-global-reg
+		(e-write3 'movab (concat "*" (* 4 nargs) "+" base-reg)
+			  	 '#.np-reg)
+		(e-goto g-topsym))
+	    t)) ; return t to indicate that tailrecursion was successful
+d398 33
+a430 48
+#+for-68k
+(defun d-dotailrecursion (name args)
+  (If (and g-ret 
+	   (eq name g-fname)
+           (do ((loccnt 0)
+		(ll g-locs (cdr ll)))
+	       ((null ll) (return t))
+	       (If (dtpr (car ll))
+		   then (If (or (eq 'catcherrset (caar ll))
+				(greaterp (cdar ll) 0))
+			    then (return nil))
+		   else (incr loccnt))))
+      then 
+	    ; evalate the arguments and pop them back to the location of
+	    ; the original args.
+	    (makecomment '(tail merging))
+	    (comp-note g-fname ": Tail merging being done: " v-form)
+	    (let ((g-locs g-locs)
+		  (g-loccnt g-loccnt))
+		 (d-pushargs args))     ; push then forget about
+	    (let (base-reg nargs)
+	         (If (eq g-ftype 'lexpr)
+		     then ; the beginning of the local variables 
+			  ;has been stacked
+		          (e-write3 'addql '"#4" 'sp)	; pop off arg count
+			  (e-write3 'movl "sp@@" '#.lbot-sym) 
+			  (e-write3 'addql '"#4" '#.lbot-sym) 
+			  (setq base-reg '#.lbot-sym)	; will push from   bot
+		     else (setq base-reg '#.olbot-reg)) ; will push from olbot
+		 (setq nargs (length args))
+		 (do ((i nargs (1- i))
+		      (top (* nargs -4) (+ top 4))
+		      (bot 0 (+ bot 4)))
+		     ((zerop i))
+		     (If (eq g-ftype 'lexpr)
+			 then (e-write3 'lea (concat top "+" base-reg) 'a5)
+			      (e-write3 'movl `(,top #.np-reg) '(0 a5))
+			 else (e-write3 'movl
+					`(,top #.np-reg)
+					`(,bot ,base-reg))))
+		 (If (eq g-ftype 'lexpr)
+		     then (e-write3 'lea
+				    (concat (* 4 nargs) "+" base-reg)
+				    'a5)
+			  (e-write3 'movl '(0 a5) '#.np-reg)
+		     else (e-write3 'lea `(,(* 4 nargs) ,base-reg) '#.np-reg))
+		 (e-goto g-topsym))
+	    t))
+@
+
+
+1.4
+log
+@portable changes
+@
+text
+@d3 1
+a3 1
+   "$Header: expr.l 1.3 83/04/06 16:42:47 layer Exp $")
+d247 3
+a249 3
+		    (e-write3 'lea `(,(* -4 c) #.Np-reg) 'a5)
+		    (e-write3 'movl 'a5 '#.Lbot-sym)
+  		    (e-write3 'movl '#.Np-reg '#.Np-sym)
+d251 1
+a251 1
+		    (e-write3 'lea `(,(* -4 c) #.Np-reg) '#.Np-reg)
+d277 3
+a279 3
+  #-no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.Np-reg '#.Np-sym)
+d283 2
+a284 2
+  #-no-global-reg (e-write3 'movl '#.Lbot-reg '#.Np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Np-reg)
+d289 3
+a291 3
+  (e-write3 'lea `(,(* -4 c) #.Np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.Lbot-sym)
+  (e-write3 'movl '#.Np-reg '#.Np-sym)
+d295 1
+a295 1
+  (e-write3 'lea `(,(* -4 c) #.Np-reg) '#.Np-reg))
+d305 3
+a307 3
+  #-no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.Np-reg '#.Np-sym)
+d311 3
+a313 3
+  #-no-global-reg (e-write3 'movl '#.Lbot-reg '#.Np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Np-reg)
+)
+d317 3
+a319 3
+  (e-write3 'lea `(,(* -4 c) #.Np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.Lbot-sym)
+  (e-write3 'movl '#.Np-reg '#.Np-sym)
+d321 1
+a321 1
+  (e-write3 'lea `(,(* -4 c) #.Np-reg) '#.Np-reg))
+d332 3
+a334 3
+  #-no-global-reg (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) '#.Lbot-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) '#.Lbot-sym)
+  #+no-global-reg (e-write3 'movl '#.Np-reg '#.Np-sym)
+d336 1
+a336 1
+  (e-write3 'movl  `(* ,(* -4 n) #.Np-reg) 'r0)	; get address to call to
+d339 2
+a340 2
+  #-no-global-reg (e-write3 'movab '(-4 #.Lbot-reg) '#.Np-reg)
+  #+no-global-reg (e-write3 'movab `(,(* -4 n) #.Np-reg) '#.Np-reg)
+d345 4
+a348 4
+  (e-write3 'lea `(,(* -4 (- n 1)) #.Np-reg) 'a5)
+  (e-write3 'movl 'a5 '#.Lbot-sym)
+  (e-write3 'movl '#.Np-reg '#.Np-sym)
+  (e-write3 'movl `(,(* -4 n) #.Np-reg) 'a5)	; get address to call to
+d351 1
+a351 1
+  (e-write3 'lea `(,(* -4 n) #.Np-reg) '#.Np-reg))
+d392 1
+a392 1
+			 (e-write4 'addl3 '$4 "(sp)" '#.Lbot-reg)
+d394 1
+a394 1
+			 (e-write4 'addl3 '$4 "(sp)" '#.Lbot-sym)
+d396 1
+a396 1
+			 (e-write3 'movl '#.oLbot-reg '#.Lbot-reg)
+d398 1
+a398 1
+			 (e-write3 'movl '#.oLbot-reg '#.Lbot-sym)
+d400 2
+a401 2
+		#-no-global-reg (setq base-reg '#.Lbot-reg)
+		#+no-global-reg (setq base-reg '#.Lbot-sym)
+d408 1
+a408 1
+		    (e-write3 'movl `(,top #.Np-reg) `(,bot ,base-reg))
+d410 1
+a410 1
+		    (e-write3 'movl `(,top #.Np-reg)
+d413 1
+a413 1
+				     `(,(* 4 nargs) ,base-reg) '#.Np-reg)
+d416 1
+a416 1
+			  	 '#.Np-reg)
+d445 4
+a448 4
+			  (e-write3 'movl "sp@@" '#.Lbot-sym) 
+			  (e-write3 'addql '"#4" '#.Lbot-sym) 
+			  (setq base-reg '#.Lbot-sym)	; will push from   bot
+		     else (setq base-reg '#.oLbot-reg)) ; will push from olbot
+d456 1
+a456 1
+			      (e-write3 'movl `(,top #.Np-reg) '(0 a5))
+d458 1
+a458 1
+					`(,top #.Np-reg)
+d464 2
+a465 2
+			  (e-write3 'movl '(0 a5) '#.Np-reg)
+		     else (e-write3 'lea `(,(* 4 nargs) ,base-reg) '#.Np-reg))
+@
+
+
+1.3
+log
+@change some compiler constants to syms instead of strings
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.2 83/03/23 20:51:05 layer Exp $")
+d277 3
+a279 3
+  #-portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-sym)
+  #+portable (e-write3 'movl '#.Np-reg '#.Np-sym)
+d283 2
+a284 2
+  #-portable (e-write3 'movl '#.Lbot-reg '#.Np-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Np-reg)
+d305 3
+a307 3
+  #-portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-sym)
+  #+portable (e-write3 'movl '#.Np-reg '#.Np-sym)
+d311 2
+a312 2
+  #-portable (e-write3 'movl '#.Lbot-reg '#.Np-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Np-reg)
+d332 3
+a334 3
+  #-portable (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) '#.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) '#.Lbot-sym)
+  #+portable (e-write3 'movl '#.Np-reg '#.Np-sym)
+d339 2
+a340 2
+  #-portable (e-write3 'movab '(-4 #.Lbot-reg) '#.Np-reg)
+  #+portable (e-write3 'movab `(,(* -4 n) #.Np-reg) '#.Np-reg)
+d391 11
+a401 6
+			 #-portable (e-write4 'addl3 '$4 "(sp)" '#.Lbot-reg)
+			 #+portable (e-write4 'addl3 '$4 "(sp)" '#.Lbot-sym)
+		    else #-portable (e-write3 'movl '#.oLbot-reg '#.Lbot-reg)
+			 #+portable (e-write3 'movl '#.oLbot-reg '#.Lbot-sym))
+		#-portable (setq base-reg '#.Lbot-reg)
+		#+portable (setq base-reg '#.Lbot-sym)
+d407 1
+a407 1
+		    #-portable
+d409 1
+a409 1
+		    #+portable
+d412 1
+a412 1
+		#-portable (e-write3 'movab
+d414 1
+a414 1
+		#+portable
+@
+
+
+1.2
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/expr.l,v 1.1 83/01/26 12:14:06 jkf Exp $")
+d248 2
+a249 2
+		    (e-write3 'movl 'a5 #.Lbot-sym)
+  		    (e-write3 'movl #.Np-reg #.Np-sym)
+d251 1
+a251 1
+		    (e-write3 'lea `(,(* -4 c) #.Np-reg) #.Np-reg)
+d277 3
+a279 3
+  #-portable (e-write3 'movab `(,(* -4 c) #.Np-reg) #.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) #.Lbot-sym)
+  #+portable (e-write3 'movl #.Np-reg #.Np-sym)
+d283 2
+a284 2
+  #-portable (e-write3 'movl #.Lbot-reg #.Np-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) #.Np-reg)
+d290 2
+a291 2
+  (e-write3 'movl 'a5 #.Lbot-sym)
+  (e-write3 'movl #.Np-reg #.Np-sym)
+d295 1
+a295 1
+  (e-write3 'lea `(,(* -4 c) #.Np-reg) #.Np-reg))
+d305 3
+a307 3
+  #-portable (e-write3 'movab `(,(* -4 c) #.Np-reg) #.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 c) #.Np-reg) #.Lbot-sym)
+  #+portable (e-write3 'movl #.Np-reg #.Np-sym)
+d319 1
+a319 1
+  (e-write3 'movl '#.Np-reg #.Np-sym)
+d332 3
+a334 3
+  #-portable (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) #.Lbot-reg)
+  #+portable (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) #.Lbot-sym)
+  #+portable (e-write3 'movl #.Np-reg #.Np-sym)
+d339 2
+a340 2
+  #-portable (e-write3 'movab '(-4 #.Lbot-reg) #.Np-reg)
+  #+portable (e-write3 'movab `(,(* -4 n) #.Np-reg) #.Np-reg)
+d346 2
+a347 2
+  (e-write3 'movl 'a5 #.Lbot-sym)
+  (e-write3 'movl #.Np-reg #.Np-sym)
+d351 1
+a351 1
+  (e-write3 'lea `(,(* -4 n) #.Np-reg) #.Np-reg))
+d392 1
+a392 1
+			 #+portable (e-write4 'addl3 '$4 "(sp)" #.Lbot-sym)
+d394 1
+a394 1
+			 #+portable (e-write3 'movl '#.oLbot-reg #.Lbot-sym))
+d396 1
+a396 1
+		#+portable (setq base-reg #.Lbot-sym)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header$")
+d9 1
+a9 1
+;--- d-exp :: compile a lisp expression				= d-exp =
+a21 1
+
+d26 3
+a28 2
+		     then (If g-cc then (d-tst tmp))
+		     else (d-move tmp g-loc))
+d101 5
+a105 4
+	    then (If g-cc then (d-tst 'reg))
+	 elseif (memq g-loc '(reg r0))
+	    then (If g-cc then (d-tst 'reg))
+	  else (d-move 'reg g-loc))
+d211 1
+a236 1
+	
+d238 33
+a270 1
+;--- d-calltran :: call a function through the transfer table  	  = d-calltran =
+d275 1
+d277 4
+a280 1
+  (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+d282 4
+a285 1
+  (e-write3 'movl '#.Lbot-reg '#.Np-reg))
+d287 10
+d303 1
+d305 4
+a308 1
+  (e-write3 'movab `(,(* -4 c) #.Np-reg) '#.Lbot-reg)
+d310 4
+a313 1
+  (e-write3 'movl '#.Lbot-reg '#.Np-reg))
+d315 8
+d330 1
+d332 5
+a336 2
+  (e-write3 'movab `(,(* -4 (- n 1)) #.Np-reg) '#.Lbot-reg)
+  (e-write3 'movl '(* -4 #.Lbot-reg) 'r0)	; get address to call to
+d338 3
+a340 1
+  (e-write3 'movab '(-4 #.Lbot-reg) '#.Np-reg)	; set up np after call
+d343 10
+d367 1
+d369 48
+d437 7
+a443 7
+		    then ; the beginning of the local variables
+			 ;has been stacked
+			 (e-write3 'addl2 '$4 'sp)	; pop off arg count
+			 (e-write4 'addl3 '$4 "(sp)" '#.Lbot-reg)
+			 (setq base-reg '#.Lbot-reg)	; will push from   bot
+		    else (e-write3 'movl '#.oLbot-reg '#.Lbot-reg)
+			 (setq base-reg '#.Lbot-reg)) ; will push from lbot
+d449 12
+a460 2
+		     (e-write3 'movl `(,top #.Np-reg) `(,bot ,base-reg)))
+		 (e-write3 'movab `(,(* 4 nargs) ,base-reg) '#.Np-reg)
+d462 1
+a462 1
+	    t)) ; return t to indicate that tailrecursion was successful
+@

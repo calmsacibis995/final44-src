@@ -1,0 +1,169 @@
+#
+# Mach Operating System
+# Copyright (c) 1989 Carnegie-Mellon University
+# Copyright (c) 1988 Carnegie-Mellon University
+# Copyright (c) 1987 Carnegie-Mellon University
+# Copyright (c) 1986 Carnegie-Mellon University
+# All rights reserved.  The CMU software License Agreement specifies
+# the terms and conditions for use and redistribution.
+#
+#
+# HISTORY
+# $Log:	Makefile.sun3,v $
+# Revision 2.10  89/02/25  17:39:39  gm0w
+# 	Changes for cleanup.
+# 
+# Revision 2.9  89/01/23  22:15:55  af
+# 	Handle locore.o and mbglue.o locally.
+# 	[89/01/16  17:15:16  af]
+# 
+# Revision 2.8  88/08/09  17:44:37  rvb
+# Make "overrides correct for _gnu_ w asm() for spl<>().
+# And fix some KCC stuff.
+# 
+# Revision 2.7  88/07/21  00:04:02  rpd
+# Changed INLINE to ././inline, because make seems to strip a "./".
+# 
+# Revision 2.6  88/07/15  15:46:37  mja
+# Don't reset CPATH here since it is now set in the calling
+# ./make script to track VPATH;  add missing ${INLINE_OBJ}
+# dependencies on "ctype.h and "stdio.h".
+# 
+# 13-Jun-88  Michael Young (mwyoung) at Carnegie-Mellon University
+#	Correct Bob's rules to use KCC when applicable.
+#
+# 29-Mar-88  Robert Baron (rvb) at Carnegie-Mellon University
+#	Added changes to be used when we eliminate spl in favor of gcc's
+#	asm.
+#
+# 28-Mar-88  Robert Baron (rvb) at Carnegie-Mellon University
+#	Add macros VOLATILE and FORCE_VOLATILE as per change in
+#	conf/files.<machine> file:
+#	VOLATILE	is included if the file contains the ansi C
+#			 volatile keyword
+#	FORCE_VOLATILE	is included if the file has volatile memory 
+#			references, but does not use declare them
+#			correctly.
+#	(also see comment in config/mkmakefile.c)
+#
+#  5-Jan-88  Robert Baron (rvb) at Carnegie-Mellon University
+#	Add inline target and make all depend on it.
+#
+# 14-Dec-87  Robert Baron (rvb) at Carnegie-Mellon University
+#	Specify override for profiling rules to use ed vs ex.
+#	Some day use pipes vs temporary files for cc phases since its
+#	faster and everyone else does it.
+#
+# 23-Nov-87  Mike Accetta (mja) at Carnegie-Mellon University
+#	Added new KCC definition as per new default; temporarily fix to
+#	create links to externally included files used by kdb until
+#	these uses can be corrected.
+#	[ V5.1(XF21) ]
+#
+# 26-Feb-87  Avadis Tevanian (avie) at Carnegie-Mellon University
+#	Removed special dependency rules now that compiler is up to date.
+#
+# 23-Feb-87  Avadis Tevanian (avie) at Carnegie-Mellon University
+#	Set start address for text segment to 0x0E004000.
+#
+# 19-Jan-87  Mike Accetta (mja) at Carnegie-Mellon University
+#	Re-created (for new common makefile organization).
+#	[ V5.1(F1) ]
+#
+
+######################################################################
+#BEGIN	Machine dependent Makefile fragment for the SUN3
+######################################################################
+
+CC=	cc -m68020
+C2=	/lib/c2 -20
+AS=	as -m68020
+
+LD=	/bin/ld
+
+KCC=	${CC}
+
+LDFLAGS=-N -e _start -X -T 0E004000
+LIBS=/lib/libc.a
+
+INLINE= ././inline
+
+LDDEPS_PREFIX=${INLINE}
+SWAPDEPS_PREFIX=${INLINE}
+OBJSDEPS=${INLINE}
+
+#
+#  Special rules to build the ${INLINECMD} program.  These are moved
+#  here from the separate makefile since the program is configuration
+#  dependent (e.g. with conditional compilation). 
+#
+INLINE_SRC = $(SOURCE_DIR)/sun3/inline/mc68020pats.c \
+	$(SOURCE_DIR)/sun3/inline/inline_machdep.c \
+	$(SOURCE_DIR)/inline/main.c
+
+INLINE_OBJ = 	mc68020pats.o \
+		inline_machdep.o \
+		main.o
+
+${INLINE}: ${INLINE_OBJ}
+	${CC} -o ${INLINE} ${INLINE_OBJ}
+
+${INLINE_OBJ}: $(SOURCE_DIR)/inline/inline.h
+
+${INLINE_OBJ}: ctype.h stdio.h
+
+mc68020pats.o: $(SOURCE_DIR)/sun3/inline/mc68020pats.c
+	${CC} ${CFLAGS} -c $(SOURCE_DIR)/sun3/inline/mc68020pats.c
+
+inline_machdep.o: $(SOURCE_DIR)/sun3/inline/inline_machdep.c
+	${CC} ${CFLAGS} -c $(SOURCE_DIR)/sun3/inline/inline_machdep.c
+
+main.o: $(SOURCE_DIR)/inline/main.c
+	${CC} ${CFLAGS} -c $(SOURCE_DIR)/inline/main.c
+
+
+AHEADS=
+LDOBJS_PREFIX=locore.o
+#
+#  Special rule to temporarily create links to external include
+#  files used by the debugger until this dependency is eliminated.
+#
+
+${SOBJS}:	assym.s
+
+access.o:	a.out.h ctype.h setjmp.h stab.h
+
+a.out.h ctype.h setjmp.h stab.h stdio.h:
+	ln -s /usr/include/$@ $@
+
+
+#
+#  Compilation rules to generate .o from .c for normal files
+#  (use the ${INLINE} filter)
+#
+C_RULE_1A=${KCC} -c -S -O ${COPTS} 
+C_RULE_1B=$*.c
+C_RULE_2=${C2} $*.s | ${INLINE} >$*.i
+C_RULE_3=${AS} -o $*.o $*.i
+C_RULE_4=rm -f $*.[is]
+
+#
+#  Compilation rules to generate .o from .c for driver files
+#  (use the ${INLINE} filter)
+#	??
+#
+
+#
+#  Compilation rules to generate .o from .c for profiling routine files
+#	use ed instead of ex.
+#  (use the ${INLINE} filter)
+#  and for the present always use cc so we can know the register layout
+#
+C_RULE_1A_P=	${KCC} -c -S ${COPTS_P} 
+C_RULE_2_P=	ed - $*.s < ${GPROF.EX}
+C_RULE_3_P=	${C2} $*.s | ${INLINE} >$*.i
+C_RULE_4_P=	${AS} -o $*.o $*.i;rm -f $*.[is]
+#
+######################################################################
+#END	 Machine dependent Makefile fragment for the SUN3
+######################################################################

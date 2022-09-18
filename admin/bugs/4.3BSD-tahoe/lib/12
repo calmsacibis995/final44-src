@@ -1,0 +1,224 @@
+From serge@okeeffe.Berkeley.EDU  Thu Aug 25 17:14:25 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.60/1.29)
+	id AA23068; Thu, 25 Aug 88 17:14:25 PDT
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.59/1.30)
+	id AA28920; Thu, 25 Aug 88 17:09:16 PDT
+Received: by okeeffe.Berkeley.EDU (5.60/1.29)
+	id AA23021; Thu, 25 Aug 88 17:11:33 PDT
+Date: Thu, 25 Aug 88 17:11:33 PDT
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8808260011.AA23021@okeeffe.Berkeley.EDU>
+Subject: rsh, rlogin, rdist, etc. do not accept inet dot numbers
+Index: lib/libc/net 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Majority of commands which require a host name do not accept
+	an internet dot number instead.
+Repeat-By:
+	% rsh 127.1
+Fix:
+	Note: /usr/src/lib/libc/net/fakehostent.c is a new file.
+
+*** /usr/src/lib/libc/net/fakehostent.c	Thu Aug 25 16:46:53 1988
+--- fakehostent.c	Thu Aug 25 16:36:15 1988
+***************
+*** 0 ****
+--- 1,40 ----
++ /*LINTLIBRARY*/
++ 
++ #if defined(LIBC_SCCS) && !defined(lint)
++ static char sccsid[] = "%W% (Berkeley) %G%";
++ #endif /* LIBC_SCCS and not lint */
++ 
++ #include <sys/types.h>
++ #include <sys/socket.h>
++ #include <netinet/in.h>
++ #include <arpa/inet.h>
++ #include <netdb.h>
++ 
++ /*
++  * Make a `struct hostent' from an internet host address
++  */
++ struct hostent *
++ fakehostent(address)
++ 	unsigned long	address;
++ {
++ 	static struct hostent	result;
++ 	static char		*aliases[1];
++ #if BSD >= 43 || defined(h_addr)
++ 	static char		*addr_list[2];
++ #endif
++ 	static unsigned long	addr;
++ 	struct in_addr		in_addr;
++ 
++ 	in_addr.s_addr		= address;
++ 	result.h_name		= inet_ntoa(in_addr);
++ 	result.h_aliases	= aliases;
++ 	result.h_addrtype	= AF_INET;
++ 	result.h_length		= sizeof (addr);
++ #if BSD >= 43 || defined(h_addr)
++ 	result.h_addr_list	= addr_list;
++ #endif
++ 	addr			= address;
++ 	result.h_addr		= (char *) &addr;
++ 
++ 	return (&result);
++ }
+*** /usr/src/lib/libc/net/named/gethostnamadr.c	Mon Jun 27 16:42:58 1988
+--- named/gethostnamadr.c	Thu Aug 25 16:41:22 1988
+***************
+*** 212,237 ****
+  	char *name;
+  {
+  	querybuf buf;
+- 	register char *cp;
+  	int n;
+- 	struct hostent *hp;
+  	extern struct hostent *_gethtbyname();
+  
+! 	/*
+! 	 * disallow names consisting only of digits/dots, unless
+! 	 * they end in a dot.
+! 	 */
+! 	if (isdigit(name[0]))
+! 		for (cp = name;; ++cp) {
+! 			if (!*cp) {
+! 				if (*--cp == '.')
+! 					break;
+! 				h_errno = HOST_NOT_FOUND;
+! 				return ((struct hostent *) NULL);
+! 			}
+! 			if (!isdigit(*cp) && *cp != '.') 
+! 				break;
+! 		}
+  
+  	if ((n = res_search(name, C_IN, T_A, buf.buf, sizeof(buf))) < 0) {
+  #ifdef DEBUG
+--- 212,225 ----
+  	char *name;
+  {
+  	querybuf buf;
+  	int n;
+  	extern struct hostent *_gethtbyname();
++ 	unsigned long addr;
++ 	extern struct hostent *fakehostent();
+  
+! 	addr = inet_addr(name);
+! 	if (addr != -1)
+! 		return (fakehostent(addr));
+  
+  	if ((n = res_search(name, C_IN, T_A, buf.buf, sizeof(buf))) < 0) {
+  #ifdef DEBUG
+*** /usr/src/lib/libc/net/hosttable/gethostnamadr.c	Mon Jun 27 16:43:53 1988
+--- hosttable/gethostnamadr.c	Thu Aug 25 16:46:56 1988
+***************
+*** 19,24 ****
+--- 19,25 ----
+  static char sccsid[] = "@(#)gethostnamadr.c	5.7 (Berkeley) 6/27/88";
+  #endif /* LIBC_SCCS and not lint */
+  
++ #include <arpa/inet.h>
+  #include <stdio.h>
+  #include <netdb.h>
+  #include <sys/file.h>
+***************
+*** 85,91 ****
+--- 86,98 ----
+          datum key;
+  	char lowname[128];
+  	register char *lp = lowname;
++ 	unsigned long addr;
++ 	extern struct hostent *fakehostent();
+  	
++ 	addr = inet_addr(nam);
++ 	if (addr != -1)
++ 		return (fakehostent(addr));
++ 
+  	while (*nam)
+  		if (isupper(*nam))
+  			*lp++ = tolower(*nam++);
+***************
+*** 94,100 ****
+  	*lp = '\0';
+  
+  	if ((_host_db == (DBM *)NULL)
+! 	  && ((_host_db = dbm_open(_host_file, O_RDONLY)) == (DBM *)NULL)) {
+  		sethostent(_host_stayopen);
+  		while (hp = gethostent()) {
+  			if (strcmp(hp->h_name, lowname) == 0)
+--- 101,107 ----
+  	*lp = '\0';
+  
+  	if ((_host_db == (DBM *)NULL)
+! 	  && ((_host_db = dbm_open(_host_file, O_RDONLY, 0)) == (DBM *)NULL)) {
+  		sethostent(_host_stayopen);
+  		while (hp = gethostent()) {
+  			if (strcmp(hp->h_name, lowname) == 0)
+***************
+*** 130,136 ****
+          datum key;
+  
+  	if ((_host_db == (DBM *)NULL)
+! 	  && ((_host_db = dbm_open(_host_file, O_RDONLY)) == (DBM *)NULL)) {
+  		sethostent(_host_stayopen);
+  		while (hp = gethostent()) {
+  			if (hp->h_addrtype == type && hp->h_length == length
+--- 137,143 ----
+          datum key;
+  
+  	if ((_host_db == (DBM *)NULL)
+! 	  && ((_host_db = dbm_open(_host_file, O_RDONLY, 0)) == (DBM *)NULL)) {
+  		sethostent(_host_stayopen);
+  		while (hp = gethostent()) {
+  			if (hp->h_addrtype == type && hp->h_length == length
+*** /usr/src/lib/libc/net/Make.resolv	Sat Jul  9 11:15:23 1988
+--- Make.resolv	Thu Aug 25 17:07:48 1988
+***************
+*** 18,26 ****
+  #
+  VPATH=	named
+  SRCS=	herror.c res_comp.c res_debug.c res_init.c res_mkquery.c res_send.c \
+! 	gethostnamadr.c sethostent.c res_query.c
+  OBJS=	herror.o res_comp.o res_debug.o res_init.o res_mkquery.o res_send.o \
+! 	gethostnamadr.o sethostent.o res_query.o
+  CFLAGS=	-O -DDEBUG
+  
+  .c.o:
+--- 18,26 ----
+  #
+  VPATH=	named
+  SRCS=	herror.c res_comp.c res_debug.c res_init.c res_mkquery.c res_send.c \
+! 	gethostnamadr.c sethostent.c res_query.c fakehostent.c
+  OBJS=	herror.o res_comp.o res_debug.o res_init.o res_mkquery.o res_send.o \
+! 	gethostnamadr.o sethostent.o res_query.o fakehostent.o
+  CFLAGS=	-O -DDEBUG
+  
+  .c.o:
+*** /usr/src/lib/libc/net/Makefile	Mon Jun 27 17:13:13 1988
+--- Makefile	Thu Aug 25 17:07:59 1988
+***************
+*** 21,31 ****
+  SRCS=	getnetbyaddr.c getnetent.c getnetbyname.c getproto.c getprotoent.c \
+  	getprotoname.c getservent.c getservbyport.c getservbyname.c \
+  	herror.c rcmd.c rexec.c ruserpass.c res_comp.c res_debug.c \
+! 	res_init.c res_mkquery.c res_query.c res_send.c
+  OBJS=	getnetbyaddr.o getnetent.o getnetbyname.o getproto.o getprotoent.o \
+  	getprotoname.o getservent.o getservbyport.o getservbyname.o \
+  	herror.o rcmd.o rexec.o ruserpass.o res_comp.o res_debug.o \
+! 	res_init.o res_mkquery.o res_query.o res_send.o
+  TAGSFILE=tags
+  
+  .c.o:
+--- 21,31 ----
+  SRCS=	getnetbyaddr.c getnetent.c getnetbyname.c getproto.c getprotoent.c \
+  	getprotoname.c getservent.c getservbyport.c getservbyname.c \
+  	herror.c rcmd.c rexec.c ruserpass.c res_comp.c res_debug.c \
+! 	res_init.c res_mkquery.c res_query.c res_send.c fakehostent.c
+  OBJS=	getnetbyaddr.o getnetent.o getnetbyname.o getproto.o getprotoent.o \
+  	getprotoname.o getservent.o getservbyport.o getservbyname.o \
+  	herror.o rcmd.o rexec.o ruserpass.o res_comp.o res_debug.o \
+! 	res_init.o res_mkquery.o res_query.o res_send.o fakehostent.o
+  TAGSFILE=tags
+  
+  .c.o:

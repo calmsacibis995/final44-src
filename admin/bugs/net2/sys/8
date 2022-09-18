@@ -1,0 +1,84 @@
+From dls@j.cc.purdue.edu  Tue Mar  3 13:04:41 1992
+Date: Tue, 3 Mar 92 16:04:33 -0500
+From: dls@j.cc.purdue.edu (David L Stevens)
+Subject: hard CPU limits not implemented & hard>=soft not enforced
+Index: 	sys/kern_{clock,resource}.c net2
+
+Description: (second filing, suggested by Chris Torek)
+	My apologies for filing both bugs in the same report-- they are at
+	least marginally related, though:
+
+	Bug1) Programs which ignore SIGXCPU are not terminated as documented.
+	Bug2) Programs can set a soft CPU time limit > the hard time limit,
+		when changing both at the same time. Contrary to expected
+		and documentation.
+Repeat-By:
+	Bug1) Run a program which ignores SIGXCPU in an infinite loop. Kernel
+		code just resends SIGXCPU ever 5 seconds forever.
+	Bug2) Call setrlimit(2) with soft > hard (for any limit). It works,
+		and the soft limit is greater than the hard. (probably not
+		the intent.) The effect with the current implementation is
+		that a program with a finite hard limit, but an infinite soft
+		limit will never get a SIGXCPU; other limits may behave
+		similarly.
+Fix: (diffs below)
+	Bug1 Fix) Have a hard CPU limit exceeded do a SIGKILL, as documented.
+	Bug2 Fix) Use the current (possibly new) hard limit when enforcing a
+		ceiling on soft limits.
+
+(Bug1 Fix)
+*** OLD kern_clock.c
+--- NEW kern_clock.c	Tue Apr 16 13:26:01 1991
+***************
+*** 140,151 ****
+  	 * the entire last tick.
+  	 */
+  	if (noproc == 0) {
+! 		if ((u.u_ru.ru_utime.tv_sec+u.u_ru.ru_stime.tv_sec+1) >
+! 		    u.u_rlimit[RLIMIT_CPU].rlim_cur) {
+! 			psignal(u.u_procp, SIGXCPU);
+! 			if (u.u_rlimit[RLIMIT_CPU].rlim_cur <
+! 			    u.u_rlimit[RLIMIT_CPU].rlim_max)
+! 				u.u_rlimit[RLIMIT_CPU].rlim_cur += 5;
+  		}
+  		if (timerisset(&u.u_timer[ITIMER_PROF].it_value) &&
+  		    itimerdecr(&u.u_timer[ITIMER_PROF], tick) == 0)
+--- 140,160 ----
+  	 * the entire last tick.
+  	 */
+  	if (noproc == 0) {
+! 		long secs = u.u_ru.ru_utime.tv_sec+ u.u_ru.ru_stime.tv_sec+1;
+! 
+! 		p = u.u_procp;
+! 
+! #define	cpusoft(u)	(u).u_rlimit[RLIMIT_CPU].rlim_cur
+! #define	cpuhard(u)	(u).u_rlimit[RLIMIT_CPU].rlim_max
+! 
+! 		if (secs > cpusoft(u)) {
+! 			if (secs > cpuhard(u))
+! 				psignal(p, SIGKILL);
+! 			else {
+! 				psignal(p, SIGXCPU);
+! 				if (cpusoft(u) < cpuhard(u))
+! 					cpusoft(u) += 5;
+! 			}
+  		}
+  		if (timerisset(&u.u_timer[ITIMER_PROF].it_value) &&
+  		    itimerdecr(&u.u_timer[ITIMER_PROF], tick) == 0)
+
+(Bug2 Fix)
+*** OLD kern_resource.c
+--- NEW kern_resource.c	Tue Apr 16 13:26:39 1991
+***************
+*** 169,174 ****
+--- 169,177 ----
+  	if (alim.rlim_cur > alimp->rlim_max || alim.rlim_max > alimp->rlim_max)
+  		if (!suser())
+  			return;
++ 	if (alim.rlim_cur > alim.rlim_max)
++ 		alim.rlim_cur = alim.rlim_max;
++ 
+  	switch (uap->which) {
+  
+  	case RLIMIT_DATA:
+

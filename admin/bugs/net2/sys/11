@@ -1,0 +1,77 @@
+From jtkohl@kolvir.elcr.ca.us Sun Jun  7 21:50:43 1992
+Date: Sun, 7 Jun 92 21:24:36 -0700
+From: John T Kohl <jtkohl@kolvir.elcr.ca.us>
+To: 4bsd-bugs@ucbvax.berkeley.edu
+Cc: staelin@cs.berkeley.edu, margo@cs.berkeley.edu, bostic@cs.berkeley.edu
+Subject: select(2) race condition with small timeout values
+X-Us-Snail: 3124 Yosemite Ave. #3, El Cerrito, CA  94530
+Index: sys/kern net2
+
+Keith, Margo & Carl: similar bogus code can be found in
+lfs_syscalls.c:lfs_segwait().
+
+
+------- Forwarded Message
+
+Date: Sat, 9 May 92 00:19:43 -0700
+From: John T Kohl <jtkohl>
+Subject: select(2) race condition with small timeout values
+Index: sys/kern/sys_generic.c bsdi0.3
+Apparently-To: jtkohl
+Apparently-To: problem@BSDI.COM
+
+The reported bug corresponding to the subject above has been assigned
+the bug id number of 001291.
+
+WPHONE:	[Your work phone number]
+HPHONE:	(510) 525-7984
+
+Description:
+	select(2) can inadvertently turn a very short timeout value into
+	a zero (infinite) sleep request.
+
+Repeat-By:
+	I found this while porting an X lock program.
+
+	examine /sys/kern/sys_generic.c:select().  The timevaladd() is
+	protected by appropriate spl's, but there's a race after
+	the splx(s) to get into hzto() and compute the timo.
+
+Fix:
+
+*** /tmp/T0000122	Sat May  9 00:16:47 1992
+--- sys_generic.c	Sat May  9 00:07:06 1992
+***************
+*** 510,515 ****
+--- 510,516 ----
+  #undef	getbits
+  
+  	if (uap->tv) {
++ 	        int dotime = 0;
+  		error = copyin((caddr_t)uap->tv, (caddr_t)&atv,
+  			sizeof (atv));
+  		if (error)
+***************
+*** 518,525 ****
+--- 519,533 ----
+  			error = EINVAL;
+  			goto done;
+  		}
++ 	        if (atv.tv_usec || atv.tv_sec)
++ 		    dotime = 1;
+  		s = splhigh(); timevaladd(&atv, &time); splx(s);
+  		timo = hzto(&atv);
++ 		if (dotime == 1 && timo == 0) {
++ 		    timo = 1;		/* don't sleep forever. (avoid race
++ 					   in adding to atv and time advancing
++ 					   when uap->tv is small */
++ 		}
+  	} else
+  		timo = 0;
+  retry:
+
+
+------- End Forwarded Message
+
+
+- M

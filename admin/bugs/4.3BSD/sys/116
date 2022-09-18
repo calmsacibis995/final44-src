@@ -1,0 +1,118 @@
+From decwrl!pyramid!lewey.AIT.COM!pkl@ucbvax.Berkeley.EDU  Wed May  6 15:38:26 1987
+Date: Wed, 6 May 87 13:09:33 PDT
+From: decwrl!pkl@lewey.ait.com (Peter K. Lee)
+Subject: getpeername() on Unix domain sockets crashes system
+Index: sys/sys/uipc_usrreq.c 4.3BSD
+
+Description:
+	Calling getpeername() on connected Unix domain sockets 
+	crashes system.
+
+Repeat-By:
+	Run the following program.  Your system will crash before
+	this program finishes execution.
+/* ----- beginning of program ----- */
+/*
+ * Program to demonstrate that getpeername() on connected Unix domain
+ * sockets crashes the system.  Run this at your own risk.
+ *
+ * Peter K. Lee, pkl@lewey.AIT.COM
+ * American Information Technology, Inc.
+ * Cupertino, California
+ */
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
+main()
+{
+	int	s1, s2;
+	struct	sockaddr sa;
+	int	namlen;
+	char	msg[27];
+	int	r;
+
+	/*
+	 * Make a couple of sockets
+	 */
+	if ((s1 = makeusock("/tmp/sock1")) < 0)
+		exit(1);
+	if ((s2 = makeusock("/tmp/sock2")) < 0)
+		exit(1);
+
+	/*
+	 * connect s2 to s1
+	 */
+	bzero(&sa, sizeof(sa));
+	sa.sa_family = AF_UNIX;
+	strcpy(sa.sa_data, "/tmp/sock1");
+	if (connect(s2, &sa, sizeof(sa)) < 0) {
+		perror("connect");
+		exit(1);
+	}
+	printf("%d connected to (family %d, data \"%s\")\n",
+	    s2, sa.sa_family, sa.sa_data);
+	fflush(stdout);
+
+	bzero(&sa, sizeof(sa));
+	namlen = sizeof(sa);
+	/*
+	 * BAMM! you're dead
+	 */
+	if (getpeername(s2, &sa, &namlen) < 0) {
+		perror("getpeername");
+		exit(1);
+	}
+	printf("peer of %d, address family %d data \"%s\"\n", 
+	    s2, sa.sa_family, sa.sa_data);
+	fflush(stdout);
+}
+
+
+makeusock(name)
+	char *name;
+{
+	struct	sockaddr sa;
+	int	s;
+	int	r;
+
+	if ((s = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+		perror("socket");
+		return(s);
+	}
+	bzero(&sa, sizeof(sa));
+	sa.sa_family = AF_UNIX;
+	strcpy(sa.sa_data, name);
+	unlink(name);
+	if (bind(s, &sa, sizeof(sa)) < 0) {
+		perror("bind");
+		return(-1);
+	}
+	return(s);
+}
+/* ----- end of program ---- */
+
+Fix:
+	In sys/uipc_usrreq.c, in the case PRU_PEERADDR, m was used instead
+	of nam when copying the peer address.  m is nil when called from
+	getpeername().  To fix the problem, change m to nam.
+	Apply the following context diff to sys/uipc_usrreq.c
+
+*** /tmp/d11130	Wed May  6 18:48:39 1987
+--- uipc_usrreq.c	Wed May  6 18:48:12 1987
+***************
+*** 269,275 ****
+  		if (unp->unp_conn && unp->unp_conn->unp_addr) {
+  			nam->m_len = unp->unp_conn->unp_addr->m_len;
+  			bcopy(mtod(unp->unp_conn->unp_addr, caddr_t),
+! 			    mtod(m, caddr_t), (unsigned)m->m_len);
+  		}
+  		break;
+  
+--- 269,275 ----
+  		if (unp->unp_conn && unp->unp_conn->unp_addr) {
+  			nam->m_len = unp->unp_conn->unp_addr->m_len;
+  			bcopy(mtod(unp->unp_conn->unp_addr, caddr_t),
+! 			    mtod(nam, caddr_t), (unsigned)nam->m_len);
+  		}
+  		break;

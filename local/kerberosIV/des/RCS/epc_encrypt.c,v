@@ -1,0 +1,608 @@
+head     4.7;
+branch   ;
+access   ;
+symbols  PATCH8:4.7 PATCH7:4.7 KPATCH6:4.7 ASRSNAP1001:4.7 PATCH5:4.7 ADAMS_NSA:4.7 KPATCH4:4.7 KPATCH3:4.7 KPATCH2:4.7 KREL1:4.7 BETA5/24/88:4.6;
+locks    ; strict;
+comment  @ * @;
+
+
+4.7
+date     88.11.15.11.28.23;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.14.21.07;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.18.43.53;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.23.11.25.35;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.23.10.46.27;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.14.12;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.40.48;  author steiner;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     87.01.13.16.34.55;  author wesommer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.01.13.11.31.19;  author wesommer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Someone lost the RCS file.
+@
+
+
+4.7
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@/*
+ * $Source: //ra/mit/wesommer/des/RCS/epc_encrypt.c,v $
+ * $Author: steiner $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * These routines perform encryption and decryption using the DES
+ * private key algorithm, or else a subset of it-- fewer inner loops.
+ * (AUTH_DES_ITER defaults to 16, may be less.)
+ *
+ * Under U.S. law, this software may not be exported outside the US
+ * without license from the U.S. Commerce department.
+ *
+ * These routines form the library interface to the des facilities.
+ *
+ * spm	8/85	MIT project athena
+ */
+
+#ifndef	lint
+static char rcsid_epc_encrypt_c[] =
+"$Header: epc_encrypt.c,v 4.6 88/02/24 14:21:07 steiner Exp $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <des.h>
+
+#include <stdio.h>
+#include <strings.h>
+#ifdef BSDUNIX
+#include <sys/time.h>
+#endif
+
+extern int des_debug;
+extern int des_debug_print();
+
+/*
+ * epc_encrypt is an "error propagation chaining" encrypt operation
+ * for DES, similar to CBC.  However, CBC limits errors to 2 blocks,
+ * while "epc" will propagate a single bit error anywhere in the chain
+ * all the way through to the end. This is NOT an official mode of
+ * operation.  It offers the cryptanalyst the same plaintext
+ * ciphertext pairs for repeated plaintext, regardless of the IV.
+ * However, cryptanalysis is not one of our concerns.
+ */
+
+/*
+ * This routine performs the EPC error-propagation chaining operation,
+ * either encrypting from cleartext to ciphertext, if encrypt != 0, or
+ * decrypting from ciphertext to cleartext, if encrypt == 0.
+ *
+ * The key schedule is passed as an arg, as well as the cleartext or
+ * ciphertext. The cleartext and ciphertext should be in host order.
+ *
+ * NOTE-- the output is ALWAYS an multiple of 8 bytes long.  If not
+ * enough space was provided, your program will get trashed.
+ *
+ * For encryption, the cleartext string is null padded, at the end, to
+ * an integral multiple of eight bytes.
+ *
+ * For decryption, the ciphertext will be used in integral multiples
+ * of 8 bytes, but only the first "length" bytes returned into the
+ * cleartext.
+ */
+
+int
+epc_encrypt(in,out,length,key,iv,encrypt)
+    des_cblock *in;		/* >= length bytes of inputtext */
+    des_cblock *out;		/* >= length bytes of outputtext */
+    register long length;	/* in bytes */
+    int encrypt;		/* 0 ==> decrypt, else encrypt */
+    des_key_schedule key;		/* precomputed key schedule */
+    des_cblock *iv;		/* 8 bytes of ivec */
+{
+    register unsigned long *input = (unsigned long *) in;
+    register unsigned long *output = (unsigned long *) out;
+    register unsigned long *ivec = (unsigned long *) iv;
+
+    unsigned long i,j;
+    static unsigned long t_input[2];
+    static unsigned long t_output[2];
+    static unsigned char *t_in_p = (unsigned char *) t_input;
+    static unsigned long xor_0, xor_1;
+
+    if (encrypt) {
+	xor_0 = *ivec++;
+	xor_1 = *ivec;
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+	    t_input[0] = *input;
+	    t_input[1] = *(input+1);
+	    /* zero pad */
+	    if (length < 8)
+		for (j = length; j <= 7; j++)
+		    *(t_in_p+j)= 0;
+
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",length,t_input[0],t_input[1]);
+#endif
+	    /* do the xor for cbc into the temp */
+	    t_input[0] ^= xor_0 ;
+	    t_input[1] ^= xor_1 ;
+	    /* encrypt */
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+	    /* copy temp output and save it for cbc */
+	    *output++ = t_output[0];
+	    *output++ = t_output[1];
+	    xor_0 = *input++;
+	    xor_1 = *input++;
+#ifdef DEBUG
+	    if (des_debug) {
+		des_debug_print("xor'ed",i,t_input[0],t_input[1]);
+		des_debug_print("cipher",i,t_output[0],t_output[1]);
+	    }
+#endif
+	}
+	t_output[0] = 0;
+	t_output[1] = 0;
+	xor_0 = 0;
+	xor_1 = 0;
+	return 0;
+    }
+
+    else	/* decrypt */
+    {
+	xor_0 = *ivec++;
+	xor_1 = *ivec;
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+	    t_input[0] = *input++;
+	    t_input[1] = *input++;
+	    /* no padding for decrypt */
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("cipher",i,t_input[0],t_input[1]);
+#endif
+	    /* encrypt */
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("out pre xor",i,t_output[0],t_output[1]);
+#endif
+	    /* do the xor for cbc into the output */
+	    t_output[0] ^= xor_0 ;
+	    t_output[1] ^= xor_1 ;
+	    /* copy temp output */
+	    *output++ = t_output[0];
+	    *output++ = t_output[1];
+	    /* save xor value for next round */
+	    xor_0 = t_output[0];
+	    xor_1 = t_output[1];
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",i,t_output[0],t_output[1]);
+#endif
+	}
+
+    }
+}
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d25 1
+a25 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d37 2
+a38 2
+extern int debug;
+extern int debug_print();
+d71 2
+a72 2
+    C_Block *in;		/* >= length bytes of inputtext */
+    C_Block *out;		/* >= length bytes of outputtext */
+d75 2
+a76 2
+    Key_schedule key;		/* precomputed key schedule */
+    C_Block *iv;		/* 8 bytes of ivec */
+d102 2
+a103 2
+	    if (debug)
+		debug_print("clear",length,t_input[0],t_input[1]);
+d109 1
+a109 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d116 3
+a118 3
+	    if (debug) {
+		debug_print("xor'ed",i,t_input[0],t_input[1]);
+		debug_print("cipher",i,t_output[0],t_output[1]);
+d140 2
+a141 2
+	    if (debug)
+		debug_print("cipher",i,t_input[0],t_input[1]);
+d144 1
+a144 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d146 2
+a147 2
+	    if (debug)
+		debug_print("out pre xor",i,t_output[0],t_output[1]);
+d159 2
+a160 2
+	    if (debug)
+		debug_print("clear",i,t_output[0],t_output[1]);
+@
+
+
+4.5
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d2 2
+a3 1
+ * des_epc_encrypt.c
+d5 2
+a6 2
+ *	spm	8/85	MIT project athena
+ *				copyright MIT	1985
+d8 2
+a10 4
+ * $Source: /u3/kerberos.new/lib/des/bsd/RCS/des_epc_encrypt.c,v $
+ * $Author: steiner $
+ * $Locker:  $
+ *
+d19 2
+d23 6
+@
+
+
+4.4
+log
+@#include <des.h> has to come before #ifdef BSDUNIX.
+@
+text
+@d1 2
+a2 1
+/* des_epc_encrypt.c
+d8 3
+a10 3
+ *	$Source: /u3/kerberos.new/lib/des/bsd/RCS/des_epc_encrypt.c,v $
+ *	$Author: steiner $
+ *	$Locker: steiner $
+d12 3
+a14 3
+ *	These routines perform encryption and decryption using the DES
+ *  private key algorithm, or else a subset of it-- fewer inner loops.
+ *  ( AUTH_DES_ITER defaults to 16, may be less)
+d16 2
+a17 2
+ *	Under U.S. law, this software may not be exported outside the US
+ *  without license from the U.S. Commerce department.
+d19 1
+a19 4
+ *	The key schedule is passed as an arg, as well as the cleartext or
+ *  ciphertext.  The cleartext and ciphertext should be in host order.
+ *
+ *	These routines form the library interface to the des facilities.
+d22 1
+a22 1
+# include	<des.h>
+d24 4
+a27 4
+# include	<stdio.h>
+# include	<strings.h>
+#ifdef	BSDUNIX
+#include	<sys/time.h>
+d30 2
+a31 2
+extern	int	debug;
+extern	int	debug_print();
+d33 8
+a40 7
+/* epc_encrypt is an "error propagation chaining" encrypt operation for
+ * DES, similar to CBC.  Howver CBC limits errors to 2 blocks, while
+ * "epc" will propagate a single bit error anywhere in the chain all the
+ * way through to the end. This is NOT an official mode of operation.
+ * It offers the cryptanalyst the same plaintext ciphertext pairs for
+ * repeated plaintext, regardless of the IV. However, cryptanalysis is
+ * not one of our concerns.
+d43 4
+a46 13
+int	
+	epc_encrypt(in,out,length,key,iv,encrypt)
+
+	C_Block				 		*in;		/* >= length bytes of inputtext	 */
+	C_Block					 	*out	;	/* >= length bytes of outputtext */
+	register 	long				length;		/* in bytes						*/
+	int							encrypt;	/* 0 ==> decrypt, else encrypt */
+	Key_schedule				key;		/* precomputed key schedule	   */
+	C_Block						*iv;		/* 8 bytes of ivec			   */
+
+/*	performs epc error-propagation chaining operation
+ *	either encrypts from cleartext to ciphertext, if encrypt != 0
+ *	or decrypts from ciphertext to cleartext, if encrypt == 0
+d48 2
+a49 3
+ *	NOTE--
+ *  the output is ALWAYS an multiple of 8 bytes long.  If not enough
+ *	space was provided, your program will get trashed.
+d51 2
+a52 2
+ *  for encryption, the cleartext string is null padded, at the end, 
+ *  to an integral multiple of eight bytes.
+d54 6
+a59 2
+ *	for decryption, the ciphertext will be used in integral multiples of
+ *  8 bytes, but only the first "length" bytes returned into the cleartext.
+d61 9
+d71 3
+a73 3
+	register	unsigned long 	*input = (unsigned long *) in;
+	register	unsigned long 	*output = (unsigned long *) out;
+	register	unsigned long 	*ivec = (unsigned long *) iv;
+d75 5
+a79 5
+	unsigned long	i,j;
+	static	unsigned long	t_input[2];
+	static	unsigned long	t_output[2];
+	static	unsigned char	*t_in_p = (unsigned char *) t_input;
+	static	unsigned long	xor_0, xor_1;
+d81 3
+a83 4
+	if (encrypt)
+		{
+		xor_0 = *ivec++;
+		xor_1 = *ivec;
+d85 12
+a96 36
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input;
+			t_input[1] = *(input+1);
+			/* zero pad													   */
+			if (length <8)
+				{
+				for (j = length; j<=7; j++)
+					{
+					*(t_in_p+j)= 0;
+					}
+				}
+					
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",length,t_input[0],t_input[1]);
+				}
+#endif			
+			/* do the xor for cbc into the temp						   */
+			t_input[0] ^= xor_0 ;
+			t_input[1] ^= xor_1 ;
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+			/* copy temp output	and save it for cbc						   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+			xor_0 = *input++;
+			xor_1 = *input++;
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("xor'ed",i,t_input[0],t_input[1]);
+				debug_print("cipher",i,t_output[0],t_output[1]);
+				}	
+d98 23
+a120 7
+			}
+		t_output[0] = 0;
+		t_output[1] = 0;
+		xor_0 = 0;
+		xor_1 = 0;
+		return 0;
+		}
+d122 4
+a125 4
+	else	/* decrypt */
+		{
+		xor_0 = *ivec++;
+		xor_1 = *ivec;
+d127 8
+a134 11
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input++;
+			t_input[1] = *input++;
+			/* no padding for decrypt									   */
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("cipher",i,t_input[0],t_input[1]);
+				}
+d136 5
+a140 7
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("out pre xor",i,t_output[0],t_output[1]);
+				}
+d142 12
+a153 14
+			/* do the xor for cbc into the output						   */
+			t_output[0] ^= xor_0 ;
+			t_output[1] ^= xor_1 ;
+			/* copy temp output											   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+			/* save xor value for next round							   */
+			xor_0 = t_output[0];
+			xor_1 = t_output[1];
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",i,t_output[0],t_output[1]);
+				}	
+d155 3
+a157 3
+			}
+					
+		}
+@
+
+
+4.3
+log
+@Moved ./des_conf.h to .../include/krb_conf.h; .../include/des.h
+includes it now.
+@
+text
+@d24 2
+a30 2
+
+# include	<des.h>
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d7 1
+a7 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_epc_encrypt.c,v $
+a9 19
+ *	$Log:	des_epc_encrypt.c,v $
+ * Revision 4.1  87/09/01  15:40:48  steiner
+ * No change; starting version 4.
+ * 
+ * Revision 1.2  87/01/13  16:34:55  wesommer
+ * Added include of des_conf.h
+ * 
+ * Revision 1.1  87/01/13  11:31:19  wesommer
+ * Initial revision
+ * 
+ * Revision 1.1  85/12/16  13:50:38  spm
+ * Initial revision
+ * 
+ * Revision 1.2  85/08/19  15:25:26  spm
+ * fix print, int
+ * 
+ * Revision 1.1  85/08/16  12:48:04  spm
+ * Initial revision
+ * 
+a23 1
+#include "des_conf.h"
+a25 2
+# include	<des.h>
+
+d29 2
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d8 1
+a8 1
+ *	$Author: wesommer $
+d11 3
+d43 1
+a43 1
+#include "./des_conf.h"
+d46 1
+a46 1
+# include	"./des.h"
+@
+
+
+1.2
+log
+@Added include of des_conf.h
+@
+text
+@d7 1
+a7 1
+ *	$Source: /altsource/kerberos/lib/des/vax/RCS/des_epc_encrypt.c,v $
+d9 1
+a9 1
+ *	$Locker: wesommer $
+d11 3
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 7
+a13 4
+ *	$Source: /mit/projects/auth/src/lib/des/vax/RCS/des_cbc_encrypt.c,v $
+ *	$Author: spm $
+ *	$Locker:  $
+ *	$Log:	des_cbc_encrypt.c,v $
+d37 1
+@

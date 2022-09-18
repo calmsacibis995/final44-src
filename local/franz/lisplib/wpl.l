@@ -1,0 +1,27 @@
+(defun wide-print-list (given-list &optional (left-margin (nwritn)))
+  ;	given a (presumably long) list, print it as wide as possible.
+  (declare (special lpar rpar))
+  (let ((max-width 78))
+       (tab left-margin)
+       (cond ((not (listp given-list))
+	      (patom given-list))
+	     ((null given-list)
+	      (patom nil))
+	     (t
+	      (patom lpar)
+	      (do ((left given-list (cdr left))
+		   (need-space-p nil t))
+		  ((null left) nil)
+		  (cond (need-space-p
+			 (patom " ")))
+		  (let* ((element (car left))
+			 (length (flatc element))
+			 (used (nwritn))
+			 (available (- max-width used)))
+			(cond ((>= length available)
+			       (tab (1+ left-margin))))
+			(cond ((listp element)
+			       (wide-print-list element))
+			      (t
+			       (patom element)))))
+	      (patom rpar)))))

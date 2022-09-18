@@ -1,0 +1,73 @@
+Return-Path: <@seismo.ARPA:elsie!ado@seismo.ARPA>
+Date: Fri, 7 Dec 84 17:59:44 EST
+From: elsie!ado@seismo.ARPA
+Subject: C muffs unsigned {char,short} vs. negative constant (with fix)
+Index: lib/pcc/local2.c 4.2BSD
+
+Description:
+	The C compiler may produce incorrect code for comparisons of
+	unsigned shorts or chars and negative constants.
+
+Repeat-By:
+    The following program demonstrates an interesting bug on the VAX
+    (4.1 and 4.2 BSD UNIX).  The comparison of unsigned short x = 0xffff
+    and the integer constant 0xffffffff should fail. . .
+	
+    main()
+    {
+	unsigned short x;
+	int y;
+    
+	x = 0xffff; 
+    
+	if (x == 0xffffffff)
+	printf("x == 0xffffffff, x = %x, 0xffffffff = %x\n", x, 0xffffffff);
+	else
+	printf("x != 0xffffffff, x = %x, 0xffffffff = %x\n", x, 0xffffffff);
+    }
+
+Fix:
+- ed /usr/src/cmd/pcc/local2.c
+- /^optim2/;/switch/a
+- #ifndef OLDVERSION
+- /*
+- ** Do these mappings:
+- **	unsigned char expr < negative constant		unsigned char expr, 0
+- **	unsigned char expr == negative constant		unsigned char expr, 0
+- **	unsigned char expr <= negative constant		unsigned char expr, 0
+- **	unsigned char expr > negative constant		unsigned char expr, 1
+- **	unsigned char expr != negative constant		unsigned char expr, 1
+- **	unsigned char expr >= negative constant		unsigned char expr, 1
+- **	unsigned short expr < negative constant		unsigned short expr, 0
+- **	unsigned short expr == negative constant	unsigned short expr, 0
+- **	unsigned short expr <= negative constant	unsigned short expr, 0
+- **	unsigned short expr > negative constant		unsigned short expr, 1
+- **	unsigned short expr != negative constant	unsigned short expr, 1
+- **	unsigned short expr >= negative constant	unsigned short expr, 1
+- ** Doing this allows us to have optimized "table.c" entries for comparisons
+- ** involving unsigned {short,char}s and SSCONs.
+- */
+- 	case UGE:
+- 	case ULE:
+- 	case UGT:
+- 	case ULT:
+- 	case EQ:
+- 	case NE:
+- 		if (p->in.left->in.type != UCHAR &&
+- 			p->in.left->in.type != USHORT)
+- 				break;
+- 		if (p->in.right->in.op != ICON)
+- 			break;
+- 		if (p->in.right->in.name[0] != '\0')
+- 			break;
+- 		if (p->in.right->tn.lval >= 0)
+- 			break;
+- 		p->in.right->tn.lval = 	p->in.op == NE ||
+- 					p->in.op == UGE ||
+- 					p->in.op == UGT;
+- 		p->in.op = COMOP;
+- 		break;
+- #endif
+- .
+- w
+- q

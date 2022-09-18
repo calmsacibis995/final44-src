@@ -1,0 +1,1363 @@
+head     4.8;
+branch   ;
+access   ;
+symbols  PATCH8:4.7 PATCH7:4.7 KPATCH6:4.7 ASRSNAP1001:4.7 PATCH5:4.7 ADAMS_NSA:4.7 KPATCH4:4.7 KPATCH3:4.7 KPATCH2:4.7 KREL1:4.7 BETA5/24/88:4.4 v1:1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.8
+date     93.03.22.06.07.09;  author bostic;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     89.01.23.15.42.17;  author wesommer;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     89.01.21.16.50.04;  author jtkohl;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.11.15.11.28.58;  author jtkohl;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.02.24.14.21.14;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.01.14.18.44.04;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     88.01.13.17.49.09;  author raeburn;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.40.54;  author steiner;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     87.01.13.16.35.17;  author wesommer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     86.08.22.12.35.36;  author spm;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     86.08.08.14.38.55;  author spm;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     86.01.30.16.26.33;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     85.12.16.13.45.16;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.08.19.15.26.05;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.08.16.12.49.13;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@ok v1
+@
+
+
+4.8
+log
+@lint for GCC 2
+
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/des/RCS/key_sched.c,v $
+ * $Author: wesommer $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine computes the DES key schedule given a key.  The
+ * permutations and shifts have been done at compile time, resulting
+ * in a direct one-step mapping from the input key to the key
+ * schedule.
+ *
+ * Also checks parity and weak keys.
+ *
+ * Watch out for the subscripts -- most effectively start at 1 instead
+ * of at zero.  Maybe some bugs in that area.
+ *
+ * DON'T change the data types for arrays and such, or it will either
+ * break or run slower.  This was optimized for Uvax2.
+ *
+ * In case the user wants to cache the computed key schedule, it is
+ * passed as an arg.  Also implies that caller has explicit control
+ * over zeroing both the key schedule and the key.
+ *
+ * All registers labeled imply Vax using the Ultrix or 4.2bsd compiler.
+ *
+ * Originally written 6/85 by Steve Miller, MIT Project Athena.
+ */
+
+#ifndef	lint
+static char rcsid_key_sched_c[] =
+"$Header: /usr/src/kerberosIV/des/RCS/key_sched.c,v 4.7 89/01/23 15:42:17 wesommer Exp Locker: bostic $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include "des_internal.h"
+#include <stdio.h>
+
+#include "des.h"
+#include "key_perm.h"
+
+extern int des_debug;
+extern rev_swap_bit_pos_0();
+
+typedef char key[64];
+/* the following are really void but cc86 doesnt allow it */
+static int make_key_sched();
+
+
+int
+des_key_sched(k,schedule)
+    register des_cblock k;	/* r11 */
+    des_key_schedule schedule;
+{
+    /* better pass 8 bytes, length not checked here */
+
+    register i, j, n;		/* i = r10, j = r9, n = r8 */
+    register unsigned int temp;	/*  r7 */
+    register char *p_char;	/* r6 */
+    static key k_char;
+    i = 8;
+    n = 0;
+    p_char = k_char;
+
+#ifdef lint
+    n = n;				/* fool it in case of VAXASM */
+#endif
+#ifdef DEBUG
+    if (des_debug)
+	fprintf(stderr,"\n\ninput key, left to right = ");
+#endif
+
+    if (!des_check_key_parity(k))	/* bad parity --> return -1 */
+	return(-1);
+
+    do {
+	/* get next input key byte */
+#ifdef DEBUG
+	if (des_debug)
+	    fprintf(stderr,"%02x ",*k & 0xff);
+#endif
+	temp = (unsigned int) ((unsigned char) *k++);
+	j = 8;
+
+	do {
+#ifndef VAXASM
+	    *p_char++ = (int) temp & 01;
+	    temp = temp >> 1;
+#else
+	    asm("bicb3	$-2,r7,(r8)+[r6]");
+	    asm("rotl	$-1,r7,r7");
+#endif
+	} while (--j > 0);
+    } while (--i > 0);
+
+#ifdef DEBUG
+    if (des_debug) {
+	p_char = k_char;
+	fprintf(stderr,"\nKey bits, from zero to 63");
+	for (i = 0; i <= 7; i++) {
+	    fprintf(stderr,"\n\t");
+	    for (j = 0; j <=7; j++)
+		fprintf(stderr,"%d ",*p_char++);
+	}
+    }
+#else
+#ifdef lint
+    p_char = p_char;
+#endif
+#endif
+
+    /* check against weak keys */
+    k -= sizeof(des_cblock);
+
+    if (des_is_weak_key(k))
+	return(-2);
+
+    make_key_sched(k_char,schedule);
+
+    /* if key was good, return 0 */
+    return 0;
+}
+
+static int
+make_key_sched(Key,Schedule)
+    register key Key;		/* r11 */
+    des_key_schedule Schedule;
+{
+    /*
+     * The key has been converted to an array to make this run faster;
+     * on a microvax 2, this routine takes about 3.5ms.  The code and
+     * size of the arrays has been played with to get it as fast as
+     * possible.
+     *
+     * Don't change the order of the declarations below without
+     * checking the assembler code to make sure that things are still
+     * where it expects them.
+     */
+
+    /* r10, unroll by AUTH_DES_ITER */
+    register int iter = AUTH_DES_ITER ;
+    register unsigned long *k;	 /* r9 */
+    register int *kp;		 /* r8 */
+    register unsigned long temp; /* r7 */
+
+    kp = (int *) key_perm;
+    k  = (unsigned long *) Schedule;
+
+    do {
+	/*
+	 * create the Key schedule
+	 *
+	 * put into lsb first order (lsb is bit 0)
+	 */
+
+	/*
+	 * On the uvax2, this C code below is as fast as straight
+	 * assembler, so just use C code below.
+	 */
+	temp = 0;
+#ifdef LSBFIRST
+#define BIT(x)	x
+#else
+#ifdef notdef
+#define BIT(x) rev_swap_bit_pos_0(x)
+#else
+#define BIT(x)	x
+#endif
+#endif
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(0));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(1));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(2));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(3));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(4));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(5));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(6));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(7));
+
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(8));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(9));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(10));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(11));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(12));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(13));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(14));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(15));
+
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(16));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(17));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(18));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(19));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(20));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(21));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(22));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(23));
+
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(24));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(25));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(26));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(27));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(28));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(29));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(30));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(31));
+
+	*k++ = temp;
+	temp = 0;
+
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(0));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(1));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(2));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(3));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(4));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(5));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(6));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(7));
+
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(8));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(9));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(10));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(11));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(12));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(13));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(14));
+	if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(15));
+
+	*k++ = temp;
+
+    } while (--iter > 0);
+
+#ifdef DEBUG
+    if (des_debug) {
+	char *n;
+	int q;
+	fprintf(stderr,"\nKey Schedule, left to right");
+	for (i = 0; i < AUTH_DES_ITER; i++) {
+	    n = (char *) &Schedule[i];
+	    fprintf(stderr,"\n");
+	    for (q = 0; q <= 7; q++)
+		fprintf(stderr,"%02x ",*n++ & 0xff);
+	}
+	fprintf(stderr,"\n");
+    }
+#endif
+}
+@
+
+
+4.7
+log
+@Move odd parity, weak key checks into separate files.
+Programmer: jtkohl.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/key_sched.c,v $
+ * $Author: jtkohl $
+d35 1
+a35 1
+"$Header: key_sched.c,v 4.6 89/01/21 16:50:04 jtkohl Locked $";
+d50 1
+a50 1
+int make_key_sched();
+@
+
+
+4.6
+log
+@lint cleanups
+(Programmer: John Kohl)
+@
+text
+@d35 1
+a35 1
+"$Header: key_sched.c,v 4.5 88/11/15 11:28:58 jtkohl Locked $";
+a43 1
+#include "odd.h"
+a49 1
+int key_sched();
+a51 7
+/* The following weak keys are not allowed */
+static des_cblock weak[16] = {
+    /* weak keys */
+    {0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01},
+    {0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe},
+    {0x1f,0x1f,0x1f,0x1f,0x0e,0x0e,0x0e,0x0e},
+    {0xe0,0xe0,0xe0,0xe0,0xf1,0xf1,0xf1,0xf1},
+a52 22
+    /* semi-weak */
+    {0x01,0xfe,0x01,0xfe,0x01,0xfe,0x01,0xfe},
+    {0xfe,0x01,0xfe,0x01,0xfe,0x01,0xfe,0x01},
+
+    {0x1f,0xe0,0x1f,0xe0,0x0e,0xf1,0x0e,0xf1},
+    {0xe0,0x1f,0xe0,0x1f,0xf1,0x0e,0xf1,0x0e},
+
+    {0x01,0xe0,0x01,0xe0,0x01,0xf1,0x01,0xf1},
+    {0xe0,0x01,0xe0,0x01,0xf1,0x01,0xf1,0x01},
+
+    {0x1f,0xfe,0x1f,0xfe,0x0e,0xfe,0x0e,0xfe},
+    {0xfe,0x1f,0xfe,0x1f,0xfe,0x0e,0xfe,0x0e},
+
+    {0x01,0x1f,0x01,0x1f,0x01,0x0e,0x01,0x0e},
+    {0x1f,0x01,0x1f,0x01,0x0e,0x01,0x0e,0x01},
+
+    {0xe0,0xfe,0xe0,0xfe,0xf1,0xfe,0xf1,0xfe},
+    {0xfe,0xe0,0xfe,0xe0,0xfe,0xf1,0xfe,0xf1}
+};
+
+static	des_cblock *weak_p;
+
+d76 3
+a86 3
+	/* if parity is bad, return error */
+	if (odd_parity[temp] != temp)
+	    return -1;
+a115 1
+    weak_p = weak;
+d117 4
+a120 4
+    for (i = 0; i < (sizeof(weak)/sizeof(des_cblock)); i++) {
+	if (!bcmp((char *)weak_p++,(char *)k,sizeof(des_cblock)))
+	    return -2;
+    }
+@
+
+
+4.5
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@d2 2
+a3 2
+ * $Source: //ra/mit/wesommer/des/RCS/key_sched.c,v $
+ * $Author: steiner $
+d35 1
+a35 1
+"$Header: key_sched.c,v 4.4 88/02/24 14:21:14 steiner Exp $";
+d86 1
+a86 1
+    register unsigned char *k;	/* r11 */
+d99 3
+d140 3
+d144 1
+d150 1
+a150 1
+	if (!bcmp(weak_p++,k,sizeof(des_cblock)))
+d179 1
+a179 5
+    register int zero = 0;	 /* r7 */
+    register unsigned long temp; /* r6 */
+    register int temp2;		 /* r5 */
+    register int temp3;		 /* r4 */
+    int i,j;
+@
+
+
+4.4
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/lib/des/RCS/key_sched.c,v $
+d35 1
+a35 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d39 1
+a39 1
+#include "conf.h"
+d46 1
+a46 1
+extern int debug;
+d55 1
+a55 1
+static C_Block weak[16] = {
+d82 1
+a82 1
+static	C_Block *weak_p;
+d85 1
+a85 1
+key_sched(k,schedule)
+d87 1
+a87 1
+    Key_schedule schedule;
+d100 1
+a100 1
+    if (debug)
+d107 1
+a107 1
+	if (debug)
+d128 1
+a128 1
+    if (debug) {
+d141 3
+a143 3
+    k -= sizeof(C_Block);
+    for (i = 0; i < (sizeof(weak)/sizeof(C_Block)); i++) {
+	if (!bcmp(weak_p++,k,sizeof(C_Block)))
+d155 1
+a155 1
+    Key_schedule Schedule;
+d264 1
+a264 1
+    if (debug) {
+@
+
+
+4.3
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@a0 4
+/*	key_sched.c program */
+
+/*	spm	6/85	project athena */
+
+d2 1
+a2 1
+ * $Source: /site/mit/kerberos/lib/des/RCS/key_sched.c,v $
+a3 1
+ * $Locker: raeburn $
+d5 2
+a6 1
+ * key_sched.c
+d8 2
+a9 1
+ * Originally written 6/85 by Steve Miller, MIT Project Athena.
+a10 2
+ * Copyright 1987 Massachusetts Institute of Technology.
+ *
+d29 2
+d33 6
+@
+
+
+4.2
+log
+@Removed RCS log; changed des_conf.h to conf.h, removed "./" in
+include file references.
+@
+text
+@d1 1
+a1 1
+/*	key_sched.c program				*/
+d3 1
+a3 1
+/*	spm	6/85	project athena		*/
+d5 4
+a8 3
+/*	$Source: /site/mit/kerberos/lib/des/RCS/key_sched.c,v $
+ *	$Author: steiner $
+ *	$Locker: raeburn $
+d10 1
+a10 3
+ *  This routine computes the DES key schedule given a key.  The
+ *  permutations and shifts have been done at compile time, resulting
+ *  in a direct one-step mapping from the input key to the key schedule.
+d12 1
+a12 1
+ *  Also checks parity and weak keys.
+d14 1
+a14 2
+ *  Watch out for the subscripts -- most effectively start at 1 instead of
+ *  at zero.  Maybe some bugs in that area.
+d16 4
+a19 2
+ *	DON'T change the data types for arrays and such, or it will either
+ *  break or run slower.  This was optimized for Uvax2.
+d21 1
+a21 3
+ *	In case the user wants to cache the computed key schedule, 
+ *	it is passed as an arg.  Also implies that caller has explicit control
+ *	over zeroing both the key schedule and the key.
+d23 11
+a33 1
+ *  All registers labeled imply Vax using the Ultrix or 4.2bsd compiler.
+a35 1
+
+d37 1
+a37 1
+# include	<stdio.h>
+d39 3
+a41 3
+# include	"des.h"
+# include	"key_perm.h"
+# include	"odd.h"
+d43 2
+a44 2
+extern	int	debug;
+extern	rev_swap_bit_pos_0();
+d46 4
+a49 13
+typedef char	key[64]; 
+/* the following are really void but cc86 doesnt allow it				   */
+int	key_sched();
+int	make_key_sched();  
+ 
+/* The following weak keys are not allowed								   */
+static	C_Block		weak[16] = 
+		{
+		/* weak keys													   */
+		{0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01},
+		{0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe},
+		{0x1f,0x1f,0x1f,0x1f,0x0e,0x0e,0x0e,0x0e},
+		{0xe0,0xe0,0xe0,0xe0,0xf1,0xf1,0xf1,0xf1},
+d51 7
+a57 3
+		/* semi-weak													   */
+		{0x01,0xfe,0x01,0xfe,0x01,0xfe,0x01,0xfe},
+		{0xfe,0x01,0xfe,0x01,0xfe,0x01,0xfe,0x01},
+d59 3
+a61 2
+		{0x1f,0xe0,0x1f,0xe0,0x0e,0xf1,0x0e,0xf1},
+		{0xe0,0x1f,0xe0,0x1f,0xf1,0x0e,0xf1,0x0e},
+d63 2
+a64 2
+		{0x01,0xe0,0x01,0xe0,0x01,0xf1,0x01,0xf1},
+		{0xe0,0x01,0xe0,0x01,0xf1,0x01,0xf1,0x01},
+d66 2
+a67 2
+		{0x1f,0xfe,0x1f,0xfe,0x0e,0xfe,0x0e,0xfe},
+		{0xfe,0x1f,0xfe,0x1f,0xfe,0x0e,0xfe,0x0e},
+d69 2
+a70 2
+		{0x01,0x1f,0x01,0x1f,0x01,0x0e,0x01,0x0e},
+		{0x1f,0x01,0x1f,0x01,0x0e,0x01,0x0e,0x01},
+d72 2
+a73 5
+		{0xe0,0xfe,0xe0,0xfe,0xf1,0xfe,0xf1,0xfe},
+		{0xfe,0xe0,0xfe,0xe0,0xfe,0xf1,0xfe,0xf1}
+		};
+	
+static	C_Block	*weak_p;
+d75 6
+d82 3
+a84 3
+ key_sched(k,schedule)
+	register			unsigned char	*k;		/* r11									   */
+	Key_schedule		schedule;
+d86 1
+a86 1
+	/* better pass 8 bytes, length not checked here						   */
+d88 7
+a94 7
+	register	i , j, n ;		/*  i = r10, j =r9, n = r8			   */
+	register	unsigned int temp;	/*  r7							   */
+	register	char	*p_char;	/* r6								   */
+	static	key	k_char;
+	i = 8;
+	n = 0;
+	p_char = k_char;
+d96 8
+a103 1
+#ifdef	DEBUG
+d105 1
+a105 3
+		{
+		fprintf(stderr,"\n\ninput key, left to right = ");
+		}
+d107 10
+a116 23
+				
+ 	do
+		{
+		/* get next input key byte										   */
+#ifdef	DEBUG
+		if (debug)
+			{
+			fprintf(stderr,"%02x ",*k & 0xff);
+			}
+#endif
+		temp = (unsigned int) ((unsigned char) *k++);		
+		j = 8;
+		/* if parity is bad, return error										   */
+		if (odd_parity[temp] != temp)
+			{
+			return -1;
+			}
+	
+		do		
+			{
+#ifndef	VAXASM
+			*p_char++ = (int) temp & 01;
+			temp = temp >> 1;
+d118 2
+a119 2
+			asm("bicb3	$-2,r7,(r8)+[r6]");
+			asm("rotl	$-1,r7,r7");
+d121 13
+a133 18
+			}	while (--j > 0);
+		
+		} while 	(--i >0);
+	
+#ifdef	DEBUG
+	if (debug)
+		{
+		p_char = k_char;
+		fprintf(stderr,"\nKey bits, from zero to 63");
+		for (i = 0; i<=7; i++)
+			{
+			fprintf(stderr,"\n\t");
+			for ( j = 0; j <=7; j++)
+				{
+				fprintf(stderr,"%d ",*p_char++);
+				}
+			}
+		}
+d136 8
+a143 11
+	/* check against weak keys*/			
+	weak_p = weak;
+	k -= sizeof(C_Block);
+	for (i = 0; i < (sizeof(weak)/sizeof(C_Block)); i++)
+		{
+		if (!bcmp(weak_p++,k,sizeof(C_Block)))
+			{
+			return -2;
+			}
+		}		
+		make_key_sched(k_char,schedule);
+d145 2
+a146 2
+/* if key was good, return 0											   */
+	return 0;
+d150 3
+a152 3
+ make_key_sched(Key,Schedule)
+	register key	Key;		/* r11									   */
+	Key_schedule	Schedule;
+d154 27
+a180 4
+	/* the key has been converted to an array to make this run faster;
+	 * on a microvax 2, this routine takes about 3.5ms;
+	 * The code and size of the arrays has been played with to get it
+	 * as fast as possible;
+d182 1
+a182 3
+	 * don't change the order of the declarations below without checking
+	 * the assembler code to make sure that things are still where it 
+	 * expects them.
+a183 8
+	register int		iter = AUTH_DES_ITER ;/* r10, unroll by AUTH_DES_ITER*/
+	register unsigned long		*k;		/* r9									   */
+	register int		*kp;	/* r8									   */
+	register int		zero = 0;	/* r7								   */
+	register unsigned long		temp ;	/* r6									   */
+	register int		temp2;	/* r5								   */
+	register int		temp3;	/* r4									   */
+	int i,j;
+d185 7
+a191 18
+	kp = (int *) 	key_perm;		
+	k  = (unsigned long *) Schedule;
+
+	do
+		{
+		/* create the Key schedule;
+		 * this produces three Vax instructions per iteration;
+		 * unroll by factor of 48, only need 48 bits per
+		 *
+		 * put into lsb first order (lsb is bit 0)
+	     */
+
+/* On the uvax2, this C code below is as fast as straight assembler,
+ *	So just use C code  below.
+ */
+		temp = 0;
+#ifdef	LSBFIRST
+#define	BIT(x)	x
+d194 1
+a194 1
+#define	BIT(x) rev_swap_bit_pos_0(x)
+d196 1
+a196 1
+#define	BIT(x)	x
+d199 8
+a206 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(0));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(1));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(2));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(3));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(4));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(5));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(6));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(7));
+d208 8
+a215 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(8));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(9));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(10));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(11));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(12));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(13));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(14));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(15));
+d217 8
+a224 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(16));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(17));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(18));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(19));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(20));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(21));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(22));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(23));
+d226 8
+a233 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(24));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(25));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(26));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(27));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(28));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(29));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(30));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(31));
+d235 2
+a236 11
+		*k++ = temp;
+		temp = 0;
+		
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(0));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(1));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(2));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(3));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(4));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(5));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(6));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(7));
+d238 8
+a245 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(8));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(9));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(10));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(11));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(12));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(13));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(14));
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<< BIT(15));
+d247 8
+a254 1
+		*k++ = temp;
+d256 1
+d258 1
+a258 1
+		}	while (--iter > 0);
+d260 13
+a272 17
+#ifdef	DEBUG
+	if (debug)
+		{
+		char	*n;
+		int	q;
+		fprintf(stderr,"\nKey Schedule, left to right");
+		for (i = 0; i<AUTH_DES_ITER; i++)
+			{
+			n = ( char *) &Schedule[i];
+			fprintf(stderr,"\n");
+			for (q = 0; q<=7; q++)
+				{
+				fprintf(stderr,"%02x ",*n++ & 0xff);		
+				}
+			}
+			fprintf(stderr,"\n");		
+		}
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d5 3
+a7 45
+/*	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_key_sched.c,v $
+ *	$Author: wesommer $
+ *	$Locker: steiner $
+ *	$Log:	des_key_sched.c,v $
+ * Revision 1.7  87/01/13  16:35:17  wesommer
+ * Added include of des_conf.h
+ * 
+ * Revision 1.6  86/08/22  12:35:36  spm
+ * remove printf
+ * 
+ * Revision 1.4  86/01/30  16:26:33  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.3  85/12/16  13:45:16  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.2  85/08/19  15:26:05  spm
+ * fix print
+ * 
+ * Revision 1.1  85/08/16  12:49:13  spm
+ * Initial revision
+ * 
+ * Revision 1.7  85/08/11  14:18:09  spm
+ * wworks
+ * 
+ * Revision 1.6  85/08/05  16:42:43  spm
+ * faster non-vax; don't use bit fields
+ * 
+ * Revision 1.5  85/08/02  16:00:21  spm
+ * works ok, as fast as I can, 3.8ms uvax2
+ * 
+ * Revision 1.3  85/07/19  09:42:12  spm
+ * asm("insv... ") works, but too slow
+ * 
+ * Revision 1.2  85/07/18  15:17:43  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  85/07/17  14:31:07  spm
+ * Initial revision
+ * 
+ * 
+ * 
+ *	This routine computes the DES key schedule given a key.  The permutations
+ *  and shifts have been done at compile time, resulting in a direct one-step
+ *  mapping from the input key to the key schedule.
+d9 3
+a11 1
+ *	Also checks parity and weak keys.
+d13 2
+d29 1
+a29 1
+#include "./des_conf.h"
+d32 3
+a34 3
+# include	"./des.h"
+# include	"./des_key_perm.h"
+# include	"./odd.h"
+@
+
+
+1.7
+log
+@Added include of des_conf.h
+@
+text
+@d5 3
+a7 3
+/*	$Source: /altsource/kerberos/lib/des/vax/RCS/des_key_sched.c,v $
+ *	$Author: spm $
+ *	$Locker: wesommer $
+d9 3
+@
+
+
+1.6
+log
+@remove printf
+@
+text
+@d5 1
+a5 1
+/*	$Source: /mit/projects/auth/src/lib/des/vax/RCS/des_key_sched.c,v $
+d7 1
+a7 1
+ *	$Locker: spm $
+d9 3
+d64 1
+@
+
+
+1.5
+log
+@weak keys, and misc.
+@
+text
+@d108 1
+a108 1
+	register	char	*k;		/* r11									   */
+a141 1
+			fprintf(stderr,"\nKey parity error\n");
+a180 1
+			fprintf(stderr,"\nIllegal weak key error");
+d232 1
+d234 3
+@
+
+
+1.4
+log
+@*** empty log message ***
+@
+text
+@d9 3
+d45 2
+d65 1
+d68 1
+d72 2
+a73 2
+int	des_set_key();
+int	key_sched();  
+d75 31
+d107 1
+a107 1
+ des_set_key(k,schedule)
+a116 1
+	int			odd;			/* for parity check						   */
+d124 1
+a124 1
+		fprintf(stdout,"\n\ninput key, left to right = ");
+d134 1
+a134 1
+			fprintf(stdout,"%02x ",*k & 0xff);
+d137 1
+a137 1
+		temp = (unsigned int) *k++;		
+d139 7
+a145 1
+		odd = 0;
+a147 1
+			odd ^= (int) temp & 01;
+d156 1
+a156 6
+			if (!odd)
+				{
+				fprintf(stderr,"\nKey parity error\n");
+				return 1;
+				}
+
+d163 1
+a163 1
+		fprintf(stdout,"\nKey bits, from zero to 63");
+d166 1
+a166 1
+			fprintf(stdout,"\n\t");
+d169 1
+a169 1
+				fprintf(stdout,"%d ",*p_char++);
+d175 12
+a186 3
+/* if parity is bad, return error										   */
+			
+	key_sched(k_char,schedule);
+d193 1
+a193 1
+ key_sched(Key,Schedule)
+d223 2
+d231 13
+a243 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<0);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<1);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<2);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<3);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<4);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<5);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<6);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<7);
+d245 8
+a252 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<8);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<9);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<10);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<11);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<12);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<13);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<14);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<15);
+d254 8
+a261 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<16);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<17);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<18);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<19);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<20);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<21);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<22);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<23);
+d263 8
+a270 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<24);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<25);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<26);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<27);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<28);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<29);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<30);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<31);
+d275 8
+a282 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<0);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<1);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<2);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<3);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<4);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<5);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<6);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<7);
+d284 8
+a291 8
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<8);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<9);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<10);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<11);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<12);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<13);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<14);
+		if ((unsigned) Key[(int) *kp++]) temp |= (1<<15);
+d303 1
+a303 1
+		fprintf(stdout,"\nKey Schedule, left to right");
+d307 2
+a308 2
+			fprintf(stdout,"\n");
+			for (q = 0; q<=5; q++)
+d310 1
+a310 1
+				fprintf(stdout,"%02x ",*n++ & 0xff);		
+d313 1
+a313 1
+			fprintf(stdout,"\n");		
+@
+
+
+1.3
+log
+@*** empty log message ***
+@
+text
+@d5 1
+a5 1
+/*	$Source: /usr/mit/spm/auth/deslib/RCS/des_key_sched.c,v $
+d9 3
+d106 1
+a106 1
+#ifndef	VAX
+d179 2
+a180 3
+/* On a 750, the vax specific code is as fast, but on the uvax2,
+ * the C code from below is faster!
+ *	So just use it below.
+a181 1
+#ifndef	notdef
+a241 159
+#else
+	
+		/* stage to r6													   */
+		asm("clrl	r6");		
+
+		asm("X0:bbc	r7,*(r8)+[r11],X1");
+		asm("bisl2	$1<<0,r6");
+
+		asm("X1:bbc	r7,*(r8)+[r11],X2");
+		asm("bisl2	$1<<1,r6");
+
+		asm("X2:bbc	r7,*(r8)+[r11],X3");
+		asm("bisl2	$1<<2,r6");
+
+		asm("X3:bbc	r7,*(r8)+[r11],X4");
+		asm("bisl2	$1<<3,r6");
+
+		asm("X4:bbc	r7,*(r8)+[r11],X5");
+		asm("bisl2	$1<<4,r6");
+
+		asm("X5:bbc	r7,*(r8)+[r11],X6");
+		asm("bisl2	$1<<5,r6");
+
+		asm("X6:bbc	r7,*(r8)+[r11],X7");
+		asm("bisl2	$1<<6,r6");
+
+		asm("X7:bbc	r7,*(r8)+[r11],X8");
+		asm("bisl2	$1<<7,r6");
+
+		asm("X8:bbc	r7,*(r8)+[r11],X9");
+		asm("bisl2	$1<<8,r6");
+
+		asm("X9:bbc	r7,*(r8)+[r11],X10");
+		asm("bisl2	$1<<9,r6");
+
+		asm("X10:bbc	r7,*(r8)+[r11],X11");
+		asm("bisl2	$1<<10,r6");
+
+		asm("X11:bbc	r7,*(r8)+[r11],X12");
+		asm("bisl2	$1<<11,r6");
+
+		asm("X12:bbc	r7,*(r8)+[r11],X13");
+		asm("bisl2	$1<<12,r6");
+
+		asm("X13:bbc	r7,*(r8)+[r11],X14");
+		asm("bisl2	$1<<13,r6");
+
+		asm("X14:bbc	r7,*(r8)+[r11],X15");
+		asm("bisl2	$1<<14,r6");
+
+		asm("X15:bbc	r7,*(r8)+[r11],X16");
+		asm("bisl2	$1<<15,r6");
+
+		asm("X16:bbc	r7,*(r8)+[r11],X17");
+		asm("bisl2	$1<<16,r6");
+
+		asm("X17:bbc	r7,*(r8)+[r11],X18");
+		asm("bisl2	$1<<17,r6");
+
+		asm("X18:bbc	r7,*(r8)+[r11],X19");
+		asm("bisl2	$1<<18,r6");
+
+		asm("X19:bbc	r7,*(r8)+[r11],X20");
+		asm("bisl2	$1<<19,r6");
+
+		asm("X20:bbc	r7,*(r8)+[r11],X21");
+		asm("bisl2	$1<<20,r6");
+
+		asm("X21:bbc	r7,*(r8)+[r11],X22");
+		asm("bisl2	$1<<21,r6");
+
+		asm("X22:bbc	r7,*(r8)+[r11],X23");
+		asm("bisl2	$1<<22,r6");
+
+		asm("X23:bbc	r7,*(r8)+[r11],X24");
+		asm("bisl2	$1<<23,r6");
+
+		asm("X24:bbc	r7,*(r8)+[r11],X25");
+		asm("bisl2	$1<<24,r6");
+
+		asm("X25:bbc	r7,*(r8)+[r11],X26");
+		asm("bisl2	$1<<25,r6");
+
+		asm("X26:bbc	r7,*(r8)+[r11],X27");
+		asm("bisl2	$1<<26,r6");
+
+		asm("X27:bbc	r7,*(r8)+[r11],X28");
+		asm("bisl2	$1<<27,r6");
+
+		asm("X28:bbc	r7,*(r8)+[r11],X29");
+		asm("bisl2	$1<<28,r6");
+
+		asm("X29:bbc	r7,*(r8)+[r11],X30");
+		asm("bisl2	$1<<29,r6");
+
+		asm("X30:bbc	r7,*(r8)+[r11],X31");
+		asm("bisl2	$1<<30,r6");
+
+		asm("X31:bbc	r7,*(r8)+[r11],Y0");
+		asm("bisl2	$1<<31,r6");
+
+/* put in the right place, and inc pointer, and clear again				   */
+		asm("Y0:movl	r6,(r9)+");
+		asm("clrl	r6");
+/* start stuffing next long												   */
+
+		asm("bbc	r7,*(r8)+[r11],Y1");
+		asm("bisl2	$1<<0,r6");
+
+		asm("Y1:bbc	r7,*(r8)+[r11],Y2");
+		asm("bisl2	$1<<1,r6");
+
+		asm("Y2:bbc	r7,*(r8)+[r11],Y3");
+		asm("bisl2	$1<<2,r6");
+
+		asm("Y3:bbc	r7,*(r8)+[r11],Y4");
+		asm("bisl2	$1<<3,r6");
+
+		asm("Y4:bbc	r7,*(r8)+[r11],Y5");
+		asm("bisl2	$1<<4,r6");
+
+		asm("Y5:bbc	r7,*(r8)+[r11],Y6");
+		asm("bisl2	$1<<5,r6");
+
+		asm("Y6:bbc	r7,*(r8)+[r11],Y7");
+		asm("bisl2	$1<<6,r6");
+
+		asm("Y7:bbc	r7,*(r8)+[r11],Y8");
+		asm("bisl2	$1<<7,r6");
+
+		asm("Y8:bbc	r7,*(r8)+[r11],Y9");
+		asm("bisl2	$1<<8,r6");
+
+		asm("Y9:bbc	r7,*(r8)+[r11],Y10");
+		asm("bisl2	$1<<9,r6");
+
+		asm("Y10:bbc	r7,*(r8)+[r11],Y11");
+		asm("bisl2	$1<<10,r6");
+
+		asm("Y11:bbc	r7,*(r8)+[r11],Y12");
+		asm("bisl2	$1<<11,r6");
+
+		asm("Y12:bbc	r7,*(r8)+[r11],Y13");
+		asm("bisl2	$1<<12,r6");
+
+		asm("Y13:bbc	r7,*(r8)+[r11],Y14");
+		asm("bisl2	$1<<13,r6");
+
+		asm("Y14:bbc	r7,*(r8)+[r11],Y15");
+		asm("bisl2	$1<<14,r6");
+
+		asm("Y15:bbc	r7,*(r8)+[r11],Y16");
+		asm("bisl2	$1<<15,r6");
+
+		asm("Y16:");
+/* put in the right place, and inc pointer, and clear again				   */
+		asm("movl	r6,(r9)+");
+
+#endif
+@
+
+
+1.2
+log
+@fix print
+@
+text
+@d9 3
+d55 2
+a56 2
+# include	"des.h"
+# include	"des_key_perm.h"
+d62 1
+a62 1
+int	set_key();
+d66 1
+a66 1
+ set_key(k,schedule)
+d76 1
+a76 1
+
+d99 1
+d102 1
+d111 5
+d134 2
+d139 2
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 1
+a5 1
+/*	$Source: /usr/mit/spm/auth/test/RCS/key_sched.c,v $
+d8 4
+a11 1
+ *	$Log:	key_sched.c,v $
+d78 1
+d83 1
+d88 1
+d93 1
+d109 1
+d123 1
+d129 1
+a129 1
+int
+d389 1
+a397 3
+#ifdef notdef
+			fprintf(stdout,"\ni = %2d\taddr = %08X\t\t",i,n);
+#endif
+d406 1
+@

@@ -1,0 +1,2990 @@
+Subject: (inet 2 of 4) updated IP/TCP and XNS sources for 4.3BSD
+Index: sys 4.3BSD
+
+Description:
+	This is number 3 of 11 total articles posted to the newsgroup
+	comp.bugs.4bsd.ucb-fixes.  This archive is number 2 of the 4
+	articles that make up the inet posting.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	netstat
+#	netstat/inet.c
+#	netstat/Makefile
+#	netstat/host.c
+#	netstat/if.c
+#	netstat/main.c
+#	netstat/mbuf.c
+#	netstat/ns.c
+#	netstat/route.c
+#	netstat/unix.c
+#	netstat/host.c.oldimp
+#	netstat/main.c.oldimp
+#	netstat/mkdep
+#
+echo c - netstat
+mkdir netstat
+echo x - netstat/inet.c
+sed 's/^X//' >netstat/inet.c << 'END-of-netstat/inet.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)inet.c	5.9.1.1 (Berkeley) 2/7/88";
+X#endif not lint
+X
+X#include <strings.h>
+X#include <stdio.h>
+X
+X#include <sys/param.h>
+X#include <sys/socket.h>
+X#include <sys/socketvar.h>
+X#include <sys/mbuf.h>
+X#include <sys/protosw.h>
+X
+X#include <net/route.h>
+X#include <netinet/in.h>
+X#include <netinet/in_systm.h>
+X#include <netinet/in_pcb.h>
+X#include <netinet/ip.h>
+X#include <netinet/ip_icmp.h>
+X#include <netinet/icmp_var.h>
+X#include <netinet/ip_var.h>
+X#include <netinet/tcp.h>
+X#include <netinet/tcpip.h>
+X#include <netinet/tcp_seq.h>
+X#define TCPSTATES
+X#include <netinet/tcp_fsm.h>
+X#include <netinet/tcp_timer.h>
+X#include <netinet/tcp_var.h>
+X#include <netinet/tcp_debug.h>
+X#include <netinet/udp.h>
+X#include <netinet/udp_var.h>
+X
+X#include <netdb.h>
+X
+Xstruct	inpcb inpcb;
+Xstruct	tcpcb tcpcb;
+Xstruct	socket sockb;
+Xextern	int kmem;
+Xextern	int Aflag;
+Xextern	int aflag;
+Xextern	int nflag;
+Xextern	char *plural();
+X
+Xchar	*inetname();
+X
+X/*
+X * Print a summary of connections related to an Internet
+X * protocol.  For TCP, also give state of connection.
+X * Listening processes (aflag) are suppressed unless the
+X * -a (all) flag is specified.
+X */
+Xprotopr(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct inpcb cb;
+X	register struct inpcb *prev, *next;
+X	int istcp;
+X	static int first = 1;
+X
+X	if (off == 0)
+X		return;
+X	istcp = strcmp(name, "tcp") == 0;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&cb, sizeof (struct inpcb));
+X	inpcb = cb;
+X	prev = (struct inpcb *)off;
+X	if (inpcb.inp_next == (struct inpcb *)off)
+X		return;
+X	while (inpcb.inp_next != (struct inpcb *)off) {
+X
+X		next = inpcb.inp_next;
+X		klseek(kmem, (off_t)next, 0);
+X		read(kmem, (char *)&inpcb, sizeof (inpcb));
+X		if (inpcb.inp_prev != prev) {
+X			printf("???\n");
+X			break;
+X		}
+X		if (!aflag &&
+X		  inet_lnaof(inpcb.inp_laddr) == INADDR_ANY) {
+X			prev = next;
+X			continue;
+X		}
+X		klseek(kmem, (off_t)inpcb.inp_socket, 0);
+X		read(kmem, (char *)&sockb, sizeof (sockb));
+X		if (istcp) {
+X			klseek(kmem, (off_t)inpcb.inp_ppcb, 0);
+X			read(kmem, (char *)&tcpcb, sizeof (tcpcb));
+X		}
+X		if (first) {
+X			printf("Active Internet connections");
+X			if (aflag)
+X				printf(" (including servers)");
+X			putchar('\n');
+X			if (Aflag)
+X				printf("%-8.8s ", "PCB");
+X			printf(Aflag ?
+X				"%-5.5s %-6.6s %-6.6s  %-18.18s %-18.18s %s\n" :
+X				"%-5.5s %-6.6s %-6.6s  %-22.22s %-22.22s %s\n",
+X				"Proto", "Recv-Q", "Send-Q",
+X				"Local Address", "Foreign Address", "(state)");
+X			first = 0;
+X		}
+X		if (Aflag)
+X			if (istcp)
+X				printf("%8x ", inpcb.inp_ppcb);
+X			else
+X				printf("%8x ", next);
+X		printf("%-5.5s %6d %6d ", name, sockb.so_rcv.sb_cc,
+X			sockb.so_snd.sb_cc);
+X		inetprint(&inpcb.inp_laddr, inpcb.inp_lport, name);
+X		inetprint(&inpcb.inp_faddr, inpcb.inp_fport, name);
+X		if (istcp) {
+X			if (tcpcb.t_state < 0 || tcpcb.t_state >= TCP_NSTATES)
+X				printf(" %d", tcpcb.t_state);
+X			else
+X				printf(" %s", tcpstates[tcpcb.t_state]);
+X		}
+X		putchar('\n');
+X		prev = next;
+X	}
+X}
+X
+X/*
+X * Dump TCP statistics structure.
+X */
+Xtcp_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct tcpstat tcpstat;
+X
+X	if (off == 0)
+X		return;
+X	printf ("%s:\n", name);
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&tcpstat, sizeof (tcpstat));
+X
+X#define	p(f, m)		printf(m, tcpstat.f, plural(tcpstat.f))
+X#define	p2(f1, f2, m)	printf(m, tcpstat.f1, plural(tcpstat.f1), tcpstat.f2, plural(tcpstat.f2))
+X  
+X	p(tcps_sndtotal, "\t%d packet%s sent\n");
+X	p2(tcps_sndpack,tcps_sndbyte,
+X		"\t\t%d data packet%s (%d byte%s)\n");
+X	p2(tcps_sndrexmitpack, tcps_sndrexmitbyte,
+X		"\t\t%d data packet%s (%d byte%s) retransmitted\n");
+X	p2(tcps_sndacks, tcps_delack,
+X		"\t\t%d ack-only packet%s (%d delayed)\n");
+X	p(tcps_sndurg, "\t\t%d URG only packet%s\n");
+X	p(tcps_sndprobe, "\t\t%d window probe packet%s\n");
+X	p(tcps_sndwinup, "\t\t%d window update packet%s\n");
+X	p(tcps_sndctrl, "\t\t%d control packet%s\n");
+X	p(tcps_rcvtotal, "\t%d packet%s received\n");
+X	p2(tcps_rcvackpack, tcps_rcvackbyte, "\t\t%d ack%s (for %d byte%s)\n");
+X	p(tcps_rcvdupack, "\t\t%d duplicate ack%s\n");
+X	p(tcps_rcvacktoomuch, "\t\t%d ack%s for unsent data\n");
+X	p2(tcps_rcvpack, tcps_rcvbyte,
+X		"\t\t%d packet%s (%d byte%s) received in-sequence\n");
+X	p2(tcps_rcvduppack, tcps_rcvdupbyte,
+X		"\t\t%d completely duplicate packet%s (%d byte%s)\n");
+X	p2(tcps_rcvpartduppack, tcps_rcvpartdupbyte,
+X		"\t\t%d packet%s with some dup. data (%d byte%s duped)\n");
+X	p2(tcps_rcvoopack, tcps_rcvoobyte,
+X		"\t\t%d out-of-order packet%s (%d byte%s)\n");
+X	p2(tcps_rcvpackafterwin, tcps_rcvbyteafterwin,
+X		"\t\t%d packet%s (%d byte%s) of data after window\n");
+X	p(tcps_rcvwinprobe, "\t\t%d window probe%s\n");
+X	p(tcps_rcvwinupd, "\t\t%d window update packet%s\n");
+X	p(tcps_rcvafterclose, "\t\t%d packet%s received after close\n");
+X	p(tcps_rcvbadsum, "\t\t%d discarded for bad checksum%s\n");
+X	p(tcps_rcvbadoff, "\t\t%d discarded for bad header offset field%s\n");
+X	p(tcps_rcvshort, "\t\t%d discarded because packet too short\n");
+X	p(tcps_connattempt, "\t%d connection request%s\n");
+X	p(tcps_accepts, "\t%d connection accept%s\n");
+X	p(tcps_connects, "\t%d connection%s established (including accepts)\n");
+X	p2(tcps_closed, tcps_drops,
+X		"\t%d connection%s closed (including %d drop%s)\n");
+X	p(tcps_conndrops, "\t%d embryonic connection%s dropped\n");
+X	p2(tcps_rttupdated, tcps_segstimed,
+X		"\t%d segment%s updated rtt (of %d attempt%s)\n");
+X	p(tcps_rexmttimeo, "\t%d retransmit timeout%s\n");
+X	p(tcps_timeoutdrop, "\t\t%d connection%s dropped by rexmit timeout\n");
+X	p(tcps_persisttimeo, "\t%d persist timeout%s\n");
+X	p(tcps_keeptimeo, "\t%d keepalive timeout%s\n");
+X	p(tcps_keepprobe, "\t\t%d keepalive probe%s sent\n");
+X	p(tcps_keepdrops, "\t\t%d connection%s dropped by keepalive\n");
+X#undef p
+X#undef p2
+X}
+X
+X/*
+X * Dump UDP statistics structure.
+X */
+Xudp_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct udpstat udpstat;
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&udpstat, sizeof (udpstat));
+X	printf("%s:\n\t%u incomplete header%s\n", name,
+X		udpstat.udps_hdrops, plural(udpstat.udps_hdrops));
+X	printf("\t%u bad data length field%s\n",
+X		udpstat.udps_badlen, plural(udpstat.udps_badlen));
+X	printf("\t%u bad checksum%s\n",
+X		udpstat.udps_badsum, plural(udpstat.udps_badsum));
+X#ifdef sun
+X	printf("\t%d socket overflow%s\n",
+X		udpstat.udps_fullsock, plural(udpstat.udps_fullsock));
+X#endif
+X}
+X
+X/*
+X * Dump IP statistics structure.
+X */
+Xip_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct ipstat ipstat;
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&ipstat, sizeof (ipstat));
+X#if BSD>=43
+X	printf("%s:\n\t%u total packets received\n", name,
+X		ipstat.ips_total);
+X#endif
+X	printf("\t%u bad header checksum%s\n",
+X		ipstat.ips_badsum, plural(ipstat.ips_badsum));
+X	printf("\t%u with size smaller than minimum\n", ipstat.ips_tooshort);
+X	printf("\t%u with data size < data length\n", ipstat.ips_toosmall);
+X	printf("\t%u with header length < data size\n", ipstat.ips_badhlen);
+X	printf("\t%u with data length < header length\n", ipstat.ips_badlen);
+X#if BSD>=43
+X	printf("\t%u fragment%s received\n",
+X		ipstat.ips_fragments, plural(ipstat.ips_fragments));
+X	printf("\t%u fragment%s dropped (dup or out of space)\n",
+X		ipstat.ips_fragdropped, plural(ipstat.ips_fragdropped));
+X	printf("\t%u fragment%s dropped after timeout\n",
+X		ipstat.ips_fragtimeout, plural(ipstat.ips_fragtimeout));
+X	printf("\t%u packet%s forwarded\n",
+X		ipstat.ips_forward, plural(ipstat.ips_forward));
+X	printf("\t%u packet%s not forwardable\n",
+X		ipstat.ips_cantforward, plural(ipstat.ips_cantforward));
+X	printf("\t%u redirect%s sent\n",
+X		ipstat.ips_redirectsent, plural(ipstat.ips_redirectsent));
+X#endif
+X}
+X
+Xstatic	char *icmpnames[] = {
+X	"echo reply",
+X	"#1",
+X	"#2",
+X	"destination unreachable",
+X	"source quench",
+X	"routing redirect",
+X	"#6",
+X	"#7",
+X	"echo",
+X	"#9",
+X	"#10",
+X	"time exceeded",
+X	"parameter problem",
+X	"time stamp",
+X	"time stamp reply",
+X	"information request",
+X	"information request reply",
+X	"address mask request",
+X	"address mask reply",
+X};
+X
+X/*
+X * Dump ICMP statistics.
+X */
+Xicmp_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct icmpstat icmpstat;
+X	register int i, first;
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&icmpstat, sizeof (icmpstat));
+X	printf("%s:\n\t%u call%s to icmp_error\n", name,
+X		icmpstat.icps_error, plural(icmpstat.icps_error));
+X	printf("\t%u error%s not generated 'cuz old message was icmp\n",
+X		icmpstat.icps_oldicmp, plural(icmpstat.icps_oldicmp));
+X	for (first = 1, i = 0; i < ICMP_MAXTYPE + 1; i++)
+X		if (icmpstat.icps_outhist[i] != 0) {
+X			if (first) {
+X				printf("\tOutput histogram:\n");
+X				first = 0;
+X			}
+X			printf("\t\t%s: %u\n", icmpnames[i],
+X				icmpstat.icps_outhist[i]);
+X		}
+X	printf("\t%u message%s with bad code fields\n",
+X		icmpstat.icps_badcode, plural(icmpstat.icps_badcode));
+X	printf("\t%u message%s < minimum length\n",
+X		icmpstat.icps_tooshort, plural(icmpstat.icps_tooshort));
+X	printf("\t%u bad checksum%s\n",
+X		icmpstat.icps_checksum, plural(icmpstat.icps_checksum));
+X	printf("\t%u message%s with bad length\n",
+X		icmpstat.icps_badlen, plural(icmpstat.icps_badlen));
+X	for (first = 1, i = 0; i < ICMP_MAXTYPE + 1; i++)
+X		if (icmpstat.icps_inhist[i] != 0) {
+X			if (first) {
+X				printf("\tInput histogram:\n");
+X				first = 0;
+X			}
+X			printf("\t\t%s: %u\n", icmpnames[i],
+X				icmpstat.icps_inhist[i]);
+X		}
+X	printf("\t%u message response%s generated\n",
+X		icmpstat.icps_reflect, plural(icmpstat.icps_reflect));
+X}
+X
+X/*
+X * Pretty print an Internet address (net address + port).
+X * If the nflag was specified, use numbers instead of names.
+X */
+Xinetprint(in, port, proto)
+X	register struct in_addr *in;
+X	u_short port; 
+X	char *proto;
+X{
+X	struct servent *sp = 0;
+X	char line[80], *cp, *index();
+X	int width;
+X
+X	sprintf(line, "%.*s.", (Aflag && !nflag) ? 12 : 16, inetname(*in));
+X	cp = index(line, '\0');
+X	if (!nflag && port)
+X		sp = getservbyport((int)port, proto);
+X	if (sp || port == 0)
+X		sprintf(cp, "%.8s", sp ? sp->s_name : "*");
+X	else
+X		sprintf(cp, "%d", ntohs((u_short)port));
+X	width = Aflag ? 18 : 22;
+X	printf(" %-*.*s", width, width, line);
+X}
+X
+X/*
+X * Construct an Internet address representation.
+X * If the nflag has been supplied, give 
+X * numeric value, otherwise try for symbolic name.
+X */
+Xchar *
+Xinetname(in)
+X	struct in_addr in;
+X{
+X	register char *cp;
+X	static char line[50];
+X	struct hostent *hp;
+X	struct netent *np;
+X	static char domain[MAXHOSTNAMELEN + 1];
+X	static int first = 1;
+X
+X	if (first && !nflag) {
+X		first = 0;
+X		if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
+X		    (cp = index(domain, '.')))
+X			(void) strcpy(domain, cp + 1);
+X		else
+X			domain[0] = 0;
+X	}
+X	cp = 0;
+X	if (!nflag && in.s_addr != INADDR_ANY) {
+X		int net = inet_netof(in);
+X		int lna = inet_lnaof(in);
+X
+X		if (lna == INADDR_ANY) {
+X			np = getnetbyaddr(net, AF_INET);
+X			if (np)
+X				cp = np->n_name;
+X		}
+X		if (cp == 0) {
+X			hp = gethostbyaddr((char *)&in, sizeof (in), AF_INET);
+X			if (hp) {
+X				if ((cp = index(hp->h_name, '.')) &&
+X				    !strcmp(cp + 1, domain))
+X					*cp = 0;
+X				cp = hp->h_name;
+X			}
+X		}
+X	}
+X	if (in.s_addr == INADDR_ANY)
+X		strcpy(line, "*");
+X	else if (cp)
+X		strcpy(line, cp);
+X	else {
+X		in.s_addr = ntohl(in.s_addr);
+X#define C(x)	((x) & 0xff)
+X		sprintf(line, "%u.%u.%u.%u", C(in.s_addr >> 24),
+X			C(in.s_addr >> 16), C(in.s_addr >> 8), C(in.s_addr));
+X	}
+X	return (line);
+X}
+END-of-netstat/inet.c
+echo x - netstat/Makefile
+sed 's/^X//' >netstat/Makefile << 'END-of-netstat/Makefile'
+X# Copyright (c) 1987 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that this notice is preserved and that due credit is given
+X# to the University of California at Berkeley. The name of the University
+X# may not be used to endorse or promote products derived from this
+X# software without specific prior written permission. This software
+X# is provided ``as is'' without express or implied warranty.
+X#
+X#	@(#)Makefile	5.8 (Berkeley) 2/7/88
+X#
+X#
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	host.c inet.c if.c main.c mbuf.c route.c unix.c ns.c
+XOBJS=	host.o inet.o if.o main.o mbuf.o route.o unix.o ns.o
+X
+Xall: netstat
+X
+Xnetstat: ${OBJS} ${LIBC}
+X	${CC} -o $@ ${CFLAGS} ${OBJS}
+X
+Xclean: FRC
+X	rm -f ${OBJS} core netstat
+X
+Xdepend: FRC
+X	mkdep ${CFLAGS} ${SRCS}
+X
+Xinstall: FRC
+X	install -s -o bin -g kmem -m 2755 netstat ${DESTDIR}/usr/ucb/netstat
+X
+Xlint: FRC
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: FRC
+X	ctags ${SRCS}
+X
+XFRC:
+X
+X# DO NOT DELETE THIS LINE -- mkdep uses it.
+X# DO NOT PUT ANYTHING AFTER THIS LINE, IT WILL GO AWAY.
+X
+Xhost.o: host.c /usr/include/sys/types.h /usr/include/sys/mbuf.h
+Xhost.o: /usr/include/sys/socket.h /usr/include/net/if.h
+Xhost.o: /usr/include/net/if_arp.h /usr/include/netinet/in.h
+Xhost.o: /usr/include/netimp/if_imp.h /usr/include/netimp/if_imphost.h
+Xinet.o: inet.c /usr/include/strings.h /usr/include/stdio.h
+Xinet.o: /usr/include/sys/param.h /usr/include/sys/types.h /usr/include/signal.h
+Xinet.o: /usr/include/machine/trap.h /usr/include/machine/machparam.h
+Xinet.o: /usr/include/machine/endian.h /usr/include/sys/socket.h
+Xinet.o: /usr/include/sys/socketvar.h /usr/include/sys/mbuf.h
+Xinet.o: /usr/include/sys/protosw.h /usr/include/net/route.h
+Xinet.o: /usr/include/netinet/in.h /usr/include/netinet/in_systm.h
+Xinet.o: /usr/include/netinet/in_pcb.h /usr/include/netinet/ip.h
+Xinet.o: /usr/include/netinet/ip_icmp.h /usr/include/netinet/icmp_var.h
+Xinet.o: /usr/include/netinet/ip_var.h /usr/include/netinet/tcp.h
+Xinet.o: /usr/include/netinet/tcpip.h /usr/include/netinet/tcp_seq.h
+Xinet.o: /usr/include/netinet/tcp_fsm.h /usr/include/netinet/tcp_timer.h
+Xinet.o: /usr/include/netinet/tcp_var.h /usr/include/netinet/tcp_debug.h
+Xinet.o: /usr/include/netinet/udp.h /usr/include/netinet/udp_var.h
+Xinet.o: /usr/include/netdb.h
+Xif.o: if.c /usr/include/sys/types.h /usr/include/sys/socket.h
+Xif.o: /usr/include/net/if.h /usr/include/net/if_arp.h /usr/include/netinet/in.h
+Xif.o: /usr/include/netinet/in_var.h /usr/include/netns/ns.h
+Xif.o: /usr/include/stdio.h /usr/include/signal.h /usr/include/machine/trap.h
+Xmain.o: main.c /usr/include/sys/param.h /usr/include/sys/types.h
+Xmain.o: /usr/include/signal.h /usr/include/machine/trap.h
+Xmain.o: /usr/include/machine/machparam.h /usr/include/machine/endian.h
+Xmain.o: /usr/include/sys/vmmac.h /usr/include/sys/socket.h
+Xmain.o: /usr/include/sys/file.h /usr/include/machine/pte.h /usr/include/ctype.h
+Xmain.o: /usr/include/errno.h /usr/include/netdb.h /usr/include/nlist.h
+Xmain.o: /usr/include/stdio.h
+Xmbuf.o: mbuf.c /usr/include/stdio.h /usr/include/sys/param.h
+Xmbuf.o: /usr/include/sys/types.h /usr/include/signal.h
+Xmbuf.o: /usr/include/machine/trap.h /usr/include/machine/machparam.h
+Xmbuf.o: /usr/include/machine/endian.h /usr/include/sys/mbuf.h
+Xroute.o: route.c /usr/include/stdio.h /usr/include/strings.h
+Xroute.o: /usr/include/sys/param.h /usr/include/sys/types.h
+Xroute.o: /usr/include/signal.h /usr/include/machine/trap.h
+Xroute.o: /usr/include/machine/machparam.h /usr/include/machine/endian.h
+Xroute.o: /usr/include/sys/socket.h /usr/include/sys/mbuf.h
+Xroute.o: /usr/include/net/if.h /usr/include/net/if_arp.h
+Xroute.o: /usr/include/net/route.h /usr/include/netinet/in.h
+Xroute.o: /usr/include/netns/ns.h /usr/include/netdb.h
+Xunix.o: unix.c /usr/include/sys/param.h /usr/include/sys/types.h
+Xunix.o: /usr/include/signal.h /usr/include/machine/trap.h
+Xunix.o: /usr/include/machine/machparam.h /usr/include/machine/endian.h
+Xunix.o: /usr/include/sys/protosw.h /usr/include/sys/socket.h
+Xunix.o: /usr/include/sys/socketvar.h /usr/include/sys/mbuf.h
+Xunix.o: /usr/include/sys/un.h /usr/include/sys/unpcb.h /usr/include/sys/file.h
+Xns.o: ns.c /usr/include/stdio.h /usr/include/errno.h /usr/include/nlist.h
+Xns.o: /usr/include/sys/types.h /usr/include/sys/socket.h
+Xns.o: /usr/include/sys/socketvar.h /usr/include/sys/mbuf.h
+Xns.o: /usr/include/sys/protosw.h /usr/include/net/route.h /usr/include/net/if.h
+Xns.o: /usr/include/net/if_arp.h /usr/include/netinet/tcp_fsm.h
+Xns.o: /usr/include/netinet/tcp_timer.h /usr/include/netns/ns.h
+Xns.o: /usr/include/netns/ns_pcb.h /usr/include/netns/idp.h
+Xns.o: /usr/include/netns/idp_var.h /usr/include/netns/ns_error.h
+Xns.o: /usr/include/netns/sp.h /usr/include/netns/spidp.h
+Xns.o: /usr/include/netns/spp_var.h /usr/include/netns/spp_debug.h
+X
+X# IF YOU PUT ANYTHING HERE IT WILL GO AWAY
+END-of-netstat/Makefile
+echo x - netstat/host.c
+sed 's/^X//' >netstat/host.c << 'END-of-netstat/host.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)host.c	5.7 (Berkeley) 2/8/88";
+X#endif not lint
+X
+X#include <sys/types.h>
+X#include <sys/mbuf.h>
+X#include <sys/socket.h>
+X
+X#include <net/if.h>
+X
+X#include <netinet/in.h>
+X#include <netimp/if_imp.h>
+X#include <netimp/if_imphost.h>
+X
+Xextern	int kmem;
+Xextern 	int nflag;
+Xextern	char *inetname();
+X
+X/*
+X * Print the host tables associated with the ARPANET IMP.
+X * Symbolic addresses are shown unless the nflag is given.
+X */
+Xhostpr(impsoftcaddr, nimpaddr)
+X	off_t impsoftcaddr, nimpaddr;
+X{
+X	struct mbuf *hosts, mb;
+X	struct imp_softc imp_softc;
+X	register struct mbuf *m;
+X	register struct hmbuf *mh;
+X	register struct host *hp;
+X	char flagbuf[10], *flags;
+X	int i, nimp;
+X
+X	if (impsoftcaddr == 0) {
+X		printf("imp_softc: symbol not in namelist\n");
+X		return;
+X	}
+X	if (nimpaddr == 0) {
+X		printf("nimp: symbol not in namelist\n");
+X		return;
+X	}
+X	klseek(kmem, nimpaddr, 0);
+X	read(kmem, (char *)&nimp, sizeof (nimp));
+X	klseek(kmem, impsoftcaddr, 0);
+X	for (i = 0; i < nimp; i++) {
+X	    read(kmem, (char *)&imp_softc, sizeof (imp_softc));
+X	    m = imp_softc.imp_hosts;
+X	    printf("IMP%d Host Table\n", i);
+X	    printf("%-5.5s %-6.6s %-8.8s %-4.4s %-9.9s %-4.4s %s\n", "Flags",
+X	        "Host", "Imp", "Qcnt", "Q Address", "RFNM", "Timer");
+X	    while (m) {
+X		klseek(kmem, (off_t)m, 0);
+X		read(kmem, (char *)&mb, sizeof (mb));
+X		m = &mb;
+X		mh = mtod(m, struct hmbuf *);
+X		if (mh->hm_count == 0) {
+X			m = m->m_next;
+X			continue;
+X		}
+X		for (hp = mh->hm_hosts; hp < mh->hm_hosts + HPMBUF; hp++) {
+X			if ((hp->h_flags&HF_INUSE) == 0 && hp->h_timer == 0)
+X				continue;
+X			flags = flagbuf;
+X			*flags++ = hp->h_flags&HF_INUSE ? 'A' : 'F';
+X			if (hp->h_flags&HF_DEAD)
+X				*flags++ = 'D';
+X			if (hp->h_flags&HF_UNREACH)
+X				*flags++ = 'U';
+X			*flags = '\0';
+X			printf("%-5.5s %-6d %-8d %-4d %-9x %-4d %d\n",
+X				flagbuf,
+X				hp->h_host,
+X				ntohs(hp->h_imp),
+X				hp->h_qcnt,
+X				hp->h_q,
+X				hp->h_rfnm,
+X				hp->h_timer);
+X		}
+X		m = m->m_next;
+X	    }
+X	}
+X}
+X
+Ximpstats(impsoftcaddr, nimpaddr)
+X	off_t impsoftcaddr, nimpaddr;
+X{
+X	struct imp_softc imp_softc;
+X	int i, nimp;
+X	extern char *plural();
+X
+X	if (impsoftcaddr == 0 || nimpaddr == 0)
+X		return;
+X	klseek(kmem, nimpaddr, 0);
+X	read(kmem, (char *)&nimp, sizeof (nimp));
+X	klseek(kmem, impsoftcaddr, 0);
+X	for (i = 0; i < nimp; i++) {
+X		read(kmem, (char *)&imp_softc, sizeof (imp_softc));
+X		printf("imp%d statistics:\n", i);
+X#define	p(f, m)		printf(m, imp_softc.f, plural(imp_softc.f))
+X		p(imp_if.if_ipackets, "\t%u input message%s\n");
+X		p(imp_if.if_opackets, "\t%u output message%s\n");
+X		printf("\t%u times output blocked at least %d sec.\n",
+X		    imp_softc.imp_block, IMP_OTIMER);
+X		p(imp_incomplete, "\t%u \"incomplete\" message%s\n");
+X		p(imp_lostrfnm, "\t%u lost RFNM message%s\n");
+X		p(imp_badrfnm, "\t%u late/bogus RFNM/incomplete message%s\n");
+X		p(imp_garbage, "\t%u unknown message type%s\n");
+X	}
+X}
+END-of-netstat/host.c
+echo x - netstat/if.c
+sed 's/^X//' >netstat/if.c << 'END-of-netstat/if.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)if.c	5.6 (Berkeley) 2/7/88";
+X#endif not lint
+X
+X#include <sys/types.h>
+X#include <sys/socket.h>
+X
+X#include <net/if.h>
+X#include <netinet/in.h>
+X#include <netinet/in_var.h>
+X#include <netns/ns.h>
+X
+X#include <stdio.h>
+X#include <signal.h>
+X
+X#define	YES	1
+X#define	NO	0
+X
+Xextern	int kmem;
+Xextern	int tflag;
+Xextern	int nflag;
+Xextern	char *interface;
+Xextern	int unit;
+Xextern	char *routename(), *netname(), *ns_phost();
+X
+X/*
+X * Print a description of the network interfaces.
+X */
+Xintpr(interval, ifnetaddr)
+X	int interval;
+X	off_t ifnetaddr;
+X{
+X	struct ifnet ifnet;
+X	union {
+X		struct ifaddr ifa;
+X		struct in_ifaddr in;
+X	} ifaddr;
+X	off_t ifaddraddr;
+X	char name[16];
+X
+X	if (ifnetaddr == 0) {
+X		printf("ifnet: symbol not defined\n");
+X		return;
+X	}
+X	if (interval) {
+X		sidewaysintpr((unsigned)interval, ifnetaddr);
+X		return;
+X	}
+X	klseek(kmem, ifnetaddr, 0);
+X	read(kmem, (char *)&ifnetaddr, sizeof ifnetaddr);
+X	printf("%-5.5s %-5.5s %-11.11s %-15.15s %8.8s %5.5s %8.8s %5.5s",
+X		"Name", "Mtu", "Network", "Address", "Ipkts", "Ierrs",
+X		"Opkts", "Oerrs");
+X	printf(" %5s", "Coll");
+X	if (tflag)
+X		printf(" %s", "Time");
+X	putchar('\n');
+X	ifaddraddr = 0;
+X	while (ifnetaddr || ifaddraddr) {
+X		struct sockaddr_in *sin;
+X		register char *cp;
+X		int n;
+X		char *index();
+X		struct in_addr inet_makeaddr();
+X
+X		if (ifaddraddr == 0) {
+X			klseek(kmem, ifnetaddr, 0);
+X			read(kmem, (char *)&ifnet, sizeof ifnet);
+X			klseek(kmem, (off_t)ifnet.if_name, 0);
+X			read(kmem, name, 16);
+X			name[15] = '\0';
+X			ifnetaddr = (off_t) ifnet.if_next;
+X			if (interface != 0 &&
+X			    (strcmp(name, interface) != 0 || unit != ifnet.if_unit))
+X				continue;
+X			cp = index(name, '\0');
+X			*cp++ = ifnet.if_unit + '0';
+X			if ((ifnet.if_flags&IFF_UP) == 0)
+X				*cp++ = '*';
+X			*cp = '\0';
+X			ifaddraddr = (off_t)ifnet.if_addrlist;
+X		}
+X		printf("%-5.5s %-5d ", name, ifnet.if_mtu);
+X		if (ifaddraddr == 0) {
+X			printf("%-11.11s ", "none");
+X			printf("%-15.15s ", "none");
+X		} else {
+X			klseek(kmem, ifaddraddr, 0);
+X			read(kmem, (char *)&ifaddr, sizeof ifaddr);
+X			ifaddraddr = (off_t)ifaddr.ifa.ifa_next;
+X			switch (ifaddr.ifa.ifa_addr.sa_family) {
+X			case AF_UNSPEC:
+X				printf("%-11.11s ", "none");
+X				printf("%-15.15s ", "none");
+X				break;
+X			case AF_INET:
+X				sin = (struct sockaddr_in *)&ifaddr.in.ia_addr;
+X#ifdef notdef
+X				/* can't use inet_makeaddr because kernel
+X				 * keeps nets unshifted.
+X				 */
+X				in = inet_makeaddr(ifaddr.in.ia_subnet,
+X					INADDR_ANY);
+X				printf("%-11.11s ", netname(in));
+X#else
+X				printf("%-11.11s ",
+X					netname(htonl(ifaddr.in.ia_subnet),
+X						ifaddr.in.ia_subnetmask));
+X#endif
+X				printf("%-15.15s ", routename(sin->sin_addr));
+X				break;
+X			case AF_NS:
+X				{
+X				struct sockaddr_ns *sns =
+X				(struct sockaddr_ns *)&ifaddr.in.ia_addr;
+X				u_long net;
+X				char netnum[8];
+X				char *ns_phost();
+X
+X				*(union ns_net *) &net = sns->sns_addr.x_net;
+X				sprintf(netnum, "%lxH", ntohl(net));
+X				upHex(netnum);
+X				printf("ns:%-8s ", netnum);
+X				printf("%-15s ", ns_phost(sns));
+X				}
+X				break;
+X			default:
+X				printf("af%2d: ", ifaddr.ifa.ifa_addr.sa_family);
+X				for (cp = (char *)&ifaddr.ifa.ifa_addr +
+X				    sizeof(struct sockaddr) - 1;
+X				    cp >= ifaddr.ifa.ifa_addr.sa_data; --cp)
+X					if (*cp != 0)
+X						break;
+X				n = cp - (char *)ifaddr.ifa.ifa_addr.sa_data + 1;
+X				cp = (char *)ifaddr.ifa.ifa_addr.sa_data;
+X				if (n <= 7)
+X					while (--n)
+X						printf("%02d.", *cp++ & 0xff);
+X				else
+X					while (--n)
+X						printf("%02d", *cp++ & 0xff);
+X				printf("%02d ", *cp & 0xff);
+X				break;
+X			}
+X		}
+X		printf("%8d %5d %8d %5d %5d",
+X		    ifnet.if_ipackets, ifnet.if_ierrors,
+X		    ifnet.if_opackets, ifnet.if_oerrors,
+X		    ifnet.if_collisions);
+X		if (tflag)
+X			printf(" %3d", ifnet.if_timer);
+X		putchar('\n');
+X	}
+X}
+X
+X#define	MAXIF	10
+Xstruct	iftot {
+X	char	ift_name[16];		/* interface name */
+X	int	ift_ip;			/* input packets */
+X	int	ift_ie;			/* input errors */
+X	int	ift_op;			/* output packets */
+X	int	ift_oe;			/* output errors */
+X	int	ift_co;			/* collisions */
+X} iftot[MAXIF];
+X
+Xu_char	signalled;			/* set if alarm goes off "early" */
+X
+X/*
+X * Print a running summary of interface statistics.
+X * Repeat display every interval seconds, showing statistics
+X * collected over that interval.  Assumes that interval is non-zero.
+X * First line printed at top of screen is always cumulative.
+X */
+Xsidewaysintpr(interval, off)
+X	unsigned interval;
+X	off_t off;
+X{
+X	struct ifnet ifnet;
+X	off_t firstifnet;
+X	register struct iftot *ip, *total;
+X	register int line;
+X	struct iftot *lastif, *sum, *interesting;
+X	int oldmask;
+X	int catchalarm();
+X
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&firstifnet, sizeof (off_t));
+X	lastif = iftot;
+X	sum = iftot + MAXIF - 1;
+X	total = sum - 1;
+X	interesting = iftot;
+X	for (off = firstifnet, ip = iftot; off;) {
+X		char *cp;
+X
+X		klseek(kmem, off, 0);
+X		read(kmem, (char *)&ifnet, sizeof ifnet);
+X		klseek(kmem, (off_t)ifnet.if_name, 0);
+X		ip->ift_name[0] = '(';
+X		read(kmem, ip->ift_name + 1, 15);
+X		if (interface && strcmp(ip->ift_name + 1, interface) == 0 &&
+X		    unit == ifnet.if_unit)
+X			interesting = ip;
+X		ip->ift_name[15] = '\0';
+X		cp = index(ip->ift_name, '\0');
+X		sprintf(cp, "%d)", ifnet.if_unit);
+X		ip++;
+X		if (ip >= iftot + MAXIF - 2)
+X			break;
+X		off = (off_t) ifnet.if_next;
+X	}
+X	lastif = ip;
+X
+X	(void)signal(SIGALRM, catchalarm);
+X	signalled = NO;
+X	(void)alarm(interval);
+Xbanner:
+X	printf("    input   %-6.6s    output       ", interesting->ift_name);
+X	if (lastif - iftot > 0)
+X		printf("     input  (Total)    output");
+X	for (ip = iftot; ip < iftot + MAXIF; ip++) {
+X		ip->ift_ip = 0;
+X		ip->ift_ie = 0;
+X		ip->ift_op = 0;
+X		ip->ift_oe = 0;
+X		ip->ift_co = 0;
+X	}
+X	putchar('\n');
+X	printf("%8.8s %5.5s %8.8s %5.5s %5.5s ",
+X		"packets", "errs", "packets", "errs", "colls");
+X	if (lastif - iftot > 0)
+X		printf("%8.8s %5.5s %8.8s %5.5s %5.5s ",
+X			"packets", "errs", "packets", "errs", "colls");
+X	putchar('\n');
+X	fflush(stdout);
+X	line = 0;
+Xloop:
+X	sum->ift_ip = 0;
+X	sum->ift_ie = 0;
+X	sum->ift_op = 0;
+X	sum->ift_oe = 0;
+X	sum->ift_co = 0;
+X	for (off = firstifnet, ip = iftot; off && ip < lastif; ip++) {
+X		klseek(kmem, off, 0);
+X		read(kmem, (char *)&ifnet, sizeof ifnet);
+X		if (ip == interesting)
+X			printf("%8d %5d %8d %5d %5d ",
+X				ifnet.if_ipackets - ip->ift_ip,
+X				ifnet.if_ierrors - ip->ift_ie,
+X				ifnet.if_opackets - ip->ift_op,
+X				ifnet.if_oerrors - ip->ift_oe,
+X				ifnet.if_collisions - ip->ift_co);
+X		ip->ift_ip = ifnet.if_ipackets;
+X		ip->ift_ie = ifnet.if_ierrors;
+X		ip->ift_op = ifnet.if_opackets;
+X		ip->ift_oe = ifnet.if_oerrors;
+X		ip->ift_co = ifnet.if_collisions;
+X		sum->ift_ip += ip->ift_ip;
+X		sum->ift_ie += ip->ift_ie;
+X		sum->ift_op += ip->ift_op;
+X		sum->ift_oe += ip->ift_oe;
+X		sum->ift_co += ip->ift_co;
+X		off = (off_t) ifnet.if_next;
+X	}
+X	if (lastif - iftot > 0)
+X		printf("%8d %5d %8d %5d %5d ",
+X			sum->ift_ip - total->ift_ip,
+X			sum->ift_ie - total->ift_ie,
+X			sum->ift_op - total->ift_op,
+X			sum->ift_oe - total->ift_oe,
+X			sum->ift_co - total->ift_co);
+X	*total = *sum;
+X	putchar('\n');
+X	fflush(stdout);
+X	line++;
+X	oldmask = sigblock(sigmask(SIGALRM));
+X	if (! signalled) {
+X		sigpause(0);
+X	}
+X	sigsetmask(oldmask);
+X	signalled = NO;
+X	(void)alarm(interval);
+X	if (line == 21)
+X		goto banner;
+X	goto loop;
+X	/*NOTREACHED*/
+X}
+X
+X/*
+X * Called if an interval expires before sidewaysintpr has completed a loop.
+X * Sets a flag to not wait for the alarm.
+X */
+Xcatchalarm()
+X{
+X	signalled = YES;
+X}
+END-of-netstat/if.c
+echo x - netstat/main.c
+sed 's/^X//' >netstat/main.c << 'END-of-netstat/main.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983 Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif not lint
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)main.c	5.11 (Berkeley) 2/7/88";
+X#endif not lint
+X
+X#include <sys/param.h>
+X#include <sys/vmmac.h>
+X#include <sys/socket.h>
+X#include <machine/pte.h>
+X#include <ctype.h>
+X#include <errno.h>
+X#include <netdb.h>
+X#include <nlist.h>
+X#include <stdio.h>
+X
+Xstruct nlist nl[] = {
+X#define	N_MBSTAT	0
+X	{ "_mbstat" },
+X#define	N_IPSTAT	1
+X	{ "_ipstat" },
+X#define	N_TCB		2
+X	{ "_tcb" },
+X#define	N_TCPSTAT	3
+X	{ "_tcpstat" },
+X#define	N_UDB		4
+X	{ "_udb" },
+X#define	N_UDPSTAT	5
+X	{ "_udpstat" },
+X#define	N_RAWCB		6
+X	{ "_rawcb" },
+X#define	N_SYSMAP	7
+X	{ "_Sysmap" },
+X#define	N_SYSSIZE	8
+X	{ "_Syssize" },
+X#define	N_IFNET		9
+X	{ "_ifnet" },
+X#define	N_IMP		10
+X	{ "_imp_softc" },
+X#define	N_RTHOST	11
+X	{ "_rthost" },
+X#define	N_RTNET		12
+X	{ "_rtnet" },
+X#define	N_ICMPSTAT	13
+X	{ "_icmpstat" },
+X#define	N_RTSTAT	14
+X	{ "_rtstat" },
+X#define	N_NFILE		15
+X	{ "_nfile" },
+X#define	N_FILE		16
+X	{ "_file" },
+X#define	N_UNIXSW	17
+X	{ "_unixsw" },
+X#define N_RTHASHSIZE	18
+X	{ "_rthashsize" },
+X#define N_IDP		19
+X	{ "_nspcb"},
+X#define N_IDPSTAT	20
+X	{ "_idpstat"},
+X#define N_SPPSTAT	21
+X	{ "_spp_istat"},
+X#define N_NSERR		22
+X	{ "_ns_errstat"},
+X#define N_NIMP		23
+X	{ "_nimp"},
+X	"",
+X};
+X
+X/* internet protocols */
+Xextern	int protopr();
+Xextern	int tcp_stats(), udp_stats(), ip_stats(), icmp_stats();
+X/* ns protocols */
+Xextern	int nsprotopr();
+Xextern	int spp_stats(), idp_stats(), nserr_stats();
+X
+X#define NULLPROTOX	((struct protox *) 0)
+Xstruct protox {
+X	u_char	pr_index;		/* index into nlist of cb head */
+X	u_char	pr_sindex;		/* index into nlist of stat block */
+X	u_char	pr_wanted;		/* 1 if wanted, 0 otherwise */
+X	int	(*pr_cblocks)();	/* control blocks printing routine */
+X	int	(*pr_stats)();		/* statistics printing routine */
+X	char	*pr_name;		/* well-known name */
+X} protox[] = {
+X	{ N_TCB,	N_TCPSTAT,	1,	protopr,
+X	  tcp_stats,	"tcp" },
+X	{ N_UDB,	N_UDPSTAT,	1,	protopr,
+X	  udp_stats,	"udp" },
+X	{ -1,		N_IPSTAT,	1,	0,
+X	  ip_stats,	"ip" },
+X	{ -1,		N_ICMPSTAT,	1,	0,
+X	  icmp_stats,	"icmp" },
+X	{ -1,		-1,		0,	0,
+X	  0,		0 }
+X};
+X
+Xstruct protox nsprotox[] = {
+X	{ N_IDP,	N_IDPSTAT,	1,	nsprotopr,
+X	  idp_stats,	"idp" },
+X	{ N_IDP,	N_SPPSTAT,	1,	nsprotopr,
+X	  spp_stats,	"spp" },
+X	{ -1,		N_NSERR,	1,	0,
+X	  nserr_stats,	"ns_err" },
+X	{ -1,		-1,		0,	0,
+X	  0,		0 }
+X};
+X
+Xstruct	pte *Sysmap;
+X
+Xchar	*system = "/vmunix";
+Xchar	*kmemf = "/dev/kmem";
+Xint	kmem;
+Xint	kflag;
+Xint	Aflag;
+Xint	aflag;
+Xint	hflag;
+Xint	iflag;
+Xint	mflag;
+Xint	nflag;
+Xint	pflag;
+Xint	rflag;
+Xint	sflag;
+Xint	tflag;
+Xint	interval;
+Xchar	*interface;
+Xint	unit;
+Xchar	usage[] = "[ -Aaihmnrst ] [-f family] [-p proto] [-I interface] [ interval ] [ system ] [ core ]";
+X
+Xint	af = AF_UNSPEC;
+X
+Xextern	char *malloc();
+Xextern	off_t lseek();
+X
+Xmain(argc, argv)
+X	int argc;
+X	char *argv[];
+X{
+X	char *cp, *name;
+X	register struct protoent *p;
+X	register struct protox *tp;	/* for printing cblocks & stats */
+X	struct protox *name2protox();	/* for -p */
+X	
+X	name = argv[0];
+X	argc--, argv++;
+X  	while (argc > 0 && **argv == '-') {
+X		for (cp = &argv[0][1]; *cp; cp++)
+X		switch(*cp) {
+X
+X		case 'A':
+X			Aflag++;
+X			break;
+X
+X		case 'a':
+X			aflag++;
+X			break;
+X
+X		case 'h':
+X			hflag++;
+X			break;
+X
+X		case 'i':
+X			iflag++;
+X			break;
+X
+X		case 'm':
+X			mflag++;
+X			break;
+X
+X		case 'n':
+X			nflag++;
+X			break;
+X
+X		case 'r':
+X			rflag++;
+X			break;
+X
+X		case 's':
+X			sflag++;
+X			break;
+X
+X		case 't':
+X			tflag++;
+X			break;
+X
+X		case 'u':
+X			af = AF_UNIX;
+X			break;
+X
+X		case 'p':
+X			argv++;
+X			argc--;
+X			if (argc == 0)
+X				goto use;
+X			if ((tp = name2protox(*argv)) == NULLPROTOX) {
+X				fprintf(stderr, "%s: unknown or uninstrumented protocol\n",
+X					*argv);
+X				exit(10);
+X			}
+X			pflag++;
+X			break;
+X
+X		case 'f':
+X			argv++;
+X			argc--;
+X			if (strcmp(*argv, "ns") == 0)
+X				af = AF_NS;
+X			else if (strcmp(*argv, "inet") == 0)
+X				af = AF_INET;
+X			else if (strcmp(*argv, "unix") == 0)
+X				af = AF_UNIX;
+X			else {
+X				fprintf(stderr, "%s: unknown address family\n",
+X					*argv);
+X				exit(10);
+X			}
+X			break;
+X			
+X		case 'I':
+X			iflag++;
+X			if (*(interface = cp + 1) == 0) {
+X				if ((interface = argv[1]) == 0)
+X					break;
+X				argv++;
+X				argc--;
+X			}
+X			for (cp = interface; isalpha(*cp); cp++)
+X				;
+X			unit = atoi(cp);
+X			*cp-- = 0;
+X			break;
+X
+X		default:
+Xuse:
+X			printf("usage: %s %s\n", name, usage);
+X			exit(1);
+X		}
+X		argv++, argc--;
+X	}
+X	if (argc > 0 && isdigit(argv[0][0])) {
+X		interval = atoi(argv[0]);
+X		if (interval <= 0)
+X			goto use;
+X		argv++, argc--;
+X		iflag++;
+X	}
+X	if (argc > 0) {
+X		system = *argv;
+X		argv++, argc--;
+X	}
+X	nlist(system, nl);
+X	if (nl[0].n_type == 0) {
+X		fprintf(stderr, "%s: no namelist\n", system);
+X		exit(1);
+X	}
+X	if (argc > 0) {
+X		kmemf = *argv;
+X		kflag++;
+X	}
+X	kmem = open(kmemf, 0);
+X	if (kmem < 0) {
+X		fprintf(stderr, "cannot open ");
+X		perror(kmemf);
+X		exit(1);
+X	}
+X	if (kflag) {
+X		off_t off;
+X
+X		off = nl[N_SYSMAP].n_value & 0x7fffffff;
+X		lseek(kmem, off, 0);
+X		nl[N_SYSSIZE].n_value *= 4;
+X		Sysmap = (struct pte *)malloc((u_int)nl[N_SYSSIZE].n_value);
+X		if (Sysmap == 0) {
+X			perror("Sysmap");
+X			exit(1);
+X		}
+X		read(kmem, (char *)Sysmap, (int)nl[N_SYSSIZE].n_value);
+X	}
+X	if (mflag) {
+X		mbpr((off_t)nl[N_MBSTAT].n_value);
+X		exit(0);
+X	}
+X	if (pflag) {
+X		if (tp->pr_stats)
+X			(*tp->pr_stats)(nl[tp->pr_sindex].n_value, 
+X				tp->pr_name);
+X		else
+X			printf("%s: no stats routine\n", tp->pr_name);
+X		exit(0);
+X	}
+X	if (hflag) {
+X		hostpr(nl[N_IMP].n_value, nl[N_NIMP].n_value);
+X		exit(0);
+X	}
+X	/*
+X	 * Keep file descriptors open to avoid overhead
+X	 * of open/close on each call to get* routines.
+X	 */
+X	sethostent(1);
+X	setnetent(1);
+X	if (iflag) {
+X		intpr(interval, nl[N_IFNET].n_value);
+X		exit(0);
+X	}
+X	if (rflag) {
+X		if (sflag)
+X			rt_stats((off_t)nl[N_RTSTAT].n_value);
+X		else
+X			routepr((off_t)nl[N_RTHOST].n_value, 
+X				(off_t)nl[N_RTNET].n_value,
+X				(off_t)nl[N_RTHASHSIZE].n_value);
+X		exit(0);
+X	}
+X    if (af == AF_INET || af == AF_UNSPEC) {
+X	setprotoent(1);
+X	setservent(1);
+X	while (p = getprotoent()) {
+X
+X		for (tp = protox; tp->pr_name; tp++)
+X			if (strcmp(tp->pr_name, p->p_name) == 0)
+X				break;
+X		if (tp->pr_name == 0 || tp->pr_wanted == 0)
+X			continue;
+X		if (sflag) {
+X			if (tp->pr_stats)
+X				(*tp->pr_stats)(nl[tp->pr_sindex].n_value,
+X					p->p_name);
+X		} else
+X			if (tp->pr_cblocks)
+X				(*tp->pr_cblocks)(nl[tp->pr_index].n_value,
+X					p->p_name);
+X	}
+X	endprotoent();
+X    }
+X    if (af == AF_NS || af == AF_UNSPEC) {
+X	for (tp = nsprotox; tp->pr_name; tp++) {
+X		if (sflag) {
+X			if (tp->pr_stats)
+X				(*tp->pr_stats)(nl[tp->pr_sindex].n_value,
+X					tp->pr_name);
+X		} else
+X			if (tp->pr_cblocks)
+X				(*tp->pr_cblocks)(nl[tp->pr_index].n_value,
+X					tp->pr_name);
+X	}
+X    }
+X    if ((af == AF_UNIX || af == AF_UNSPEC) && !sflag)
+X	    unixpr((off_t)nl[N_NFILE].n_value, (off_t)nl[N_FILE].n_value,
+X		(struct protosw *)nl[N_UNIXSW].n_value);
+X    if (af == AF_UNSPEC && sflag)
+X	impstats(nl[N_IMP].n_value, nl[N_NIMP].n_value);
+X    exit(0);
+X}
+X
+X#ifndef KERNBASE
+X#ifdef vax
+X#define KERNBASE 0x80000000
+X#endif
+X#ifdef tahoe
+X#define KERNBASE 0xC0000000
+X#endif
+X#endif KERNBASE
+X/*
+X * Seek into the kernel for a value.
+X */
+Xoff_t
+Xklseek(fd, base, off)
+X	int fd, off;
+X	off_t base;
+X{
+X	if (kflag) {
+X		/* get kernel pte */
+X		base &= ~KERNBASE;
+X		base = ctob(Sysmap[btop(base)].pg_pfnum) + (base & PGOFSET);
+X	}
+X	return (lseek(fd, base, off));
+X}
+X
+Xchar *
+Xplural(n)
+X	int n;
+X{
+X
+X	return (n != 1 ? "s" : "");
+X}
+X
+X/*
+X * Find the protox for the given "well-known" name.
+X */
+Xstruct protox *
+Xknownname(name)
+X	char *name;
+X{
+X	struct protox *tp;
+X	
+X	for (tp = protox; tp->pr_name; tp++)
+X		if (strcmp(tp->pr_name, name) == 0)
+X			return(tp);
+X	for (tp = nsprotox; tp->pr_name; tp++)
+X		if (strcmp(tp->pr_name, name) == 0)
+X			return(tp);
+X	return(NULLPROTOX);
+X}
+X
+X/*
+X * Find the protox corresponding to name.
+X */
+Xstruct protox *
+Xname2protox(name)
+X	char *name;
+X{
+X	struct protox *tp;
+X	char **alias;			/* alias from p->aliases */
+X	struct protoent *p;
+X	
+X	/*
+X	 * Try to find the name in the list of "well-known" names. If that
+X	 * fails, check if name is an alias for an Internet protocol.
+X	 */
+X	if (tp = knownname(name))
+X		return(tp);
+X		
+X	setprotoent(1);			/* make protocol lookup cheaper */
+X	while (p = getprotoent()) {
+X		/* assert: name not same as p->name */
+X		for (alias = p->p_aliases; *alias; alias++)
+X			if (strcmp(name, *alias) == 0) {
+X				endprotoent();
+X				return(knownname(p->p_name));
+X			}
+X	}
+X	endprotoent();
+X	return(NULLPROTOX);
+X}
+END-of-netstat/main.c
+echo x - netstat/mbuf.c
+sed 's/^X//' >netstat/mbuf.c << 'END-of-netstat/mbuf.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)mbuf.c	5.3 (Berkeley) 2/3/87";
+X#endif not lint
+X
+X#include <stdio.h>
+X#include <sys/param.h>
+X#include <sys/mbuf.h>
+X#define	YES	1
+Xtypedef int bool;
+X
+Xstruct	mbstat mbstat;
+Xextern	int kmem;
+X
+Xstatic struct mbtypes {
+X	int	mt_type;
+X	char	*mt_name;
+X} mbtypes[] = {
+X	{ MT_DATA,	"data" },
+X	{ MT_HEADER,	"packet headers" },
+X	{ MT_SOCKET,	"socket structures" },
+X	{ MT_PCB,	"protocol control blocks" },
+X	{ MT_RTABLE,	"routing table entries" },
+X	{ MT_HTABLE,	"IMP host table entries" },
+X	{ MT_ATABLE,	"address resolution tables" },
+X	{ MT_FTABLE,	"fragment reassembly queue headers" },
+X	{ MT_SONAME,	"socket names and addresses" },
+X	{ MT_ZOMBIE,	"zombie process information" },
+X	{ MT_SOOPTS,	"socket options" },
+X	{ MT_RIGHTS,	"access rights" },
+X	{ MT_IFADDR,	"interface addresses" }, 
+X	{ 0, 0 }
+X};
+X
+Xint nmbtypes = sizeof(mbstat.m_mtypes) / sizeof(short);
+Xbool seen[256];			/* "have we seen this type yet?" */
+X
+X/*
+X * Print mbuf statistics.
+X */
+Xmbpr(mbaddr)
+X	off_t mbaddr;
+X{
+X	register int totmem, totfree, totmbufs;
+X	register int i;
+X	register struct mbtypes *mp;
+X
+X	if (nmbtypes != 256) {
+X		fprintf(stderr, "unexpected change to mbstat; check source\n");
+X		return;
+X	}
+X	if (mbaddr == 0) {
+X		printf("mbstat: symbol not in namelist\n");
+X		return;
+X	}
+X	klseek(kmem, mbaddr, 0);
+X	if (read(kmem, (char *)&mbstat, sizeof (mbstat)) != sizeof (mbstat)) {
+X		printf("mbstat: bad read\n");
+X		return;
+X	}
+X	printf("%u/%u mbufs in use:\n",
+X		mbstat.m_mbufs - mbstat.m_mtypes[MT_FREE], mbstat.m_mbufs);
+X	totmbufs = 0;
+X	for (mp = mbtypes; mp->mt_name; mp++)
+X		if (mbstat.m_mtypes[mp->mt_type]) {
+X			seen[mp->mt_type] = YES;
+X			printf("\t%u mbufs allocated to %s\n",
+X			    mbstat.m_mtypes[mp->mt_type], mp->mt_name);
+X			totmbufs += mbstat.m_mtypes[mp->mt_type];
+X		}
+X	seen[MT_FREE] = YES;
+X	for (i = 0; i < nmbtypes; i++)
+X		if (!seen[i] && mbstat.m_mtypes[i]) {
+X			printf("\t%u mbufs allocated to <mbuf type %d>\n",
+X			    mbstat.m_mtypes[i], i);
+X			totmbufs += mbstat.m_mtypes[i];
+X		}
+X	if (totmbufs != mbstat.m_mbufs - mbstat.m_mtypes[MT_FREE])
+X		printf("*** %u mbufs missing ***\n",
+X			(mbstat.m_mbufs - mbstat.m_mtypes[MT_FREE]) - totmbufs);
+X	printf("%u/%u mapped pages in use\n",
+X		mbstat.m_clusters - mbstat.m_clfree, mbstat.m_clusters);
+X	printf("%u interface pages allocated\n", mbstat.m_space);
+X	totmem = mbstat.m_mbufs * MSIZE + mbstat.m_clusters * CLBYTES +
+X	    mbstat.m_space * CLBYTES;
+X	totfree = mbstat.m_mtypes[MT_FREE]*MSIZE + mbstat.m_clfree * CLBYTES;
+X	printf("%u Kbytes allocated to network (%d%% in use)\n",
+X		totmem / 1024, (totmem - totfree) * 100 / totmem);
+X	printf("%u requests for memory denied\n", mbstat.m_drops);
+X	printf("%u requests for memory delayed\n", mbstat.m_wait);
+X	printf("%u calls to protocol drain routines\n", mbstat.m_drain);
+X}
+END-of-netstat/mbuf.c
+echo x - netstat/ns.c
+sed 's/^X//' >netstat/ns.c << 'END-of-netstat/ns.c'
+X/*
+X * Copyright (c) 1985,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)ns.c	5.8 (Berkeley) 3/29/88";
+X#endif not lint
+X
+X#include <stdio.h>
+X#include <errno.h>
+X#include <nlist.h>
+X
+X#include <sys/types.h>
+X#include <sys/socket.h>
+X#include <sys/socketvar.h>
+X#include <sys/mbuf.h>
+X#include <sys/protosw.h>
+X
+X#include <net/route.h>
+X#include <net/if.h>
+X
+X#include <netinet/tcp_fsm.h>
+X
+X#include <netns/ns.h>
+X#include <netns/ns_pcb.h>
+X#include <netns/idp.h>
+X#include <netns/idp_var.h>
+X#include <netns/ns_error.h>
+X#include <netns/sp.h>
+X#include <netns/spidp.h>
+X#include <netns/spp_timer.h>
+X#include <netns/spp_var.h>
+X#define SANAMES
+X#include <netns/spp_debug.h>
+X
+X
+Xstruct	nspcb nspcb;
+Xstruct	sppcb sppcb;
+Xstruct	socket sockb;
+Xextern	int kmem;
+Xextern	int Aflag;
+Xextern	int aflag;
+Xextern	int nflag;
+Xextern	char *plural();
+Xchar *ns_prpr();
+X
+Xstatic	int first = 1;
+X
+X/*
+X * Print a summary of connections related to a Network Systems
+X * protocol.  For SPP, also give state of connection.
+X * Listening processes (aflag) are suppressed unless the
+X * -a (all) flag is specified.
+X */
+X
+Xnsprotopr(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct nspcb cb;
+X	register struct nspcb *prev, *next;
+X	int isspp;
+X
+X	if (off == 0)
+X		return;
+X	isspp = strcmp(name, "spp") == 0;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&cb, sizeof (struct nspcb));
+X	nspcb = cb;
+X	prev = (struct nspcb *)off;
+X	if (nspcb.nsp_next == (struct nspcb *)off)
+X		return;
+X	for (;nspcb.nsp_next != (struct nspcb *)off; prev = next) {
+X		off_t ppcb;
+X
+X		next = nspcb.nsp_next;
+X		klseek(kmem, (off_t)next, 0);
+X		read(kmem, (char *)&nspcb, sizeof (nspcb));
+X		if (nspcb.nsp_prev != prev) {
+X			printf("???\n");
+X			break;
+X		}
+X		if (!aflag && ns_nullhost(nspcb.nsp_faddr) ) {
+X			continue;
+X		}
+X		klseek(kmem, (off_t)nspcb.nsp_socket, 0);
+X		read(kmem, (char *)&sockb, sizeof (sockb));
+X		ppcb = (off_t) nspcb.nsp_pcb;
+X		if (ppcb) {
+X			if (isspp) {
+X				klseek(kmem, ppcb, 0);
+X				read(kmem, (char *)&sppcb, sizeof (sppcb));
+X			} else continue;
+X		} else
+X			if (isspp) continue;
+X		if (first) {
+X			printf("Active NS connections");
+X			if (aflag)
+X				printf(" (including servers)");
+X			putchar('\n');
+X			if (Aflag)
+X				printf("%-8.8s ", "PCB");
+X			printf(Aflag ?
+X				"%-5.5s %-6.6s %-6.6s  %-18.18s %-18.18s %s\n" :
+X				"%-5.5s %-6.6s %-6.6s  %-22.22s %-22.22s %s\n",
+X				"Proto", "Recv-Q", "Send-Q",
+X				"Local Address", "Foreign Address", "(state)");
+X			first = 0;
+X		}
+X		if (Aflag)
+X			printf("%8x ", ppcb);
+X		printf("%-5.5s %6d %6d ", name, sockb.so_rcv.sb_cc,
+X			sockb.so_snd.sb_cc);
+X		printf("  %-22.22s", ns_prpr(&nspcb.nsp_laddr));
+X		printf(" %-22.22s", ns_prpr(&nspcb.nsp_faddr));
+X		if (isspp) {
+X			extern char *tcpstates[];
+X			if (sppcb.s_state >= TCP_NSTATES)
+X				printf(" %d", sppcb.s_state);
+X			else
+X				printf(" %s", tcpstates[sppcb.s_state]);
+X		}
+X		putchar('\n');
+X		prev = next;
+X	}
+X}
+X#define ANY(x,y,z)  ((x) ? printf("\t%d %s%s%s -- %s\n",x,y,plural(x),z,"x") : 0)
+X
+X/*
+X * Dump SPP statistics structure.
+X */
+Xspp_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct spp_istat spp_istat;
+X#define sppstat spp_istat.newstats
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&spp_istat, sizeof (spp_istat));
+X	printf("%s:\n", name);
+X	ANY(spp_istat.nonucn, "connection", " dropped due to no new sockets ");
+X	ANY(spp_istat.gonawy, "connection", " terminated due to our end dying");
+X	ANY(spp_istat.nonucn, "connection", " dropped due to inability to connect");
+X	ANY(spp_istat.noconn, "connection", " dropped due to inability to connect");
+X	ANY(spp_istat.notme, "connection", " incompleted due to mismatched id's");
+X	ANY(spp_istat.wrncon, "connection", " dropped due to mismatched id's");
+X	ANY(spp_istat.bdreas, "packet", " dropped out of sequence");
+X	ANY(spp_istat.lstdup, "packet", " duplicating the highest packet");
+X	ANY(spp_istat.notyet, "packet", " refused as exceeding allocation");
+X	ANY(sppstat.spps_connattempt, "connection", " initiated");
+X	ANY(sppstat.spps_accepts, "connection", " accepted");
+X	ANY(sppstat.spps_connects, "connection", " established");
+X	ANY(sppstat.spps_drops, "connection", " dropped");
+X	ANY(sppstat.spps_conndrops, "embryonic connection", " dropped");
+X	ANY(sppstat.spps_closed, "connection", " closed (includes drops)");
+X	ANY(sppstat.spps_segstimed, "packet", " where we tried to get rtt");
+X	ANY(sppstat.spps_rttupdated, "time", " we got rtt");
+X	ANY(sppstat.spps_delack, "delayed ack", " sent");
+X	ANY(sppstat.spps_timeoutdrop, "connection", " dropped in rxmt timeout");
+X	ANY(sppstat.spps_rexmttimeo, "retransmit timeout", "");
+X	ANY(sppstat.spps_persisttimeo, "persist timeout", "");
+X	ANY(sppstat.spps_keeptimeo, "keepalive timeout", "");
+X	ANY(sppstat.spps_keepprobe, "keepalive probe", " sent");
+X	ANY(sppstat.spps_keepdrops, "connection", " dropped in keepalive");
+X	ANY(sppstat.spps_sndtotal, "total packet", " sent");
+X	ANY(sppstat.spps_sndpack, "data packet", " sent");
+X	ANY(sppstat.spps_sndbyte, "data byte", " sent");
+X	ANY(sppstat.spps_sndrexmitpack, "data packet", " retransmitted");
+X	ANY(sppstat.spps_sndrexmitbyte, "data byte", " retransmitted");
+X	ANY(sppstat.spps_sndacks, "ack-only packet", " sent");
+X	ANY(sppstat.spps_sndprobe, "window probe", " sent");
+X	ANY(sppstat.spps_sndurg, "packet", " sent with URG only");
+X	ANY(sppstat.spps_sndwinup, "window update-only packet", " sent");
+X	ANY(sppstat.spps_sndctrl, "control (SYN|FIN|RST) packet", " sent");
+X	ANY(sppstat.spps_sndvoid, "request", " to send a non-existant packet");
+X	ANY(sppstat.spps_rcvtotal, "total packet", " received");
+X	ANY(sppstat.spps_rcvpack, "packet", " received in sequence");
+X	ANY(sppstat.spps_rcvbyte, "byte", " received in sequence");
+X	ANY(sppstat.spps_rcvbadsum, "packet", " received with ccksum errs");
+X	ANY(sppstat.spps_rcvbadoff, "packet", " received with bad offset");
+X	ANY(sppstat.spps_rcvshort, "packet", " received too short");
+X	ANY(sppstat.spps_rcvduppack, "duplicate-only packet", " received");
+X	ANY(sppstat.spps_rcvdupbyte, "duplicate-only byte", " received");
+X	ANY(sppstat.spps_rcvpartduppack, "packet", " with some duplicate data");
+X	ANY(sppstat.spps_rcvpartdupbyte, "dup. byte", " in part-dup. packet");
+X	ANY(sppstat.spps_rcvoopack, "out-of-order packet", " received");
+X	ANY(sppstat.spps_rcvoobyte, "out-of-order byte", " received");
+X	ANY(sppstat.spps_rcvpackafterwin, "packet", " with data after window");
+X	ANY(sppstat.spps_rcvbyteafterwin, "byte", " rcvd after window");
+X	ANY(sppstat.spps_rcvafterclose, "packet", " rcvd after 'close'");
+X	ANY(sppstat.spps_rcvwinprobe, "rcvd window probe packet", "");
+X	ANY(sppstat.spps_rcvdupack, "rcvd duplicate ack", "");
+X	ANY(sppstat.spps_rcvacktoomuch, "rcvd ack", " for unsent data");
+X	ANY(sppstat.spps_rcvackpack, "rcvd ack packet", "");
+X	ANY(sppstat.spps_rcvackbyte, "byte", " acked by rcvd acks");
+X	ANY(sppstat.spps_rcvwinupd, "rcvd window update packet", "");
+X}
+X#undef ANY
+X#define ANY(x,y,z)  ((x) ? printf("\t%d %s%s%s\n",x,y,plural(x),z) : 0)
+X
+X/*
+X * Dump IDP statistics structure.
+X */
+Xidp_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct idpstat idpstat;
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&idpstat, sizeof (idpstat));
+X	printf("%s:\n", name);
+X	ANY(idpstat.idps_toosmall, "packet", " smaller than a header");
+X	ANY(idpstat.idps_tooshort, "packet", " smaller than advertised");
+X	ANY(idpstat.idps_badsum, "packet", " with bad checksums");
+X}
+X
+Xstatic	struct {
+X	u_short code;
+X	char *name;
+X	char *where;
+X} ns_errnames[] = {
+X	{0, "Unspecified Error", " at Destination"},
+X	{1, "Bad Checksum", " at Destination"},
+X	{2, "No Listener", " at Socket"},
+X	{3, "Packet", " Refused due to lack of space at Destination"},
+X	{01000, "Unspecified Error", " while gatewayed"},
+X	{01001, "Bad Checksum", " while gatewayed"},
+X	{01002, "Packet", " forwarded too many times"},
+X	{01003, "Packet", " too large to be forwarded"},
+X	{-1, 0, 0},
+X};
+X
+X/*
+X * Dump NS Error statistics structure.
+X */
+X/*ARGSUSED*/
+Xnserr_stats(off, name)
+X	off_t off;
+X	char *name;
+X{
+X	struct ns_errstat ns_errstat;
+X	register int j;
+X	register int histoprint = 1;
+X	int z;
+X
+X	if (off == 0)
+X		return;
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&ns_errstat, sizeof (ns_errstat));
+X	printf("NS error statistics:\n");
+X	ANY(ns_errstat.ns_es_error, "call", " to ns_error");
+X	ANY(ns_errstat.ns_es_oldshort, "error",
+X		" ignored due to insufficient addressing");
+X	ANY(ns_errstat.ns_es_oldns_err, "error request",
+X		" in response to error packets");
+X	ANY(ns_errstat.ns_es_tooshort, "error packet",
+X		" received incomplete");
+X	ANY(ns_errstat.ns_es_badcode, "error packet",
+X		" received of unknown type");
+X	for(j = 0; j < NS_ERR_MAX; j ++) {
+X		z = ns_errstat.ns_es_outhist[j];
+X		if (z && histoprint) {
+X			printf("Output Error Histogram:\n");
+X			histoprint = 0;
+X		}
+X		ns_erputil(z, ns_errstat.ns_es_codes[j]);
+X
+X	}
+X	histoprint = 1;
+X	for(j = 0; j < NS_ERR_MAX; j ++) {
+X		z = ns_errstat.ns_es_inhist[j];
+X		if (z && histoprint) {
+X			printf("Input Error Histogram:\n");
+X			histoprint = 0;
+X		}
+X		ns_erputil(z, ns_errstat.ns_es_codes[j]);
+X	}
+X}
+Xstatic
+Xns_erputil(z, c)
+X{
+X	int j;
+X	char codebuf[30];
+X	char *name, *where;
+X	for(j = 0;; j ++) {
+X		if ((name = ns_errnames[j].name) == 0)
+X			break;
+X		if (ns_errnames[j].code == c)
+X			break;
+X	}
+X	if (name == 0)  {
+X		if (c > 01000)
+X			where = "in transit";
+X		else
+X			where = "at destination";
+X		sprintf(codebuf, "Unknown XNS error code 0%o", c);
+X		name = codebuf;
+X	} else 
+X		where =  ns_errnames[j].where;
+X	ANY(z, name, where);
+X}
+Xstatic struct sockaddr_ns ssns = {AF_NS};
+X
+Xchar *ns_prpr(x)
+Xstruct ns_addr *x;
+X{
+X	extern char *ns_print();
+X	struct sockaddr_ns *sns = &ssns;
+X	sns->sns_addr = *x;
+X	return(ns_print(sns));
+X}
+END-of-netstat/ns.c
+echo x - netstat/route.c
+sed 's/^X//' >netstat/route.c << 'END-of-netstat/route.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)route.c	5.13 (Berkeley) 88/02/07";
+X#endif
+X
+X#include <stdio.h>
+X#include <strings.h>
+X
+X#include <sys/param.h>
+X#include <sys/socket.h>
+X#include <sys/mbuf.h>
+X
+X#include <net/if.h>
+X#include <net/route.h>
+X#include <netinet/in.h>
+X
+X#include <netns/ns.h>
+X
+X#include <netdb.h>
+X
+Xextern	int kmem;
+Xextern	int nflag;
+Xextern	char *routename(), *netname(), *ns_print(), *plural();
+Xextern	char *malloc();
+X
+X/*
+X * Definitions for showing gateway flags.
+X */
+Xstruct bits {
+X	short	b_mask;
+X	char	b_val;
+X} bits[] = {
+X	{ RTF_UP,	'U' },
+X	{ RTF_GATEWAY,	'G' },
+X	{ RTF_HOST,	'H' },
+X	{ RTF_DYNAMIC,	'D' },
+X	{ RTF_MODIFIED,	'M' },
+X	{ 0 }
+X};
+X
+X/*
+X * Print routing tables.
+X */
+Xroutepr(hostaddr, netaddr, hashsizeaddr)
+X	off_t hostaddr, netaddr, hashsizeaddr;
+X{
+X	struct mbuf mb;
+X	register struct rtentry *rt;
+X	register struct mbuf *m;
+X	register struct bits *p;
+X	char name[16], *flags;
+X	struct mbuf **routehash;
+X	struct ifnet ifnet;
+X	int hashsize;
+X	int i, doinghost = 1;
+X
+X	if (hostaddr == 0) {
+X		printf("rthost: symbol not in namelist\n");
+X		return;
+X	}
+X	if (netaddr == 0) {
+X		printf("rtnet: symbol not in namelist\n");
+X		return;
+X	}
+X	if (hashsizeaddr == 0) {
+X		printf("rthashsize: symbol not in namelist\n");
+X		return;
+X	}
+X	klseek(kmem, hashsizeaddr, 0);
+X	read(kmem, (char *)&hashsize, sizeof (hashsize));
+X	routehash = (struct mbuf **)malloc( hashsize*sizeof (struct mbuf *) );
+X	klseek(kmem, hostaddr, 0);
+X	read(kmem, (char *)routehash, hashsize*sizeof (struct mbuf *));
+X	printf("Routing tables\n");
+X	printf("%-16.16s %-18.18s %-6.6s  %6.6s%8.8s  %s\n",
+X		"Destination", "Gateway",
+X		"Flags", "Refs", "Use", "Interface");
+Xagain:
+X	for (i = 0; i < hashsize; i++) {
+X		if (routehash[i] == 0)
+X			continue;
+X		m = routehash[i];
+X		while (m) {
+X			struct sockaddr_in *sin;
+X
+X			klseek(kmem, (off_t)m, 0);
+X			read(kmem, (char *)&mb, sizeof (mb));
+X			rt = mtod(&mb, struct rtentry *);
+X			if ((unsigned)rt < (unsigned)&mb ||
+X			    (unsigned)rt >= (unsigned)(&mb + 1)) {
+X				printf("???\n");
+X				return;
+X			}
+X
+X			switch(rt->rt_dst.sa_family) {
+X			case AF_INET:
+X				sin = (struct sockaddr_in *)&rt->rt_dst;
+X				printf("%-16.16s ",
+X				    (sin->sin_addr.s_addr == 0) ? "default" :
+X				    (rt->rt_flags & RTF_HOST) ?
+X				    routename(sin->sin_addr) :
+X					netname(sin->sin_addr, 0L));
+X				sin = (struct sockaddr_in *)&rt->rt_gateway;
+X				printf("%-18.18s ", routename(sin->sin_addr));
+X				break;
+X			case AF_NS:
+X				printf("%-16s ",
+X				    ns_print((struct sockaddr_ns *)&rt->rt_dst));
+X				printf("%-18s ",
+X				    ns_print((struct sockaddr_ns *)&rt->rt_gateway));
+X				break;
+X			default:
+X				{
+X				u_short *s = (u_short *)rt->rt_dst.sa_data;
+X				printf("(%d)%x %x %x %x %x %x %x ",
+X				    rt->rt_dst.sa_family,
+X				    s[0], s[1], s[2], s[3], s[4], s[5], s[6]);
+X				s = (u_short *)rt->rt_gateway.sa_data;
+X				printf("(%d)%x %x %x %x %x %x %x ",
+X				    rt->rt_gateway.sa_family,
+X				    s[0], s[1], s[2], s[3], s[4], s[5], s[6]);
+X				}
+X			}
+X			for (flags = name, p = bits; p->b_mask; p++)
+X				if (p->b_mask & rt->rt_flags)
+X					*flags++ = p->b_val;
+X			*flags = '\0';
+X			printf("%-6.6s %6d %8d ", name,
+X				rt->rt_refcnt, rt->rt_use);
+X			if (rt->rt_ifp == 0) {
+X				putchar('\n');
+X				m = mb.m_next;
+X				continue;
+X			}
+X			klseek(kmem, (off_t)rt->rt_ifp, 0);
+X			read(kmem, (char *)&ifnet, sizeof (ifnet));
+X			klseek(kmem, (off_t)ifnet.if_name, 0);
+X			read(kmem, name, 16);
+X			printf(" %.15s%d\n", name, ifnet.if_unit);
+X			m = mb.m_next;
+X		}
+X	}
+X	if (doinghost) {
+X		klseek(kmem, netaddr, 0);
+X		read(kmem, (char *)routehash, hashsize*sizeof (struct mbuf *));
+X		doinghost = 0;
+X		goto again;
+X	}
+X	free((char *)routehash);
+X}
+X
+Xchar *
+Xroutename(in)
+X	struct in_addr in;
+X{
+X	register char *cp;
+X	static char line[MAXHOSTNAMELEN + 1];
+X	struct hostent *hp;
+X	static char domain[MAXHOSTNAMELEN + 1];
+X	static int first = 1;
+X	char *index();
+X
+X	if (first) {
+X		first = 0;
+X		if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
+X		    (cp = index(domain, '.')))
+X			(void) strcpy(domain, cp + 1);
+X		else
+X			domain[0] = 0;
+X	}
+X	cp = 0;
+X	if (!nflag) {
+X		hp = gethostbyaddr((char *)&in, sizeof (struct in_addr),
+X			AF_INET);
+X		if (hp) {
+X			if ((cp = index(hp->h_name, '.')) &&
+X			    !strcmp(cp + 1, domain))
+X				*cp = 0;
+X			cp = hp->h_name;
+X		}
+X	}
+X	if (cp)
+X		strncpy(line, cp, sizeof(line) - 1);
+X	else {
+X#define C(x)	((x) & 0xff)
+X		in.s_addr = ntohl(in.s_addr);
+X		sprintf(line, "%u.%u.%u.%u", C(in.s_addr >> 24),
+X			C(in.s_addr >> 16), C(in.s_addr >> 8), C(in.s_addr));
+X	}
+X	return (line);
+X}
+X
+X/*
+X * Return the name of the network whose address is given.
+X * The address is assumed to be that of a net or subnet, not a host.
+X */
+Xchar *
+Xnetname(in, mask)
+X	struct in_addr in;
+X	u_long mask;
+X{
+X	char *cp = 0;
+X	static char line[MAXHOSTNAMELEN + 1];
+X	struct netent *np = 0;
+X	u_long net;
+X	register i;
+X	int subnetshift;
+X
+X	i = ntohl(in.s_addr);
+X	if (!nflag && i) {
+X		if (mask == 0) {
+X			if (IN_CLASSA(i)) {
+X				mask = IN_CLASSA_NET;
+X				subnetshift = 8;
+X			} else if (IN_CLASSB(i)) {
+X				mask = IN_CLASSB_NET;
+X				subnetshift = 8;
+X			} else {
+X				mask = IN_CLASSC_NET;
+X				subnetshift = 4;
+X			}
+X			/*
+X			 * If there are more bits than the standard mask
+X			 * would suggest, subnets must be in use.
+X			 * Guess at the subnet mask, assuming reasonable
+X			 * width subnet fields.
+X			 */
+X			while (i &~ mask)
+X				mask = (long)mask >> subnetshift;
+X		}
+X		net = i & mask;
+X		while ((mask & 1) == 0)
+X			mask >>= 1, net >>= 1;
+X		np = getnetbyaddr(net, AF_INET);
+X		if (np)
+X			cp = np->n_name;
+X	}	
+X	if (cp)
+X		strncpy(line, cp, sizeof(line) - 1);
+X	else if ((i & 0xffffff) == 0)
+X		sprintf(line, "%u", C(i >> 24));
+X	else if ((i & 0xffff) == 0)
+X		sprintf(line, "%u.%u", C(i >> 24) , C(i >> 16));
+X	else if ((i & 0xff) == 0)
+X		sprintf(line, "%u.%u.%u", C(i >> 24), C(i >> 16), C(i >> 8));
+X	else
+X		sprintf(line, "%u.%u.%u.%u", C(i >> 24),
+X			C(i >> 16), C(i >> 8), C(i));
+X	return (line);
+X}
+X
+X/*
+X * Print routing statistics
+X */
+Xrt_stats(off)
+X	off_t off;
+X{
+X	struct rtstat rtstat;
+X
+X	if (off == 0) {
+X		printf("rtstat: symbol not in namelist\n");
+X		return;
+X	}
+X	klseek(kmem, off, 0);
+X	read(kmem, (char *)&rtstat, sizeof (rtstat));
+X	printf("routing:\n");
+X	printf("\t%u bad routing redirect%s\n",
+X		rtstat.rts_badredirect, plural(rtstat.rts_badredirect));
+X	printf("\t%u dynamically created route%s\n",
+X		rtstat.rts_dynamic, plural(rtstat.rts_dynamic));
+X	printf("\t%u new gateway%s due to redirects\n",
+X		rtstat.rts_newgateway, plural(rtstat.rts_newgateway));
+X	printf("\t%u destination%s found unreachable\n",
+X		rtstat.rts_unreach, plural(rtstat.rts_unreach));
+X	printf("\t%u use%s of a wildcard route\n",
+X		rtstat.rts_wildcard, plural(rtstat.rts_wildcard));
+X}
+Xshort ns_nullh[] = {0,0,0};
+Xshort ns_bh[] = {-1,-1,-1};
+X
+Xchar *
+Xns_print(sns)
+Xstruct sockaddr_ns *sns;
+X{
+X	struct ns_addr work;
+X	union { union ns_net net_e; u_long long_e; } net;
+X	u_short port;
+X	static char mybuf[50], cport[10], chost[25];
+X	char *host = "";
+X	register char *p; register u_char *q;
+X
+X	work = sns->sns_addr;
+X	port = ntohs(work.x_port);
+X	work.x_port = 0;
+X	net.net_e  = work.x_net;
+X	if (ns_nullhost(work) && net.long_e == 0) {
+X		if (port ) {
+X			sprintf(mybuf, "*.%xH", port);
+X			upHex(mybuf);
+X		} else
+X			sprintf(mybuf, "*.*");
+X		return (mybuf);
+X	}
+X
+X	if (bcmp(ns_bh, work.x_host.c_host, 6) == 0) { 
+X		host = "any";
+X	} else if (bcmp(ns_nullh, work.x_host.c_host, 6) == 0) {
+X		host = "*";
+X	} else {
+X		q = work.x_host.c_host;
+X		sprintf(chost, "%02x%02x%02x%02x%02x%02xH",
+X			q[0], q[1], q[2], q[3], q[4], q[5]);
+X		for (p = chost; *p == '0' && p < chost + 12; p++);
+X		host = p;
+X	}
+X	if (port)
+X		sprintf(cport, ".%xH", htons(port));
+X	else
+X		*cport = 0;
+X
+X	sprintf(mybuf,"%xH.%s%s", ntohl(net.long_e), host, cport);
+X	upHex(mybuf);
+X	return(mybuf);
+X}
+X
+Xchar *
+Xns_phost(sns)
+Xstruct sockaddr_ns *sns;
+X{
+X	struct sockaddr_ns work;
+X	static union ns_net ns_zeronet;
+X	char *p;
+X	
+X	work = *sns;
+X	work.sns_addr.x_port = 0;
+X	work.sns_addr.x_net = ns_zeronet;
+X
+X	p = ns_print(&work);
+X	if (strncmp("0H.", p, 3) == 0) p += 3;
+X	return(p);
+X}
+XupHex(p0)
+Xchar *p0;
+X{
+X	register char *p = p0;
+X	for (; *p; p++) switch (*p) {
+X
+X	case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+X		*p += ('A' - 'a');
+X	}
+X}
+END-of-netstat/route.c
+echo x - netstat/unix.c
+sed 's/^X//' >netstat/unix.c << 'END-of-netstat/unix.c'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)unix.c	5.5 (Berkeley) 2/7/88";
+X#endif not lint
+X
+X/*
+X * Display protocol blocks in the unix domain.
+X */
+X#include <sys/param.h>
+X#include <sys/protosw.h>
+X#include <sys/socket.h>
+X#include <sys/socketvar.h>
+X#include <sys/mbuf.h>
+X#include <sys/un.h>
+X#include <sys/unpcb.h>
+X#define	KERNEL
+X#include <sys/file.h>
+X
+Xint	Aflag;
+Xint	kmem;
+Xextern	char *calloc();
+X
+Xunixpr(nfileaddr, fileaddr, unixsw)
+X	off_t nfileaddr, fileaddr;
+X	struct protosw *unixsw;
+X{
+X	register struct file *fp;
+X	struct file *filep;
+X	struct socket sock, *so = &sock;
+X
+X	if (nfileaddr == 0 || fileaddr == 0) {
+X		printf("nfile or file not in namelist.\n");
+X		return;
+X	}
+X	klseek(kmem, nfileaddr, L_SET);
+X	if (read(kmem, (char *)&nfile, sizeof (nfile)) != sizeof (nfile)) {
+X		printf("nfile: bad read.\n");
+X		return;
+X	}
+X	klseek(kmem, fileaddr, L_SET);
+X	if (read(kmem, (char *)&filep, sizeof (filep)) != sizeof (filep)) {
+X		printf("File table address, bad read.\n");
+X		return;
+X	}
+X	file = (struct file *)calloc(nfile, sizeof (struct file));
+X	if (file == (struct file *)0) {
+X		printf("Out of memory (file table).\n");
+X		return;
+X	}
+X	klseek(kmem, (off_t)filep, L_SET);
+X	if (read(kmem, (char *)file, nfile * sizeof (struct file)) !=
+X	    nfile * sizeof (struct file)) {
+X		printf("File table read error.\n");
+X		return;
+X	}
+X	fileNFILE = file + nfile;
+X	for (fp = file; fp < fileNFILE; fp++) {
+X		if (fp->f_count == 0 || fp->f_type != DTYPE_SOCKET)
+X			continue;
+X		klseek(kmem, (off_t)fp->f_data, L_SET);
+X		if (read(kmem, (char *)so, sizeof (*so)) != sizeof (*so))
+X			continue;
+X		/* kludge */
+X		if (so->so_proto >= unixsw && so->so_proto <= unixsw + 2)
+X			if (so->so_pcb)
+X				unixdomainpr(so, fp->f_data);
+X	}
+X	free((char *)file);
+X}
+X
+Xstatic	char *socktype[] =
+X    { "#0", "stream", "dgram", "raw", "rdm", "seqpacket" };
+X
+Xunixdomainpr(so, soaddr)
+X	register struct socket *so;
+X	caddr_t soaddr;
+X{
+X	struct unpcb unpcb, *unp = &unpcb;
+X	struct mbuf mbuf, *m;
+X	struct sockaddr_un *sa;
+X	static int first = 1;
+X
+X	klseek(kmem, (off_t)so->so_pcb, L_SET);
+X	if (read(kmem, (char *)unp, sizeof (*unp)) != sizeof (*unp))
+X		return;
+X	if (unp->unp_addr) {
+X		m = &mbuf;
+X		klseek(kmem, (off_t)unp->unp_addr, L_SET);
+X		if (read(kmem, (char *)m, sizeof (*m)) != sizeof (*m))
+X			m = (struct mbuf *)0;
+X		sa = mtod(m, struct sockaddr_un *);
+X	} else
+X		m = (struct mbuf *)0;
+X	if (first) {
+X		printf("Active UNIX domain sockets\n");
+X		printf(
+X"%-8.8s %-6.6s %-6.6s %-6.6s %8.8s %8.8s %8.8s %8.8s Addr\n",
+X		    "Address", "Type", "Recv-Q", "Send-Q",
+X		    "Inode", "Conn", "Refs", "Nextref");
+X		first = 0;
+X	}
+X	printf("%8x %-6.6s %6d %6d %8x %8x %8x %8x",
+X	    soaddr, socktype[so->so_type], so->so_rcv.sb_cc, so->so_snd.sb_cc,
+X	    unp->unp_inode, unp->unp_conn,
+X	    unp->unp_refs, unp->unp_nextref);
+X	if (m)
+X		printf(" %.*s", m->m_len - sizeof(sa->sun_family),
+X		    sa->sun_path);
+X	putchar('\n');
+X}
+END-of-netstat/unix.c
+echo x - netstat/host.c.oldimp
+sed 's/^X//' >netstat/host.c.oldimp << 'END-of-netstat/host.c.oldimp'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)host.c	5.3 (Berkeley) 8/11/86";
+X#endif not lint
+X
+X#include <sys/types.h>
+X#include <sys/mbuf.h>
+X
+X#include <netinet/in.h>
+X#include <netimp/if_imp.h>
+X#include <netimp/if_imphost.h>
+X
+Xextern	int kmem;
+Xextern 	int nflag;
+Xextern	char *inetname();
+X
+X/*
+X * Print the host tables associated with the ARPANET IMP.
+X * Symbolic addresses are shown unless the nflag is given.
+X */
+Xhostpr(hostsaddr)
+X	off_t hostsaddr;
+X{
+X	struct mbuf *hosts, mb;
+X	register struct mbuf *m;
+X	register struct hmbuf *mh;
+X	register struct host *hp;
+X	char flagbuf[10], *flags;
+X
+X	if (hostsaddr == 0) {
+X		printf("hosts: symbol not in namelist\n");
+X		return;
+X	}
+X	klseek(kmem, hostsaddr, 0);
+X	read(kmem, (char *)&hosts, sizeof (hosts));
+X	m = hosts;
+X	printf("IMP Host Table\n");
+X	printf("%-5.5s %-15.15s %-4.4s %-9.9s %-4.4s %s\n",
+X		"Flags", "Host", "Qcnt", "Q Address", "RFNM", "Timer");
+X	while (m) {
+X		klseek(kmem, (off_t)m, 0);
+X		read(kmem, (char *)&mb, sizeof (mb));
+X		m = &mb;
+X		mh = mtod(m, struct hmbuf *);
+X		if (mh->hm_count == 0) {
+X			m = m->m_next;
+X			continue;
+X		}
+X		for (hp = mh->hm_hosts; hp < mh->hm_hosts + HPMBUF; hp++) {
+X			if ((hp->h_flags&HF_INUSE) == 0 && hp->h_timer == 0)
+X				continue;
+X			flags = flagbuf;
+X			*flags++ = hp->h_flags&HF_INUSE ? 'A' : 'F';
+X			if (hp->h_flags&HF_DEAD)
+X				*flags++ = 'D';
+X			if (hp->h_flags&HF_UNREACH)
+X				*flags++ = 'U';
+X			*flags = '\0';
+X			printf("%-5.5s %-15.15s %-4d %-9x %-4d %d\n",
+X				flagbuf,
+X				inetname(hp->h_addr),
+X				hp->h_qcnt,
+X				hp->h_q,
+X				hp->h_rfnm,
+X				hp->h_timer);
+X		}
+X		m = m->m_next;
+X	}
+X}
+END-of-netstat/host.c.oldimp
+echo x - netstat/main.c.oldimp
+sed 's/^X//' >netstat/main.c.oldimp << 'END-of-netstat/main.c.oldimp'
+X/*
+X * Copyright (c) 1983,1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983 Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif not lint
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)main.c	5.8 (Berkeley) 8/11/86";
+X#endif not lint
+X
+X#include <sys/param.h>
+X#include <sys/vmmac.h>
+X#include <sys/socket.h>
+X#include <machine/pte.h>
+X#include <ctype.h>
+X#include <errno.h>
+X#include <netdb.h>
+X#include <nlist.h>
+X#include <stdio.h>
+X
+Xstruct nlist nl[] = {
+X#define	N_MBSTAT	0
+X	{ "_mbstat" },
+X#define	N_IPSTAT	1
+X	{ "_ipstat" },
+X#define	N_TCB		2
+X	{ "_tcb" },
+X#define	N_TCPSTAT	3
+X	{ "_tcpstat" },
+X#define	N_UDB		4
+X	{ "_udb" },
+X#define	N_UDPSTAT	5
+X	{ "_udpstat" },
+X#define	N_RAWCB		6
+X	{ "_rawcb" },
+X#define	N_SYSMAP	7
+X	{ "_Sysmap" },
+X#define	N_SYSSIZE	8
+X	{ "_Syssize" },
+X#define	N_IFNET		9
+X	{ "_ifnet" },
+X#define	N_HOSTS		10
+X	{ "_hosts" },
+X#define	N_RTHOST	11
+X	{ "_rthost" },
+X#define	N_RTNET		12
+X	{ "_rtnet" },
+X#define	N_ICMPSTAT	13
+X	{ "_icmpstat" },
+X#define	N_RTSTAT	14
+X	{ "_rtstat" },
+X#define	N_NFILE		15
+X	{ "_nfile" },
+X#define	N_FILE		16
+X	{ "_file" },
+X#define	N_UNIXSW	17
+X	{ "_unixsw" },
+X#define N_RTHASHSIZE	18
+X	{ "_rthashsize" },
+X#define N_IDP		19
+X	{ "_nspcb"},
+X#define N_IDPSTAT	20
+X	{ "_idpstat"},
+X#define N_SPPSTAT	21
+X	{ "_spp_istat"},
+X#define N_NSERR		22
+X	{ "_ns_errstat"},
+X	"",
+X};
+X
+X/* internet protocols */
+Xextern	int protopr();
+Xextern	int tcp_stats(), udp_stats(), ip_stats(), icmp_stats();
+X/* ns protocols */
+Xextern	int nsprotopr();
+Xextern	int spp_stats(), idp_stats(), nserr_stats();
+X
+X#define NULLPROTOX	((struct protox *) 0)
+Xstruct protox {
+X	u_char	pr_index;		/* index into nlist of cb head */
+X	u_char	pr_sindex;		/* index into nlist of stat block */
+X	u_char	pr_wanted;		/* 1 if wanted, 0 otherwise */
+X	int	(*pr_cblocks)();	/* control blocks printing routine */
+X	int	(*pr_stats)();		/* statistics printing routine */
+X	char	*pr_name;		/* well-known name */
+X} protox[] = {
+X	{ N_TCB,	N_TCPSTAT,	1,	protopr,
+X	  tcp_stats,	"tcp" },
+X	{ N_UDB,	N_UDPSTAT,	1,	protopr,
+X	  udp_stats,	"udp" },
+X	{ -1,		N_IPSTAT,	1,	0,
+X	  ip_stats,	"ip" },
+X	{ -1,		N_ICMPSTAT,	1,	0,
+X	  icmp_stats,	"icmp" },
+X	{ -1,		-1,		0,	0,
+X	  0,		0 }
+X};
+X
+Xstruct protox nsprotox[] = {
+X	{ N_IDP,	N_IDPSTAT,	1,	nsprotopr,
+X	  idp_stats,	"idp" },
+X	{ N_IDP,	N_SPPSTAT,	1,	nsprotopr,
+X	  spp_stats,	"spp" },
+X	{ -1,		N_NSERR,	1,	0,
+X	  nserr_stats,	"ns_err" },
+X	{ -1,		-1,		0,	0,
+X	  0,		0 }
+X};
+X
+Xstruct	pte *Sysmap;
+X
+Xchar	*system = "/vmunix";
+Xchar	*kmemf = "/dev/kmem";
+Xint	kmem;
+Xint	kflag;
+Xint	Aflag;
+Xint	aflag;
+Xint	hflag;
+Xint	iflag;
+Xint	mflag;
+Xint	nflag;
+Xint	pflag;
+Xint	rflag;
+Xint	sflag;
+Xint	tflag;
+Xint	interval;
+Xchar	*interface;
+Xint	unit;
+Xchar	usage[] = "[ -Aaihmnrst ] [-f family] [-p proto] [-I interface] [ interval ] [ system ] [ core ]";
+X
+Xint	af = AF_UNSPEC;
+X
+Xextern	char *malloc();
+Xextern	off_t lseek();
+X
+Xmain(argc, argv)
+X	int argc;
+X	char *argv[];
+X{
+X	char *cp, *name;
+X	register struct protoent *p;
+X	register struct protox *tp;	/* for printing cblocks & stats */
+X	struct protox *name2protox();	/* for -p */
+X	
+X	name = argv[0];
+X	argc--, argv++;
+X  	while (argc > 0 && **argv == '-') {
+X		for (cp = &argv[0][1]; *cp; cp++)
+X		switch(*cp) {
+X
+X		case 'A':
+X			Aflag++;
+X			break;
+X
+X		case 'a':
+X			aflag++;
+X			break;
+X
+X		case 'h':
+X			hflag++;
+X			break;
+X
+X		case 'i':
+X			iflag++;
+X			break;
+X
+X		case 'm':
+X			mflag++;
+X			break;
+X
+X		case 'n':
+X			nflag++;
+X			break;
+X
+X		case 'r':
+X			rflag++;
+X			break;
+X
+X		case 's':
+X			sflag++;
+X			break;
+X
+X		case 't':
+X			tflag++;
+X			break;
+X
+X		case 'u':
+X			af = AF_UNIX;
+X			break;
+X
+X		case 'p':
+X			argv++;
+X			argc--;
+X			if (argc == 0)
+X				goto use;
+X			if ((tp = name2protox(*argv)) == NULLPROTOX) {
+X				fprintf(stderr, "%s: unknown or uninstrumented protocol\n",
+X					*argv);
+X				exit(10);
+X			}
+X			pflag++;
+X			break;
+X
+X		case 'f':
+X			argv++;
+X			argc--;
+X			if (strcmp(*argv, "ns") == 0)
+X				af = AF_NS;
+X			else if (strcmp(*argv, "inet") == 0)
+X				af = AF_INET;
+X			else if (strcmp(*argv, "unix") == 0)
+X				af = AF_UNIX;
+X			else {
+X				fprintf(stderr, "%s: unknown address family\n",
+X					*argv);
+X				exit(10);
+X			}
+X			break;
+X			
+X		case 'I':
+X			iflag++;
+X			if (*(interface = cp + 1) == 0) {
+X				if ((interface = argv[1]) == 0)
+X					break;
+X				argv++;
+X				argc--;
+X			}
+X			for (cp = interface; isalpha(*cp); cp++)
+X				;
+X			unit = atoi(cp);
+X			*cp-- = 0;
+X			break;
+X
+X		default:
+Xuse:
+X			printf("usage: %s %s\n", name, usage);
+X			exit(1);
+X		}
+X		argv++, argc--;
+X	}
+X	if (argc > 0 && isdigit(argv[0][0])) {
+X		interval = atoi(argv[0]);
+X		if (interval <= 0)
+X			goto use;
+X		argv++, argc--;
+X		iflag++;
+X	}
+X	if (argc > 0) {
+X		system = *argv;
+X		argv++, argc--;
+X	}
+X	nlist(system, nl);
+X	if (nl[0].n_type == 0) {
+X		fprintf(stderr, "%s: no namelist\n", system);
+X		exit(1);
+X	}
+X	if (argc > 0) {
+X		kmemf = *argv;
+X		kflag++;
+X	}
+X	kmem = open(kmemf, 0);
+X	if (kmem < 0) {
+X		fprintf(stderr, "cannot open ");
+X		perror(kmemf);
+X		exit(1);
+X	}
+X	if (kflag) {
+X		off_t off;
+X
+X		off = nl[N_SYSMAP].n_value & 0x7fffffff;
+X		lseek(kmem, off, 0);
+X		nl[N_SYSSIZE].n_value *= 4;
+X		Sysmap = (struct pte *)malloc((u_int)nl[N_SYSSIZE].n_value);
+X		if (Sysmap == 0) {
+X			perror("Sysmap");
+X			exit(1);
+X		}
+X		read(kmem, (char *)Sysmap, (int)nl[N_SYSSIZE].n_value);
+X	}
+X	if (mflag) {
+X		mbpr((off_t)nl[N_MBSTAT].n_value);
+X		exit(0);
+X	}
+X	if (pflag) {
+X		if (tp->pr_stats)
+X			(*tp->pr_stats)(nl[tp->pr_sindex].n_value, 
+X				tp->pr_name);
+X		else
+X			printf("%s: no stats routine\n", tp->pr_name);
+X		exit(0);
+X	}
+X	/*
+X	 * Keep file descriptors open to avoid overhead
+X	 * of open/close on each call to get* routines.
+X	 */
+X	sethostent(1);
+X	setnetent(1);
+X	if (iflag) {
+X		intpr(interval, nl[N_IFNET].n_value);
+X		exit(0);
+X	}
+X	if (hflag) {
+X		hostpr(nl[N_HOSTS].n_value);
+X		exit(0);
+X	}
+X	if (rflag) {
+X		if (sflag)
+X			rt_stats((off_t)nl[N_RTSTAT].n_value);
+X		else
+X			routepr((off_t)nl[N_RTHOST].n_value, 
+X				(off_t)nl[N_RTNET].n_value,
+X				(off_t)nl[N_RTHASHSIZE].n_value);
+X		exit(0);
+X	}
+X    if (af == AF_INET || af == AF_UNSPEC) {
+X	setprotoent(1);
+X	setservent(1);
+X	while (p = getprotoent()) {
+X
+X		for (tp = protox; tp->pr_name; tp++)
+X			if (strcmp(tp->pr_name, p->p_name) == 0)
+X				break;
+X		if (tp->pr_name == 0 || tp->pr_wanted == 0)
+X			continue;
+X		if (sflag) {
+X			if (tp->pr_stats)
+X				(*tp->pr_stats)(nl[tp->pr_sindex].n_value,
+X					p->p_name);
+X		} else
+X			if (tp->pr_cblocks)
+X				(*tp->pr_cblocks)(nl[tp->pr_index].n_value,
+X					p->p_name);
+X	}
+X	endprotoent();
+X    }
+X    if (af == AF_NS || af == AF_UNSPEC) {
+X	for (tp = nsprotox; tp->pr_name; tp++) {
+X		if (sflag) {
+X			if (tp->pr_stats)
+X				(*tp->pr_stats)(nl[tp->pr_sindex].n_value,
+X					tp->pr_name);
+X		} else
+X			if (tp->pr_cblocks)
+X				(*tp->pr_cblocks)(nl[tp->pr_index].n_value,
+X					tp->pr_name);
+X	}
+X    }
+X    if ((af == AF_UNIX || af == AF_UNSPEC) && !sflag)
+X	    unixpr((off_t)nl[N_NFILE].n_value, (off_t)nl[N_FILE].n_value,
+X		(struct protosw *)nl[N_UNIXSW].n_value);
+X    exit(0);
+X}
+X
+X/*
+X * Seek into the kernel for a value.
+X */
+Xoff_t
+Xklseek(fd, base, off)
+X	int fd, off;
+X	off_t base;
+X{
+X	if (kflag) {
+X		/* get kernel pte */
+X#ifdef vax
+X		base &= 0x7fffffff;
+X#endif
+X		base = ctob(Sysmap[btop(base)].pg_pfnum) + (base & PGOFSET);
+X	}
+X	return (lseek(fd, base, off));
+X}
+X
+Xchar *
+Xplural(n)
+X	int n;
+X{
+X
+X	return (n != 1 ? "s" : "");
+X}
+X
+X/*
+X * Find the protox for the given "well-known" name.
+X */
+Xstruct protox *
+Xknownname(name)
+X	char *name;
+X{
+X	struct protox *tp;
+X	
+X	for (tp = protox; tp->pr_name; tp++)
+X		if (strcmp(tp->pr_name, name) == 0)
+X			return(tp);
+X	for (tp = nsprotox; tp->pr_name; tp++)
+X		if (strcmp(tp->pr_name, name) == 0)
+X			return(tp);
+X	return(NULLPROTOX);
+X}
+X
+X/*
+X * Find the protox corresponding to name.
+X */
+Xstruct protox *
+Xname2protox(name)
+X	char *name;
+X{
+X	struct protox *tp;
+X	char **alias;			/* alias from p->aliases */
+X	struct protoent *p;
+X	
+X	/*
+X	 * Try to find the name in the list of "well-known" names. If that
+X	 * fails, check if name is an alias for an Internet protocol.
+X	 */
+X	if (tp = knownname(name))
+X		return(tp);
+X		
+X	setprotoent(1);			/* make protocol lookup cheaper */
+X	while (p = getprotoent()) {
+X		/* assert: name not same as p->name */
+X		for (alias = p->p_aliases; *alias; alias++)
+X			if (strcmp(name, *alias) == 0) {
+X				endprotoent();
+X				return(knownname(p->p_name));
+X			}
+X	}
+X	endprotoent();
+X	return(NULLPROTOX);
+X}
+END-of-netstat/main.c.oldimp
+echo x - netstat/mkdep
+sed 's/^X//' >netstat/mkdep << 'END-of-netstat/mkdep'
+X#!/bin/sh -
+X#
+X# Copyright (c) 1987 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that this notice is preserved and that due credit is given
+X# to the University of California at Berkeley. The name of the University
+X# may not be used to endorse or promote products derived from this
+X# software without specific prior written permission. This software
+X# is provided ``as is'' without express or implied warranty.
+X#
+X#	@(#)mkdep.sh	5.10 (Berkeley) 1/14/88
+X#
+X
+XPATH=/bin:/usr/bin:/usr/ucb
+Xexport PATH
+X
+XMAKE=Makefile			# default makefile name is "Makefile"
+X
+Xwhile :
+X	do case "$1" in
+X		# -f allows you to select a makefile name
+X		-f)
+X			MAKE=$2
+X			shift; shift ;;
+X
+X		# the -p flag produces "program: program.c" style dependencies
+X		# so .o's don't get produced
+X		-p)
+X			SED='s;\.o;;'
+X			shift ;;
+X		*)
+X			break ;;
+X	esac
+Xdone
+X
+Xif [ $# = 0 ] ; then
+X	echo 'usage: mkdep [-p] [-f makefile] [flags] file ...'
+X	exit 1
+Xfi
+X
+Xif [ ! -w $MAKE ]; then
+X	echo "mkdep: no writeable file \"$MAKE\""
+X	exit 1
+Xfi
+X
+XTMP=/tmp/mkdep$$
+X
+Xtrap 'rm -f $TMP ; exit 1' 1 2 3 13 15
+X
+Xcp $MAKE ${MAKE}.bak
+X
+Xsed -e '/DO NOT DELETE THIS LINE/,$d' < $MAKE > $TMP
+X
+Xcat << _EOF_ >> $TMP
+X# DO NOT DELETE THIS LINE -- mkdep uses it.
+X# DO NOT PUT ANYTHING AFTER THIS LINE, IT WILL GO AWAY.
+X
+X_EOF_
+X
+Xcc -M $* |
+Xsed "
+X	s; \./; ;g
+X	$SED" |
+Xawk '{
+X	if ($1 != prev) {
+X		if (rec != "")
+X			print rec;
+X		rec = $0;
+X		prev = $1;
+X	}
+X	else {
+X		if (length(rec $2) > 78) {
+X			print rec;
+X			rec = $0;
+X		}
+X		else
+X			rec = rec " " $2
+X	}
+X}
+XEND {
+X	print rec
+X}' >> $TMP
+X
+Xcat << _EOF_ >> $TMP
+X
+X# IF YOU PUT ANYTHING HERE IT WILL GO AWAY
+X_EOF_
+X
+X# copy to preserve permissions
+Xcp $TMP $MAKE
+Xrm -f ${MAKE}.bak $TMP
+Xexit 0
+END-of-netstat/mkdep
+exit
+

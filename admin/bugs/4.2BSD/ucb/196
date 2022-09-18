@@ -1,0 +1,167 @@
+Return-Path: <ur-cvsvax!bill@rochester.arpa>
+Date: Fri, 29 Nov 85 15:24:58 est
+From: ur-cvsvax!bill@rochester.arpa (Bill Vaughn)
+Subject: xstr and escaped newlines
+Index: ucb/xstr.c 4.2BSD
+
+Description:
+	1.) /usr/ucb/xstr creates an incorrect C program if any of the
+	    quoted strings contain escaped newlines.
+	2.) It gets confused if '"' is escaped in a character constant.
+	    (Of course it's not necessary to escape the '"' in this
+	    context, but it's legal to do so).
+	3.) The manual page under BUGS should have the following appended:
+	
+	"Becuse the C compiler won't allow constant array pointers to be
+	initialized by a variable, 'xstr' will produce incorrect code
+	for the statement 'char array[] = " ... "; '.  The user must
+	replace these contructs with 'char *array = " ..."; ' to circum-
+	vent this problem. (This will not change any of the semantics
+	of the program.)"
+
+Repeat-By:
+	cat >bug.c << 'EOF'
+	char array[] = "xstr won't do this right";
+	char *s = "or \
+	this\n";
+	char c = '\"';	/* this munges what follows */
+	a(p) char *p {
+	printf("%s",p);
+	}
+	'EOF'
+	xstr -c bug.c ; cc -c x.c
+
+Fix:
+	The following is a context diff against the original distribution
+	with irrelevant differences(from a previous enhancement) removed.
+
+*** xstr.org.c	Thu Oct 10 13:05:49 1985
+--- xstr.c	Thu Nov  7 16:18:22 1985
+***************
+*** 1
+  static char *sccsid = "@(#)xstr.c	4.3 (Berkeley) 6/27/82";
+
+--- 1,2 -----
++ #ifndef lint
+  static char *sccsid = "@(#)xstr.c	4.3 (Berkeley) 6/27/82";
+***************
+*** 1,2
+  static char *sccsid = "@(#)xstr.c	4.3 (Berkeley) 6/27/82";
+  #include <stdio.h>
+
+--- 2,4 -----
+  static char *sccsid = "@(#)xstr.c	4.3 (Berkeley) 6/27/82";
++ #endif
+  #include <stdio.h>
+***************
+*** 11,12
+   * November, 1978
+   */
+
+--- 13,35 -----
+   * November, 1978
++  *
++  * A fix is included so that strings with embedded newlines
++  * are parsed correctly. Also the character constant '\"'
++  * is now interpreted correctly.
++  *
++  * A deficiency in 'xstr' still exists however in that
++  * initialized declarations of the form:
++  *
++  *		char array[] = " ... ";
++  *
++  * cannot be processed properly. This is because the C
++  * compiler will not allow a variable to initialize a
++  * constant pointer.
++  * The only way around this is to change the above form to:
++  *
++  *		char *array = " ... ";
++  *
++  * William Vaughn, Univ of Rochester, CVS
++  * November, 1985
+   */
+***************
+*** 85,86
+  
+  process(name)
+
+--- 120,154 -----
+  
++ /*
++  * fgetline uses the same argument sequence as fgets.
++  * It reads n-1 characters, or up to a NON-ESCAPED
++  * newline character, whichever comes first, from the
++  * stream into the string s. Any ESCAPED newlines are
++  * discarded (along with the '\'). The last character
++  * read into s is followed by a '\0'.  Returns first
++  * argument or NULL if EOF or error is detected.
++  */
++ char *fgetline(s, n, stream)
++ 	char *s;
++ 	FILE *stream;
++ {
++ 	register char *p, *str;
++ 	register int m;
++ 
++ 	str = s;
++ 	m = n;
++ 	while ((p = fgets(str, m, stream)) != NULL) {
++ 		while (*str++)
++ 			m--;
++ 		str--;
++ 		if (*(--str) != '\n') {
++ 			fprintf(stderr,"xstr: Line > %d bytes\n",n-1);
++ 			break;
++ 		}
++ 		if (*(--str) != '\\')
++ 			break;
++ 		m -= 2;
++ 	}
++ 	return( (p != NULL ? s : NULL) );
++ }
++ 
+  process(name)
+***************
+*** 89,91
+  	char *cp;
+! 	char linebuf[BUFSIZ];
+  	register int c;
+
+--- 157,159 -----
+  	char *cp;
+! 	char linebuf[BUFSIZ*2];
+  	register int c;
+***************
+*** 95,97
+  	for (;;) {
+! 		if (fgets(linebuf, sizeof linebuf, stdin) == NULL) {
+  			if (ferror(stdin)) {
+
+--- 163,165 -----
+  	for (;;) {
+! 		if (fgetline(linebuf, sizeof linebuf, stdin) == NULL) {
+  			if (ferror(stdin)) {
+***************
+*** 121,123
+  			putchar(c);
+! 			if (*cp)
+  				putchar(*cp++);
+
+--- 189,193 -----
+  			putchar(c);
+! 			while (*cp != '\'') {
+! 				if (!*cp)
+! 					break;
+  				putchar(*cp++);
+***************
+*** 123,124
+  				putchar(*cp++);
+  			break;
+
+--- 193,196 -----
+  				putchar(*cp++);
++ 			}
++ 			putchar(*cp++);
+  			break;
+*******************
+

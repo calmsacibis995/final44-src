@@ -1,0 +1,90 @@
+From leres@ee.lbl.gov  Fri Feb 21 13:17:53 1992
+To: bugs@okeeffe.CS.Berkeley.EDU (Bugs BSD Bunny)
+Index: sbin/dump/dumptraverse.c 4.3BSD-tahoe +FIX
+Subject: dump sez it always dumps the root directory (but actually doesn't)
+Date: Mon, 14 Oct 91 22:07:57 PDT
+From: Craig Leres <leres@ee.lbl.gov>
+Resent-To: bugs@okeeffe.CS.Berkeley.EDU (Bugs BSD Bunny)
+Resent-Date: Fri, 21 Feb 92 13:18:38 PST
+Resent-From: Craig Leres <leres@ee.lbl.gov>
+
+Description:
+	Recently, dump was modified to "always dump the root" to keep
+	restore from barfing on empty dump tapes. This is a good idea
+	except that the code doesn't actually do this.
+
+Repeat-By:
+	Make a level 0 dump (to update /etc/dumpdates) and then make a
+	higher level dump. Notice that restore doesn't like it:
+
+	    hell 11 % dump 0uf root.dump /pub	# handy static filesystem
+	    hell 12 % dump 8uf level8.dump /pub
+	    hell 13 % /sbin/restore tvf level8.dump
+	    Verify tape and initialize maps
+	    Tape block size is 10
+	    Dump   date: Mon Oct 14 20:34:59 1991
+	    Dumped from: Mon Oct 14 20:31:31 1991
+	    Level 8 dump of /pub on hell.ee.lbl.gov:/dev/ip0e
+	    Label: none
+	    Cannot find file dump list
+
+Fix:
+	Change logic to insure root inode gets dumped.
+
+*** dumptraverse.c.virgin	Mon Oct 14 21:18:50 1991
+--- dumptraverse.c	Mon Oct 14 21:20:23 1991
+***************
+*** 32,38 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)dumptraverse.c	5.13 (Berkeley) 8/28/91";
+  #endif /* not lint */
+  
+  #ifdef sunos
+--- 32,38 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)dumptraverse.c	5.13+ (Berkeley) 8/28/91";
+  #endif /* not lint */
+  
+  #ifdef sunos
+***************
+*** 124,131 ****
+  		SETINO(ino, usedinomap);
+  		if (mode == IFDIR)
+  			SETINO(ino, dumpdirmap);
+  		if (dp->di_mtime >= spcl.c_ddate ||
+! 		    dp->di_ctime >= spcl.c_ddate) {
+  			SETINO(ino, dumpinomap);
+  			if (mode != IFREG && mode != IFDIR && mode != IFLNK) {
+  				*tapesize += 1;
+--- 124,136 ----
+  		SETINO(ino, usedinomap);
+  		if (mode == IFDIR)
+  			SETINO(ino, dumpdirmap);
++ 		/*
++ 		 * Restore gets very upset if the root is not dumped,
++ 		 * so ensure that it always is dumped.
++ 		 */
+  		if (dp->di_mtime >= spcl.c_ddate ||
+! 		    dp->di_ctime >= spcl.c_ddate ||
+! 		    ino == ROOTINO)) {
+  			SETINO(ino, dumpinomap);
+  			if (mode != IFREG && mode != IFDIR && mode != IFLNK) {
+  				*tapesize += 1;
+***************
+*** 137,147 ****
+  		if (mode == IFDIR)
+  			anydirskipped = 1;
+  	}
+- 	/*
+- 	 * Restore gets very upset if the root is not dumped,
+- 	 * so ensure that it always is dumped.
+- 	 */
+- 	SETINO(ROOTINO, usedinomap);
+  	return (anydirskipped);
+  }
+  
+--- 142,147 ----

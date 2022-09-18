@@ -1,0 +1,206 @@
+From yale!cmcl2!polyof!john@uunet.uu.net Mon Dec  5 10:55:11 PST 1988
+Path: seismo!uunet!yale!cmcl2!polyof!john
+From: john@polyof.UUCP ( John Buck )
+Newsgroups: comp.protocols.tcp-ip,comp.bugs.4bsd
+Subject: recent posting ftpd (and older version) have a bug
+Index: etc/ftpd 4.3BSD
+Sources: etc/ftpd/{glob.c,popen.c}
+
+Symptom: ftpd core dumps (essentially) sometimes, causing a remote error
+	 of "Service unavailable; server has closed connection"
+Problem: If glob() fails (no matches), it winds up freeing (via free()),
+	 an automatic stack array (gargv)
+Fix:	 Remove last free() call in blkfree() (IE the one that frees the
+	 pointer to the list)
+	 Then, you have to fix the call to blkfree() in popen.c to do an
+	 extra free(argv[argc]) after the blkfree(argv[argc])
+
+History: The comment in glob.c says it all... The code for glob was lifted
+	 from csh, and seeming appropriate changes were made.  Problem
+	 was a call to xfree() was changed to plain old free().  xfree() in
+	 csh checked to see if the address that was being freed was
+	 past the end of the data area.  If it was, the call was ignored.
+	 free() does not do this extra, kludgy, checking.
+Alternative fix: lift the code for xfree() from csh, and make necessary,
+	kludgy, changes.
+
+John Buck
+john@polyof.poly.edu
+john@polygraf.bitnet
+
+----------------------------------------------------------------------
+Path: seismo!uunet!ncrlnk!ncr-sd!hp-sdd!hplabs!decwrl!labrea!rutgers!cmcl2!polyof!john
+From: john@polyof.UUCP ( John Buck )
+Newsgroups: comp.bugs.4bsd
+Subject: ftpd/ftp bug
+Recently I posted a bug report for the "ftpd" that was recently posted
+to the net.  I described a bug with the "blkfree()" routine, but I neglected
+to include "diff -c" output so that you may apply the fixes required to
+solve the problem.  cpw%sneezy@lanl.gov was kind enough to send me a copy
+of the the "diff -c" of the changes I proposed.  Enclosed below is a copy
+of the "diffs" he sent to me.  Note this is for the "ftpd" that was recently
+posted; not your standard 4.2/4.3 ftpd; line numbers may vary.
+
+Also included below cpw%sneezy's diffs to ftpd are the diffs to "ftp"
+which has the exact same problem that "ftpd" had.  The diffs were those
+applied to the standard BSD4.3 "ftp", again, line numbers may vary.
+
+Code changes are commented.
+
+PS -- Thanks, cpw%sneezy@lanl.gov
+
+----------------------CUT ME HERE-------------------------------
+Here are the diffs to "Ftpd":
+--- glob.c      Fri Dec  9 13:29:50 1988
+***************
+*** 606,608 ****
+                free(*av++);
+-       free((char *)av0);
+  }
+--- 606,607 ----
+
+------- popen.c -------
+*** /tmp/d18193 Fri Dec  9 13:46:29 1988
+--- popen.c     Fri Dec  9 13:38:13 1988
+***************
+*** 86,88 ****
+                (void)close(pdes[1]);
+!               goto free;
+                /* NOTREACHED */
+--- 86,88 ----
+                (void)close(pdes[1]);
+!               goto pfree;
+                /* NOTREACHED */
+***************
+*** 115,118 ****
+! free: for (argc = 1; argv[argc] != NULL; argc++)
+                blkfree((char **)argv[argc]);
+        return(iop);
+--- 115,120 ----
+! pfree:        for (argc = 1; argv[argc] != NULL; argc++) {
+                blkfree((char **)argv[argc]);
++               free((char *)argv[argc]);
++       }
+        return(iop);
+-------------------------END OF Ftpd DIFFS-------------------------
+
+Here are the diffs to "Ftp":
+*** /usr/src/ucb/ftp/cmds.c     Fri Mar  7 15:33:25 1986
+--- cmds.c      Sun Dec 11 11:25:54 1988
+***************
+*** 382,389 ****
+                gargs = glob(argv[i]);
+                if (globerr != NULL) {
+                        printf("%s\n", globerr);
+!                       if (gargs)
+                                blkfree(gargs);
+                        continue;
+                }
+                for (cpp = gargs; cpp && *cpp != NULL; cpp++) {
+--- 382,395 ----
+                gargs = glob(argv[i]);
+                if (globerr != NULL) {
+                        printf("%s\n", globerr);
+!                       if (gargs){
+! /* JB 12/88; fix problem caused by blkfree() -- we must free the globbed
+!  *    argument list by hand -- blkfree() only frees each of the
+!  *    arguments.
+!  */
+                                blkfree(gargs);
++                               free(gargs);
++                       }
+                        continue;
+                }
+                for (cpp = gargs; cpp && *cpp != NULL; cpp++) {
+***************
+*** 402,409 ****
+                                }
+                        }
+                }
+!               if (gargs != NULL)
+                        blkfree(gargs);
+        }
+        (void) signal(SIGINT, oldintr);
+        mflag = 0;
+--- 408,421 ----
+                                }
+                        }
+                }
+!               if (gargs != NULL){
+! /* JB 12/88; fix problem caused by blkfree() -- we must free the globbed
+!  *    argument list by hand -- blkfree() only frees each of the
+!  *    arguments.
+!  */
+                        blkfree(gargs);
++                       free(gargs);
++               }
+        }
+        (void) signal(SIGINT, oldintr);
+        mflag = 0;
+***************
+*** 1337,1351 ****
+        globbed = glob(*cpp);
+        if (globerr != NULL) {
+                printf("%s: %s\n", *cpp, globerr);
+!               if (globbed)
+                        blkfree(globbed);
+                return (0);
+        }
+        if (globbed) {
+                *cpp = *globbed++;
+                /* don't waste too much memory */
+!               if (*globbed)
+                        blkfree(globbed);
+        }
+        return (1);
+  }
+--- 1349,1375 ----
+        globbed = glob(*cpp);
+        if (globerr != NULL) {
+                printf("%s: %s\n", *cpp, globerr);
+!               if (globbed){
+! /* JB 12/88; fix problem caused by blkfree() -- we must free the globbed
+!  *    argument list by hand -- blkfree() only frees each of the
+!  *    arguments.
+!  */
+                        blkfree(globbed);
++                       free(globbed);
++               }
+                return (0);
+        }
+        if (globbed) {
+                *cpp = *globbed++;
+                /* don't waste too much memory */
+!               if (*globbed){
+! /* JB 12/88; fix problem caused by blkfree() -- we must free the globbed
+!  *    argument list by hand -- blkfree() only frees each of the
+!  *    arguments.
+!  */
+                        blkfree(globbed);
++                       free(globbed);
++               }
+        }
+        return (1);
+  }
+*** /usr/src/ucb/ftp/glob.c     Fri Mar  7 15:33:19 1986
+--- glob.c      Sun Dec 11 11:21:36 1988
+***************
+*** 593,599 ****
+--- 593,604 ----
+        while (*av)
+                free(*av++);
++ #ifdef BUGGY
++ /* JB -- 12/88; this call to free() is too ambitious -- It could wind
++  *    up free'ing stack space that was blkfree'd in glob()
++  */
+        free((char *)av0);
++ #endif
+  }
+  static
+----------------------END OF Ftp DIFFS----------------------------
+
+John Buck
+john@polyof.poly.edu [128.238.10.100]
+john@polygraf.bitnet
+trixie!polyof!john
+

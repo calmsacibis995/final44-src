@@ -1,0 +1,167 @@
+From chris@gyre.umd.edu Wed Jan  4 22:52:05 1989
+Date: Thu, 5 Jan 89 01:50:53 EST
+From: Chris Torek <chris@gyre.umd.edu>
+To: bostic@okeeffe.Berkeley.EDU
+Subject: vi race condition
+Index: ucb/ex 4.3BSD-tahoe
+
+vi has a nasty little race condition that shows up as a `longjmp botch'
+occasionally on loaded systems.  The conditions necessary to trigger it
+are:
+
+	- a map that includes ESC (`map #1 foo' on a terminal with a
+	  function key, e.g.)
+	- the right stuff in a global variable.  I managed to get it
+	  there with `:e /etc/termcap' then `!Gcat'.
+	- a load big enough to make vi stop during the execution of
+	  its `CATCH' macro while inside fastpeekkey().
+
+CATCH looks like this:
+
+	#define CATCH	vcatch = 1; if (setjmp(vreslab) == 0) {
+
+For the bug to manifest, vi has to stop between the assignment
+	vcatch = 1
+and the call to setjmp, *after* the alarm has been set (to 1 second).
+It must then wait for at least one second.  It will then resume in
+the trapalarm() function, which will test vcatch, and seeing it set,
+call longjmp(vreslab), jumping to somewhere random.
+
+To demonstrate the bug, change ex_vget.c as follows:
+
+RCS file: RCS/ex_vget.c,v
+retrieving revision 1.2
+diff -c2 -r1.2 ex_vget.c
+*** /tmp/,RCSt1018835	Thu Jan  5 01:37:57 1989
+--- ex_vget.c	Thu Jan  5 01:20:16 1989
+***************
+*** 669,673 ****
+  #endif
+  	}
+! 	CATCH
+  		c = peekkey();
+  #ifdef MDEBUG
+--- 669,678 ----
+  #endif
+  	}
+! 	/*CATCH*/
+! vcatch = 1;
+!   c=sigblock(sigmask(SIGALRM));
+!   {int tv[2];tv[0]=1;tv[1]=200000;(void)select(0,0,0,0,tv);}
+!   sigsetmask(c);
+! if (setjmp(vreslab) == 0) {
+  		c = peekkey();
+  #ifdef MDEBUG
+
+Then set up the conditions described above:
+
+	% make
+	...
+	% ln a.out vi
+	% ./vi /etc/termcap
+	:map #1 foo
+	!Gcat
+	^[
+
+Presto!  (A word meaning `your laundry is ready, sir' :-) )
+
+One rather weak fix for this is to change the macro to
+
+	#define	CATCH	if (setjmp(vreslab) == 0) { vcatch = 1;
+
+This may be a good idea anyway, but it still leaves a race (but
+this time an essentially harmless one).  An alternative is to
+change ex_vget's fastpeekkey() so that the alarm() call is done
+inside the catch code:
+
+	CATCH
+		if (value(TIMEOUT) && inopen >= 0) {
+			... alarm stuff ...
+		}
+		c = peekkey();
+		alarm(0);
+		... debug stuff ...
+	ONERR
+		c = 0;
+		... debug stuff ...
+	ENDCATCH
+
+This still races, but not as hard.  (Jogging vs sprinting :-) )
+
+Much better would be to augment peekkey(), and when you want to
+read a character with a 1-second timeout via fastpeekkey(), use
+select() to wait for input with that timeout.  All other methods
+are quite error-prone.
+
+Of course, since old systems on which vi still runs do not have
+select, one would have to move all the catch code into peekkey()
+for the timeout case.  I think I will leave all that up to you,
+and just move the alarm() call for now....
+
+RCS file: RCS/ex_vget.c,v
+retrieving revision 1.2
+diff -c2 -r1.2 ex_vget.c
+*** /tmp/,RCSt1018891	Thu Jan  5 01:58:03 1989
+--- ex_vget.c	Thu Jan  5 01:57:01 1989
+***************
+*** 656,684 ****
+  #ifdef MDEBUG
+  	if (trace)
+! 		fprintf(trace,"\nfastpeekkey: ",c);
+  #endif
+  	Oint = signal(SIGINT, trapalarm);
+! 	if (value(TIMEOUT) && inopen >= 0) {
+! 		signal(SIGALRM, trapalarm);
+  #ifdef MDEBUG
+! 		alarm(10);
+! 		if (trace)
+! 			fprintf(trace, "set alarm ");
+  #else
+! 		alarm(1);
+  #endif
+! 	}
+! 	CATCH
+  		c = peekkey();
+  #ifdef MDEBUG
+! 	if (trace)
+! 		fprintf(trace,"[OK]",c);
+  #endif
+- 		alarm(0);
+  	ONERR
+  		c = 0;
+  #ifdef MDEBUG
+! 	if (trace)
+! 		fprintf(trace,"[TIMEOUT]",c);
+  #endif
+  	ENDCATCH
+--- 656,684 ----
+  #ifdef MDEBUG
+  	if (trace)
+! 		fprintf(trace,"\nfastpeekkey: ");
+  #endif
+  	Oint = signal(SIGINT, trapalarm);
+! 	CATCH
+! 		if (value(TIMEOUT) && inopen >= 0) {
+! 			signal(SIGALRM, trapalarm);
+  #ifdef MDEBUG
+! 			alarm(10);
+! 			if (trace)
+! 				fprintf(trace, "set alarm ");
+  #else
+! 			alarm(1);
+  #endif
+! 		}
+  		c = peekkey();
++ 		alarm(0);
+  #ifdef MDEBUG
+! 		if (trace)
+! 			fprintf(trace,"[OK]",c);
+  #endif
+  	ONERR
+  		c = 0;
+  #ifdef MDEBUG
+! 		if (trace)
+! 			fprintf(trace,"[TIMEOUT]",c);
+  #endif
+  	ENDCATCH
+

@@ -1,0 +1,355 @@
+Return-Path: <arnold%emoryu1%emory.csnet@RELAY.CS.NET>
+Date: Mon, 20 Oct 86 11:34:44 EDT
+From: "Arnold D. Robbins" <arnold%emoryu1%emory.csnet@RELAY.CS.NET>
+Subject: 4.3 rcp can clobber files; does not grok site.user:file -- bug fix
+Subject: rcp can clobber a file; does not understand host.user:file notation
+Index: bin/rcp.c 4.3BSD
+
+[ Note, this report has already been posted to net.bugs.4bsd ]
+
+Description:
+	There are two problems with rcp. First, the man page says that rcp
+	understands the 4.2 "host.user:file" notation, for compatibility.
+	In fact, it does not; it only knows about "user@host:file".
+
+	Secondly, rcp can clobber a file by attempting to copy it onto
+	itself, when a "remote" file is actually a local file. See the
+	example below. (Admittedly, this is a hole more than a "bug", but
+	it can be a problem in many environments, particularly where there
+	are shorthand names. E.g., we have two machines, "emoryu1" and
+	"emoryu2", with nicknames of "u1" and "u2". I clobbered files a
+	number of times until I learned to be more careful.)
+Repeat-By:
+	Script started on Fri Oct 17 11:40:47 1986
+	emory> echo this is a file > foo
+	emory> rcp foo emoryu1.osadr:
+	emoryu1.osadr: unknown host
+
+	emory> rcp foo emory:
+	rcp: foo: file changed size
+	emory> cat foo
+	emory> lf -l foo
+	-rw-r--r--  1 arnold   eucc           15 Oct 17 11:41 foo
+	emory> od -c foo
+	0000000   \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0  \0
+	0000017
+	emory> 
+	script done on Fri Oct 17 11:42:14 1986
+Fix:
+	Apply the following patch:
+
+*** rcp.c	Sun Feb  9 22:36:06 1986
+--- /usr4/arnold/rcp.c	Fri Oct 17 10:16:28 1986
+***************
+*** 44,49 ****
+--- 44,50 ----
+  struct	passwd *getpwuid();
+  int	userid;
+  int	port;
++ struct hostent me;
+  
+  struct buffer {
+  	int	cnt;
+***************
+*** 64,70 ****
+--- 65,74 ----
+  	int i;
+  	char buf[BUFSIZ], cmd[16];
+  	struct servent *sp;
++ 	int dot = 0;		/* use old style host.user:file */
++ 	int junk;
+  
++ 	setmyhost ();
+  	sp = getservbyname("shell", "tcp");
+  	if (sp == NULL) {
+  		fprintf(stderr, "rcp: shell/tcp: unknown service\n");
+***************
+*** 125,142 ****
+  		*targ++ = 0;
+  		if (*targ == 0)
+  			targ = ".";
+! 		thost = index(argv[argc - 1], '@');
+! 		if (thost) {
+! 			*thost++ = 0;
+! 			tuser = argv[argc - 1];
+! 			if (*tuser == '\0')
+! 				tuser = NULL;
+! 			else if (!okname(tuser))
+! 				exit(1);
+! 		} else {
+! 			thost = argv[argc - 1];
+! 			tuser = NULL;
+! 		}
+  		for (i = 0; i < argc - 1; i++) {
+  			src = colon(argv[i]);
+  			if (src) {		/* remote to remote */
+--- 129,135 ----
+  		*targ++ = 0;
+  		if (*targ == 0)
+  			targ = ".";
+! 		sethostuser (argv[argc - 1], & thost, & tuser, NULL, & dot);
+  		for (i = 0; i < argc - 1; i++) {
+  			src = colon(argv[i]);
+  			if (src) {		/* remote to remote */
+***************
+*** 143,167 ****
+  				*src++ = 0;
+  				if (*src == 0)
+  					src = ".";
+! 				host = index(argv[i], '@');
+! 				if (host) {
+! 					*host++ = 0;
+! 					suser = argv[i];
+! 					if (*suser == '\0')
+! 						suser = pwd->pw_name;
+! 					else if (!okname(suser))
+! 						continue;
+  		(void) sprintf(buf, "rsh %s -l %s -n %s %s '%s%s%s:%s'",
+  					    host, suser, cmd, src, tuser,
+  					    tuser ? "@" : "",
+  					    thost, targ);
+! 				} else
+! 		(void) sprintf(buf, "rsh %s -n %s %s '%s%s%s:%s'",
+! 					    argv[i], cmd, src, tuser,
+! 					    tuser ? "@" : "",
+! 					    thost, targ);
+  				(void) susystem(buf);
+  			} else {		/* local to remote */
+  				if (rem == -1) {
+  					(void) sprintf(buf, "%s -t %s",
+  					    cmd, targ);
+--- 136,168 ----
+  				*src++ = 0;
+  				if (*src == 0)
+  					src = ".";
+! 				sethostuser (argv[i], & host,
+! 					& suser, pwd->pw_name, & junk);
+! 				if (suser && !okname(suser))
+! 					continue;
+! 				/*
+! 				 * this always passes the user name,
+! 				 * but big deal.
+! 				 */
+! 				if (dot)	/* set only for dest */
+  		(void) sprintf(buf, "rsh %s -l %s -n %s %s '%s%s%s:%s'",
++ 					    host, suser, cmd, src,
++ 					    thost,
++ 					    tuser ? "." : "",
++ 					    tuser,
++ 					    targ);
++ 				else
++ 		(void) sprintf(buf, "rsh %s -l %s -n %s %s '%s%s%s:%s'",
+  					    host, suser, cmd, src, tuser,
+  					    tuser ? "@" : "",
+  					    thost, targ);
+! 				if (sourceistarget (host, src, thost, targ))
+! 					continue;
+  				(void) susystem(buf);
+  			} else {		/* local to remote */
++ 				if (sourceistarget (me.h_name, argv[i],
++ 								thost, targ))
++ 					continue;
+  				if (rem == -1) {
+  					(void) sprintf(buf, "%s -t %s",
+  					    cmd, targ);
+***************
+*** 184,189 ****
+--- 185,194 ----
+  		for (i = 0; i < argc - 1; i++) {
+  			src = colon(argv[i]);
+  			if (src == 0) {		/* local to local */
++ 				/*
++ 				 * cp will make sure not to copy
++ 				 * a file onto itself.
++ 				 */
+  				(void) sprintf(buf, "/bin/cp%s%s %s %s",
+  				    iamrecursive ? " -r" : "",
+  				    pflag ? " -p" : "",
+***************
+*** 193,211 ****
+  				*src++ = 0;
+  				if (*src == 0)
+  					src = ".";
+! 				host = index(argv[i], '@');
+! 				if (host) {
+! 					*host++ = 0;
+! 					suser = argv[i];
+! 					if (*suser == '\0')
+! 						suser = pwd->pw_name;
+! 					else if (!okname(suser))
+! 						continue;
+! 				} else {
+! 					host = argv[i];
+! 					suser = pwd->pw_name;
+! 				}
+  				(void) sprintf(buf, "%s -f %s", cmd, src);
+  				rem = rcmd(&host, port, pwd->pw_name, suser,
+  				    buf, 0);
+  				if (rem < 0)
+--- 198,211 ----
+  				*src++ = 0;
+  				if (*src == 0)
+  					src = ".";
+! 				sethostuser (argv[i], & host, & suser,
+! 							pwd->pw_name, & junk);
+! 				if (suser && !okname(suser))
+! 					continue;
+  				(void) sprintf(buf, "%s -f %s", cmd, src);
++ 				if (sourceistarget (host, src, me.h_name,
++ 							argv[argc-1]))
++ 					continue;
+  				rem = rcmd(&host, port, pwd->pw_name, suser,
+  				    buf, 0);
+  				if (rem < 0)
+***************
+*** 704,707 ****
+--- 704,852 ----
+  	(void) write(rem, buf, strlen(buf));
+  	if (iamremote == 0)
+  		(void) write(2, buf+1, strlen(buf+1));
++ }
++ 
++ /*
++  * sethostuser
++  *
++  * info is string containing "host", "host.user", or "user@host",
++  * set host to host part, user to user part, or to defuser if no
++  * user is available. Set dot if name was old style dotted name.
++  */
++ 
++ sethostuser (info, host, user, defuser, dot)
++ register char *info, **host, **user, *defuser;
++ int *dot;
++ {
++ 	register char *cp = info;
++ 
++ 	while (*cp && *cp != '@' && *cp != '.')
++ 		cp++;
++ 	
++ 	if (! *cp)
++ 	{
++ 		*host = info;
++ 		*user = defuser;
++ 	}
++ 	else if (*cp == '@')
++ 	{
++ 		*cp++ = '\0';
++ 		*host = cp;
++ 		*user = info;
++ 	}
++ 	else	/* *cp == '.' */
++ 	{
++ 		*cp++ = '\0';
++ 		*user = cp;
++ 		*host = info;
++ 		*dot = 1;
++ 	}
++ 	return 0;
++ }
++ 
++ setmyhost ()
++ {
++ 	struct hostent *h;
++ 	char buf[BUFSIZ];
++ 
++ 	if (gethostname (buf, sizeof buf) < 0)
++ 	{
++ 		error ("rcp: gethostname: %s\n", sys_errlist[errno]);
++ 		exit (1);
++ 	}
++ 
++ 	sethostent (0);
++ 	if ((h = gethostbyname (buf)) == NULL)
++ 	{
++ 		error ("rcp: gethostbyname (\"%s\") failed.\n", buf);
++ 		endhostent ();
++ 		exit (1);
++ 	}
++ 
++ 	me = *h;
++ 	endhostent ();
++ }
++ 
++ /*
++  * sourceistarget
++  *
++  * attempt to prevent rcp from copying a file onto itself by seeing
++  * if both hosts are really the current host, and if so, if the files
++  * are identical.
++  */
++ 
++ sourceistarget (shost, sfile, dhost, dfile)
++ char *shost, *sfile, *dhost, *dfile;
++ {
++ 	static char localhost[] = "localhost";
++ 	struct stat sbuf1, sbuf2;
++ 	int i;
++ 	char buf[BUFSIZ], *cp, *rindex ();
++ 
++ 	if (strcmp (shost, me.h_name) == 0 || strcmp (shost, localhost) == 0)
++ 		goto out1;
++ 	else
++ 		for (i = 0; me.h_aliases[i]; i++)
++ 			if (strcmp (shost, me.h_aliases[i]) == 0)
++ 				goto out1;
++ 	return 0;
++ 
++ out1:
++ 	/* source host is local, check destination host */
++ 	if (strcmp (dhost, me.h_name) == 0 || strcmp (dhost, localhost) == 0)
++ 		goto out2;
++ 	else
++ 		for (i = 0; me.h_aliases[i]; i++)
++ 			if (strcmp (dhost, me.h_aliases[i]) == 0)
++ 				goto out2;
++ 	return 0;
++ 
++ out2:
++ 	/*
++ 	 * At this point, the two hosts are the same, and
++ 	 * they are actually the local host.
++ 	 * See if the files are the same.
++ 	 *
++ 	 * This gets complicated because the destination could
++ 	 * be a directory, so if it is, get file name part of the
++ 	 * source, tack it onto the directory, and check that.
++ 	 *
++ 	 * If the stat call fails on the source file, play it safe
++ 	 * and return 1, forcing the code which checks the status to skip
++ 	 * copying this particular file. If it fails on the destination
++ 	 * file, it does not exist yet, so the source and target are
++ 	 * not the same file.
++ 	 */
++ 
++ 	if (stat (sfile, & sbuf1) < 0)
++ 	{
++ 		error ("rcp: %s: %s\n", sfile, sys_errlist[errno]);
++ 		return 1;
++ 	}
++ 
++ 	if (stat (dfile, & sbuf2) < 0)	/* destination does not exist */
++ 		return 0;
++ 	else if ((sbuf2.st_mode & S_IFMT) == S_IFDIR &&
++ 		(sbuf1.st_mode & S_IFMT) != S_IFDIR)	/* file to directory */
++ 	{
++ 		cp = rindex (sfile, '/');
++ 		if (cp)
++ 			cp++;
++ 		else
++ 			cp = sfile;
++ 		sprintf (buf, "%s/%s", dfile, cp);
++ 		if (stat (buf, & sbuf2) < 0)	/* target does not exist */
++ 			return 0;
++ 		else
++ 			dfile = buf;	/* for error message, below */
++ 	}
++ 
++ 	if (sbuf1.st_dev == sbuf2.st_dev && sbuf1.st_ino == sbuf2.st_ino)
++ 	{
++ 		error ("rcp: %s:%s is the same file as %s:%s.\n",
++ 				shost, sfile, dhost, dfile);
++ 		return 1;
++ 	}
++ 	else
++ 		return 0;
+  }

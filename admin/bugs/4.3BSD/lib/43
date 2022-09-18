@@ -1,0 +1,67 @@
+From bostic@okeeffe.berkeley.edu  Mon Feb  2 11:29:12 1987
+Received: by ucbarpa.Berkeley.EDU (5.57/1.20)
+	id AA20258; Mon, 2 Feb 87 11:29:12 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.20)
+	id AA04262; Mon, 2 Feb 87 11:28:37 PST
+Received: by okeeffe.Berkeley.EDU (5.57/1.14)
+	id AA11376; Mon, 2 Feb 87 11:28:29 PST
+Date: Mon, 2 Feb 87 11:28:29 PST
+From: bostic@okeeffe.berkeley.edu (Keith Bostic)
+Message-Id: <8702021928.AA11376@okeeffe.Berkeley.EDU>
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: 4.3bsd/VAX stdio: buffer overruns
+Index: lib/libc/vax/stdio/doprnt.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	4.3 stdio on a VAX will, sometimes, grossly overrun its buffer,
+	scribbling on whatever happens to follow said buffer.
+
+Repeat-By:
+	This is difficult to demonstrate easily, because it depends on
+	the output being line buffered and on what happens to follow
+	the output buffer in memory.  But....
+
+	#include <stdio.h>
+	char buf[BUFSIZ+1];
+	main()
+	{
+	 /* no \n - don't want to flush the buffer */
+	 printf("Hello world....");
+	}
+
+	Run this under adb.  Examine __iob+14 immediately after the
+	printf and notice that the _cnt field is zero even though the
+	_ptr has been advanced properly.
+
+	Provided you always use printf, this problem doesn't show
+	itself, because _doprnt checks for _ptr > _base+_bufsiz.  Where
+	it bites is when you mix printf() and putc() (or fputc()),
+	because putc() checks _cnt and assumes _ptr and _base agree
+	with it.  Thus, it is possible to overrun _sobuf by up to
+	BUFSIZ-1 characters (use printf to nearly fill _sobuf, then you
+	can do BUFSIZ more putc()s before it will flush).
+
+Fix:
+	I suspect some of the code in _doprnt (see Index: line):
+
+	strout2:		# enter here to force out r2; r0,r1 must be set
+		# do some tricks with line buffering (_IOLBF) first
+		movl	fdesc,r3
+	<six lines omitted here>
+		movb	r2,*4(r3)		# line buffered and not buffer full
+		incl	4(r3)			#  and not newline
+		clrl	(r3)			#  just stuff it and fix _cnt
+		incl	nchar			# count the char
+
+	I don't like the way it "fixes" _cnt.  But I don't understand
+	this code entirely (not the assembly, I know VAX assembly, I
+	mean _doprnt in general), so I'm not sure what to do about it.
+	Perhaps the clrl should be decl?
+
+					der Mouse
+
+USA: {ihnp4,decvax,akgua,utzoo,etc}!utcsri!mcgill-vision!mouse
+     think!mosart!mcgill-vision!mouse
+Europe: mcvax!decvax!utcsri!mcgill-vision!mouse
+ARPAnet: think!mosart!mcgill-vision!mouse@harvard.harvard.edu

@@ -1,0 +1,975 @@
+head     4.11;
+branch   ;
+access   ;
+symbols  PATCH8:4.11 PATCH7:4.9 KPATCH6:4.9 ASRSNAP1001:4.9 PATCH5:4.9 ADAMS_NSA:4.9 KPATCH4:4.9 KPATCH3:4.9 KPATCH2:4.9 KREL1:4.9 BETA5/24/88:4.6;
+locks    ; strict;
+comment  @ * @;
+
+
+4.11
+date     90.01.02.13.46.30;  author jtkohl;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     89.12.19.13.37.13;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     89.01.24.11.13.03;  author steiner;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     89.01.21.16.50.29;  author jtkohl;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.11.15.11.30.34;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.14.22.52;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.18.46.17;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.23.10.46.35;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.09.10.16.17.10;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.04.14.55.23;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.41.45;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     87.01.13.16.37.19;  author wesommer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.08.14.23.11.15;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.08.14.18.24.15;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.11
+log
+@change $Header$ to $Id$
+@
+text
+@/*
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/pcbc_encrypt.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * These routines perform encryption and decryption using the DES
+ * private key algorithm, or else a subset of it-- fewer inner loops.
+ * ( AUTH_DES_ITER defaults to 16, may be less)
+ *
+ * Under U.S. law, this software may not be exported outside the US
+ * without license from the U.S. Commerce department.
+ *
+ * The key schedule is passed as an arg, as well as the cleartext or
+ * ciphertext.	 The cleartext and ciphertext should be in host order.
+ *
+ * These routines form the library interface to the des facilities.
+ *
+ * spm 8/85	MIT project athena
+ */
+
+#ifndef	lint
+static char rcsid_pcbc_encrypt_c[] =
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/pcbc_encrypt.c,v 4.10 89/12/19 13:37:13 jtkohl Exp Locker: jtkohl $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <des.h>
+#include "des_internal.h"
+
+extern int des_debug;
+extern int des_debug_print();
+
+/*
+ * pcbc_encrypt is an "error propagation chaining" encrypt operation
+ * for DES, similar to CBC, but that, on encryption, "xor"s the
+ * plaintext of block N with the ciphertext resulting from block N,
+ * then "xor"s that result with the plaintext of block N+1 prior to
+ * encrypting block N+1. (decryption the appropriate inverse.  This
+ * "pcbc" mode propagates a single bit error anywhere in either the
+ * cleartext or ciphertext chain all the way through to the end. In
+ * contrast, CBC mode limits a single bit error in the ciphertext to
+ * affect only the current (8byte) block and the subsequent block.
+ *
+ * performs pcbc error-propagation chaining operation by xor-ing block
+ * N+1 with both the plaintext (block N) and the ciphertext from block
+ * N.  Either encrypts from cleartext to ciphertext, if encrypt != 0
+ * or decrypts from ciphertext to cleartext, if encrypt == 0
+ *
+ * NOTE-- the output is ALWAYS an multiple of 8 bytes long.  If not
+ * enough space was provided, your program will get trashed.
+ *
+ * For encryption, the cleartext string is null padded, at the end, to
+ * an integral multiple of eight bytes.
+ *
+ * For decryption, the ciphertext will be used in integral multiples
+ * of 8 bytes, but only the first "length" bytes returned into the
+ * cleartext.
+ *
+ * This is NOT a standard mode of operation.
+ *
+ */
+
+int
+des_pcbc_encrypt(in,out,length,key,iv,encrypt)
+    des_cblock *in;		/* >= length bytes of inputtext */
+    des_cblock *out;		/* >= length bytes of outputtext */
+    register long length;	/* in bytes */
+    int encrypt;		/* 0 ==> decrypt, else encrypt */
+    des_key_schedule key;		/* precomputed key schedule */
+    des_cblock *iv;		/* 8 bytes of ivec */
+{
+    register unsigned long *input = (unsigned long *) in;
+    register unsigned long *output = (unsigned long *) out;
+    register unsigned long *ivec = (unsigned long *) iv;
+
+    unsigned long i,j;
+    static unsigned long t_input[2];
+    static unsigned long t_output[2];
+    static unsigned char *t_in_p;
+    static unsigned long xor_0, xor_1;
+
+    t_in_p = (unsigned char *) t_input;
+    if (encrypt) {
+#ifdef MUSTALIGN
+	if ((long) ivec & 3) {
+	    bcopy((char *)ivec++,(char *)&xor_0,sizeof(xor_0));
+	    bcopy((char *)ivec,(char *)&xor_1,sizeof(xor_1));
+	}
+	else
+#endif
+	{
+	    xor_0 = *ivec++;
+	    xor_1 = *ivec;
+	}
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+#ifdef MUSTALIGN
+	    if ((long) input & 3) {
+		bcopy((char *)input,(char *)&t_input[0],sizeof(t_input[0]));
+		bcopy((char *)(input+1),(char *)&t_input[1],sizeof(t_input[1]));
+	    }
+	    else
+#endif
+	    {
+		t_input[0] = *input;
+		t_input[1] = *(input+1);
+	    }
+
+	    /* zero pad */
+	    if (length < 8) {
+		for (j = length; j <= 7; j++)
+		    *(t_in_p+j)= 0;
+	    }
+
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",length,t_input[0],t_input[1]);
+#endif
+	    /* do the xor for cbc into the temp */
+	    t_input[0] ^= xor_0 ;
+	    t_input[1] ^= xor_1 ;
+	    /* encrypt */
+	    (void) des_ecb_encrypt(t_input,t_output,key,encrypt);
+
+	    /*
+	     * We want to XOR with both the plaintext and ciphertext
+	     * of the previous block, before we write the output, in
+	     * case both input and output are the same space.
+	     */
+#ifdef MUSTALIGN
+	    if ((long) input & 3) {
+		bcopy((char *)input++,(char *)&xor_0,sizeof(xor_0));
+		xor_0 ^= t_output[0];
+		bcopy((char *)input++,(char *)&xor_1,sizeof(xor_1));
+		xor_1 ^= t_output[1];
+	    }
+	    else
+#endif
+	    {
+		xor_0 = *input++ ^ t_output[0];
+		xor_1 = *input++ ^ t_output[1];
+	    }
+
+
+	    /* copy temp output and save it for cbc */
+#ifdef MUSTALIGN
+	    if ((long) output & 3) {
+		bcopy((char *)&t_output[0],(char *)output++,
+		      sizeof(t_output[0]));
+		bcopy((char *)&t_output[1],(char *)output++,
+		      sizeof(t_output[1]));
+	    }
+	    else
+#endif
+	    {
+		*output++ = t_output[0];
+		*output++ = t_output[1];
+	    }
+
+#ifdef DEBUG
+	    if (des_debug) {
+		des_debug_print("xor'ed",i,t_input[0],t_input[1]);
+		des_debug_print("cipher",i,t_output[0],t_output[1]);
+	    }
+#endif
+	}
+	t_output[0] = 0;
+	t_output[1] = 0;
+	xor_0 = 0;
+	xor_1 = 0;
+	return 0;
+    }
+
+    else {
+	/* decrypt */
+#ifdef MUSTALIGN
+	if ((long) ivec & 3) {
+	    bcopy((char *)ivec++,(char *)&xor_0,sizeof(xor_0));
+	    bcopy((char *)ivec,(char *)&xor_1,sizeof(xor_1));
+	}
+	else
+#endif
+	{
+	    xor_0 = *ivec++;
+	    xor_1 = *ivec;
+	}
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+#ifdef MUSTALIGN
+	    if ((long) input & 3) {
+		bcopy((char *)input++,(char *)&t_input[0],sizeof(t_input[0]));
+		bcopy((char *)input++,(char *)&t_input[1],sizeof(t_input[1]));
+	    }
+	    else
+#endif
+	    {
+		t_input[0] = *input++;
+		t_input[1] = *input++;
+	    }
+
+	    /* no padding for decrypt */
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("cipher",i,t_input[0],t_input[1]);
+#else
+#ifdef lint
+	    i = i;
+#endif
+#endif
+	    /* encrypt */
+	    (void) des_ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("out pre xor",i,t_output[0],t_output[1]);
+#endif
+	    /* do the xor for cbc into the output */
+	    t_output[0] ^= xor_0 ;
+	    t_output[1] ^= xor_1 ;
+	    /* copy temp output */
+#ifdef MUSTALIGN
+	    if ((long) output & 3) {
+		bcopy((char *)&t_output[0],(char *)output++,
+		      sizeof(t_output[0]));
+		bcopy((char *)&t_output[1],(char *)output++,
+		      sizeof(t_output[1]));
+	    }
+	    else
+#endif
+	    {
+		*output++ = t_output[0];
+		*output++ = t_output[1];
+	    }
+
+	    /* save xor value for next round */
+	    xor_0 = t_output[0] ^ t_input[0];
+	    xor_1 = t_output[1] ^ t_input[1];
+
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",i,t_output[0],t_output[1]);
+#endif
+	}
+	return 0;
+    }
+}
+@
+
+
+4.10
+log
+@workaround compiler bugs
+from [Steven J. Lunt] at Bellcore
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d28 1
+a28 1
+"$Header: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/pcbc_encrypt.c,v 4.9 89/01/24 11:13:03 steiner Exp Locker: jtkohl $";
+@
+
+
+4.9
+log
+@Fixed pointer arithmetic.
+Programmer: jtkohl
+Auditor: steiner
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/pcbc_encrypt.c,v $
+ * $Author: jtkohl $
+d28 1
+a28 1
+"$Header: pcbc_encrypt.c,v 4.8 89/01/21 16:50:29 jtkohl Exp $";
+d85 1
+a85 1
+    static unsigned char *t_in_p = (unsigned char *) t_input;
+d88 1
+@
+
+
+4.8
+log
+@lint cleanups
+(Programmer: John Kohl)
+@
+text
+@d28 1
+a28 1
+"$Header: pcbc_encrypt.c,v 4.7 88/11/15 11:30:34 jtkohl Locked $";
+d106 1
+a106 1
+		bcopy((char *)input+1,(char *)&t_input[1],sizeof(t_input[1]));
+@
+
+
+4.7
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@d2 2
+a3 2
+ * $Source: //ra/mit/wesommer/des/RCS/pcbc_encrypt.c,v $
+ * $Author: steiner $
+d28 1
+a28 1
+"$Header: pcbc_encrypt.c,v 4.6 88/02/24 14:22:52 steiner Exp $";
+a83 1
+    static unsigned long old_in[2];
+d91 2
+a92 2
+	    bcopy(ivec++,&xor_0,sizeof(xor_0));
+	    bcopy(ivec,&xor_1,sizeof(xor_1));
+d105 2
+a106 2
+		bcopy(input,&t_input[0],sizeof(t_input[0]));
+		bcopy(input+1,&t_input[1],sizeof(t_input[1]));
+d129 1
+a129 1
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+d138 1
+a138 1
+		bcopy(input++,&xor_0,sizeof(xor_0));
+d140 1
+a140 1
+		bcopy(input++,&xor_1,sizeof(xor_1));
+d154 4
+a157 2
+		bcopy(&t_output[0],output++,sizeof(t_output[0]));
+		bcopy(&t_output[1],output++,sizeof(t_output[1]));
+d184 2
+a185 2
+	    bcopy(ivec++,&xor_0,sizeof(xor_0));
+	    bcopy(ivec,&xor_1,sizeof(xor_1));
+d198 2
+a199 2
+		bcopy(input++,&t_input[0],sizeof(t_input[0]));
+		bcopy(input++,&t_input[1],sizeof(t_input[1]));
+d212 3
+d216 1
+d218 1
+a218 1
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+d229 4
+a232 2
+		bcopy(&t_output[0],output++,sizeof(t_output[0]));
+		bcopy(&t_output[1],output++,sizeof(t_output[1]));
+d250 1
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d28 1
+a28 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d34 1
+d36 2
+a37 2
+extern int debug;
+extern int debug_print();
+d70 3
+a72 3
+pcbc_encrypt(in,out,length,key,iv,encrypt)
+    C_Block *in;		/* >= length bytes of inputtext */
+    C_Block *out;		/* >= length bytes of outputtext */
+d75 2
+a76 2
+    Key_schedule key;		/* precomputed key schedule */
+    C_Block *iv;		/* 8 bytes of ivec */
+d123 2
+a124 2
+	    if (debug)
+		debug_print("clear",length,t_input[0],t_input[1]);
+d130 1
+a130 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d166 3
+a168 3
+	    if (debug) {
+		debug_print("xor'ed",i,t_input[0],t_input[1]);
+		debug_print("cipher",i,t_output[0],t_output[1]);
+d209 2
+a210 2
+	    if (debug)
+		debug_print("cipher",i,t_input[0],t_input[1]);
+d213 1
+a213 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d215 2
+a216 2
+	    if (debug)
+		debug_print("out pre xor",i,t_output[0],t_output[1]);
+d239 2
+a240 2
+	    if (debug)
+		debug_print("clear",i,t_output[0],t_output[1]);
+@
+
+
+4.5
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d2 2
+a3 1
+ * des_pcbc_encrypt.c
+d5 2
+a6 2
+ *  spm 8/85	MIT project athena
+ *		copyright MIT	1985
+d8 2
+d11 3
+a13 3
+ *  $Source: /u3/kerberos.new/lib/des/bsd/RCS/des_pcbc_encrypt.c,v $
+ *  $Author: steiner $
+ *  $Locker:  $
+d15 2
+a16 3
+ *  These routines perform encryption and decryption using the DES
+ *  private key algorithm, or else a subset of it-- fewer inner loops.
+ *  ( AUTH_DES_ITER defaults to 16, may be less)
+d18 2
+a19 2
+ *  Under U.S. law, this software may not be exported outside the US
+ *  without license from the U.S. Commerce department.
+d21 1
+a21 2
+ *  The key schedule is passed as an arg, as well as the cleartext or
+ *  ciphertext.	 The cleartext and ciphertext should be in host order.
+d23 1
+a23 1
+ *  These routines form the library interface to the des facilities.
+d26 6
+@
+
+
+4.4
+log
+@Moved ./des_conf.h to .../include/krb_conf.h; .../include/des.h
+includes it now.
+@
+text
+@d1 2
+a2 1
+/* des_pcbc_encrypt.c
+d4 2
+a5 2
+ *  spm 8/85    MIT project athena
+ *              copyright MIT   1985
+d10 1
+a10 1
+ *  $Locker: steiner $
+d20 1
+a20 1
+ *  ciphertext.  The cleartext and ciphertext should be in host order.
+d25 2
+a26 2
+# include   <stdio.h>
+# include   <des.h>
+d28 2
+a29 2
+extern  int debug;
+extern  int debug_print();
+d31 10
+a40 9
+/* pcbc_encrypt is an "error propagation chaining" encrypt operation for
+ * DES, similar to CBC, but that, on encryption, "xor"s the plaintext of block
+ * N with the ciphertext resulting from block N, then "xor"s that result with
+ * the plaintext of block N+1 prior to encrypting block N+1. (decryption
+ * the appropriate inverse.
+ * This "pcbc" mode propagates a single bit error anywhere in either the
+ * cleartext or ciphertext chain all the way through to the end. In contrast,
+ * CBC mode limits a single bit error in the ciphertext to affect only the
+ * current (8byte) block and the subsequent block.
+d42 4
+a45 1
+ * This is NOT a standard mode of operation.
+d47 2
+a48 17
+ */
+
+int 
+    pcbc_encrypt(in,out,length,key,iv,encrypt)
+
+    C_Block                     *in;        /* >= length bytes of inputtext  */
+    C_Block                     *out    ;   /* >= length bytes of outputtext */
+    register    long             length;     /* in bytes                     */
+    int                         encrypt;    /* 0 ==> decrypt, else encrypt */
+    Key_schedule                key;        /* precomputed key schedule    */
+    C_Block                     *iv;        /* 8 bytes of ivec             */
+
+/*  performs pcbc error-propagation chaining operation by
+ *  xor-ing block N+1 with both the plaintext (block N) and the ciphertext
+ *  from block N.
+ *  Either encrypts from cleartext to ciphertext, if encrypt != 0
+ *  or decrypts from ciphertext to cleartext, if encrypt == 0
+d50 2
+a51 3
+ *  NOTE--
+ *  the output is ALWAYS an multiple of 8 bytes long.  If not enough
+ *  space was provided, your program will get trashed.
+d53 3
+a55 2
+ *  for encryption, the cleartext string is null padded, at the end, 
+ *  to an integral multiple of eight bytes.
+d57 2
+a58 2
+ *  for decryption, the ciphertext will be used in integral multiples of
+ *  8 bytes, but only the first "length" bytes returned into the cleartext.
+d60 9
+d70 3
+a72 3
+    register    unsigned long   *input = (unsigned long *) in;
+    register    unsigned long   *output = (unsigned long *) out;
+    register    unsigned long   *ivec = (unsigned long *) iv;
+d74 6
+a79 6
+    unsigned long   i,j;
+    static  unsigned long   t_input[2];
+	static	unsigned long	old_in[2];
+    static  unsigned long   t_output[2];
+    static  unsigned char   *t_in_p = (unsigned char *) t_input;
+    static  unsigned long   xor_0, xor_1;
+d81 3
+a83 5
+    if (encrypt)
+        {
+#ifdef	MUSTALIGN		/* ibm rt				   */
+	if ((long) ivec & 3)
+	    {
+d86 1
+a86 1
+	    }
+d89 4
+a92 4
+		{
+		xor_0 = *ivec++;
+        xor_1 = *ivec;
+		}
+d94 7
+a100 9
+        for ( i = 0; length > 0; i++, length -=8)
+            {
+            /* get input                                                   */
+#ifdef	MUSTALIGN		/* rt					   */
+	    if ((long) input & 3)
+			{
+			bcopy(input,&t_input[0],sizeof(t_input[0]));
+			bcopy(input+1,&t_input[1],sizeof(t_input[1]));
+			}
+d103 4
+a106 25
+			{
+			t_input[0] = *input;
+	        t_input[1] = *(input+1);
+			}
+	
+            /* zero pad                                                    */
+            if (length <8)
+                {
+                for (j = length; j<=7; j++)
+                    {
+                    *(t_in_p+j)= 0;
+                    }
+                }
+                    
+#ifdef  DEBUG
+            if (debug)
+                {
+                debug_print("clear",length,t_input[0],t_input[1]);
+                }
+#endif          
+            /* do the xor for cbc into the temp                        */
+            t_input[0] ^= xor_0 ;
+            t_input[1] ^= xor_1 ;
+            /* encrypt                                                 */
+            ecb_encrypt(t_input,t_output,key,encrypt);
+d108 20
+a127 3
+	    /* We want to XOR with both the plaintext and ciphertext 
+         * of the previous block, before we write the output, in case
+		 * both input and output are the same space
+d129 7
+a135 8
+#ifdef	MUSTALIGN
+	    if ((long) input & 3)
+			{
+			bcopy(input++,&xor_0,sizeof(xor_0));
+			xor_0 ^= t_output[0];
+			bcopy(input++,&xor_1,sizeof(xor_1));
+			xor_1 ^= t_output[1];
+			}
+a137 9
+		{
+            xor_0 = *input++ ^ t_output[0];
+            xor_1 = *input++ ^ t_output[1];
+		}
+		
+
+        /* copy temp output and save it for cbc                        */
+#ifdef	MUSTALIGN
+	if ((long) output & 3)
+d139 2
+a140 2
+	    bcopy(&t_output[0],output++,sizeof(t_output[0]));
+	    bcopy(&t_output[1],output++,sizeof(t_output[1]));
+d142 9
+a150 1
+	else
+d153 2
+a154 2
+        *output++ = t_output[0];
+	    *output++ = t_output[1];
+d156 6
+a161 7
+	
+#ifdef  DEBUG
+            if (debug )
+                {
+                debug_print("xor'ed",i,t_input[0],t_input[1]);
+                debug_print("cipher",i,t_output[0],t_output[1]);
+                }   
+d163 7
+a169 7
+            }
+        t_output[0] = 0;
+        t_output[1] = 0;
+        xor_0 = 0;
+        xor_1 = 0;
+        return 0;
+        }
+d171 4
+a174 5
+    else    /* decrypt */
+        {
+#ifdef	MUSTALIGN		/* ibm rt				   */
+	if ((long) ivec & 3)
+	    {
+d177 1
+a177 1
+	    }
+d180 12
+a191 14
+		{
+        xor_0 = *ivec++;
+        xor_1 = *ivec;
+		}
+    
+        for ( i = 0; length > 0; i++, length -=8)
+            {
+            /* get input                                                   */
+#ifdef	MUSTALIGN
+	    if ((long) input & 3)
+			{
+			bcopy(input++,&t_input[0],sizeof(t_input[0]));
+			bcopy(input++,&t_input[1],sizeof(t_input[1]));
+			}
+d194 9
+a202 11
+			{
+            t_input[0] = *input++;
+            t_input[1] = *input++;
+			}
+		
+            /* no padding for decrypt                                      */
+#ifdef  DEBUG
+            if (debug)
+                {
+                debug_print("cipher",i,t_input[0],t_input[1]);
+                }
+d204 5
+a208 7
+            /* encrypt                                                 */
+            ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef  DEBUG
+            if (debug )
+                {
+                debug_print("out pre xor",i,t_output[0],t_output[1]);
+                }
+d210 10
+a219 11
+            /* do the xor for cbc into the output                          */
+            t_output[0] ^= xor_0 ;
+            t_output[1] ^= xor_1 ;
+            /* copy temp output                                            */
+#ifdef	MUSTALIGN
+			if ((long) output & 3)
+				{
+				bcopy(&t_output[0],output++,sizeof(t_output[0]));
+				bcopy(&t_output[1],output++,sizeof(t_output[1]));
+				}
+			else
+d221 12
+a232 14
+				{
+	            *output++ = t_output[0];
+	            *output++ = t_output[1];
+				}
+			
+            /* save xor value for next round                               */
+            xor_0 = t_output[0] ^ t_input[0];
+            xor_1 = t_output[1] ^ t_input[1];
+	    
+#ifdef  DEBUG
+            if (debug)
+                {
+                debug_print("clear",i,t_output[0],t_output[1]);
+                }   
+d234 2
+a235 3
+            }
+                    
+        }
+@
+
+
+4.3
+log
+@Changed include files configuration and referencing.
+@
+text
+@d7 1
+a7 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_pcbc_encrypt.c,v $
+a9 22
+ *  $Log:	des_pcbc_encrypt.c,v $
+ * Revision 4.2  87/09/04  14:55:23  steiner
+ * Changes for PC compatibility, from Jerry Saltzer.
+ * 
+ * Revision 1.3  87/01/13  16:37:19  wesommer
+ * Added include of des_conf.h
+ * 
+ * Revision 1.2  86/08/14  23:11:15  spm
+ * add alignment fix for RT
+ * 
+ * Revision 1.1  86/08/14  18:24:15  spm
+ * Initial revision
+ * 
+ * Revision 1.1  85/12/16  13:50:38  spm
+ * Initial revision
+ * 
+ * Revision 1.2  85/08/19  15:25:26  spm
+ * fix print, int
+ * 
+ * Revision 1.1  85/08/16  12:48:04  spm
+ * Initial revision
+ * 
+a23 1
+#include "des_conf.h"
+@
+
+
+4.2
+log
+@Changes for PC compatibility, from Jerry Saltzer.
+@
+text
+@d7 3
+a9 3
+ *  $Source: /source/kerberos/lib/des/bsd/RCS/des_pcbc_encrypt.c,v $
+ *  $Author: wesommer $
+ *  $Locker:  $
+d11 3
+d46 1
+a46 1
+#include "./des_conf.h"
+d48 1
+a48 1
+# include   "./des.h"
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d7 1
+a7 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_pcbc_encrypt.c,v $
+d9 1
+a9 1
+ *  $Locker: steiner $
+a44 1
+# include   <strings.h>
+a45 4
+
+#ifdef  BSDUNIX
+#include    <sys/time.h>
+#endif
+@
+
+
+1.3
+log
+@Added include of des_conf.h
+@
+text
+@d7 3
+a9 3
+ *  $Source: /altsource/kerberos/lib/des/vax/RCS/des_pcbc_encrypt.c,v $
+ *  $Author: spm $
+ *  $Locker: wesommer $
+d11 3
+@
+
+
+1.2
+log
+@add alignment fix for RT
+@
+text
+@d7 1
+a7 1
+ *  $Source: /mit/projects/auth/src/lib/des/vax/RCS/des_pcbc_encrypt.c,v $
+d9 1
+a9 1
+ *  $Locker:  $
+d11 3
+d40 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+a7 1
+ *  $Source: /mit/projects/auth/src/lib/des/vax/RCS/des_cbc_encrypt.c,v $
+d10 4
+a13 1
+ *  $Log:   des_cbc_encrypt.c,v $
+d102 10
+a111 1
+        xor_0 = *ivec++;
+d113 1
+d118 13
+a130 2
+            t_input[0] = *input;
+            t_input[1] = *(input+1);
+d156 11
+d169 2
+d173 13
+a185 2
+            *output++ = t_output[0];
+            *output++ = t_output[1];
+d203 9
+d214 2
+a215 1
+
+d219 9
+d230 2
+d251 13
+a263 2
+            *output++ = t_output[0];
+            *output++ = t_output[1];
+@

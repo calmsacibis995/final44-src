@@ -1,0 +1,130 @@
+From forys@snake.utah.edu  Sat Nov 10 00:36:33 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.65/1.41)
+	id AA07272; Sat, 10 Nov 90 00:36:33 -0800
+Received: from snake.utah.edu by ucbvax.Berkeley.EDU (5.63/1.42)
+	id AA13260; Sat, 10 Nov 90 00:36:44 -0800
+Received: by snake.utah.edu (5.65/utah-2.16s-cs)
+	id AA14304; Sat, 10 Nov 90 01:35:18 -0700
+Message-Id: <9011100835.AA14304@snake.utah.edu>
+From: Jeff Forys <forys@snake.utah.edu>
+To: The Macro-Kernel Group <4bsd-bugs@ucbvax.Berkeley.EDU>
+Subject: Sendmail can loop on certain addresses +FIX
+Date: Sat, 10 Nov 90 01:35:17 MST
+
+Index:	usr.lib/sendmail/src/parseaddr.c 4.3BSD
+
+This applies to all known versions of sendmail (through "5.65").
+
+Description:
+	Sendmail reserves characters in the range 020 - 036 for coding
+	its rewrite rules.  If one of these characters shows up in an
+	address, the results are unpredictable (from a user's point of
+	view).  Specifically, an address containing a "replacement on
+	RHS" rule can cause sendmail to go into an infinite loop while
+	processing various rewrite rules.
+
+	I suppose this could be used for a denial-of-service attack;
+	if an evil-minded person fired off a bunch of these in your
+	direction, you would end up with an equal number of sendmail
+	processes churning endlessly away on your CPU.  Of course,
+	whence such an "attack" originates would be painfully obvious!
+
+Repeat-By:
+	This is configuration-file dependent, however if your RuleSet
+	3 looks similar to what Berkeley distributes, you can get your
+	sendmail to loop on the rule:
+
+		R$+<$+@$+>	$1$2<@$3>	move gaze right
+
+	by doing:
+
+		% sendmail -bs
+		MAIL FROM: user
+		RCPT TO: <user@host^U>
+
+	or, under addess test mode:
+
+		% sendmail -bt
+		3 <user@host^U>
+
+	The angle brackets are important (in this particular example).
+	The "^U" should, of course, be an ASCII NAK (i.e. MATCHREPL).
+
+Fix:
+	Apply the following patches; they should be self-explanatory.
+
+*** /tmp/,RCSt1003663	Tue Nov  6 01:20:48 1990
+--- parseaddr.c	Tue Nov  6 00:55:21 1990
+***************
+*** 86,91 ****
+--- 86,94 ----
+  	if (tTd(20, 1))
+  		printf("\n--parseaddr(%s)\n", addr);
+  
++ 	if (invalidaddr(addr))
++ 		return(NULL);
++ 
+  	pvp = prescan(addr, delim, pvpbuf);
+  	if (pvp == NULL)
+  		return (NULL);
+***************
+*** 220,225 ****
+--- 223,267 ----
+  
+  	if (!bitnset(M_USR_UPPER, m->m_flags))
+  		makelower(a->q_user);
++ }
++ /*
++ **  INVALIDADDR -- check an address string for invalid control characters.
++ **
++ **	Parameters:
++ **		addr -- address string to be checked.
++ **
++ **	Returns:
++ **		TRUE if address string could cause problems, FALSE o/w.
++ **
++ **	Side Effects:
++ **		ExitStat may be changed and an error message generated.
++ */
++ 
++ invalidaddr(addr)
++ 	char *addr;
++ {
++ 	register char *cp;
++ 	extern int errno;
++ 
++ 	/* make sure error messages don't have garbage on them */
++ 	errno = 0;
++ 
++ 	/*
++ 	** Sendmail reserves characters 020 - 036 for rewriting rules
++ 	** which can cause havoc (e.g. infinite rewriting loops) if
++ 	** one shows up at the wrong time.  If any of these characters
++ 	** appear in an address, the address is deemed "invalid" and
++ 	** an error message is generated.
++ 	*/
++ 
++ 	for (cp = addr; *cp; cp++)
++ 		if ((*cp >= MATCHZANY && *cp <= HOSTEND) || *cp == '\001') {
++ 			setstat(EX_USAGE);
++ 			usrerr("address contained invalid control char(s)");
++ 			return (TRUE);
++ 		}
++ 
++ 	return(FALSE);
+  }
+  /*
+  **  PRESCAN -- Prescan name and make it canonical
+*** /tmp/,RCSt1003691	Tue Nov  6 01:21:07 1990
+--- main.c	Tue Nov  6 00:55:21 1990
+***************
+*** 586,591 ****
+--- 586,593 ----
+  			if (*p == '\0')
+  				continue;
+  			*p = '\0';
++ 			if (invalidaddr(p+1))
++ 				continue;
+  			do
+  			{
+  				extern char **prescan();

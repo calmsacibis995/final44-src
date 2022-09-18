@@ -1,0 +1,101 @@
+Date: Fri, 5 Feb 88 17:51:00 -0100
+From: mcvax!diku.dk!thorinn@uunet.uu.net (Lars Henrik Mathiesen)
+Subject: Named eats lines after WKS records
+#Index: etc/named/db_load.c 5/30/86 4.3BSD
+Index: etc/named/db_load.c 4.3BSD
+
+Description:
+	WKS resource records in a BIND domain data file may cause the
+	next line in the file to be ignored.
+Repeat-By:
+	Use lines like the following in your domain data.
+
+	hosta	in	a	192.142.96.1
+		any	wks	udp domain ;screw up
+	hostb	in	a	192.142.96.2
+	hostc	in	a	192.142.96.3
+		any	wks	tcp ( domain
+				nameserver )
+	hostd	in	a	192.142.96.4
+
+	Now try to look up hostb or hostd.
+Fix:
+	There are two problems: getw_b_nl() will not return an empty word
+	if a line ends in a comment after whitespace. If a bracket ends the
+	line, getw_b_nl() gobbles the newline, and getservices() flushes
+	the next line.
+	To fix, apply the following patch:
+	*** /tmp/,RCSt1012256	Fri Feb  5 17:27:11 1988
+	--- db_load.c	Fri Feb  5 17:08:56 1988
+	***************
+	*** 483,491 ****
+					;
+				if (c == '\n')
+					lineno++;
+	! 			if (cp != buf)
+	! 				break;
+	! 			continue;
+			}
+			if (cp >= buf+size-1)
+				break;
+	--- 483,489 ----
+					;
+				if (c == '\n')
+					lineno++;
+	! 			break;
+			}
+			if (cp >= buf+size-1)
+				break;
+	***************
+	*** 653,670 ****
+			bm[j] = 0;
+		maxl = 0;
+		bracket = eol = 0;
+	! 	while (1) {
+	! 		if (!getw_b_nl(b, sizeof(b), fp) && (!bracket)) {
+	! 			if (strlen(b) == 0)
+	! 				break;
+	! 			eol++;
+	! 		}	
+			if ( b[0] == '(') {
+				bracket++;
+				continue;
+			}
+			if ( b[0] == ')') {
+	! 			bracket = 0;
+				while ((ch = getc(fp)) != EOF && ch != '\n')
+					;
+				break;
+	--- 651,667 ----
+			bm[j] = 0;
+		maxl = 0;
+		bracket = eol = 0;
+	! 	while (!eol || bracket) {
+	! 		eol = !getw_b_nl(b, sizeof(b), fp);
+	! 		if (strlen(b) == 0)
+	! 			continue;
+			if ( b[0] == '(') {
+				bracket++;
+				continue;
+			}
+			if ( b[0] == ')') {
+	! 			if (eol)
+	! 				break;
+				while ((ch = getc(fp)) != EOF && ch != '\n')
+					;
+				break;
+	***************
+	*** 685,692 ****
+			}
+			else
+				syslog(LOG_WARNING,"port no.(%d) too big\n",k);
+	- 		if(eol)
+	- 			break;
+		}
+		maxl = maxl/8+1;
+		bcopy(bm, data+n, maxl);
+	--- 682,687 ----
+--
+Lars Mathiesen, DIKU, U of Copenhagen, Denmark      [uunet!]mcvax!diku!thorinn
+Institute of Datalogy -- we're scientists, not engineers.
+

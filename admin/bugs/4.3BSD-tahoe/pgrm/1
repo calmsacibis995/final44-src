@@ -1,0 +1,339 @@
+From housel@en.ecn.purdue.edu Wed Jan 17 17:51:45 1990
+To: corbett@Berkeley.EDU
+Cc: bostic@okeeffe.Berkeley.EDU
+Subject: Bug fixes for Berkeley YACC
+Date: Wed, 17 Jan 90 20:51:26 EST
+Index: pgrm/yacc 4.3BSD-tahoe
+
+	I spent several hours this past week finding and fixing
+several bugs in Berkeley YACC in an attempt to run it on my PC
+under Minix. Most of the bugs had to do with memory allocation
+and freeing, which is of course quite understandable given the
+amount of this the program does.
+
+	I hope you can take a look at these and incorporate them
+into your distribution soon. A list of fixes and a set of context
+diffs (against the version on ucbarpa as of this afternoon) follows.
+
+	Thanks for making this program available. It should prove
+very useful to Minix users.
+
+	Thanks,
+	-Peter S. Housel-
+	housel@ecn.purdue.edu
+
+--------------
+The debugging was done on a Tahoe using malloc.c compiled with with
+RCHECK defined and the code that permitted free(NULL) taken out, and
+on a '286 system with very little memory running Minix 1.3.
+
+Changes included:
+
+1) The CALLOC(k,n) macro in defs.h is never used so I removed it.
+
+2) no_space() calls abort(), which is the right thing to do during
+debugging but is frustrating for users. Maybe an #ifdef DEBUG?
+I commented it out.
+
+3) several calls to FREE() on what may be null pointers. The
+ANSI spec permits this, as does 4.3Tahoe BSD, but some older
+C libraries don't handle it and it tends to cover over bugs.
+I think I got all of the cases that might cause FREE() to
+be handed a null pointer.
+
+4) There were several snatches of code that look like this:
+
+	  for (cp = first_state; cp; cp = cp->next)
+	    FREE(cp);
+
+That is, the memory used by the item is freed, and then the 'next'
+field is accessed from it. This is wrong, since free() might clear
+the memory, store its free space list there, or something else which
+would cause trouble. I added a temp variable to read the 'next' field
+into before freeing the memory in each of these cases.
+
+5) There were a couple of calls to MALLOC() that didn't check the return
+value against NULL. I fixed both of them.
+
+6) The following code was in symtab.c:
+    symbol_table = (bucket **) MALLOC(TABLE_SIZE*sizeof(bucket));
+
+That is, it allocates an array of TABLE_SIZE 'bucket's, but then
+stores 'bucket *'s in them. This is a big waste of space (20480 bytes
+on a VAX or Tahoe). I changed it to 'sizeof(bucket *)'.
+
+7) In the output_debug() function, an array 'symnam' of pointers is
+allocated. Space for 'max' pointers is allocated, but somehow
+the item 'symnam[max]' is getting stored into. You might want
+to figure out why it's doing that; for now I increased the array
+size to 'max+1' so it doesn't stomp on other memory.
+
+8) The program uses a typedef named 'shifts', which is a structure
+with a field of the same name. Some compilers handle typedef names
+at the lexical analysis stage, so they choke on references to the
+structure field. This isn't covered in the diffs below, but in one
+of my copies I changed the typedef to 'Shifts' and left the field name
+alone. If you want to do this I can make another context diff with
+this change added.
+
+9) I ran skeleton.c through "unexpand -a" to convert runs of spaces
+into tabs. (No context diff for this needed.) This saves about 1K of
+data space in the program.
+
+10) Some systems (V7, for example) require that external identifiers
+be unique to the first 7 characters. ANSI only guarantees six unique
+external identifier characters. I generated an include file that
+redefines some of the names of identifiers that collide.  (This isn't
+in the diffs either.)
+
+*** /tmp/,RCSt1012836	Wed Jan 17 20:02:30 1990
+--- defs.h	Wed Jan 17 17:43:02 1990
+***************
+*** 101,107 ****
+  
+  /*  storage allocation macros  */
+  
+- #define CALLOC(k,n)	(calloc((unsigned)(k),(unsigned)(n)))
+  #define	FREE(x)		(free((char*)(x)))
+  #define MALLOC(n)	(malloc((unsigned)(n)))
+  #define	NEW(t)		((t*)allocate(sizeof(t)))
+--- 101,106 ----
+*** /tmp/,RCSt1012836	Wed Jan 17 20:02:31 1990
+--- error.c	Wed Jan 17 17:44:24 1990
+***************
+*** 13,19 ****
+  
+  no_space()
+  {
+!     abort();
+      fprintf(stderr, "%s: f - out of space\n", myname);
+      done(2);
+  }
+--- 13,19 ----
+  
+  no_space()
+  {
+! /*  abort();	*/
+      fprintf(stderr, "%s: f - out of space\n", myname);
+      done(2);
+  }
+*** /tmp/,RCSt1012836	Wed Jan 17 20:02:33 1990
+--- lalr.c	Wed Jan 17 17:35:44 1990
+***************
+*** 417,423 ****
+    new_includes = transpose(includes, ngotos);
+  
+    for (i = 0; i < ngotos; i++)
+!     FREE(includes[i]);
+  
+    FREE(includes);
+  
+--- 417,424 ----
+    new_includes = transpose(includes, ngotos);
+  
+    for (i = 0; i < ngotos; i++)
+!     if (includes[i])
+!       FREE(includes[i]);
+  
+    FREE(includes);
+  
+***************
+*** 523,529 ****
+  {
+    register int i, n;
+    register unsigned *fp1, *fp2, *fp3;
+!   register shorts *sp;
+    register unsigned *rowp;
+  
+    rowp = LA;
+--- 524,530 ----
+  {
+    register int i, n;
+    register unsigned *fp1, *fp2, *fp3;
+!   register shorts *sp, *temp;
+    register unsigned *rowp;
+  
+    rowp = LA;
+***************
+*** 542,549 ****
+      }
+  
+    for (i = 0; i < n; i++)
+!     for (sp = lookback[i]; sp; sp = sp->next)
+!       FREE(sp);
+  
+    FREE(lookback);
+    FREE(F);
+--- 543,554 ----
+      }
+  
+    for (i = 0; i < n; i++)
+!     for (sp = lookback[i]; sp;)
+!       {
+! 	temp = sp->next;
+! 	FREE(sp);
+! 	sp = temp;
+!       }
+  
+    FREE(lookback);
+    FREE(F);
+*** /tmp/,RCSt1012836	Wed Jan 17 20:02:37 1990
+--- output.c	Wed Jan 17 17:41:14 1990
+***************
+*** 404,411 ****
+  
+      for (i = 0; i < nvectors; i++)
+      {
+! 	FREE(froms[i]);
+! 	FREE(tos[i]);
+      }
+  
+      FREE(froms);
+--- 404,413 ----
+  
+      for (i = 0; i < nvectors; i++)
+      {
+!         if(froms[i])
+! 	  FREE(froms[i]);
+! 	if(tos[i])
+! 	  FREE(tos[i]);
+      }
+  
+      FREE(froms);
+***************
+*** 803,809 ****
+      ++outline;
+      fprintf(output_file, "#define YYMAXTOKEN %d\n", max);
+  
+!     symnam = (char **) MALLOC(max*sizeof(char *));
+      if (symnam == 0) no_space();
+      for (i = 0; i < max; ++i)
+  	symnam[i] = 0;
+--- 805,811 ----
+      ++outline;
+      fprintf(output_file, "#define YYMAXTOKEN %d\n", max);
+  
+!     symnam = (char **) MALLOC((max+1)*sizeof(char *));
+      if (symnam == 0) no_space();
+      for (i = 0; i < max; ++i)
+  	symnam[i] = 0;
+***************
+*** 1100,1111 ****
+  
+  free_itemsets()
+  {
+!   register core *cp;
+  
+    FREE(state_table);
+  
+!   for (cp = first_state; cp; cp = cp->next)
+!     FREE(cp);
+  }
+  
+  
+--- 1102,1117 ----
+  
+  free_itemsets()
+  {
+!   register core *cp, *temp;
+  
+    FREE(state_table);
+  
+!   for (cp = first_state; cp;)
+!     {
+!       temp = cp->next;
+!       FREE(cp);
+!       cp = temp;
+!     }
+  }
+  
+  
+***************
+*** 1112,1123 ****
+  
+  free_shifts()
+  {
+!   register shifts *sp;
+  
+    FREE(shift_table);
+  
+!   for (sp = first_shift; sp; sp = sp->next)
+!     FREE(sp);
+  }
+  
+  
+--- 1118,1133 ----
+  
+  free_shifts()
+  {
+!   register shifts *sp, *temp;
+  
+    FREE(shift_table);
+  
+!   for (sp = first_shift; sp;)
+!     {
+!       temp = sp->next;
+!       FREE(sp);
+!       sp = temp;
+!     }
+  }
+  
+  
+***************
+*** 1124,1133 ****
+  
+  free_reductions()
+  {
+!   register reductions *rp;
+  
+    FREE(reduction_table);
+  
+!   for (rp = first_reduction; rp; rp = rp->next)
+!     FREE(rp);
+  }
+--- 1134,1147 ----
+  
+  free_reductions()
+  {
+!   register reductions *rp, *temp;
+  
+    FREE(reduction_table);
+  
+!   for (rp = first_reduction; rp;)
+!     {
+!       temp = rp->next;
+!       FREE(rp);
+!       rp = temp;
+!     }
+  }
+*** /tmp/,RCSt1012836	Wed Jan 17 20:02:41 1990
+--- symtab.c	Wed Jan 17 19:51:58 1990
+***************
+*** 41,46 ****
+--- 41,47 ----
+      bp->link = 0;
+      bp->next = 0;
+      bp->name = MALLOC(strlen(name) + 1);
++     if (bp->name == 0) no_space();
+      bp->tag = 0;
+      bp->value = UNDEFINED;
+      bp->index = 0;
+***************
+*** 84,90 ****
+      register int i;
+      register bucket *bp;
+  
+!     symbol_table = (bucket **) MALLOC(TABLE_SIZE*sizeof(bucket));
+      for (i = 0; i < TABLE_SIZE; i++)
+  	symbol_table[i] = 0;
+  
+--- 85,92 ----
+      register int i;
+      register bucket *bp;
+  
+!     symbol_table = (bucket **) MALLOC(TABLE_SIZE*sizeof(bucket *));
+!     if (symbol_table == 0) no_space();
+      for (i = 0; i < TABLE_SIZE; i++)
+  	symbol_table[i] = 0;
+  
+

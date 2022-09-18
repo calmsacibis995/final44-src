@@ -1,0 +1,2149 @@
+.ds nM nmake\"	`make' someday
+.ds uM NMAKE\"	upper case \*(nM
+.ds oM make\"	`omake' someday
+.de XS		\" start example
+.PP
+.RS 
+.PD 0
+.nf
+..
+.de XE		\" end example
+.fi
+.RE
+.PD
+.PP
+..
+.TH \*(uM 1
+.(B
+.tl @Copyright (c) 1984, 1985, 1986, 1987@@AT&T All Rights Reserved@
+.(E 2
+.SH NAME
+\*(nM \- maintain and update programs
+.SH SYNOPSIS
+.B \*(nM
+[
+.B \-fg
+.I makefile
+] [
+.B \-bchiklmnoqrstuvxAFMORSTV
+] [
+.BI \-dj n
+] [
+.I target
+]
+.SH DESCRIPTION
+.I \*(nM
+reads the input 
+.I makefiles
+and executes shell (see
+.IR sh (1))
+commands to update
+one or more
+.IR targets .
+A target is updated if at least one of its dependencies has been
+modified since the target was last modified,
+or if the target does not exist.
+.PP
+The
+.I makefiles
+are passed through
+.IR cpp (1)
+and are
+.I compiled
+into object files before any actions are taken.
+If a
+.I makefile
+has not been modified since the last 
+.I \*(nM
+then the corresponding object file is used.
+Each
+.I \*(nM
+object file is placed in
+.IB base .mo
+where
+.I base
+is the base name (suffix deleted) of the corresponding
+.IR makefile .
+.SS Makefiles
+Each
+.I makefile
+contains a sequence of entries that specify dependencies.
+An entry consists of a non-empty
+list of target rules, a
+.BR : ,
+and a list of dependency rules for the targets.
+Text following
+.B ;
+and all following lines that begin with
+.B tab
+or
+.B space
+are shell commands to be executed to update the target(s).
+Commands may also be specified by enclosing the command
+list with 
+.B {
+and
+.BR } .
+Neither
+.B space
+nor
+.B tab
+may precede an initial target name.
+Both the dependency list and shell command list may be empty.
+Comments are the same as in the C language.
+.B #
+in column 1 is interpreted by
+.IR cpp ,
+otherwise text between 
+.B #
+(preceded by 
+.B space 
+or
+.BR tab )
+and
+.B newline
+is treated as a comment by
+.IR \*(nM .
+.PP
+A rule may appear as a target in more than one entry;
+the dependencies for successive entries are simply appended.
+However, only one shell command list may be specified for a given target.
+Rule names containing the special characters
+.B :{}#=+
+must be enclosed in double quotes.
+The dependencies for a rule are scanned in order from left to right.
+.SS "Rule Binding"
+.I \*(nM
+.I binds
+each rule to either a
+.I file 
+or a
+.I state variable
+in the process of updating targets.
+A
+.I state variable
+is a variable whose modify time and definition is stored from one invocation of
+.I \*(nM
+to the next.
+.I state variables
+have two basic forms:
+.BI ( variable )
+is a 
+.I makefile
+variable
+(see
+.BR Variables )
+and
+.IB file ( variable )
+is a variable corresponding to a
+.B #define
+statement in
+.IR file .
+For example:
+.XS
+\f5x.o : header.h(DEBUG) (MACHINE)
+.XE
+specifies that 
+.I x.o
+depends on the definition of the variable
+.B DEBUG
+from the file
+.I header.h
+and the definition of
+.B MACHINE
+from the current
+.IR makefile .
+State variables are not usually included in automatic variable expansions
+(see
+.BR "Automatic Variables" ).
+State variable definitions are stored in 
+.IB base .ms
+in the current directory, where
+.I base
+is the name of the first
+.I makefile
+in the argument list.
+The contents of the state variable file can be listed by executing
+.XS
+\f5\*(nM \-bflr \fBbase\fP.ms
+.XE
+If a state variable is defined by a
+.B #define
+statement that is part of a conditional
+.B #if,
+.B #ifdef
+or
+.B #ifndef
+then only the first encountered definition is used.
+.PP
+Rule names are bound to file names using the dependencies of the special
+.BR .SOURCE ,
+.IB p. .SOURCE
+and
+.BI .SOURCE .s
+rules (see
+.BR "Special Rules" ).
+The dependencies of these rules are directories to be scanned when searching
+for files.
+.I \*(nM
+warns when the same file is found in more than one directory, but
+continues with the first file found.
+.SS Variables
+.I makefile
+entries of the form
+.XS
+\f5variable = value
+.XE
+are variable definitions.
+Subsequent appearances of 
+.BI $( variable )
+are replaced by
+.IR value .
+.BI $$( variable )
+is replaced by
+.BI $( variable ).
+Otherwise
+.B $
+is passed untouched.
+.I value
+is not expanded until
+.BI $( variable )
+is encountered.
+If
+.I variable
+contains another variable then it is expanded before
+.I value
+is determined.
+Using
+.B :=
+instead of
+.B =
+causes
+.I value
+to be expanded immediately.
+.B +=
+causes
+.I value
+to be expanded and appended to the current value of
+.IR variable .
+Command line variable assignments can only be modified using the
+.B +=
+assignment operator.
+.PP
+A variable name is a sequence of letters, digits, underscores and dots.
+Variables with names containing dot
+.RB ( . )
+cannot conflict with
+.I environment
+variables set by
+.IR sh (1);
+such variables are typically used in builtin rule specifications.
+To avoid conflicts with the builtin rules the user should not define upper case
+variable names with
+.B .
+as the first character.
+.PP
+Variable values may be edited during expansion by using the builtin
+.B : 
+edit operators.
+The general syntax is
+\fB$(\fP\fIvariable\fP\fB:\fP\fIop[=arg]\fP\fB:\fP\fI...\fP\fB)\fP.
+The operators are applied to each space separated token in the expanded
+.IR value ,
+where
+.B newline
+is treated as a separate token.
+.PP
+Variable file name components can be edited during substitution.
+The components are:
+.TP
+.BI M " machine"
+All characters up to and including the last
+.BR ! .
+.I null
+if no
+.B !
+appears.
+.TP
+.BI D " directory"
+All characters after the last 
+.B !
+up to and including the last
+.BR / .
+.I null
+if no
+.B /
+appears.
+.TP
+.BI P " prefix"
+All characters after the last
+.B /
+up to and including the first
+.BR . .
+.I null
+if less than two
+.BR . 's
+or if
+.B .
+is the first character.
+.TP
+.BI B " base"
+All characters after the first
+.B .
+up to but not including the last
+.BR . .
+.TP
+.BI S " suffix"
+All characters from the last
+.B .
+to the end.
+.I null
+if no
+.B .
+appears.
+.PP
+.RI $( variable : edit )
+causes
+.I variable
+to be edited,
+where
+.I edit
+is a concatenation of
+.IR c :
+or
+.IR c = new :.
+.I c
+specifies the component
+.RB ( MDPBS
+from above)
+and 
+.I new
+specifies a new value for the component.
+Omitted component letters cause the corresponding component to be
+deleted from the substituted value.
+For example:
+.XS
+\f5FILES = a.c dir/s.x.c bozo!.profile
+
+\f5$(FILES)           ->    a.c dir/s.x.c bozo!.profile
+\f5$(FILES:B:S=.o)    ->    a.o x.o .profile.o
+\f5$(FILES:M)         ->    bozo!
+.XE
+.PP
+Other edit operators are:
+.TP
+.BI A [\|!\|]=a[\||\|b...]
+Selects tokens that
+.I "[do not]"
+have the user attribute
+.I a
+[or
+.IR b... ].
+.TP
+.BI C <del>old<del>new<del>
+Substitutes every occurrence of the string 
+.I old
+with the string
+.I new
+for each token.
+.I <del>
+may be any delimiter character.
+.B ^
+as the first character in
+.I old
+represents the beginning of each token of
+.IR variable 's
+expanded value and
+.B $
+as the last character
+represents the end of each token.
+If 
+.I old
+is null then
+.B &
+in
+.I new
+is replaced by the current token.
+.B C/
+may be abbreviated as
+.BR / .
+.TP
+.BI E =message
+.I message
+is output as an error on
+.I stderr
+and
+.I \*(nM
+exits with non-zero exit status.
+.TP
+.BI F =format
+Expands tokens according to
+.IR format .
+.I format 
+may be a concatenation of the following:
+.RS
+.TP
+.B L
+The token is converted to lower case.
+.TP
+.B U
+The token is converted to lower case.
+.TP
+.BI % [\-][n][.m]c
+.IR printf (3)
+style formatting.
+Only the 
+.IR s ,
+.IR d ,
+.IR o ,
+.I x
+and 
+.I u
+conversions are interpreted.
+.RE
+.TP
+.BI G =.s
+Selects tokens that can generate files with suffix
+.I .s
+using the implicit rules.
+That is, a token
+.BI x .y
+is selected if the implicit rule
+.B "*.s : *.y"
+exists.
+.TP
+.BI N [\|!\|]=pattern
+Only tokens
+.I [\|not\|]
+matching the shell file match
+.I pattern
+are selected.
+.TP
+.BI T =type
+.ns
+.TP
+.BI T =type [\|!\|]= pattern
+.ns
+.TP
+.BI T =type ? return
+Selects tokens specified by
+.IR type .
+.BI [\|!\|]= pattern
+specifies that the substituted tokens must also
+.I [\|not\|]
+match the shell file match
+.I pattern.
+.BI ? return
+alters the substituted value to
+.I return
+for matching tokens the null string otherwise.
+.I type
+may be one of:
+.RS
+.TP
+.B A
+Each token that can be bound to an
+.I archive
+is selected.
+.TP
+.B B
+Causes 
+.I value
+to be tokenized.
+Multiple space character sequences are translated to a single space.
+.TP
+.B D
+Each token that can be bound to a
+.I state variable
+is expanded using the 
+.I state variable 
+definition.
+The expanded definitions may be used as arguments to
+.IR cc (1).
+.TP
+.B E
+Similar to
+.B T=D
+except that the expanded definitions are of the form
+.IR x = y .
+.TP
+.B F
+Each token that can be
+.I bound
+to a file is selected using the
+.I bound
+file name.
+.TP
+.B N
+If
+.I variable
+has a null value then the null string is expanded, otherwise
+.B #
+is expanded.
+This can be used to specify conditional 
+.I makefile
+input.
+.TP
+.B O
+Each token that is bound neither to a file nor to a
+.I state variable
+is selected.
+.TP
+.B S
+Each token that can be
+.I bound
+to a
+.I state variable
+is selected.
+.TP
+.B T
+Each token that appears as a target in the input
+.I makefiles
+is selected.
+.TP
+.B V
+If
+.I variable
+has a non-null value then the null string is expanded, otherwise
+.B #
+is expanded.
+.RE
+.TP
+.B V
+The
+.I value
+of 
+.I variable
+is substituted without expansion.
+.TP
+.BI W =message
+.I message
+is output as a warning on
+.IR stderr .
+.TP
+.BI X =cross
+The cross product of the tokens in
+.I variable
+and the tokens in
+.I cross
+is expanded.
+.PP
+Only one of each operator may occur for each edit expansion and the
+operators are evaluated in the following order:
+X, V, G, N, A, T, C, M, D, P, B, S and F.
+.PP
+.RI $( var1 " | " var2 ...)
+causes the value of the first non-null variable (left to right)
+to be substituted.
+If the last variable name is enclosed in 
+\fB"\|"\fP
+then this string is used as the value if all preceding variables have null values.
+The standard
+.B \\\\
+character constants are interpreted within the string.
+.RI $( file(variable) )
+causes the value of the state variable
+.I file(variable)
+to be substituted.
+.PP
+For example:
+.XS
+\f5FILES = a.h b.h c.h x.c y.c z.c
+\f5HEADERS = $(FILES:N=*.h)
+
+\f5$(HEADERS:/^/-I/:)   ->    -Ia.h -Ib.h -Ic.h
+\f5$(HEADERS:/ /:/:)    ->    a.h:b.h:c.h
+.XE
+.PP
+Variable definitions come from many sources.
+The precedence order (highest to lowest) is:
+.XS
+(1)	automatic definitions
+(2)	dynamic definitions
+(3)	command line definitions
+(4)	makefile definitions
+(5)	environment definitions
+(6)	builtin definitions
+.XE
+.I automatic
+definitions are maintained by
+.I \*(nM
+(see
+.BR "Automatic Variables" ).
+.I dynamic 
+definitions occur while targets are being updated.
+Command line arguments of the form
+.IR variable = value
+are
+.I command line
+definitions.
+.I environment
+definitions are read from the inherited environment
+(see
+.IR env (1)).
+.PP
+Variables in
+.I target
+and
+.I dependency
+names are expanded once when the 
+.I makefile
+is read and once when the 
+.I target
+or
+.I dependency
+is
+.IR bound .
+Variables in shell command lists are expanded each time the commands are
+executed.
+If
+.B $
+is the first character on a line then the corresponding variable
+is always expanded when the
+.I makefile 
+is read.
+This allows conditional 
+.I makefile
+input using the
+.B :T=N:
+and
+.B :T=V:
+edit operators.
+.SS Automatic Variables
+The following variables are maintained by
+.IR \*(nM :
+.TP
+.B $(\-)
+The concatenation of the option flags presented to
+.I \*(nM
+(with the preceding \-).
+.TP 
+.BI $(\- x )
+Expands to 
+.B 1
+if option
+.I x
+is set, otherwise null.
+.TP
+.B $(=)
+The list of variable assignments in the 
+.I \*(nM
+command arguments.
+.TP
+.B $(?)
+The list of
+.I \*(nM
+command arguments that have not been made yet.
+After this expansion all arguments are treated as if they have
+already been made.
+.B $(?)
+and
+.B $(=)
+are useful in recursive
+.I \*(nM
+calls.
+.TP
+.B $(<)
+The current target name.
+.TP
+.B $(>)
+The list of all file dependencies of the current target that are out
+of date with the target.
+.TP
+.B $(*)
+The list of all file dependencies of the current target.
+.TP
+.B $(&)
+The list of all file and
+.I state variable
+dependencies of the current target.
+.TP
+.B $(%)
+If the current target is a
+.I state variable
+then
+.B $(%)
+is the
+.I state variable
+value, otherwise it is the
+.I unbound
+rule name.
+.TP
+.B $(@)
+The
+.IR pre -command
+list for the current target.
+.TP
+.B $(#)
+The
+.IR post -command
+list for the current target.
+.TP
+.B $(MAKE)
+The name of the current
+.I \*(nM
+program.
+.TP
+.B $(MAKEFILE)
+The name of the first non-global makefile.
+.PP
+Each successive occurrence
+of
+.B <>*&%@#
+causes the 
+.I parent
+of the current target to be accessed.
+For example,
+.B $(<<)
+is the name of the parent of the current target and
+.B $(**)
+is the list of all its dependencies.
+.BI $(c rule )
+accesses information for 
+.I rule
+instead of the current target.
+Also,
+.BI $(+ c )
+accesses information for the first dependency of the current target.
+Notice that
+.IR "state variables" ,
+.BR .NOTOUCH ,
+.B .POST
+and
+.B .USE
+rules are not included in
+.B <>*
+automatic variable substitutions.
+.SS Option Generation
+The builtin rules automatically generate the proper
+.B \-D
+and
+.B \-I
+options of 
+.IR cc (1)
+in the
+.B $(CCFLAGS)
+variable.
+The
+.B \-D
+options are generated from
+.I "state variable"
+dependencies and the 
+.B \-I
+options are generated from the dependencies of the
+.B .SOURCE.h
+rule.
+.I "State variable"
+dependencies specified using the
+.B ::
+operator apply to all dependencies of the corresponding target
+(global dependencies),
+otherwise the dependencies apply only to the individual target of the
+.B :
+operator.
+.SS Example
+The following
+.I makefile
+specifies that
+.I program
+depends on two
+files
+.I a.o
+and
+.IR b.o ,
+and that they in turn depend on
+.I .c
+files and a common file
+.IR header.h .
+.XS
+.HP
+\f5program : a.o b.o
+\f5cc a.o b.o lib.a \-lm \-o program
+.HP
+\f5a.o : header.h a.c
+\f5cc \-c a.c
+.HP
+\f5b.o : header.h b.c
+\f5cc \-c b.c
+.XE
+.PP
+.I \*(nM 
+infers dependencies for files that do not have
+explicit update commands.
+For example, a
+.I .c
+file may be inferred as dependency for a
+.I .o
+file and be compiled to produce the
+.I .o
+file.
+.PP
+The rule to create a file with suffix
+.I .s2
+that depends on a file (with the same
+.I base
+name) with suffix
+.I .s1
+is specified as an entry
+for the target rule
+.BR "*.s2 : *.s1" .
+.I .s2
+and
+.I .s1
+are automatically appended to
+.B .SUFFIXES
+if they have not been previously specified.
+Any dependencies following
+.B *.s1
+are transferred to each implicit target when the implicit rule is applied.
+For example, a rule for making optimized
+.I .o
+files from
+.I .c
+files is
+.XS
+.HP
+\f5*.o : *.c (CC) (CCFLAGS)
+\f5$(CC) $(CCFLAGS) \-c \-o $(<) $(>)
+.XE
+.PP
+If the current target is 
+.I a.o
+then
+.I \*(nM
+infers the following rule from the
+.B "*.o : *.c"
+rule:
+.XS
+.HP
+\f5a.o : a.c
+\f5cc \-c \-O \-o a.o a.c
+.XE
+.PP
+Using the default
+.B "*.o : *.c"
+rule,
+the example can be stated more briefly:
+.XS
+.HP
+\f5program : a.o b.o
+\f5$(CC) $(*) lib.a \-lm \-o $(<)
+.HP
+\f5a.o b.o : header.h
+.XE
+.PP
+The rule to create a file with no suffix
+from a similarly named file with suffix
+.I .s
+is specified as an entry for the target rule
+.BR "* : *.s" .
+The rule to create a file with no suffix
+when no other suffix rule applies is specified as an entry for the target rule
+.BR "* : *" .
+.PP
+Implicit rules are inferred according to the suffixes
+listed as the dependencies of the special rule
+.BR .SUFFIXES .
+Suffix order is significant; the first possible name for which both
+a file and a rule exist is inferred.
+.PP
+The default rule and variable definitions can be listed by executing
+.XS
+\f5\*(nM \-lf /dev/null
+.XE
+.SS Operators
+The builtin rules for
+.I \*(nM
+also contain 
+.I operator
+definitions.
+An 
+.I operator
+specifies actions to be taken
+when 
+.I makefiles
+are read and often allows abbreviated 
+.I makefile
+specifications.
+The
+.B ::
+operator is similar to
+.B :
+in specifying dependencies, except that
+.B ::
+specifies
+.I source
+dependencies.
+For example, the 
+.I makefile
+of the previous section can be specified as:
+.XS
+\f5program :: a.c b.c lib.a \-lm
+.XE
+Notice that 
+.IR ld (1)
+library flags and libraries with suffix
+.B .a
+may also be placed in 
+.B ::
+dependency lists.
+.I \*(nM
+expands
+.BI \-l x
+to
+.BI lib x .a .
+.SS Special Rules
+The following rules are special to
+.IR \*(nM .
+Most are used to associate attributes with rules and targets.
+To avoid conflicts with the builtin rules the user should not define upper case
+rule names with
+.B .
+as the first character.
+.TP
+.B .ARCHIVE
+The dependencies of 
+.B .ARCHIVE
+are suffixes associated with archive files
+(see
+.IR ar (1)).
+A rule with one of these suffixes is treated as an archive.
+When used as a dependency,
+.B .ARCHIVE
+causes the target
+to be treated as an archive.
+The
+.B "*.a : *"
+rule is used to update the target.
+Some archive formats require an explicit update of the archive symbol table
+(i.e.,
+.IR ranlib ).
+The variable
+.B $(ARUPDATE)
+is dynamically set by
+.I \*(nM
+to contain the proper update sequence for the current archive target
+(the commands are preceded by a newline).
+The default archive suffixes and update commands are:
+.XS
+\f5\&.ARCHIVE : .a
+
+*.a : * (AR) (ARFLAGS)
+	$(AR) $(ARFLAGS) $(<) $(>) $(ARUPDATE)
+	$(RM) $(RMFLAGS) $(>)
+.XE
+.TP
+.B .ATTRIBUTE
+When used as a dependency,
+.B .ATTRIBUTE
+defines the target as a user attribute.
+Dependencies of user attributes are treated as suffixes.
+A rule with one of these suffixes automatically
+.I inherits
+the corresponding user attribute.
+A rule may have any number of user attributes, up to an implementation
+defined limit.
+.TP
+.B .CLEAR
+When used as a dependency, clears the dependency and command lists
+for the target.
+.TP
+.B .CURRENT
+The dependencies of 
+.B .CURRENT
+are suffixes associated with targets that are only produced in the
+current directory.
+When used as a dependency,
+.B .CURRENT
+marks the target as being produced in the current directory.
+The default is:
+.XS
+\f5\&.CURRENT : .a .o
+.XE
+.TP
+.B .DEFAULT
+This rule is used as a last resort when no other rules can be inferred
+to make the current target.
+.TP
+.B .DONE
+This rule is made after all targets have been made
+and has no affect on the update status of the targets.
+The commands are always executed in the foreground shell (see
+.BR Jobs ).
+.TP
+.B .DONTCARE
+When used as a dependency,
+causes
+.I \*(nM
+to continue if the target cannot be made.
+Otherwise, 
+.I \*(nM
+issues an error and exits if a target cannot be made.
+.TP
+.B .FOREGROUND
+When used as a dependency, causes the target update commands to be 
+executed in the foreground shell.
+Otherwise the commands may be executed in a background shell (see
+.BR Jobs ).
+Normally 
+.I \*(nM
+computes future dependencies while update commands are being executed,
+however,
+.B .FOREGROUND
+update commands cause 
+.I \*(nM
+to block until the commands complete.
+.TP
+.BI .GLOBAL .x
+The dependencies of
+.BI .GLOBAL .x
+are inserted onto each target with suffix
+.I .x
+immediately before the target is made.
+Notice that
+.I .x 
+may be the null suffix.
+For this rule 
+.B $(<)
+refers to the current
+.BI .GLOBAL .x
+target and 
+.B $(<<)
+refers to the target on which the dependencies are inserted.
+.TP
+.B .IMPLICIT
+When used as a dependency, causes the implicit suffix rules to be applied
+even if update commands have been specified for the target.
+Otherwise the implicit suffix rules are only applied to targets with
+no explicit update commands.
+.TP
+.B .INIT
+This rule is made before any other target
+and has no affect on the update status of the targets.
+The commands are always executed in the foreground shell (see
+.BR Jobs ).
+.TP
+.B .INSERT
+When used as a dependency, causes the dependency list to be inserted
+rather than appended to the target dependency list.
+.TP
+.B .INTERNAL
+This rule is used internally
+and appears here for completeness.
+.TP
+.B .INTERRUPT
+This rule is made when an interrupt signal is caught
+and has no affect on the update status of the targets.
+The commands are always executed in the foreground shell (see
+.BR Jobs ).
+.I \*(nM
+exits after the commands have been executed.
+.TP
+.B .MAIN
+If no targets are explicitly listed on the command line then
+the dependencies of 
+.B .MAIN
+are used as the main targets.
+If not explicitly specified in the input makefiles then
+the first dependency of
+.B .MAIN
+is set to be the first target encountered that is not a special rule
+or inference rule.
+.TP
+.B .MAKE
+When used as a dependency, causes the command update list to be
+parsed by
+.I \*(nM
+instead of executed by the shell.
+Such command lists are always parsed, even with the
+.B \-n
+option on.
+.TP
+.B .MAKEFILES
+Specifies the default 
+.I makefile
+names.
+If no explicit 
+.I makefile
+is specified then these files are tried in order.
+The default is:
+.XS
+\f5\&.MAKEFILES : Makefile makefile
+.XE
+.TP
+.B .MAKEINIT
+This target is made before the 
+.B .SOURCE
+targets are examined.
+.B .INIT
+is made after the
+.B .SOURCE
+targets are examined.
+The user should not redefine this rule.
+However, it is safe to insert or append dependencies onto 
+.BR .MAKEINIT .
+Variable assignments within
+.B .MAKEINIT
+commands override any command line variable assignments.
+.TP
+.B .NOEXPAND
+This attribute is associated with state variables that are not to be
+expanded by the
+.B :T=D:
+edit operator.
+.B .NOEXPAND
+is defined in the builtin rules using
+.BR .ATTRIBUTE .
+.TP
+.B .NOTOUCH
+When used as a dependency, causes the target modify time to remain
+untouched, even if the corresponding update commands are executed.
+This allows initialization sequences to be specified for individual rules:
+.XS
+.HP
+\f5main : init header
+\f5echo "executed if header is newer than main"
+.HP
+\f5init : .NOTOUCH
+\f5echo "always executed for main"
+.XE
+.TP
+.B .NULL
+When used as a dependency of a target with no suffix or explicit
+update commands, causes the commands associated with the
+.B "* : *"
+rule to be used when updating the target.
+.TP
+.B .OPERATOR
+When used as a dependency, marks the target as an
+.I operator
+to be applied when reading
+.IR makefiles .
+Operator names must be exactly two characters long.
+.TP
+.B .OPTIONS
+The dependencies of
+.B .OPTIONS
+are treated like command line options.
+The options take effect immediately when 
+.B .OPTIONS
+is read.
+The 
+.B \-f
+and
+.B \-g
+options have no effect in this case.
+.TP
+.B .PARAMETER
+When used as a dependency,
+marks the target as a 
+.I parameter
+file.
+A
+.I parameter
+file only contains definitions (i.e.,
+.B #define
+definitions) and comments.
+The modify time of a
+.I parameter
+file is ignored when determining the update status of corresponding targets.
+.TP
+.B .POST
+When used as a dependency,
+causes the target to be made
+.I after
+the parent target has been made.
+If a 
+.B .POST
+dependency also has the 
+.B .NOTOUCH
+attribute then commands are executed only if the target has been updated.
+.TP
+.B .PRECIOUS
+The current target(s) are usually deleted
+when
+.I \*(nM
+is interrupted.
+However, the dependencies of
+.B .PRECIOUS
+are not deleted.
+If
+.B .PRECIOUS
+is specified with no dependencies then
+.I all
+targets are precious.
+Targets marked with
+.B .ARCHIVE
+are always precious.
+.TP
+.B .PREFIXES
+The dependencies of
+.B .PREFIXES
+are file name prefixes of the form
+.I p.
+used to infer implicit rules.
+The (left to right) prefix order is important; the first inference rule name
+for which both a file and a rule exist is inferred.
+The default prefix rules provide a smooth interface to
+.I Source Code Control System
+files (see
+.IR admin (1)):
+.XS
+\f5\&.PREFIXES : s.
+.XE
+.TP
+.B .READONLY
+When used as a dependency for
+.B .o
+target files,
+.B .READONLY
+causes the data portions of the corresponding
+.B .c
+source file to be placed into readonly text.
+.B .READONLY
+can also be used to place the tables of corresponding
+.B .l
+and 
+.B .y
+source files into readonly text.
+The commands are tailored to the current host machine.
+.B .READONLY
+is implemented as a
+.B .USE
+rule and
+will become obsolete when the
+.B const
+data attribute becomes a C language standard.
+Typical usage is:
+.XS
+\f5file.o : .READONLY
+.XE
+.TP
+.B .SEARCH
+The dependencies of 
+.B .SEARCH
+are suffixes associated with files that are to be searched for implicit
+file dependencies.
+When used as a dependency,
+.B .SEARCH
+marks the target to be searched for implicit file dependencies.
+By default any dependency with a
+.B .SEARCH
+suffix or marked with
+.B .SEARCH
+is automatically searched for
+.B #include
+header file dependencies.
+If any of the header files are newer than the dependency file then the
+corresponding target is updated.
+The default is:
+.XS
+\f5\&.SEARCH : .c .h .y .l
+.XE
+.TP
+.B .SOURCE
+The dependencies of 
+.B .SOURCE
+are directories to be scanned when searching for files
+The (left to right) directory order is important; the first directory
+containing the file is used.
+The directory
+.B .
+is always searched first.
+The default is:
+.XS
+\f5\&.SOURCE : .
+.XE
+.TP
+.BI .SOURCE .x
+The directories specified by the rule
+.BI .SOURCE .x
+are checked for files with suffix
+.BR . .
+If the file is not found then the directories specified by
+.B .SOURCE
+are checked.
+Notice that 
+.I .x 
+must be a dependency of 
+.BR .SUFFIXES .
+The (left to right) directory order is important; the first directory
+containing the file is used.
+The directory
+.B .
+is always searched first.
+The default when the 
+.B \-X
+option is off is:
+.XS
+\f5\&.SOURCE.a : /lib /usr/lib
+\f5\&.SOURCE.h : /usr/include
+.XE
+.TP
+.B .SUFFIXES
+The dependencies of
+.B .SUFFIXES
+are file name suffixes of the form
+.I .s
+used to infer implicit rules.
+The (left to right) suffix order is important; the first inference rule name
+for which both a file and a rule exist is inferred.
+The default suffix list is:
+.XS
+\f5\&.SUFFIXES : .o .c .r .f .y .l .s .sh .h .a
+.XE
+.TP
+.B .TOUCH
+Each dependency of
+.B .TOUCH
+is touched as though it has already been made.
+The dependencies are touched immediately when
+.B .TOUCH
+is read.
+.TP
+.B .UNTOUCH
+Each dependency of
+.B .UNTOUCH
+is untouched as though it had never been made.
+The dependencies are untouched immediately when
+.B .UNTOUCH
+is read.
+.TP
+.BI .USE
+When used as a dependency,
+marks the target as a
+.B .USE 
+rule.
+Any target having a 
+.B .USE 
+rule as a dependency
+will be updated using the commands associated with the
+.B .USE
+rule.
+.TP
+.B .WAIT
+.br
+.B .WAIT
+is a synonym for
+.BR .FOREGROUND .
+.SS Command Execution
+.I \*(nM
+and
+.I sh
+run as co-processes.
+All update commands are sent to a single copy of the shell,
+keeping the shell environment intact between command executions
+(see
+.B Jobs
+for an exception).
+This includes the effects of
+.IR cd (1)
+and shell
+.I parameter
+assignments.
+.I sh
+echoes each command when executed unless the 
+.B \-s
+option is on.
+Since entire command blocks are sent as a unit,
+special shell constructs
+.RB ( case ,
+.BR if ,
+.BR for ,
+.BR while )
+may cross 
+.B newline
+boundaries without
+.B newline
+escapes.
+.PP
+Commands returning nonzero status (see
+.IR intro (1))
+cause
+.I \*(nM
+to stop unless the 
+.B \-i
+or 
+.B \-k
+option is on.
+.PP
+Interrupt and quit cause the current target to be deleted
+unless the target is an archive, directory or
+is a dependency of the special rule
+.BR .PRECIOUS .
+.PP
+Any command update list containing the variable
+.B $(MAKE)
+is always executed, even when the
+.B \-n
+option is on.
+This simplifies the maintenance of a
+.I makefile
+hierarchy, as one may recursively invoke 
+.IR \*(nM ,
+passing along the top level options and variable assignments with 
+.B $(\-)
+and
+.BR $(=) .
+.B $(MAKE:)
+may be used to disable execution when the
+.B \-n
+option is on.
+.SS Special Commands
+A few special shell commands are provided for the
+.IR \*(nM - sh
+co-process environment:
+.TP
+.B ...
+The 
+.I ellipsis
+command separates an update command list into
+.IR pre -commands
+(before
+.BR ... )
+and 
+.IR post -commands
+(after
+.BR ... ).
+The
+.IR pre -commands
+are executed when a target is being updated.
+The
+.IR post -commands
+are stacked (first in first out) and are executed in the foreground shell
+after the last target has been generated.
+.B ...
+must appear as the first command on a line.
+.TP
+.BI @ " \*(nM-command"
+.br
+.I \*(nM-command
+is sent to and executed by
+.IR \*(nM .
+This allows variable definitions and even 
+.I makefiles
+to be dynamically modified
+(although some dynamic modifications may not work with the
+.B \-n
+option on).
+Embedded
+.B newline
+characters may be sent by enclosing
+.I \*(nM-command
+in single or double quotes.
+.TP
+.BI exit " code"
+Removes the shell co-process, causing
+.I \*(nM
+to stop.
+.TP
+.BI ignore " shell-command"
+Causes the exit status of
+.I shell-command
+to be ignored.
+.TP
+.BI silent " shell-command"
+Prevents
+.I shell-command
+from being printed by the shell.
+.B silent
+must precede
+.B ignore
+if both are to be used.
+.TP
+.BI _make_ " command data"
+Used to pass messages from
+.I sh
+to
+.IR \*(nM .
+The user should not modify the shell definition of either
+.B _make_
+or
+.BR _id_ .
+.RS
+.TP
+.PD 0
+.BI "_make_ error" " exit-code"
+Called when an update command returns a non-zero exit code.
+.TP
+.B "_make_ exit"
+Called when an update command block completes.
+.TP
+.BI "_make_ read" " \*(nM-command"
+.br
+.I \*(nM-command
+is sent to and executed by
+.IR \*(nM .
+.BI @ " \*(nM-command"
+is an alias for
+.BI "_make_ read" " \*(nM-command."
+.TP
+.BI "_make_ start" " job-id process-id"
+Associates a command block with a process id.
+.PD
+.RE
+.SS Jobs
+The
+.B \-j
+option allows
+.I \*(nM
+to update many targets concurrently.
+The updates are synchronized using the target dependency graph
+specified in
+.IR makefile .
+With this option, each update command block is sent to a new subshell
+(background shell).
+Background shells inherit the environment of the main shell (foreground shell)
+and the foreground shell inherits the environment of
+.IR \*(nM .
+Target update commands can be forced to execute in the foreground shell
+by including the special rule
+.B .FOREGROUND
+as a dependency.
+.SS Common Actions
+When the
+.B ::
+operator is used several common action targets are automatically defined.
+The common action target 
+.I xxx
+is defined as 
+.I .XXX
+in the builtin rules.
+If 
+.I xxx
+appears as a command line target and 
+.I xxx
+has not been defined by the input
+.I makefiles
+then the target
+.I .XXX
+is made.
+The common action target must be the first command argument target
+(from left to right) and may be followed by specific command targets.
+If no command argument targets are given then all command targets are
+affected.
+The common actions are:
+.TP
+.B arch
+Creates an
+.IR ar (1)
+archive of the source files listed after each
+.B ::
+operator.
+The archive is placed in the file
+.IR main .arch
+where
+.I main
+is the base name of the main target rule.
+.TP
+.B clean
+Deletes all object files corresponding to the current 
+.IR makefile .
+.TP
+.B clobber
+Executes the
+.B clean
+action and also deletes the target(s) corresponding to the current
+.IR makefile .
+.TP
+.B cpio
+Creates a
+.IR cpio (1)
+archive of the source files listed after each
+.B ::
+operator.
+The archive is placed in the file
+.IR main .cpio
+where
+.I main
+is the base name of the main target rule.
+.TP
+.B ctags
+Creates a
+.I tags
+file for
+.IR vi (1)
+using
+.IR ctags (1).
+.TP
+.B install
+Makes the main target and copies it to the directory
+.BR $(INSTALLDIR) .
+By default, 
+.B $(INSTALLDIR) 
+is 
+.B $(BINDIR)
+for executable targets,
+.B $(LIBDIR)
+for object archive targets and
+.BI $(MANDIR) n
+for manual page targets, where 
+.I n
+is the manual section number.
+.BR BINDIR ,
+.BR ETCDIR ,
+.BR LIBDIR 
+and
+.B MANDIR
+are defined as $(ROOT\||\|HOME)/bin, $(ROOT\||\|HOME)/etc, $(ROOT\||\|HOME)/lib and
+$(ROOT\||\|HOME)/man/man respectively.
+The commands associated with the rule
+.B .DOINSTALL
+are used to do the copy.
+The installation directory for any (non-man page) target
+.I x
+may be specified by the variable
+.BI .INSTALL. x.
+.TP
+.B lint
+Runs 
+.IR lint (1)
+on the input source files.
+Any
+.B .l
+and
+.B .y
+source files are automatically preprocessed if necessary.
+.TP
+.B lprof
+Runs
+.IR lprof (1)
+(System V only) on the target command(s).
+Each command must have been generated with the
+.B -ql
+profiling option and the file
+.IB command .cnt
+must exist in the current directory (i.e., 
+.I command
+must have been run at least once).
+.TP
+.B print
+The source files are printed by passing them through the filter
+.B $(PR)
+and listing them with
+.BR $(LP) .
+.TP
+.B tar
+Creates a
+.IR tar (1)
+archive of the source files listed after each
+.B ::
+operator.
+The archive is placed in the file
+.IR main .tar
+where
+.I main
+is the base name of the main target rule.
+.TP
+.B uarch
+Same as 
+.B arch
+except that only those source files modified since the last
+.B uarch
+are archived (see also
+.B $(UTIME)
+in
+.BR ucpio ).
+.TP
+.B ucpio
+Same as 
+.B cpio
+except that only those source files modified since the last
+.B ucpio
+are archived.
+If 
+.B $(UTIME)
+is specified then it is taken to be a file name whose modify time is used
+to determine which files are to be archived; only files newer than
+this modify time are archived.
+.TP
+.B uprint
+Same as 
+.B print
+except that only those source files modified since the last
+.B uprint
+are printed (see also
+.B $(UTIME)
+in
+.BR ucpio ).
+The 
+.B \-F
+option must be set the first time
+.B uprint
+is used.
+.TP
+.B utar
+Same as 
+.B tar
+except that only those source files modified since the last
+.B utar
+are archived (see also
+.B $(UTIME)
+in
+.BR ucpio ).
+.SS Conventions
+Builtin attributes match the regular expression
+.BR .[.A-Z][.A-Z0-9]* .
+User attributes match the regular expression
+.BR .[.A-Z][.a-z0-9]* .
+Intermediate targets match the regular expression
+.BR .[.a-z][.a-z0-9]* .
+Use
+.B ${!:\-$$}
+to generate temporary file names.
+.SH OPTIONS
+Options are preceded by
+.B \-
+or
+.B +
+and may appear anywhere on the command line.
+.B +
+turns the corresponding option off.
+Command line options override options specified in
+.IR makefile .
+Options not listed here may be interpreted by local versions of the builtin rules.
+The standard options are:
+.TP
+.B \-b
+Do not use the builtin rules.
+.TP
+.B \-c
+Force the 
+.I makefiles
+to be compiled into a single
+.I \*(nM
+object file.
+.I \*(nM
+exits after the files are compiled.
+.TP
+.BI \-d [n]
+Provide a step by step dump of 
+.IR \*(nM 's
+actions.
+The optional number argument
+.I n
+selects the dump level; higher levels produce more output.
+Levels 4 and higher are only enabled in debugging versions of
+.IR \*(nM .
+.TP
+.BI \-f " makefile"
+Read the descriptions in 
+.IR makefile .
+If no
+.B \-f
+option is present then the files specified by the dependencies of
+the rule
+.B .MAKEFILES
+are tried in order from left to right.
+If
+.I makefile
+is `\-' then the standard input is read.
+More than one
+.B \-f
+option may appear; the files are read in order from left to right.
+If no 
+.B \-f
+option is present and no default 
+.I makefiles
+are found then the suffix
+.B .mk
+is appended to the base name of the first argument and this file
+is read.
+An error occurs if no 
+.I makefile
+can be found.
+.TP
+.BI \-g " makefile"
+Similar to the
+.B \-f
+option, except that
+.I makefile
+is treated like a global makefile.
+This means that the default 
+.I makefiles
+will still be tried if no 
+.B \-f 
+option appears.
+.TP
+.B \-h
+Do not automatically search files with suffixes marked by
+.B .SEARCH
+for 
+.B #include
+header file dependencies.
+.TP
+.B \-i
+Ignore command error codes from the shell.
+.TP
+.BI \-j [n]
+Specifies that 
+.I \*(nM
+may concurrently execute up to
+.I n
+command update jobs.
+.I n
+defaults to 3 if omitted.
+.TP
+.B \-k
+If the update commands for the current target return non-zero status,
+continue working on targets that do not depend on the current target.
+.TP
+.B \-l
+List variable and rule definitions after the
+.I makefiles
+are read.
+The targets are neither checked nor updated.
+.TP
+.B \-m
+Move each target to the directory of the corresponding primary source file.
+The primary source file is determined using the implicit suffix rules.
+Normally, targets are placed in the current directory.
+Archive members and targets with explicit directory names are not moved.
+.TP
+.B \-n
+Trace and print, but do not execute the target update commands.
+This option also inhibits
+.I makefile
+compilations.
+.TP
+.B \-o
+Output intermediate dependency information to be used by
+.IR mkold (1)
+to generate
+.IR \*(oM (1)
+makefiles.
+.TP
+.B \-q
+Don't update any targets but exit 0 if the target(s) are up to date,
+otherwise exit \(mi1.
+.TP
+.B \-r
+List the detailed status of each rule after all targets have been made.
+If 
+.B \-l
+is also set then the listing occurs before any targets are made and
+.I \*(nM
+exits without making any targets.
+.TP 
+.B \-s
+Execute but do not print the update commands.
+.TP
+.B \-t
+Touch the modify date of targets, bypassing the update commands.
+Only existing targets are touched.
+Targets with state variable dependencies can only be touched using
+this option.
+.TP
+.B \-u
+Do not force file bindings to be unique and
+do not warn about duplicate files.
+.TP
+.B \-v
+List variable assignments.
+Useful in conjunction with the
+.B \-d
+option.
+.TP
+.B \-x
+Do not check implicit file dependencies generated by a previous
+.IR \*(nM .
+.TP
+.B \-A
+Accept any existing targets as being up to date, even if the targets
+have state variable dependencies.
+Targets out of date with files dependencies, however, are always updated.
+.TP
+.BI \-D name[=value]
+Passed to 
+.IR cpp (1)
+when reading
+.IR makefiles .
+.TP
+.B \-F
+Force all targets to be updated.
+.TP
+.BI \-I directory
+Passed to 
+.IR cpp (1)
+when reading
+.IR makefiles .
+.TP
+.B \-M
+Causes
+.I \*(nM
+to act as if no command line target has been made.
+.TP
+.B \-O
+Override explicit command update blocks by applying only implicit command update
+blocks.
+.TP
+.B \-R
+Force the input makefiles to be read rather than loading the corresponding
+.I \*(nM
+object files.
+.TP
+.B \-S
+Ignore previous state variable definitions.
+.TP
+.B \-T
+Enable testing code.
+Don't use this unless you know what the current test is.
+.TP
+.BI \-U name
+Passed to 
+.IR cpp (1)
+when reading
+.IR makefiles .
+.TP
+.B \-V
+List the current
+.I \*(nM
+version.
+.SH ENVIRONMENT
+The builtin rules are compiled into a
+.I \*(nM
+object file whose location is specified by the environment variable
+.BR MAKERULES .
+The path name of the makefile preprocessor is specified by
+.BR MAKEPP .
+The path name of the shell used to update targets is specified by
+.B MAKESHELL
+and
+.B SHELL
+(in that order).
+.B SRCPATH
+is interpreted as a
+.B :
+separated list of directories that is inserted onto the
+.B .SOURCE
+and
+.B .SOURCE.h
+rule dependency lists
+.RB ( .
+is
+.I always
+searched first).
+.SH FILES
+.TP 1.5i
+.PD 0
+Makefile, makefile
+default makefiles, tried in order
+.TP 1.5i
+.PD 0
+/usr/lib/Makerules.mo
+standard compiled builtin rules
+.TP 1.5i
+.PD 0
+.BR base .mo
+make object file
+.TP 1.5i
+.PD 0
+.BR base .ms
+make state file
+.SH DIAGNOSTICS
+A warning is issued when the input makefiles must be recompiled.
+A warning is issued if a rule can be bound to more than one file
+(unless the 
+.B \-u
+option is set);
+.I \*(nM
+proceeds with the first file found using the
+.B .SOURCE
+and
+.BI .SOURCE .s
+rules.
+.SH "SEE ALSO"
+S. I. Feldman,
+.I
+Make \- A Program for Maintaining Computer Programs
+.br
+E. G. Bradford,
+.I
+An Augmented Version of Make
+.br
+V. B. Erickson, J. F. Pellegrin,
+.I
+Build \- A Software Construction Tool
+.br
+G. S. Fowler,
+.I
+The Fourth Generation Make
+.br
+G. S. Fowler,
+.I
+Converting to the Fourth Generation Make
+.br
+sh(1), cc(1), lint(1), cpp(1), lex(1), yacc(1), ar(1), cpio(1), tar(1), ctags(1), vi(1), \*(oM(1), mkcv(1), mkold(1)
+.SH NOTES
+The default makefile ordering is exactly opposite that of 
+.IR \*(oM (1).
+This means that if old makefiles are named
+.B makefile
+and new makefiles are named
+.B Makefile
+then both
+.I \*(oM
+and
+.I \*(nM
+can be run without specifying explicit files names.
+Refer to
+.IR mkcv (1)
+for makefile conversion assistance.
+.PP
+Since the builtin rules are placed in a
+.I \*(nM
+object file,
+there is no loss of performance when different builtin rules
+are specified either by the
+environment variable
+.B MAKERULES
+or by using the
+.B \-b
+and 
+.B \-g
+options.
+.PP
+The line
+.XS
+\f5\&.MAIN : .CLEAR .ALL
+.XE
+causes all 
+.B ::
+targets to be made by default.
+Otherwise only the first 
+.B ::
+target is made by default.
+.SH CAVEATS
+.BR : ,
+.BR := ,
+.BR +=
+and 
+.I operator
+lines are expanded when the makefile is read.
+Any 
+.BI $( var )
+variables occurring in these lines are
+.I frozen
+into the corresponding
+.I \*(nM
+object file.
+If the value of a
+.I frozen
+variable changes from one invocation of 
+.I \*(nM
+to the next,
+either in a command line definition or in the environment,
+then a warning is issued and the makefile is automatically recompiled.
+Variable evaluation on these lines can be deferred by entering
+.BI $( var )
+as
+.BI $$( var ) .
+.PP
+It is not possible to specify explicit makefile dependencies.
+However, implicit makefile dependencies are automatically generated.
+.PP
+Some commands return nonzero status inappropriately.
+Use
+.B ignore
+.I command
+to overcome any difficulties.
+.PP
+.I \*(nM
+only detects source files that exist before
+.I \*(nM
+is executed.
+.PP
+For a given command name variable
+.B $(XX)
+the default flags are given by the variable
+.BR $(XXFLAGS) .
+For example, the flags for
+.B $(CC)
+are
+.B $(CCFLAGS)
+and the flags for
+.B $(YACC)
+are
+.BR $(YACCFLAGS) .
+The variable
+.B $(LDLIBRARIES)
+can be used to specify additional libraries to the
+.IR cc (1)
+command.
+The variable
+.B $(LINTLIBRARIES)
+can be used to specify additional libraries to the
+.IR lint (1)
+command.
+The variable
+.B $(LINTLIB)
+specifies the default
+.IR lint (1)
+library directory.
+.PP
+The default 
+.IR yacc (1)
+rules for the file
+.IB x .y
+produces the files
+.IB x .h
+and 
+.IB x .o ,
+not 
+.I y.tab.h 
+and
+.IR y.tab.o .
+.IB x .h
+is only updated if it is different than the 
+.IB x .h
+generated by the previous
+.IR yacc .
+Similarly, the default
+.IR lex (1)
+rules for the file
+.IB x .l
+produces the file
+.IB x .o ,
+not
+.IR lex.yy.o .
+The 
+.I yacc
+target should be made before any other targets
+that may depend on the generated header file.
+.PP
+.B "#include <file>"
+is treated as
+\f3#include "file"\fP
+for dynamic dependencies.
+.PP
+The 
+.I \*(nM
+.BI \-l x
+library expansions may load different libraries than if the
+.BI \-l x
+options were passed directly to
+.IR ld .
+.PP
+Because of optimizations, unified input syntax and new functionality,
+this version of
+.I \*(nM
+is not compatible with either the original or augmented versions.
+.SH BUGS
+Syntactically incorrect 
+.I sh
+commands may cause
+.I \*(nM
+to hang.
+Non-terminated quoted strings are usually to blame.
+.PP
+.I \*(nM
+is optimized to work with
+.IR ksh (1).
+If 
+.B SHELL
+is defined as some shell other than
+.I ksh
+then
+.B MAKESHELL
+must be defined as the full path name of
+.IR ksh .

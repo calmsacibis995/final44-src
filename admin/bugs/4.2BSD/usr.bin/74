@@ -1,0 +1,148 @@
+Return-Path: <allegra!jpl>
+Date: Mon, 21 Oct 85 21:39:36 PDT
+From: allegra!jpl
+Subject: find(1) command mishandles multiple -newer options - fix included
+Index: usr.bin/find.c 4.2BSD
+
+Description:
+	Only one -newer option will be correctly processed on a find.
+Repeat-By:
+	# The following script demonstrates the problem (which also
+	# exists on System V and Version 8) and the effect of the fix.
+	# The fix also adds the ability to compare on access and
+	# inode modification times as well as file modification time,
+	# as is also demonstrated in the script.
+	$ touch 1
+	$ touch 2
+	$ touch 3
+	$ find . \( -newer 2 -o -newer 3 \) -print
+	.
+	$ /usr/5bin/find . \( -newer 2 -o -newer 3 \) -print
+	.
+	$ find . \( -newer 3 -o -newer 2 \) -print
+	.
+	./3
+	$ ./find . \( -newer 2 -o -newer 3 \) -print
+	.
+	./3
+	$ mv 1 4
+	$ find . -newer 2 -print
+	.
+	./3
+	$ ./find . -newer 2 -print
+	.
+	./3
+	$ ./find . -newerc 2 -print
+	.
+	./3
+	./4
+	$
+Fix:
+	The following diffs to the BSD 4.2 source correct the problem,
+	and add a dozen options.  (Only a few options are genuinely
+	useful, but it was cleaner to add them all than to prune out
+	the useless ones.)  -newer can be followed by one or two
+	occurrences of the letters [acm] to specify which time from the
+	stat structure (st_atime, st_ctime or st_mtime -- see stat(2))
+	will be used in the comparison.  The first letter, if any,
+	determines the time used for the files the find command is
+	searching.  The second, if any, determines the time from the
+	file that follows the -newer option.  Both default to m, so
+	-newer foo, -newerm foo, and -newermm foo are identical.  Note
+	that -newerc causes the INODE modification time of the found
+	files to be compared to the FILE (not inode) modification time
+	of the specified target.  This was done deliberately, because
+	it works correctly with the following incremental backup scheme
+
+	touch startstamp
+	find ... -newerc laststamp ...
+	mv startstamp laststamp
+
+	If the dump dies midstream, laststamp is not changed, so the
+	next dump will get all the files this dump would have.  If the
+	dump does run to completion, the mv changes the inode
+	modification time of startstamp but not the file modification
+	time, so the next incremental dump will pick up all the files
+	changed after OR DURING this dump, including those whose modes
+	or owners were changed or those renamed.
+
+	I don't know if the System V and Version 8 sources are
+	identical, but (except for the MAXPATHLEN change), the
+	changes appear to be analogous.  The new features are
+	particularly useful in conjunction with the System V
+	touch command, which allows one to set the modification
+	dates of a file to an arbitrary time.  These give
+	greater precision and cleaner semantics than the -mtime
+	and -atime options (one day since when??).
+
+	John P. Linderman  Department of find bug finders  allegra!jpl
+
+	11c11
+	< char	Pathname[200];
+	---
+	> char	Pathname[MAXPATHLEN + 1];
+	30c30,32
+	< long	Newer;
+	---
+	> #define	NNEW	50
+	> int	Nnewer;
+	> time_t	Newer[NNEW];
+	230c232,234
+	< 	else if(EQ(a, "-newer")) {
+	---
+	> 	else if(strncmp(a, "-newer", 6) == 0) {
+	> 		char *p =        a + 6;
+	> 		time_t *t1p, *t2p;
+	235,236c239,278
+	< 		Newer = Statb.st_mtime;
+	< 		return mk(newer, (struct anode *)0, (struct anode *)0);
+	---
+	> 		if(Nnewer >= NNEW) {
+	> 			fprintf(stderr, "find: too many -newer constructs\n");
+	> 			exit(1);
+	> 		}
+	> 		t1p = t2p = &(Statb.st_mtime);
+	> 		switch (*p) {
+	> 		case 'm':
+	> 		    p++;
+	> 		    break;
+	> 		case '\0':
+	> 		    break;
+	> 		case 'a':
+	> 		    t1p = &(Statb.st_atime);
+	> 		    p++;
+	> 		    break;
+	> 		case 'c':
+	> 		    t1p = &(Statb.st_ctime);
+	> 		    p++;
+	> 		    break;
+	> 		}
+	> 		switch (*p) {
+	> 		case 'm':
+	> 		    p++;
+	> 		    break;
+	> 		case '\0':
+	> 		    break;
+	> 		case 'a':
+	> 		    t2p = &(Statb.st_atime);
+	> 		    p++;
+	> 		    break;
+	> 		case 'c':
+	> 		    t2p = &(Statb.st_ctime);
+	> 		    p++;
+	> 		    break;
+	> 		}
+	> 		if (*p == '\0') {
+	> 		    Newer[Nnewer] = *t2p;
+	> 		    return mk(newer, (struct anode *)t1p,
+	> 				     (struct anode *)(&Newer[Nnewer++]));
+	> 		}
+	428c470,471
+	< newer()
+	---
+	> newer(p)
+	> register struct { int f; time_t *t1, *t2; } *p;
+	430c473
+	< 	return Statb.st_mtime > Newer;
+	---
+	> 	return *(p->t1) > *(p->t2);

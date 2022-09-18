@@ -1,0 +1,184 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Thu, 31 May 84 01:08:17 pdt
+Subject: Really obscure bug with CHARACTER*1 comparisons in f77
+Index: usr.bin/f77/src/f77pass1/putpcc.c 4.2BSD
+
+Description:
+	Another f77 bug...  Sometimes a comparison of two CHARACTER*1
+	values gets the wrong result.  Specifically this occurs when
+	one operand of the comparison is a CHARACTER*1 expression (a
+	function call or a type conversion) and the other operand is
+	any CHARACTER*1 value.  This is another bug contributed by
+	Jerry Berkman at UC Berkeley; he apparently got it from a
+	friend.  This bug is so specific that it's sheer luck that
+	anyone ever managed to exercise it.
+
+Repeat-By:
+	Clip out the following program (courtesy of Jerry Berkman)
+	and compile it.
+
+	----------------------------------------------------------------
+		character*1 getchr,ich
+		ich=getchr("A")
+		if(ich.ne.getchr("A")) write(6,100)
+	100	format("Error in character functions")
+		stop
+		end
+		
+		character*1 function getchr(ich)
+		character*1 ich
+		print 8000, ich, ichar(ich)
+	8000	format('in getchr with ich = ',a1,' (',16r,i6.2,')')
+		getchr=ich
+		return
+		end
+	----------------------------------------------------------------
+
+	When run it prints 'Error in character functions' (surprise!).
+	A little poking around reveals the following gaffe in the
+	assembly language code:
+
+	----------------------------------------------------------------
+		pushl	$1		# 'ich=getchr("A")'
+		pushal	{0101,00}
+		pushl	$1
+		pushal	-1(fp)
+		calls	$4,_getchr_
+		movb	-1(fp),{ich}(r11)
+		pushl	$1		# 'if(ich.ne.getchr("A")) ...'
+		pushal	{0101,00}
+		pushl	$1
+		pushal	-1(fp)
+		calls	$4,_getchr_
+		cvtbl	-1(fp),r1
+		cmpl	r0,r1		# Oops!  What's in r0?  Not 'ich'!
+		jeql	L15
+	----------------------------------------------------------------
+
+Fix:
+	Odd as it may seem, this is actually a bug in pass 1 of the
+	compiler, not the code generation pass.  If we look at the
+	'disassembled' intermediate code, the problem is obvious (it
+	helps to have an intermediate code 'disassembler' first -- I
+	wrote one while hunting down this bug):
+
+	----------------------------------------------------------------
+	oreg        (char)  v.2-v.1(r11)	# 'ich=getchr("A")': get 'ich'
+	int         (char * ()) _getchr_	# Postfix Polish, remember
+	reg         (char *) fp
+	int         (long) -1
+	+           (char *)			# Get address of temporary
+	int         (long) 1			# Size of temporary
+	list
+	int         (char *) L19
+	list
+	int         (long) 1
+	list        				# Argument list
+	call        (long)			# Call getchr
+	oreg        (char)  -1(fp)		# Retrieve value from temporary
+	,           (long)			# Notice there are 2 expr's here
+	=           (char)			# Assign (finally)
+	stmt        (2)  
+	oreg        (char)  v.2-v.1(r11)	# 'if(ich.ne.getchr("A")) ...'
+	int         (char * ()) _getchr_	# Almost the same...
+	reg         (char *) fp
+	int         (long) -1
+	+           (char *)			# Get address of temporary
+	int         (long) 1			# Size of temporary
+	list
+	int         (char *) L19
+	list
+	int         (long) 1
+	list        				# Argument list
+	call        (long)			# Call getchr
+	oreg        (char)  -1(fp)		# Retrieve return value
+	!=          (char)			# Oops!  We're comparing the
+						# 'result' of the call with
+						# the actual return value...
+	,           (long)			# And throwing away 'ich'
+	int         (long) 15
+	cbranch					# If false jump to L15
+	stmt        (3)  
+	----------------------------------------------------------------
+
+	The compiler is clever -- it realizes that it can do a simple
+	C-style character comparison if the objects it is working with
+	are of type CHARACTER*1.  Unfortunately f77 CHARACTER routines
+	must return a value in a complicated way -- the caller must
+	provide a temporary CHARACTER variable which the callee can put
+	the the return value into.  Thus a call to a function of type
+	CHARACTER takes two steps: making the call and retrieving the
+	return value.  These two operations are coordinated with a
+	'comma' operator in the intermediate code.  Unfortunately the
+	routine which emits the intermediate code for CHARACTER
+	comparisons (putchcmp() in putpcc.c) gets the comma and the
+	comparison inverted so that the comparison is between a
+	function call with no return value and the actual return
+	value!  Since the code generator 'knows' that (unless
+	instructed otherwise) it can find the return value in r0, the
+	compiler doesn't complain and we get the bizarre assembly code
+	presented above.
+
+	The fix to putchcmp() is simple:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1015122	Thu May 31 00:52:49 1984
+	--- putpcc.c	Thu May 31 00:52:16 1984
+	***************
+	*** 1010,1015
+	  if(ISONE(lp->headblock.vleng) && ISONE(rp->headblock.vleng) )
+		{
+		putaddr( putch1(lp, &ncomma) , YES );
+		putaddr( putch1(rp, &ncomma) , YES );
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+		free( (charptr) p );
+
+	--- 1015,1022 -----
+	  if(ISONE(lp->headblock.vleng) && ISONE(rp->headblock.vleng) )
+		{
+		putaddr( putch1(lp, &ncomma) , YES );
+	+ 	putcomma(ncomma, TYINT, NO);
+	+ 	ncomma = 0;
+		putaddr( putch1(rp, &ncomma) , YES );
+		putcomma(ncomma, TYINT, NO);
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+	***************
+	*** 1011,1016
+		{
+		putaddr( putch1(lp, &ncomma) , YES );
+		putaddr( putch1(rp, &ncomma) , YES );
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+		free( (charptr) p );
+		putcomma(ncomma, TYINT, NO);
+
+	--- 1018,1024 -----
+		putcomma(ncomma, TYINT, NO);
+		ncomma = 0;
+		putaddr( putch1(rp, &ncomma) , YES );
+	+ 	putcomma(ncomma, TYINT, NO);
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+		free( (charptr) p );
+		}
+	***************
+	*** 1013,1019
+		putaddr( putch1(rp, &ncomma) , YES );
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+		free( (charptr) p );
+	- 	putcomma(ncomma, TYINT, NO);
+		}
+	  else
+		{
+
+	--- 1021,1026 -----
+		putcomma(ncomma, TYINT, NO);
+		p2op(ops2[p->exprblock.opcode], P2CHAR);
+		free( (charptr) p );
+		}
+	  else
+		{
+	----------------------------------------------------------------
+
+	Anybody who understands this deserves a medal...
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn

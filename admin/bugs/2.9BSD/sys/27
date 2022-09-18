@@ -1,0 +1,76 @@
+From ihnp4!inmet!faust!root  Tue Jun 26 09:45:34 1984
+From: ihnp4!inmet!faust!root
+Date: 26 Jun 84 09:05:52 CDT (Tue)
+Subject: Breakpoint traps don't work (depending on configuration)
+Index: 	sys/dev/dh.c 2.9BSD
+
+Description:
+	When breakpoints are executed, the system refuses to act as if
+	a breakpoint happened -- acting instead as if a bus error had 
+	happened.
+Repeat-By:
+	Configure your system with one more DH than you actually have.
+	bring the system up multi user, or otherwise cause dh activity.
+	Try to set a breakpoint using adb, and then try to execute the
+	breakpoint you've set.
+Fix:
+	Either configure your system to have the same number of dh's
+	as are actually present, or make the following changes to dh.c:
+
+	***************
+	*** 58,63
+	   */
+	  int	dhsar[NDH];
+	  
+	  dhattach(addr, unit)
+	  struct dhdevice *addr;
+	  {
+	
+	--- 58,69 -----
+	   */
+	  int	dhsar[NDH];
+	  
+	+ /* 
+	+  * largest DH attached (to protect us from random core-clobbering
+	+  * by DHtimer
+	+  */
+	+ char	dhmax = -1;
+	+ 
+	  dhattach(addr, unit)
+	  struct dhdevice *addr;
+	  {
+	***************
+	*** 64,69
+	  	if ((unsigned) unit >= NDH)
+	  		return 0;
+	  	dh_addr[unit] = addr;
+	  	return 1;
+	  }
+	  
+	
+	--- 70,76 -----
+	  	if ((unsigned) unit >= NDH)
+	  		return 0;
+	  	dh_addr[unit] = addr;
+	+ 	if(unit > dhmax) dhmax = unit;
+	  	return 1;
+	  }
+	  
+	***************
+	*** 523,529
+	  				cc = 0;
+	  		addr->dhsilo = cc;
+	  		dhrint(dh++);
+	! 	} while (dh < NDH);
+	  	timeout(dhtimer, (caddr_t) 0, SILOSCANRATE);
+	  }
+	  #endif	DH_SILO
+	
+	--- 530,536 -----
+	  				cc = 0;
+	  		addr->dhsilo = cc;
+	  		dhrint(dh++);
+	! 	} while (dh <= dhmax);
+	  	timeout(dhtimer, (caddr_t) 0, SILOSCANRATE);
+	  }
+	  #endif	DH_SILO

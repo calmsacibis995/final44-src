@@ -1,0 +1,82 @@
+From slevy@umn-rei-uc.ARPA  Fri Feb 13 13:56:12 1987
+Date: Fri, 13 Feb 87 15:55:27 CST
+From: slevy@umn-rei-uc.arpa (Stuart Levy)
+Subject: Found: sendmail hang & "line eating" bugs
+
+Index: usr.lib/sendmail 4.3BSD
+
+Description:
+
+We've recently found and corrected a mailer problem
+which causes sendmail to hang when receiving some aberrant mail.
+It may also cause the long-standing bug in which the first
+line of a message occasionally disappears.
+
+The problem is in the definition of the end of a mail header.
+Sendmail now considers a header to end with a non-header-format
+line which does not begin with a blank.  Lines beginning with
+white space are taken as continuation lines for the previous
+header line.
+
+The header conventionally ends with a zero-length line (...\n\n...).
+However, some mailers (or mail forwarders?) seem to end their headers
+with one or two lines containing a single blank.
+
+Sendmail considers these as header continuations.  In the case we found,
+the message body was a Fortran program where -every- line began with a blank.
+Sendmail gathered up continuation lines until it filled its 2500-character
+header line limit, then hung repeatedly calling sfgets() with a buffer length
+of -1.
+
+In the more usual case where the mail body begins with a left-justified
+text line, it looks as though the code would recognize it as a non-header
+line but not insert it into the message body, so that line would vanish
+(while any preceding indented line(s) would be tacked onto the header).
+
+Fix:
+
+The relevant code is in collect(), in collect.c.  We changed it to consider
+any indented line lacking printable text to mark the end of a header.
+
+At the bottom of the "while((c = getc(InChannel)) == ' ' || c == '\t')" loop,
+after the statement "fixcrlf(p, TRUE);" we added
+
+			while(isspace(*p))
+				p++;
+			if(*p == '\0') {
+				/* No printable text. Arrange to push back
+				 * a bare '\n', so the next iteration
+				 * will consider this the end of the header.
+				 */
+				c = '\n';
+				break;
+			}
+
+This worked around the problem in our case, but sendmail could still hang
+if someone ever did supply header continuations exceeding the limit.
+One might fix this by changing the lines just above the fixcrlf(p, TRUE) from
+
+			if (sfgets(p, MAXFIELD - (p - buf), InChannel) == NULL)
+				break;
+
+to
+			if (p < &buf[MAXFIELD-1]) {
+			    if(sfgets(p, MAXFIELD - (p-buf), InChannel) == NULL)
+				break;
+			} else {
+			    while((c = getc(InChannel)) != '\n' && c != EOF)
+				continue;
+			    if(c == EOF)
+				break;
+			}
+
+I'm not sure whether sendmail or the originating mailer is really at
+fault here.  RFC 822 might answer the question, but we don't have a copy
+and the NIC continues to be down.  I'd be inclined to argue that sendmail
+should follow the liberal-acceptance doctrine and not rely on a distinction
+invisible to the naked eye.
+
+				Stuart Levy,	    Scott Bertilson
+				   Minnesota Supercomputer Center
+				(612) 626-0211      (612) 626-0395
+				slevy@umn-rei-uc.arpa  scott@umn-rei-uc.arpa

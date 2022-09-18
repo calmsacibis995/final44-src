@@ -1,0 +1,209 @@
+<html>
+<!--
+$Header$
+
+%(Copyright)
+>
+<head>
+<TITLE>Gated Configuration Guide - HELLO Configuration</TITLE>
+</head>
+<body>
+
+<H1>The Hello Protocol</H1>
+
+It's really better not to use HELLO unless you have a specific need
+for it.  We plan to drop it some time around GateD 4.0.
+<P>
+
+The HELLO protocol is an interior protocol that uses a routing metric
+based on the length of time it takes a packet to make the trip between
+the source and the destination.  HELLO packets carry timestamp
+information which allows receivers to compute the shortest delay paths
+to destinations.  The "best" route is the route with the shortest time
+delay.  The unit of time used in HELLO is milliseconds.  If a HELLO
+update packet takes less than 100 milliseconds to travel between two
+routers, a minimum value of 100 is used for that hop.  Thus on
+networks built of high-speed interfaces HELLO essentially defaults to
+using hop counts.  As in any routing algorithm, HELLO cannot change
+routes too rapidly or it would be unstable.  To avoid instabilities,
+implementations of HELLO build in hysteresis and "hesitate" to change
+routes until they have confidence that the change will be lasting.
+<P>
+
+By default HELLO, like RIP, uses the kernel interface metric set by the
+<code>ifconfig</code> command to influence metric added to routes as
+they are installed in the routing table (<code>metricin</code>).
+Since the kernel interface metric is in hops, it must be translated
+into HELLOs millisecond metric.  In order to do that, the following
+table is used:
+
+<pre>
+	Hops	HELLO metric
+	   0		   0
+	   1		 100
+	   2		 148
+	   3		 219
+	   4		 325
+	   5		 481
+	   6		 713
+	   7		1057
+	   8	        1567
+	   9	        2322
+	  10	        3440
+	  11	        5097
+	  12	        7552
+	  13	       11190
+	  14	       16579
+	  15	       24564
+	  16	       30000
+</pre>
+
+<hr>     
+<H2>The Hello Statement</H2>
+
+<pre>
+<strong>hello</strong> <strong>yes</strong> | <strong>no</strong> | <strong>on</strong> | <strong>off</strong> [ <strong>{</strong>
+    <strong>broadcast</strong> <strong>;</strong>
+    <strong>nobroadcast</strong> <strong>;</strong>
+    <strong>preference</strong> <var><a href="pref.html">preference</a></var> <strong>;</strong>
+    <strong>defaultmetric</strong> <var>metric</var> <strong>;</strong>
+    <strong>interface</strong> <var><a href="intfcs.html#interface list">interface_list</a></var> 
+            [<strong>nohelloin</strong>] | [<strong>helloin</strong>]
+            [<strong>nohelloout</strong>] | [<strong>helloout</strong>]
+            [<strong>metricin</strong> <var>metric</var>]
+            [<strong>metricout</strong> <var>metric</var>] <strong>;</strong>
+    <strong>trustedgateways</strong> <var>gateway_list</var> <strong>;</strong>
+    <strong>sourcegateways</strong> <var>gateway_list</var> <strong>;</strong>
+    <strong>traceoptions</strong> <var>trace_options</var> <strong>;</strong>
+<strong>}</strong> ] <strong>;</strong>
+</pre>
+<p>
+  
+the <code>hello</code> statement enables or disables HELLO.  If the 
+<code>hello</code> statement is not specified the default is 
+<code>hello off</code>.  If enabled, HELLO will assume 
+<code>nobroadcast</code> when there is only one interface and 
+<code>broadcast</code> when there is more than one interface.
+
+<dl>
+<dt> <strong>broadcast</strong>
+<dd> Specifies that HELLO packets will be broadcast regardless of the
+number of interfaces present.  This is useful when propagating static
+routes or routes learned from anther protocol into HELLO.  In some
+cases, the use of <code>broadcast</code> when only one network
+interface is present can cause data packets to traverse a single
+network twice.
+
+<dt> <strong>nobroadcast</strong>
+<dd> Specifies that HELLO packets will not be broadcast on attached
+interfaces, even if there are more than one.
+If a <CODE>sourcegateways</CODE> clause is present, routes will still
+be unicast directly to that gateway.
+
+<dt> <strong>preference</strong> <var><a href="pref.html">preference</a></var>
+<dd> Sets the preference for routes learned from HELLO.  The default
+preference is op.  This preference may be overridden by a preference
+specified in import policy.
+<dt> <strong>defaultmetric</strong> <var>metric</var> 
+<dd> Defines the metric used when advertising routes via HELLO that were
+learned from other protocols.  If not specified, the default value is
+30000 (unreachable).  This choice of values requires you to explicitly
+specify a metric in order to export routes from other protocols into
+HELLO.  This metric may be overridden by a metric specified in export
+policy.
+	
+<dt> <strong>interface</strong> <var><a href="intfcs.html#interface list">interface_list</a></var>
+<dd> Controls various attributes of sending HELLO on specific
+     interfaces.  See the section on <a href="intfcs.html#interface
+     list">inteface list</a> specification for the description of the
+     <var>interface_list</var>.  The possible parameters are:
+                    
+	<dl>
+	<dt> <STRONG>nohelloin</strong>
+	<dd> Specifies that HELLO packets received via  the specified
+	     interface will be ignored.  The default is to listen to
+	     HELLO on all interfaces.
+	<dt> <STRONG>helloin</strong>
+	<dd> This is the default.  This argument may be necessary
+	     when <code>nohelloin</code> is used on a wildcard interface
+	     descriptor.
+	<dt> <strong>nohelloout</strong>
+	<dd> Specifies that no HELLO packets will be sent on the
+	     specified interfaces.  The default is to send HELLO on all
+	     interfaces when in <code>broadcast</code> mode.
+	<dt> <STRONG>helloout</strong>
+	<dd> This is the default.  This argument may be necessary
+	     when <code>nohelloin</code> is used on a wildcard interface
+	     descriptor.
+
+	<dt> <strong>metricin</strong> <var>metric</var>
+	<dd> Specifies the HELLO metric to add to incoming routes before
+	     they are installed in the routing table.  The default is
+	     the kernel interface metric plus 1 (which is the default
+	     HELLO hop count).  If this value is specified it will be
+	     used as the absolute value, the kernel metric will not be
+	     added.  This option is used to make this router prefer
+	     HELLO routes learned via the specified interface(s) less
+	     than HELLO routes from other interfaces. 
+
+	<dt> <strong>metricout</strong> <var>metric</var>
+	<dd> Specifies the HELLO metric to be added to routes that are
+	     send via the specified interface(s).  The default is
+	     zero.  This option is used to make other routers prefer
+	     other sources of HELLO routes over this router.
+
+	</dl>
+
+<dt> <strong>trustedgateways</strong> <var>gateway_list</var>
+<dd> Defines the list of gateways from which
+     HELLO   will accept  updates.  The  
+     <var>gateway_list</var> is simply  a list of host names or IP
+     addresses. 
+     By default, all routers on the shared network are trusted to
+     supply routing information.   But if the
+     <CODE>trustedgateways</CODE> clause is specified only updates
+     from the gateways in the list are accepted.
+	
+<dt> <strong>sourcegateways</strong> <var>gateway_list</var>
+<dd> Defines a list of routers to which HELLO sends
+packets directly, not through multicast or broadcast.  By default HELLO
+packets are broadcast to every system on the shared network.  If the
+<CODE>sourcegateways</CODE> statement is used only updates from the
+gateways in the list are accepted.
+	
+<dt> <strong>traceoptions</strong> <var>trace_options</var>
+<dd> Specifies the tracing options for HELLO.
+(See <A HREF="trace.html">Trace Statements</A> and the HELLO specific
+tracing options below.)
+
+</dl>
+<P>
+
+The default preference is 90.  The default metric is 30000.
+
+<hr>
+<h2>Tracing options</h2>
+Packet tracing options (which may be modified with 
+<code>detail</code>, <code>send</code> and/or <code>recv</code>):
+                                
+<dl>
+<dt> <strong>packets</strong>
+<dd> All HELLO packets
+</dl>
+          
+    
+<hr>      
+<H2>Sample Hello Configurations</H2>
+    
+Sample configurations for the HELLO protocol closely resemble <A 
+HREF="rip_stmt.html">RIP</A> configurations.  Please refer to sample 
+<A HREF="samp_host.html">host</A> and <A HREF="samp_ig.html">interior 
+gateway</A> configurations for the RIP protocol.
+
+<hr>
+
+Last updated $Date$.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

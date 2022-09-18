@@ -1,0 +1,124 @@
+From forys@cs.utah.edu  Tue Mar 21 14:30:30 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA20228; Tue, 21 Mar 89 14:30:30 -0800
+Received: from cs.utah.edu by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA09868; Tue, 21 Mar 89 14:30:28 -0800
+Received: by cs.utah.edu (5.61/utah-2.1-cs)
+	id AA29298; Tue, 21 Mar 89 15:29:58 -0700
+Date: Tue, 21 Mar 89 15:29:58 -0700
+From: forys@cs.utah.edu (Jeff Forys)
+Message-Id: <8903212229.AA29298@cs.utah.edu>
+Subject: make handles `-f' flag incorrectly
+Index: 	bin/make/main.c 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Make reads in description files as soon as the `-f' argument
+	is encountered.  This leads to unexpected results since the
+	complete environment may not be defined yet.  For example,
+	when the variable ${MACHINE} is used as a dependancy, it will
+	not work if `-f makefile' is explicitly specified.
+
+Repeat-By:
+	Create the following Makefile:
+
+		all: x.${MACHINE}
+
+		x.vax:
+			@echo this be a VAX
+
+		x.tahoe:
+			@echo this be a Tahoe
+
+	Assuming you are on a VAX or Tahoe, when you do a "make", this
+	will work.  However, if you do "make -f Makefile", you will get
+	the error:
+
+		Make:  Don't know how to make x..  Stop.
+
+	Notice that ${MACHINE} never gets defined.  There is a similar
+	problem with ${MFLAGS}.  Also, some of the arguments (i.e. `-r'
+	and `-e') may not have been discovered by time rddescf() is
+	called with a `-f'.
+
+Fix:
+	The following patch moves the handling of `-f' into its own
+	loop.  This way, the configuration file(s) is read after all
+	the flags have been processed and ${MACHINE}/${MFLAGS} have
+	been set up.
+
+*** /tmp/,RCSt1029171	Tue Mar 21 15:27:49 1989
+--- main.c	Mon Mar 20 19:00:50 1989
+***************
+*** 61,66 ****
+--- 61,67 ----
+  TIMETYPE tjunk;
+  char c, *s;
+  static char onechar[2] = "X";
++ static char *dashf = "-f";
+  #ifdef unix
+  int intrupt();
+  #endif
+***************
+*** 136,146 ****
+  
+  			case 'f':
+  				op--;		/* don't pass this one */
+- 				if(i >= argc-1)
+- 				  fatal("No description argument after -f flag");
+- 				if( rddescf(argv[i+1]) )
+- 				fatal1("Cannot open %s", argv[i+1]);
+- 				argv[i+1] = 0;
+  				++descset;
+  				break;
+  
+--- 137,142 ----
+***************
+*** 153,159 ****
+  				fatal1("Unknown flag argument %s", onechar);
+  			}
+  		}
+! 		argv[i] = 0;
+  	}
+  
+  *op++ = '\0';
+--- 149,166 ----
+  				fatal1("Unknown flag argument %s", onechar);
+  			}
+  		}
+! 		if (descset) {
+! 			/*
+! 			 *  argv[i] contained an `f'; the next argument is
+! 			 *  a file name.  Since the other flags in this arg
+! 			 *  were dealt with, set argv[i] to "-f" and skip
+! 			 *  past the file name for now.
+! 			 */
+! 			argv[i++] = dashf;
+! 			descset = 0;		/* reset */
+! 		} else {
+! 			argv[i] = 0;
+! 		}
+  	}
+  
+  *op++ = '\0';
+***************
+*** 162,167 ****
+--- 169,186 ----
+  setvar("MFLAGS", options);		/* MFLAGS=options to make */
+  
+  setvar("MACHINE", MACHINE);
++ 
++ /* process "-f <filename>" args */
++ 
++ for (i = 1; i < argc; i++)
++ 	if (argv[i] == dashf) {		/* if (argv[i] == "-f") */
++ 		if (i >= argc-1)
++ 			fatal("No description argument after -f flag");
++ 		if (rddescf(argv[i+1]))
++ 			fatal1("Cannot open %s", argv[i+1]);
++ 		argv[i] = argv[i+1] = 0;
++ 		++descset;
++ 	}
+  
+  if (!descset) {
+  	if (rddescf("makefile"))

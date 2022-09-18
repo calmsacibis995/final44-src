@@ -1,0 +1,136 @@
+Return-Path: <satz@SU-MOJAVE.ARPA>
+Date: Thu, 9 May 85 22:38:34 pdt
+From: Greg Satz <satz@su-mojave.ARPA>
+Subject: ftpd bug
+
+Subject: ftpd dies unexpectedly
+Index:	etc/ftpd 4.2BSD
+
+Description:
+	When ftpd gets a globbed filename that doesn't match, it will
+	disconnect from the user program.
+Repeat-By:
+	Run ftp to your favorite host that has a running ftpd. Login
+	and use the directory command with a globbed filename argument.
+	If the globbed filename doesn't exist, you will get disconnected 
+	from the remote host.
+Fix:
+	glob() returns a null array of character pointers when a
+	globbed filename doesn't match.  Unfortunately, ftpd didn't
+	handle this case and tried to free memory that wasn't allocated.
+
+	Diffs follow:
+
+RCS file: RCS/ftpd.c,v
+retrieving revision 1.4
+diff -c -r1.4 ftpd.c
+*** /tmp/,RCSt1008091	Thu May  9 22:17:16 1985
+--- ftpd.c	Thu May  9 22:15:46 1985
+***************
+*** 804,810
+  	/* glob each piece */
+  	for (gac = ac = 1; av[ac] != NULL; ac++) {
+  		char **pop;
+! 		extern char **glob();
+  
+  		pop = glob(av[ac]);
+  		if (pop) {
+
+--- 810,816 -----
+  	/* glob each piece */
+  	for (gac = ac = 1; av[ac] != NULL; ac++) {
+  		char **pop;
+! 		extern char **glob(), **copyblk();
+  
+  		if ((pop = glob(av[ac])) == (char **)NULL) {
+  			char *vv[2];
+***************
+*** 806,816
+  		char **pop;
+  		extern char **glob();
+  
+! 		pop = glob(av[ac]);
+! 		if (pop) {
+! 			av[ac] = (char *)pop;		/* save to free later */
+! 			while (*pop && gac < 512)
+! 				gav[gac++] = *pop++;
+  		}
+  	}
+  	gav[gac] = (char *)0;
+
+--- 812,823 -----
+  		char **pop;
+  		extern char **glob(), **copyblk();
+  
+! 		if ((pop = glob(av[ac])) == (char **)NULL) {
+! 			char *vv[2];
+! 
+! 			vv[0] = av[ac];
+! 			vv[1] = 0;
+! 			pop = copyblk(vv);
+  		}
+  		av[ac] = (char *)pop;		/* save to free later */
+  		while (*pop && gac < 512)
+***************
+*** 812,817
+  			while (*pop && gac < 512)
+  				gav[gac++] = *pop++;
+  		}
+  	}
+  	gav[gac] = (char *)0;
+  	myside = tst(p[WTR], p[RDR]);
+
+--- 819,827 -----
+  			vv[1] = 0;
+  			pop = copyblk(vv);
+  		}
++ 		av[ac] = (char *)pop;		/* save to free later */
++ 		while (*pop && gac < 512)
++ 			gav[gac++] = *pop++;
+  	}
+  	gav[gac] = (char *)0;
+  	myside = tst(p[WTR], p[RDR]);
+
+
+RCS file: RCS/glob.c,v
+retrieving revision 1.1
+diff -c -r1.1 glob.c
+*** /tmp/,RCSt1008132	Thu May  9 22:19:25 1985
+--- glob.c	Thu May  9 22:13:13 1985
+***************
+*** 30,37
+  char	*home;
+  struct	passwd *getpwnam();
+  extern	int errno;
+! static	char *strspl(), **copyblk(), *strend();
+! char	*malloc(), *strcpy(), *strcat();
+  
+  static	int globcnt;
+  
+
+--- 30,37 -----
+  char	*home;
+  struct	passwd *getpwnam();
+  extern	int errno;
+! static	char *strspl(), *strend();
+! char	*malloc(), *strcpy(), *strcat(), **copyblk();
+  
+  static	int globcnt;
+  
+***************
+*** 604,610
+  	return (ep);
+  }
+  
+- static
+  char **
+  copyblk(v)
+  	register char **v;
+
+--- 604,609 -----
+  	return (ep);
+  }
+  
+  char **
+  copyblk(v)
+  	register char **v;

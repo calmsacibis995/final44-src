@@ -1,0 +1,138 @@
+From esquire!info8!yost@cmcl2.NYU.EDU  Wed Apr 11 08:16:42 1990
+From: yost@DPW.COM (Dave Yost)
+To: sunbugs@sun.COM, 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: shell >> redirection bug
+Cc: yost@cmcl2.NYU.EDU, uunet!research!dmr, uunet!ulysses!dgk
+Direct-Line-Voice-Phone: +1 212-266-0796
+Fax: +1 212-266-0790
+Organization: Davis Polk & Wardwell
+	      1 Chase Manhattan Plaza
+	      New York, NY  10005
+Date: Wed, 11 Apr 90 10:13:52 -0400
+Sender: yost@info8.NYU.EDU
+Index: bin/{sh,csh} 4.3BSD-tahoe
+
+
+Both sh and csh do >> incorrectly.  (I'm running SunOS 4.0.3)
+(Our ksh does it wrong, too, but it's 3 years old.)
+
+They still implement >> the bad old way: an open
+followed by a seek to end of file.  The good new way
+is an open in O_APPEND mode.
+
+For those readers who instantly see that this is an
+oversight that should be fixed, read no further.
+Thanks, Bye.
+
+ --dave
+
+The new way is better because every write to the
+file is always appended to the file regardless of
+intervening writes from other processes, and such
+writes are guaranteed to be atomic.  That is, appending
+writes won't clobber each other.  I believe this new
+kernel facility was Dennis Ritchie's doing, and it was
+put into both the Berkeley and Sys V kernels some years
+ago.
+
+The rationale was that in practically all cases where
+you want to append to a file, you want this non-
+interfering behavior.  The good sense of this rationale
+certainly applies to shells as well, and they should
+have been upgraded accordingly.
+
+How did this come up?  I wanted to write a command
+in a Makefile that filtered standard error through
+a pipeline and merged that with unfiltered standard
+output.  The purpose was to run the command built by
+the Makefile on some test input and put this merged
+output into a single output file that could be diff'ed
+against a file containing known correct merged output.
+Like this:
+
+	(command >> file) 2>&1 | filter >> file
+
+You can test this with this sh one-liner:
+
+((echo one ; sleep 2 ; echo two 1>&2) >> out) 2>&1 | sed 's/^/2>/' >> out
+
+The out file should look like this:
+
+one
+2>two
+
+but instead it looks like this for a couple of seconds:
+
+one
+
+and then like this:
+
+2>two
+
+Perusing the sh and csh sources we have confirms that
+O_APPEND is indeed not being used:
+
+sh code:
+	else if (iof & IOAPP && (fd = open(ion, 1)) >= 0)
+		lseek(fd, 0L, 2);
+	else
+		...
+should be:
+	else if (!(iof & IOAPP) || (fd = open(ion, O_WRONLY | O_APPEND)) < 0)
+		...
+
+csh code:
+	if ((flags & FCAT) && open(cp, O_WRONLY | O_APPEND) >= 0)
+		lseek(1, 0l, 2);
+	else {
+		...
+	}
+should be:
+	if (!(flags & FCAT) || open(cp, O_WRONLY | O_APPEND) < 0) {
+		...
+	}
+
+ --dave yost
+   yost@dpw.com or uunet!esquire!yost
+   Please ignore the From or Reply-To fields above, if different.
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+From esquire!info8!yost@cmcl2.NYU.EDU  Thu Apr 12 12:04:52 1990
+From: yost@DPW.COM (Dave Yost)
+Reply-To: yost@DPW.COM (Dave Yost)
+To: sunbugs@sun.COM, 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Re: shell >> redirection bug
+Cc: yost@cmcl2.NYU.EDU, uunet!research!dmr, dgk@ulysses.att.COM
+Cc: dpk@morgan.COM
+Direct-Line-Voice-Phone: +1 212-266-0796
+Fax: +1 212-266-0790
+Organization: Davis Polk & Wardwell
+	      1 Chase Manhattan Plaza
+	      New York, NY  10005
+Date: Thu, 12 Apr 90 10:19:09 -0400
+Sender: yost@info8.NYU.EDU
+
+I received this reply from Dennis Ritchie.
+Also, I hear that the newer Korn shell does get it right.
+
+So, now, can we get this fixed?
+
+ --dave yost
+   yost@dpw.com or uunet!esquire!yost
+   Please ignore the From or Reply-To fields above, if different.
+
+------- Forwarded Message
+
+From: dmr@research.att.com
+Date: Thu, 12 Apr 90 00:32:58 EDT
+To: yost@dpw.com
+Subject: >>
+
+You're right (assuming, of course, that one's system has O_APPEND).
+
+	Best,
+	Dennis
+
+------- End of Forwarded Message
+

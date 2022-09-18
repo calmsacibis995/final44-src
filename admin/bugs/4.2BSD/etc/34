@@ -1,0 +1,67 @@
+Return-Path: <ucsfcgl!conrad>
+Date: Tue, 28 Aug 84 15:13:45 pdt
+From: ucsfcgl!conrad (Conrad Huang)
+Subject: rexecd closes off stdin before exec'ing command
+Index: 	etc/rexecd 4.2BSD (sccsid 4.11, dated 4/11/84)
+
+Description:
+	A bug was introduced into rexecd when it was converted to run
+	with the inet super-daemon.  Originally, the first argument
+	to the routine doit() is a socket and must always be closed
+	before execl()ing the specified command.  With the new version,
+	the inet daemon dup2()s the socket to standard input (descriptor
+	0), but rexecd still does a close() on the first argument of
+	doit() and so closes off standard input.  The result is that
+	programs run with the new rexecd cannot read from standard input
+	(except for /bin/csh which does some really weird things).
+Repeat-By:
+	Create a new user "news" with password "netnews" and login
+	program /tmp/try2.  Use the following program as try2:
+
+		#include <stdio.h>
+
+		main()
+		{
+			register int	i, fd;
+			char		buf[BUFSIZ];
+
+			fd = creat("/tmp/junk", 0644);
+			while ((i = read(0, buf, sizeof buf)) > 0)
+				(void) write(fd, buf, i);
+			(void) close(fd);
+			exit(0);
+		}
+
+	Then execute the following program:
+
+		#include <sys/types.h>
+		#include <netdb.h>
+
+		char	buf[] = "Hello world\n";
+
+		main()
+		{
+			int		fd;
+			char		*host;
+			struct servent	*rexecp;
+
+			host = "your host name";
+			rexecp = getservbyname("exec", "tcp");
+			fd = rexec(&host, (u_short) rexecp->s_port,
+				"news", "netnews",
+				"command", (int *) 0);
+			if (fd < 0) {
+				perror("rexec");
+				exit(1);
+			}
+			(void) write(fd, buf, sizeof buf);
+			(void) close(fd);
+			exit(0);
+		}
+
+	The file /tmp/junk should have the words "Hello world" in it.
+Fix:
+	Replace
+		(void) close(f);
+	in doit() about line 177 with
+		if (f > 2) (void) close(f);

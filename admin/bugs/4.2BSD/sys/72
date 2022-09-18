@@ -1,0 +1,105 @@
+Return-Path: <rws@mit-bold>
+Date: Mon, 7 Nov 83 21:38:31 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: UDP checksum problems
+Index: 	sys/netinet/udp_usrreq.c 4.2BSD
+
+Description:
+	UDP checksums are turned off, and don't work when turned on.
+Repeat-By:
+	Turn on checksums (udpcksum = 1).
+Fix:
+	In udp_output(), the code
+		ui->ui_ulen = htons((u_short)ui->ui_len);
+	should be changed to
+		ui->ui_len = htons((u_short)ui->ui_len);
+		ui->ui_ulen = ui->ui_len;
+	and the code
+		ui->ui_sum = in_cksum(m, sizeof (struct udpiphdr) + len)
+	should be
+		if (udpcksum) {
+			if (!(ui->ui_sum = in_cksum(m, sizeof (struct udpiphdr) + len)))
+				ui->ui_sum = -1;
+		}
+	In udp_input(), the code
+		if (udpcksum) {
+			ui->ui_next = ui->ui_prev = 0;
+			ui->ui_x1 = 0;
+			ui->ui_len = htons((u_short)len);
+			if (ui->ui_sum = in_cksum(m, len + sizeof (struct ip))) {
+				udpstat.udps_badsum++;
+				m_freem(m);
+				return;
+			}
+		}
+	should be changed to
+		if (udpcksum && ui->ui_sum) {
+			ui->ui_next = ui->ui_prev = 0;
+			ui->ui_x1 = 0;
+			ui->ui_len = htons((u_short)len);
+			if (in_cksum(m, len + sizeof (struct ip))) {
+				udpstat.udps_badsum++;
+				m_freem(m);
+				return;
+			}
+		}
+	Then
+		int	udpcksum;
+	can be changed to
+		int	udpcksum = 1;
+============================================================================
+Return-Path: <rws@mit-bold>
+Date: Tue, 22 Nov 83 15:27:30 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: UDP checksum problems revisited
+Index: 	sys/netinet/udp_usrreq.c 4.2BSD
+
+Description:
+	(This supercedes my previous report.)
+	UDP checksums are turned off, and don't work when turned on.
+Repeat-By:
+	Turn on checksums (udpcksum = 1).
+Fix:
+	In udp_output(), the code
+		ui->ui_ulen = htons((u_short)ui->ui_len);
+	should be changed to
+		ui->ui_len = htons((u_short)ui->ui_len);
+		ui->ui_ulen = ui->ui_len;
+	and the code
+		ui->ui_sum = in_cksum(m, sizeof (struct udpiphdr) + len)
+	should be
+		if (udpcksum) {
+			if (!(ui->ui_sum = in_cksum(m, sizeof (struct udpiphdr) + len)))
+				ui->ui_sum = -1;
+		}
+	In udp_input(), the declarations
+		u_short osum, nsum;
+	should be added and the code
+		if (udpcksum) {
+			ui->ui_next = ui->ui_prev = 0;
+			ui->ui_x1 = 0;
+			ui->ui_len = htons((u_short)len);
+			if (ui->ui_sum = in_cksum(m, len + sizeof (struct ip))) {
+				udpstat.udps_badsum++;
+				m_freem(m);
+				return;
+			}
+		}
+	should be changed to
+		if (udpcksum && (osum = ui->ui_sum)) {
+			ui->ui_next = ui->ui_prev = 0;
+			ui->ui_x1 = 0;
+			ui->ui_len = htons((u_short)len);
+			ui->ui_sum = 0;
+			if ((nsum = in_cksum(m, len + sizeof (struct ip))) != osum) {
+				if ((nsum != 0) || (osum != -1)) {
+					udpstat.udps_badsum++;
+					m_freem(m);
+					return;
+				}
+			}
+		}
+	Then
+		int	udpcksum;
+	can be changed to
+		int	udpcksum = 1;

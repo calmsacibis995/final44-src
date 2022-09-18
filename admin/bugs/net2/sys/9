@@ -1,0 +1,144 @@
+From jonathan@tahi.isor.vuw.ac.nz Thu Mar 19 09:30:22 1992
+Path: pasteur!dog.ee.lbl.gov!network.ucsd.edu!usc!wupost!waikato.ac.nz!comp.vuw.ac.nz!tahi.isor.vuw.ac.nz!jonathan
+Newsgroups: comp.bugs.4bsd
+Subject: Reno, Net-2 uda.c fails to autoconfig KDA-50 in Microvax-II +FIX
+Message-ID: <1992Mar16.235846.4131@comp.vuw.ac.nz>
+From: jonathan@tahi.isor.vuw.ac.nz (Jonathan Stone)
+Date: Mon, 16 Mar 1992 23:58:46 GMT
+Sender: news@comp.vuw.ac.nz (News Admin)
+Organization: Dept. of Comp. Sci., Victoria Uni. of Wellington, New Zealand.
+Nntp-Posting-Host: tahi.isor.vuw.ac.nz
+Lines: 96
+Index: sys/vax/uba/uda.c net2
+
+Index::
+	sys/vaxuba/uda.c (4.3BSD-Reno)
+	sys/vax/uba/uda.c (2nd networking release)
+
+Summary::
+	The 4.3-Reno MSCP driver, when built for a non-generic kernel,
+	fails to autoconfigure a KDA-50 configured in a Microvax-II.
+	The MSCP driver in 2nd Networking Release contains the same
+	bug, since only the copyright notice and RA82 geometry changed.
+	
+
+Repeat-By::
+	Bootstrap 4.3-Reno on a Microvax. Build a tailored non-generic kernel.
+	Attempt to boot that kernel.  Notice how autoconfiguration fails to
+	find the KDA-50. This is hard to miss if the KDA-50 is the only disk
+	controller on the configuration:  the kernel cannot intialise a swap
+	device, and panics.
+
+
+Diagnosis::
+	It seems the KDA-50 suffers the same too-clever-by-half
+	approach to MSCP initialisation as the TK-50 controller.
+	That is, when software attempts to enable interrupts on the KDA-50,
+	the KDA-50 does not set the CSR bit acknowledging that request
+	(i.e., the UDA_STEP2 bit)  until the CPU honours the KDA-50's request
+	for an interrupt.   On a non-generic Qbus configuration, uda.c
+	runs at spl6() so that it can call qbgetpri() to dynamically determine
+	the Qbus request level for the MSCP controller.   The CPU cannot
+	grant the KDA-50 request while at spl6(): the CPU and the
+	controller are therefore deadlocked.  udaprobe() eventually
+	times out and continues booting, but the KDA-50 is not found and
+	configured.
+
+	This bug is not seen on generic kernels, because the fancy
+	Qbus priority handing is #ifdef'ed out.
+
+
+Workaround::
+	Hack uda.c to make it always #define GENERIC if
+	the preprocessor token QBA is defined.  Gross, but it works.
+
+
+Fix::
+	There are two possible fixes: follow the lead of the
+	TMSCP driver to TK-50 controllers, and abandon dynamic
+	configuration of  Qbus priority levels; or kludge the
+	uda50 driver to try lowering IPL if a controller doesn't respond.
+	The enclosed patch implements the latter approach. It works,
+	but it's hard to see how to make it elegant. Calling qbgetpri(),
+	rather than explictly lowering	the processor priority, might also
+	work.
+
+*** uda.c.DIST	Thu Nov 29 05:19:09 1990
+--- uda.c	Tue Mar 10 02:23:43 1992
+***************
+*** 331,341 ****
+--- 331,369 ----
+  	while ((udaddr->udasa & UDA_STEP1) == 0)
+  		if (todr() > timeout)
+  			goto bad;
++ 	/* if we get here, we should conclude an MSCP ctlr is present*/
++ 
+  	udaddr->udasa = UDA_ERR | (NCMDL2 << 11) | (NRSPL2 << 8) | UDA_IE |
+  		(sc->sc_ivec >> 2);
+  	while ((udaddr->udasa & UDA_STEP2) == 0)
+  		if (todr() > timeout)
++ 		  {
++ #if defined(QBA) && !defined(GENERIC)
++ 	/* The ctlr is there, but failed to acknowledge that we
++ 	 * enabled interrupts.  Perhaps the ctlr is a KDA-50. Before a
++ 	 * KDA-50 sets this bit it requests an interrupt, and doesn't
++ 	 * set the bit until the CPU acks the interrupt.  But we are
++ 	 * running with the CPU at spl6() so that qbgetpri() will work,
++ 	 * which means the interrupt isn't granted and the ctlr appears dead.
++ 	 * Gross hack: drop the CPU priority and see if the ctlr responds
++ 	 * quickly. If so, give up on qbgetpri().
++ 	 */
++ 			printf("uda%d: present but not responding, lowering IPL and retrying\n", ctlr);
++ 			splx(s);
++ 			timeout = todr() + 50;	/*timeout in .5 sec*/
++ 			while ((udaddr->udasa & UDA_STEP2) == 0)
++ 			  if (todr() > timeout) {
++ 			    /* not ready; restore elevated ipl and retry */
++ 			    s = spl6();
++ 			    goto bad;
++ 			  }
++ 		    /* ctlr responded.  looks like it's a kda-50. */
++ 			sc->sc_ipl = br = 0x15;
++ 			return (sizeof (struct udadevice));
++ #else
+  			goto bad;
++ #endif
++ 		      }
+  
+  	/* should have interrupted by now */
+  #ifdef QBA
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+Path: pasteur!ames!haven.umd.edu!darwin.sura.net!wupost!uwm.edu!psuvax1!rutgers!spcvxb.spc.edu!terry
+From: terry@spcvxb.spc.edu (Terry Kennedy, Operations Mgr.)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: Reno, Net-2 uda.c fails to autoconfig KDA-50 in Microvax-II +FIX
+Message-ID: <1992Mar17.025456.2463@spcvxb.spc.edu>
+Date: 17 Mar 92 02:54:56 GMT
+References: <1992Mar16.235846.4131@comp.vuw.ac.nz>
+Organization: St. Peter's College, US
+Lines: 23
+
+In article <1992Mar16.235846.4131@comp.vuw.ac.nz>, jonathan@tahi.isor.vuw.ac.nz (Jonathan Stone) writes:
+> 	This bug is not seen on generic kernels, because the fancy
+> 	Qbus priority handing is #ifdef'ed out.
+
+  There are a bunch of other problems in the handling of systems CONFIG'd
+for multiple processor types and not GENERIC in Reno.
+
+  Apparently these configurations were never contemplated to exist by the
+folks who coded the various drivers. From many years of working on DEC hard-
+ware, I can safely say that one can't infer the bus type from the CPU model.
+I have a VAX-11/750 here with a Q-bus (it came this way from DEC as a stand-
+ard configuration). That's just an example.
+
+  Ideally, bus type determination should be deferred to boot time. If CONFIG's
+options were changed to include BUS_QBUS, BUS_UNIBUS, BUS_BI as well as the
+KAxxx options, that might help.
+
+  In any event, a bunch of code in the drivers seems to depend on GENERIC when
+it shouldn't.
+
+	Terry Kennedy		Operations Manager, Academic Computing
+	terry@spcvxa.bitnet	St. Peter's College, Jersey City, NJ USA
+	terry@spcvxa.spc.edu	+1 201 915 9381

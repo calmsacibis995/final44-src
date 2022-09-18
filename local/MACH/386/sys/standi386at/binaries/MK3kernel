@@ -1,0 +1,74 @@
+	if [ $# != 1 -a $# != 2 ]
+	then
+		echo "usage: MKkernel floppy_type"
+		exit 1
+	fi
+
+	MACH=/afs/cs/project/mach3/latest/release/i386_mach/special
+
+	rbdev=/dev/rfloppy
+	bdev=/dev/floppy
+	if [ $# = 2 ]
+	then
+		rbdev=$rbdev$2
+		 bdev=$bdev$2
+	fi
+
+	if [ X"$1" = X3h ] 
+	then
+		echo ">> 3.5 inch hi density == 1.44 Meg"
+		fsize=2880
+		spt=18
+		tpc=2
+	elif [ X"$1" = X3d ]
+	then
+		echo ">> 3.5 inch double density == .720 Meg"
+		fsize=1440
+		spt=9
+		tpc=2
+	elif [ X"$1" = X5h ]
+	then
+		echo ">> 5.25 inch hi density == 1.20 Meg"
+		fsize=2400
+		spt=15
+		tpc=2
+	fi
+
+	echo ">> preparing root file system"
+#    mkfs -N special size [ nsect ntrak bsize fsize cpg minfree rps nbpi opt ]
+	mkfs $rbdev $fsize $spt $tpc 4096 512 32 1
+	if [ $? != 0 ] 
+	then
+		echo ">> unable to make root file system !"
+		exit
+	fi
+	fsck $rbdev
+
+	echo ">> adding boot"
+	dd if=boot.hd of=$rbdev
+
+	mount $bdev /mnt
+	if [ $? != 0 ] 
+	then
+		echo ">> unable to mount $bdev !"
+		exit
+	fi
+
+	echo ">> adding mach"
+	ls -lg $MACH/mach.boot.MK*.STD+WS
+	cp -p $MACH/mach.boot.MK*.STD+WS /mnt/
+	ln /mnt/mach.boot.MK* /mnt/mach
+
+	echo
+	echo ">> adding mach_servers"
+	mkdir /mnt/mach_servers
+	ls -lg $MACH/emulator.UX*
+	cp -p $MACH/emulator.UX* /mnt/mach_servers/emulator
+	ls -lg $MACH/vmunix.UX*.STDVICE+WS
+	cp -p $MACH/vmunix.UX*.STDVICE+WS /mnt/mach_servers
+	ln /mnt/mach_servers/vmunix.UX* /mnt/mach_servers/startup
+	touch /mnt/mach_servers/paging_file
+
+	sync; sync; sync
+	umount $bdev
+	fsck $rbdev

@@ -1,0 +1,69 @@
+Return-Path: <ron@brl.arpa>
+Date: Wed, 22 Oct 86 20:38:11 EDT
+From: ron@brl.arpa
+Subject: RCP clobbers files.
+Index: bin/rcp.c 4.3BSD
+
+Description:
+	Rcp will silently make a file zero lenght if it is specified
+	as both the source and destination of a copy.  It is difficult
+	to predict when this will happen as there is no sure way to
+	verify that two CPU's are in fact using the same filesystem.
+	In addiiton, when rcp is called with one argument it just silently
+	exit without saying anything.
+
+Repeat-By:
+	1.	create a file with non-zero lenght called foo on machine host
+		issue command on host:  rcp host:foo foo
+		the file will now be zero length.
+	2.	type "rcp foo"
+Fix:
+	Make rcp non-destructive in it's copies.  Rather than doing an
+	initial creat, just open the file. Then copy all the blocks.
+	When the files are the same, each block will be read and written
+	back into the same place it was read.
+	Then do an ftruncate to fix up the file length.
+
+	Add usage message when too few arguments.
+
+*** 118,123 ****
+--- 114,125 ----
+  		}
+  	}
+  	rem = -1;
++ 
++ 	if(argc <= 1){
++ 		fprintf(stderr,"Usage: rcp [-p] f1 f2; or: rcp [-rp] f1...fn d2\n");
++ 		exit(1);
++ 	}
++ 	
+  	if (argc > 2)
+  		targetshouldbedirectory = 1;
+  	(void) sprintf(cmd, "rcp%s%s%s",
+***************
+*** 605,611 ****
+  			}
+  			continue;
+  		}
+! 		if ((of = creat(nambuf, mode)) < 0) {
+  	bad:
+  			error("rcp: %s: %s\n", nambuf, sys_errlist[errno]);
+  			continue;
+--- 607,613 ----
+  			}
+  			continue;
+  		}
+! 		if ((of = open(nambuf, O_WRONLY|O_CREAT, mode)) < 0) {
+  	bad:
+  			error("rcp: %s: %s\n", nambuf, sys_errlist[errno]);
+  			continue;
+***************
+*** 649,654 ****
+--- 651,657 ----
+  		if (count != 0 && wrerr == 0 &&
+  		    write(of, bp->buf, count) != count)
+  			wrerr++;
++ 		ftruncate(of, size);
+  		(void) close(of);
+  		(void) response();
+  		if (setimes) {

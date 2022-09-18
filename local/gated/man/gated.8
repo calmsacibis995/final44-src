@@ -1,0 +1,248 @@
+.\"
+.\" $Id: gated.8,v 1.21 1993/10/28 20:29:54 jch Exp $
+.\"
+.\" %(Copyright.header)
+.\"
+.TH GATED 8 "$Date: 1993/10/28 20:29:54 $ UTC" "%#(RELEASE)" "Cornell GateDaemon Project"
+.SH NAME
+gated \- gateway routing daemon
+.SH SYNOPSIS
+.B gated
+.RB [ \-c ]
+.RB [ \-C ]
+.RB [ \-n ]
+.RB [ \-N ]
+.RB [ \-t
+.IR trace_options ]
+.RB [ \-f
+.IR config_file ]
+.RI [ trace_file ]
+.SH DESCRIPTION
+.B Gated
+is a routing daemon that handles multiple routing protocols and replaces
+routed(8), egpup(8), and any routing daemon that
+speaks the HELLO routing protocol.
+.B Gated
+currently handles the RIP, BGP, EGP,
+HELLO, and OSPF routing protocols.  The
+.B gated
+process can be configured to perform all
+routing protocols or any 
+combination of the five.
+.PP
+The command-line options are:
+.IP -c
+Specifies that the configuration file will be parsed for syntax errors
+and then 
+.B gated
+will exit, if there were no errors, 
+.B gated
+will leave a
+dump file in @(_path_dump).  
+.B Gated
+does not need to be run as the
+super user to use the -c option but it may not be possible to read the
+kernel routing table and interface configuration if not run as super
+user.  The -c option implies -tgeneral,kernel,nostamp.  All traceoption
+and tracefile clauses in the configuration file will be ignored.
+.IP -C
+Specifies that the configuration file will just be parsed for syntax
+errors.  
+.B Gated
+will exit with a status 1 if there were any errors and 0
+if there were not.  
+.B Gated
+does not need to be run as the super user to
+use the -C option but it may not be possible to read the kernel routing
+table and interface configuration if not run as super user.  The -c
+option implies -tnostamp.
+.IP -n
+Specifies that 
+.B gated
+will not modify the kernel's
+routing table.  This is used for testing 
+.B gated
+configurations with actual routing data.
+.IP -N
+Specifies that 
+.B gated
+will not daemonize.
+Normally, if tracing to stderr is
+not specified 
+.B gated
+will daemonize if
+the parent process ID is not 1.  This
+allows the use of an /etc/inittab-like
+method of invoking 
+.B gated
+that does not
+have a PID of 1.
+.IP -t
+Specifies a comma separated list of
+trace options to be enabled on startup.
+If no flags are specified, "general" is
+assumed.  No space is allowed
+between this option and it's arguments.
+.sp
+This option must be used to trace events
+that take place before the config file
+is parsed, such as determining the
+interface configuration and reading
+routes from the kernel.
+.pp
+See
+.BR gated-config (5)
+for valid trace options and a more detailed
+explaination of tracing.
+.IP -f
+Use an alternate config file.
+By default,
+.B gated
+uses
+.IR @(_path_config) .
+.PP
+If a trace file is specified on the command line, or no trace flags
+are specified on the command line, 
+.B gated
+detaches from the terminal
+and runs in the background.  If trace flags are
+specified without specifying a trace file, 
+.B gated
+assumes that tracing is desired to stderr and
+remains in the foreground.
+.SH "SIGNAL PROCESSING"
+.PP
+.B Gated
+catches the following signals and does special processing.
+.PD 1.5v
+.IP SIGHUP: 16
+Re-read configuration.
+.sp
+A SIGHUP causes 
+.B gated
+to reread the configuration
+file.  
+.B Gated
+first performs a clean-up of all
+allocated policy structures.  All BGP and EGP peers
+are flagged for deletion and the configuration file is
+re-parsed. 
+.sp
+If the re-parse is successful, any BGP and EGP peers
+that are no longer in the configuration are shut down,
+and new peers are started.  
+.B Gated
+attempts to
+determine if changes to existing peers require a
+shutdown and restart.
+.sp
+It should also be possible to enable/disable any
+protocol without restarting 
+.BT gated .
+.sp
+Reconfiguration is currently disabled when OSPF
+is enabled, this will hopefully be fixed in a
+future release.
+.IP SIGINT:
+Snap-shot of current state.
+.sp
+The current state of all 
+.B gated
+tasks, timers,
+protocols and tables are written to
+@(_path_dump).
+.sp
+On systems supporting fork(), this is done by
+forking a subprocess to dump the table information so
+as not to impact 
+.BR gated 's
+routing functions.  On
+systems where memory management does not support
+copy-on-write, this will cause the 
+.B gated
+address space
+to be duplicated; this may be cause a noticeable impact
+on the system.  On system not supporting fork(), the
+main process immediately processes the dump, which may
+impact 
+.BR gated 's
+routing functions.
+.IP SIGTERM:
+Graceful shutdown.
+.sp
+On receipt of a SIGTERM, 
+.B gated
+attempts a graceful
+shutdown.  All tasks and protocols are asked to
+shutdown.  Most will terminate immediately, the
+exception being EGP peers which wait for confirmation.
+It may be necessary to repeat the SIGTERM once or
+twice if it this process takes too long.
+.sp
+All protocol routes are removed from the
+kernel's routing table on receipt of a SIGTERM.
+Interface routes, routes with RTF_STATIC set (from
+the route command where supported) and static routes
+specifying `retain' will remain.  To terminate 
+.B gated
+with the exterior routes intact, use SIGKILL or
+.IP SIGUSR1:
+Toggle tracing.
+.sp
+On receipt of a SIGUSR1, 
+.B gated
+will close the trace
+file.  A subsequent SIGUSR1 will cause it to be
+reopened.  This will allow the file to be moved
+regularly.
+.sp
+It is not possible to use SIGUSR1 if a trace file has
+not been specified, or tracing is being performed to
+stderr.
+.IP SIGUSR2:
+Check for interface changes.
+.sp
+On receipt of a SIGUSR2, 
+.B gated
+will rescan the kernel
+interface list looking for changes.
+.PD
+.SH AUTHORS
+Mark Fedor <fedor@psi.com>,
+Jeffrey C Honig <jch@gated.cornell.edu>,
+Rob Coltun <rcoltun@ni.umd.edu>
+and
+Dennis Ferguson <dennis@ans.net>
+.SH SEE ALSO
+gated-config(5),
+gated-copyright(8),
+@(GDC)(8),
+arp(8),
+ifconfig(8),
+netstat(8),
+@(RIPQUERY)(8),
+routed(8)
+.PP
+.PD 0
+.IP RFC\ 891 16
+DCN Local-Network Protocols (HELLO)
+.IP RFC\ 904
+Exterior Gateway Protocol Formal Specification
+.IP RFC\ 1058
+Routing Information Protocol
+.IP RFC\ 1163
+A Border Gateway Protocol (BGP)
+.IP RFC\ 1164
+Application of the Border Gateway Protocol in the Internet
+.IP RFC\ 1247
+OSPF Specification, Version 2
+.PD
+.SH COPYRIGHT INFORMATION
+%(Copyright_short)
+.PP
+%(Copyright_short.OSPF)
+.PP
+%(Copyright_short.ISIS)
+.\"
+.\" %(Copyright)
+.\"

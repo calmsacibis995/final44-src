@@ -1,0 +1,118 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Jan  5 13:30:37 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA06806; Fri, 5 Jan 90 13:30:37 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.39)
+	id AA27043; Fri, 5 Jan 90 13:30:40 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA00685; Fri, 5 Jan 90 13:30:48 -0800
+Date: Fri, 5 Jan 90 13:30:48 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9001052130.AA00685@WLV.IMSD.CONTEL.COM>
+Subject: clock function crashes 'px'
+Index: 	ucb/pascal/px/34fun.s 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The "clock" function causes a floating point exception core
+	dump in /usr/ucb/px.
+
+Repeat-By:
+	Put the following test program into p.p,
+
+program spin(input,output);
+
+var
+	i,j: integer;
+
+begin
+	i := clock;
+	writeln(i);
+	j := 0;
+	repeat
+		j := j+1;
+	until j >= 100000;
+	i := clock;
+	writeln(i);
+end.
+
+	Then:
+	
+	pi p.p
+	px obj
+
+	Note the floating point exception.
+
+Fix:
+	Even if the floating point exception did not occur, the
+	answers returned could be wrong because only the low order
+	of the time values were being used in the calculations.
+
+	Actual cause of the exception was a divide by zero, there
+	was a missing 'setl' instruction which led to a zero being
+	used in the ticks to milliseconds conversion.
+
+	In addition to returning the correct answer, the code has
+	also been reduced in size.
+
+	Apply the following patch to /usr/src/ucb/pascal/px/34fun.s,
+	recompile and install 'px'.
+
+*** 34fun.s.old	Fri Mar 13 05:27:43 1987
+--- 34fun.s	Tue Jan  2 15:58:46 1990
+***************
+*** 36,46 ****
+  	mov	$EARGV,_perrno
+  	error	EARGV
+  _SCLCK:
+! 	mov	$6,-(sp)
+  	br	1f
+  _CLCK:
+! 	mov	$2,-(sp)
+  1:
+  	sub	$16.,sp
+  	mov	sp,r0
+  	mov	r0,-(sp)
+--- 36,47 ----
+  	mov	$EARGV,_perrno
+  	error	EARGV
+  _SCLCK:
+! 	mov	$4,-(sp)
+  	br	1f
+  _CLCK:
+! 	clr	-(sp)
+  1:
++ 	seti
+  	sub	$16.,sp
+  	mov	sp,r0
+  	mov	r0,-(sp)
+***************
+*** 48,63 ****
+  	tst	(sp)+
+  	mov	sp,r0
+  	add	16.(sp),r0
+! 	mov	(r0),r0
+  	add	$18.,sp
+- 	mul	$1000.,r0
+- 	mov	r1,-(sp)
+- 	mov	r0,-(sp)
+- 	movif	(sp)+,fr0
+- 	mov	$HZ,-(sp)
+- 	sxt	-(sp)
+- 	movif	(sp)+,fr1
+  	divf	fr1,fr0
+  	movfi	fr0,-(sp)
+  	return
+  _DATE:
+--- 49,60 ----
+  	tst	(sp)+
+  	mov	sp,r0
+  	add	16.(sp),r0
+! 	movif	$HZ,fr1
+! 	setl
+! 	movif	(r0),fr0
+  	add	$18.,sp
+  	divf	fr1,fr0
++ 	mulf	$042572,fr0		/ mulf $1000.,fr0 
+  	movfi	fr0,-(sp)
+  	return
+  _DATE:

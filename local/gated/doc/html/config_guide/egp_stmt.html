@@ -1,0 +1,294 @@
+<html>
+<!--
+$Header$
+
+%(Copyright)
+>
+<head>
+<TITLE>Gated Configuration Guide - EGP</TITLE>
+</head>
+<body>
+
+<H1>The Exterior Gateway Protocol (EGP)</H1>
+
+The Exterior Gateway Protocol (EGP) is an exterior routing protocol
+used for exchanging routing information with gateways in other
+autonomous systems.  Unlike interior protocols, EGP propagates only
+reachability indications, not true metrics.  EGP updates contain
+metrics, called <em>distances</em> which range from 0 to 255.  GateD
+will only compare EGP distances learned from the same AS.
+them.
+<p>
+
+Before EGP sends routing information to a remote router, it must
+establish an adjacency with that router.
+This is accomplished by an
+exchange of <em>Hello</em> (not to be confused with the HELLO
+protocol, or OSPF HELLO messages) and <em>I Heard You</em> (I-H-U)
+messages with that router.
+Computers communicating via EGP are called
+EGP <em>neighbors</em>, and the exchange of HELLO and I-H-U messages is
+referred to as <em>acquiring a neighbor</em>.
+Once the neighbor is acquired,
+the system <em>polls</em> the neighbor for routing information.
+The neighbor
+responds by sending an <em>update</em> containing routing information.
+If the system receives a poll from
+its neighbor, it responds with its own update packet.  When the system
+receives an update, it includes routes from the update into its
+routing database.  If the neighbor fails to respond to three
+consecutive polls, GateD assumes that the neighbor is down and removes
+the neighbor's routes from its database.
+<p>
+
+<H2>The EGP Statement</H2>
+
+<PRE>
+    <strong>egp</strong> <strong>yes</strong> | <strong>no</strong> | <strong>on</strong> | <strong>off</strong>
+    [ <strong>{</strong>
+        <strong>preference</strong> <var><a href="pref.html">preference</a></var> <strong>;</strong>
+        <strong>defaultmetric</strong> <var>metric</var> <strong>;</strong>
+        <strong>packetsize</strong> <var>number</var> <strong>;</strong>
+        <strong>traceoptions</strong> <var>trace_options</var> <strong>;</strong>
+        <strong>group</strong>
+            [ <strong>peeras</strong> <var>autonomous_system</var> ]
+            [ <strong>localas</strong> <var>autonomous_system</var> ]
+            [ <strong>maxup</strong> <var>number</var> ]
+        <strong>{</strong>
+            <strong>neighbor</strong> <var>host</var>
+                [ <strong>metricout</strong> <var>metric</var> ]
+                [ <strong>preference</strong> <var><a href="pref.html">preference</a></var> ]
+                [ <strong>preference2</strong> <var><a href="pref.html">preference</a></var> ]
+		[ <strong>ttl</strong> <var>ttl</var> ]
+                [ <strong>nogendefault</strong> ]
+                [ <strong>importdefault</strong> ]
+                [ <strong>exportdefault</strong> ]
+                [ <strong>gateway</strong> <var>gateway</var> ]
+                [ <strong>lcladdr</strong> <var>local_address</var> ]
+                [ <strong>sourcenet</strong> <var>network</var> ]
+                [ <strong>minhello</strong> | <strong>p1</strong> <var>time</var> ]
+                [ <strong>minpoll</strong> | <strong>p2</strong> <var>time</var> ]
+                [ <strong>traceoptions</strong> <var>trace_options</var> ]
+		<strong>;</strong>
+       <strong>}</strong> <strong>;</strong>
+    <strong>}</strong> ] <strong>;</strong>
+</PRE>
+
+<dl>
+<dt> <strong>preference</strong> <var><a href="pref.html">preference</a></var>
+<dd> Sets the preference for routes learned from RIP.  The default
+     preference is 200.  This preference may be overridden by a
+     preference specified on the <code>group</code> or
+     <code>neighbor</code> statments or by import policy.
+
+<dt> <strong>defaultmetric</strong> <var>metric</var> <strong>;</strong> 
+<dd> Defines the metric used when advertising routes via EGP.  If not
+     specified, the default value is 255 which some systems may
+     consider unreachable.  This choice of values requires you to
+     explicitly specify a metric when exporting routes to EGP
+     neighbors.  This metric may be overridden by a metric specified
+     on the neighbor or group statements or in export policy.
+
+<dt> <strong>packetsize</strong> <var>maxpacketsize</var>
+<dd> This defines the expected maximum size of a packet that EGP
+     expects to receive from this neighbor.  If a packet larger than
+     this value is received, it will be incomplete and have to be
+     discarded.  The length of this packet will be noted and the
+     expected size will be increased to be able to receive a packet of
+     this size.  Specifying the parameter here will prevent the first
+     packet from being dropped.  If not specified, the default size is
+     8192 bytes.  All packet sizes are rounded up to a multiple of the
+     system page size.
+
+<dt> <strong>traceoptions</strong> <var>trace_options</var>
+<dd> Specifies the tracing options for EGP.  By default these are
+     inherited from the global trace options.  These values may be
+     overridden on a group or neighbor basis. (See <A
+     HREF="trace.html">Trace Statements</A> and the EGP specific
+     tracing options below.)
+
+<dt> <strong>group</strong>
+<dd> EGP neighbors must be specified as members of a
+     <code>group</code>.  A group is usually used to group all
+     neighbors in one autonomous system.  Parameters specified on the
+     group clause apply to all of the subsidiary neighbors unless
+     explicitly overridden on a neighbor clause.  Any number of
+     <code>group</code> clauses may specify any number of
+     <code>neighbor</code> clauses. 
+     <p>
+
+     Any parameters from the <CODE>neighbor</CODE> subclause may be
+     specified on the <CODE>group</CODE> clause to provide defaults
+     for the whole group (which may be overridden for individual
+     neighbors).  In addition, the <CODE>group</CODE> clause is the
+     only place to set the following attributes: 
+
+     <dl>
+     <dt> <strong>peeras</strong>
+     <dd> Identifies the  autonomous system number expected from peers
+          in the group.  If not specified it will be learned
+          dynamically.
+
+     <dt> <strong>localas</strong>
+     <dd> Identifies the autonomous system which GateD is representing
+          to the group. The  default is that which has been set
+          globally in the <A
+          HREF="defines.html#asno"><CODE>autonomoussystem</CODE></A>
+          statement.  This option is usually only used when
+          <em>masquerading</em> as another autonomous system and it's
+          use is discouraged.
+	
+     <dt> <strong>maxup</strong>
+     <dd> Specifies the number of neighbors GateD should acquire from
+          this group. The default is to acquire all of the neighbors
+          in the group.  GateD will attempt to acquire the first
+          <code>maxup</code> neighbors in the order listed.  If one of
+          the first neighbors is not available, it will acquire one
+          further down the list. If after start-up GateD does manage
+          to acquire the more desirable neighbor, it will drop the
+          less desirable one.
+     </dl>
+
+<dt> <strong>neighbor</strong> <var>neighbor_address</var>
+<dd> Each neighbor subclause defines one EGP neighbor within a group.
+     The only part of the subclause that is required is the
+     <code>neighbor_address</code> argument which is the symbolic host
+     name or IP address of the neighbor.  All other parameters are
+     optional.
+
+    <dl>     
+    <dt> <strong>preference</strong> <var><a href="pref.html">preference</a></var>
+    <dd> Specifies  the  preference  used  for  routes learned  from
+         these  neighbors.   This  can differ from the default EGP
+         preference set in the <code>egp</code> statement, so that
+         GateD can prefer routes from one neighbor, or group of
+         neighbors, over another.  This preference may be explicitly
+         overriden by import policy.
+
+    <dt> <strong>preference2</strong> <var><a href="pref.html">preference</a></var>
+    <dd> In the case of a <code>preference</code> tie, the second
+         preference, <code>preference2</code> may be used to break the
+         tie.  The default value is 0.
+
+    <dt> <strong>metricout</strong> <var>metric</var>
+    <dd> This defines a metric to be used for all routes sent to this
+         neighbor.  The value overrides the default metric set in the
+         <code>egp</code> statement and any metrics specified by
+         export policy, but only for this specific neighbor or group
+         of neighbors.
+	
+    <dt> <strong>nogendefault</strong>
+    <dd> Prevents GateD from generating a default route when EGP
+         receives a valid update from its neighbor.  The default route
+         is only generated when the <a
+         href="options.html#gendefault">gendefault</a> option is
+         enabled.
+	
+    <dt> <strong>importdefault</strong>
+    <dd> Enables GateD to accept the default route (0.0.0.0) if it is
+         included in a received EGP update.  If not specified, the
+         default route contained in an EGP update is ignored.  For
+         efficiency, some networks have external routers announce a
+         default route to avoid sending large EGP update packets.
+	
+    <dt> <strong>exportdefault</strong>
+    <dd> Enables GateD to include the default route (0.0.0.0) in EGP
+         updates sent to this EGP neighbor.  This allows the system to
+         advertise the default route via EGP. Normally a default route
+         is not included in EGP updates.
+	
+    <dt> <strong>gateway</strong> <var>gateway</var>
+    <dd> If a network is not shared with a neighbor,
+         <code>gateway</code> specifies a router on an attached
+         network to be used as the next hop router for routes received
+         from this neighbor.  This option is only rarely used.
+
+    <dt> <strong>lcladdr</strong> <var>local_address</var> <dd>
+    <dd> Specifies the address to be used on the local end of the
+         connection with the neighbor.  The local address must be on
+         an interface which is shared with the neighbor or with the
+         neighbor's <em>gateway</em> when the <code>gateway</code>
+         parameter is used.  A sessionwill only be opened when an
+         interface with the appropriate local address (through which
+         the neighbor or gateway address is directly reachable) is
+         operating.
+	
+    <dt> <strong>sourcenet</strong> <var>network</var>
+    <dd> Specifies the network queried in the EGP Poll packets.  By
+         default this is the network shared with neighbors address
+         specified.  If there is no network shared with the neighbor,
+         one of the network the neighbor is attached to should be
+         specified.  This parameter can also be used to specify a
+         network shared with the neighbor other than the one on which the
+         EGP packets are sent.  This parameter is normally not needed.
+         
+    <dt> <strong>p1</strong> <var>time</var>
+    <dt> <strong>minhello</strong> <var>time</var>
+    <dd> Sets the minimum acceptable interval between the transmission
+         of EGP <em>HELLO</em> packets.  The default hello interval is
+         30 seconds.  If the neighbor fails to respond to three hello
+         packets, GateD stops trying to acquire the neighbor.  Setting
+         a larger interval gives the neighbor a better chance to
+         respond.  Minhello is an alias for the <code>P1</code> value
+         defined in the EGP specification.
+	
+    <dt> <strong>p2</strong> <var>time</var>
+    <dt> <strong>minpoll</strong> <var>time</var>
+    <dd> Sets the time interval between polls to the neighbor.  The
+         default is 120 seconds.  If three polls are sent without a
+         response, the neighbor is declared "down" and all routes
+         learned from that neighbor are removed from the routing
+         database.  A longer polling interval supports a more stable
+         routing database but is not as responsive to routing changes.
+         Minpoll is an alias for the <code>P2</code> value defined in
+         the EGP specification.
+
+    <dt> <strong>ttl</strong> <var>ttl</var>
+    <dd> By default, GateD sets the IP TTL for local neighbors to
+         <em>one</em> and the TTL for non-local neighbors to 255.  This
+         option is provided when attempting to communicate with
+         improperly functioning routers that ignore packets sent with
+         a TTL of one.
+
+    <dt> <strong>traceoptions</strong> <var>trace_options</var>
+    <dd> Specifies the tracing options for this EGP neighbor.  By
+         default these are inherited from group or EGP global trace
+         options. (See <A HREF="trace.html">Trace Statements</A> and
+         the EGP specific tracing options below.)
+
+    </dl>
+
+</dl>
+
+<hr>
+<h2>Tracing options</h2>
+The <CODE>state</CODE> and <CODE>policy</CODE> options work with 
+EGP.
+                    
+<P>Packet tracing options (which may be modified with <CODE>detail</CODE>, 
+<CODE>send</CODE> and <CODE>recv</CODE>):
+
+<DL>
+<DT> <STRONG>packets</STRONG>
+	<DD> All EGP packets
+	
+<DT> <STRONG>hello</STRONG>
+	<DD> EGP <CODE>HELLO/I-HEARD-U</CODE> packets which are used to
+                    determine neighbor reachability.
+	
+<DT> <STRONG>acquire</STRONG>
+	<DD> EGP <CODE>ACQUIRE/CEASE</CODE> packets which are used to
+                    initiate and terminate EGP sessions.
+	
+<DT> <STRONG>update</STRONG>
+	<DD> EGP <CODE>POLL/UPDATE</CODE> packets which are used to
+                    request and receive reachability updates.
+</DL>
+
+<hr>
+
+Last updated $Date$.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

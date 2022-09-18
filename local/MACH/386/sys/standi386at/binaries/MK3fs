@@ -1,0 +1,67 @@
+	if [ $# != 1 -a $# != 2 ]
+	then
+		echo "usage: MKfs floppy_type"
+		exit 1
+	fi
+
+	MACH=/afs/cs/project/mach3/latest/release/i386_mach/special
+
+	rbdev=/dev/rfloppy
+	bdev=/dev/floppy
+	if [ $# = 2 ]
+	then
+		rbdev=$rbdev$2
+		 bdev=$bdev$2
+	fi
+
+	if [ X"$1" = X3h ] 
+	then
+		echo ">> 3.5 inch hi density == 1.44 Meg"
+		fsize=2880
+		spt=18
+		tpc=2
+		den=fh
+	elif [ X"$1" = X3d ]
+	then
+		echo ">> 3.5 inch double density == .720 Meg"
+		fsize=1440
+		spt=9
+		tpc=2
+	elif [ X"$1" = X5h ]
+	then
+		echo ">> 5.25 inch hi density == 1.20 Meg"
+		fsize=2400
+		spt=15
+		tpc=2
+		den=fd
+	fi
+
+	echo ">> preparing user file system"
+#    mkfs -N special size [ nsect ntrak bsize fsize cpg minfree rps nbpi opt ]
+	mkfs $rbdev $fsize $spt $tpc 4096 512 32 1
+	if [ $? != 0 ] 
+	then
+		echo ">> unable to make user file system !"
+		exit
+	fi
+	fsck $rbdev
+	mount $bdev /mnt
+	if [ $? != 0 ] 
+	then
+		echo ">> unable to mount $bdev !"
+		exit
+	fi
+	echo ">> copying user files"
+	tar cf - bin etc dev tmp usr -e RFS/.LOCALROOT/bin/FAC RFS | \
+			(cd /mnt; tar xvf -)
+	echo
+	echo ">> adding mach_servers/emulator"
+	ls -lg $MACH/emulator.UX*
+	cp -p $MACH/emulator.UX* /mnt/RFS/.LOCALROOT/mach_servers/emulator
+
+	echo
+	echo ">> making devices"
+	(cd /mnt/dev; ./MAKEDEV std hd0 sd0 ${den}0 pty0 st0)
+	sync; sync; sync
+	umount	$bdev
+	fsck $rbdev

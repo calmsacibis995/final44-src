@@ -1,0 +1,80 @@
+Subject: How to tune d1,d2,d3 params in /etc/disktab
+Index: etc/disktab 4.3BSD-tahoe
+
+For those of you that are interested in maximizing the performance
+of your disks, here is an empirical procedure developed by Tom Ferrin
+(tef@cgl.ucsf.edu) to tune the drive dependent parameters for 
+disk controllers that have search capabilities. CSRG would be
+interested in getting experimental results for other drives
+in /etc/disktab and also in hearing of refinements to this procedure.
+
+
+Here is the procedure to empirically determine the correct
+drive-dependent parameters for "HP" type disks.  This technique
+improved both read and write times for an NEC2362 drive by more
+than 2x!  Since the "doubleeagle" params were used as a starting
+point, throughput to that drive could probably be improved
+considerably as well since the physical characteristics of the
+two drives are very similar.  The throughput is now nearly 1MB/sec
+on writes (995 KB/s to be exact) and 842 KB/s on reads.
+
+Here is the method:
+
+	0. format the drive and build the badblock table.
+	1. set d3 (sdist) to something large, say 20.
+	2. set d1 (mindist) to 0.
+	3. set d2 (maxdist) to #sectors/track - 1 (63 for the NEC).
+	4. write out these parameters using disklabel.
+	5. newfs a filesystem and mount it.
+
+This essentially disables the "search" capability of the driver so
+than whenever the drive is positioned on the proper cylinder the
+driver immediately issues a data xfer command.  This will minimize
+the data transfer time at the expense of tying up the controller
+for a longer period (possibly for a complete revolution [~17ms]).
+Now use Mike's "write_8192" program (was in ~karels/tests on the
+distribution tape) to write a 8MB file out to the filesystem.
+
+Optimize maxdist as follows:
+
+	6. use the read_8192 program to determine the real time
+	   required to read the data file.  (do 4 - 6 runs to make
+	   sure there are no abnormalities on a particular run).
+	7. reduce maxdist (d2) by 10 in disktab, write it out with
+	   disklabel, and do step #6 again.
+
+The real time required to read the file should remain relatively
+constant until maxdist gets too small, then the time will suddenly
+jump up as you begin missing revs on the xfer.  Decrease the step
+size from 10 to 5 and iterate again, finally choosing a value a
+a little larger than the "cut off" value.  (It is much better to
+be conservative.)
+
+Optimize mindist by increasing it upwards from 0 using a step size
+of 1 or 2, again using read_8192 as the benchmark.  You will see that
+time required to read the file will initially be small, but then will
+start creeping upwards as the driver begins issuing "search" commands
+when it could be starting a read directly.  Back off 1 or 2 sectors
+from the point where the file read time first starting increasing.
+(Being conservative is less critical here.)
+
+Mindist and maxdist determine the window (measured in sectors) from
+which the driver determines to whether to begin a data xfer immediately
+or to do a "search" command first (possibly freeing the controller
+for a data xfer on another drive).  Values of 2 and 15 worked best for
+mindist and maxdist on a NEC D2362, using an Emulex SC7003 controller
+on a VAX8650.
+
+Lastly optimize sdist in the same way you optimized maxdist.
+A value of 5 is reasonable (far different than the 15 originally found
+in disktab).  Again it is better to error on the conservative side, since
+being too liberal causes you to miss a rev, while being too conservative
+just ties up the controller longer while the data xfer is queued up
+and the controller is waiting for the heads to get over the proper sector.
+
+A final note:  bus I/O architecture and CPU speed play a factor in all
+of this, since how fast it takes the processor to field a device interrupt
+and how fast the code in the driver executes affect timing.  Ideally
+someone should use the same drive and controller setup on a slow
+CPU (eg VAX750) and see how different the numbers are.
+

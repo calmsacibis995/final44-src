@@ -1,0 +1,296 @@
+From potency@violet.berkeley.edu  Thu Apr 16 13:23:12 1987
+Date: Thu, 16 Apr 87 13:21:11 PDT
+From: potency@violet.berkeley.edu (Tom Slone)
+Subject: Sccs prints erroneous warning message
+Index: ucb/sccs 4.3BSD
+
+Description:
+	I have a number of SCCS files from which I get the following
+	(apparently) erroneous error message when I do "sccs get" on
+	them:
+		Clock may be set wrong! (co11)
+Repeat-By:
+	Here follows an SCCS file which gives me the message (cut at
+	the "==="):
+======================================================================
+h33776
+s 00013/00014/00072
+d D 1.3 85/10/07 14:21:18 slone 3 2
+c This version is getting very close results
+e
+s 00082/00109/00004
+d D 1.2 85/09/19 15:01:13 slone 2 1
+c This is the first version to compile and link
+e
+s 00113/00000/00000
+d D 1.1 85/08/01 15:32:19 slone 1 0
+c date and time created 85/08/01 15:32:19 by slone
+e
+u
+U
+t
+T
+I 1
+# %W% %G%
+
+D 2
+subroutine davclc(dose, nd, ncap, phi, mxlife) 
+c.	Tue Apr 10 08:00:51 PST 1979
+c.	Calculate d bar sub j  and n sub ij *  in 17:11
+c.	If phi is given as a negative number, then n sub ij * will be
+c.	calculated as Nij*(1-(total dead in this time interval)*abs(phi))
+c.	for all but the last time interval.
+c.	Variable names come from the paper.
+common/angls/theta(271), sn(271), cs(271) 
+common/tumors/x(128, 8), nr(8), nt, d(256), dbar(256), ntimes, ntum(128), totaln(128), davg(128)
+dimension dose(nd), ndead(8), nij(8), ncapij(8)
+	c.	Initialize.
+	nj = 0
+	iwk = x(1) / 100
+	ntimes = 0
+	c.	ntimes is the number of discrete times a tumor appeared.
+	davg(1) = 0 
+	totaln(1) = 0 
+	dtot = 0
+	deltad = dose(nd) * 1.0e-6
+	do 10 k = 1, nd
+		nij(k) = 0
+		ndead(k) = 0
+		ncapij(k) = nr(k) 
+	   10 continue
+	c.print 990, ncap{debug}
+	c.  990 format(* enter davclc, ncap = *, i3){debug}
+	do 15 j = 1, ncap
+		dtot = dtot + (x(j) - 10 * aint(x(j) / 10.))
+		c.	dtot = total doses summed over all animals
+	   15 continue
+	do 11 j = 1, ncap
+		call brkdwn(x(j), iwknew, itum, dosej) 
+		c.	Breaks x down to life, (tum ? 1 : 0), and dose
+		dold = dtot
+		c.	When dold  ==  0.0, only controls left.
+		dtot = dtot - dosej 
+		if(iwk == iwknew)go to 1
+			c.print 992, iwk, iwknew{debug}
+			c.  992 format(* old age *, i3, *, new age *, i3){debug}
+			iwk = iwknew
+			if(nj == 0)go to 5
+			c.	nj = 0 means no tumors, so don't calculate davg
+				    2 continue
+					c.	Return here when j = ncap
+					ntimes = ntimes + 1 
+					do 12 k = 1, nd
+						ngone = nij(k)
+						if(phi < 0  &&  iwk != mxlife)ngone = ndead(k)
+						adjn = ncapij(k) - (1. - abs(phi)) * ngone
+						davg(ntimes) = davg(ntimes) + dose(k) * adjn
+						totaln(ntimes) = totaln(ntimes) + adjn
+					   12 continue
+					if(davg(ntimes) == 0.0) go to 6
+						davg(ntimes) = davg(ntimes) / totaln(ntimes)
+						ntum(ntimes) = nj 
+						c.print 993, ntimes, davg(ntimes), ntimes, ntum(ntimes) {debug}
+						c.  993 format(* davg(*, i2, *) = *, e10.3, *, ntum(*, i2, *) = *, i3){debug}
+						go to 7
+					    6 continue
+						c.	Bandaid to patch up problem of control tumors
+						c.	after all dosed animals dead.
+						ntimes = ntimes - 1
+					    7 continue
+					if(dold <= 0)go to 4
+					c.	At last dosed animal, break 11 loop.
+					c.	Forget about tumors when only controls left (page 8).
+					c.
+					c.	Assumes no machine roundoff error in adding
+					c.	and then subtracting all the doses.
+					if(j == ncap)go to 11 
+						nj = 0
+						totaln(ntimes + 1) = 0
+						davg(ntimes + 1) = 0
+			    5 continue
+						do 13 k = 1,nd
+							nij(k) = 0
+							ncapij(k) = ncapij(k) - ndead(k)
+							ndead(k) = 0
+						   13 continue
+		    1 continue
+						do 14 k = 1,nd
+							test = abs(dosej - dose(k)) 
+							if(test < deltad)go to 3 
+							c.	Found dose, break 14 loop
+						   14 continue
+						stop 1
+						    3 continue
+						nij(k) = nij(k) + itum
+						ndead(k) = ndead(k) + 1 
+						nj = nj + itum
+						c.	nj=number of tumors in current time interval.
+				if(j == ncap)go to 2
+				c.	Last animal; wrap it up, go back to 2
+	   11 continue
+	    4 continue
+		c.print 99,(i,totaln(i),ntum(i),davg(i),i=1,ntimes) {debug}
+		c.   99 format(* i, totaln(i), ntum(i), davg(i)*/(x,i3,e10.3,i8,e10.3)) {debug}
+E 2
+I 2
+# Tue Apr 10 08:00:51 PST 1979
+# Calculate d bar sub j and n sub ij* in 17:11.  If phi is given as a negative
+# number, then n sub ij * will be calculated as Nij*(1-(total dead in this time
+# interval)*abs(phi)) for all but the last time interval.  Variable names come
+# from the paper.
+subroutine davclc(dose, nd, ncap, phi, mxlife, x, nr, ntimes, ntum, totaln,
+	davg)
+double precision dose(nd), phi, totaln(128), davg(128), x(1028)
+integer nd, ncap, mxlife, ntimes, ntum(128), nr(8)
+{
+double precision dtot, deltad, dosej, dold, adjn
+integer ndead(8), nij(8), ncapij(8), nj, iwk, k, j, iwknew, itum, ngone
+
+nj = 0
+D 3
+iwk = x(1) / 100
+E 3
+I 3
+iwk = x(1) / 100.0D0
+E 3
+ntimes = 0 # ntimes is the number of discrete times a tumor appeared
+davg(1) = 0.0D0
+totaln(1) = 0.0D0
+dtot = 0.0D0
+deltad = dose(nd) * 1.0D-6
+do k = 1, nd {
+	nij(k) = 0
+	ndead(k) = 0
+D 3
+	ncapij(k) = nr(k) 
+E 3
+I 3
+	ncapij(k) = nr(k)
+E 3
+	}
+D 3
+do j = 1, ncap
+E 3
+I 3
+do j = 1, ncap # dtot = total doses summed over all animals
+E 3
+	dtot = dtot + (x(j) - 10.0D0 * dint(x(j) / 10.0D0))
+D 3
+		# dtot = total doses summed over all animals
+E 3
+do j = 1, ncap {
+#	Breaks x down to life, (tum ? 1 : 0), and dose
+D 3
+	call brkdwn(x(j), iwknew, itum, dosej) 
+	dold = dtot # When dold  ==  0.0, only controls left
+	dtot = dtot - dosej 
+E 3
+I 3
+	call brkdwn(x(j), iwknew, itum, dosej)
+	dold = dtot # When dold == 0.0, only controls left
+	dtot = dtot - dosej
+E 3
+	if (iwk != iwknew) {
+		iwk = iwknew
+		if (nj != 0) { # nj = 0 means no tumors, so don't calculate davg
+2			continue # Return here when j = ncap
+D 3
+			ntimes = ntimes + 1 
+E 3
+I 3
+			ntimes = ntimes + 1
+E 3
+			do k = 1, nd {
+				ngone = nij(k)
+				if (phi < 0.0D0 && iwk != mxlife)
+					ngone = ndead(k)
+				adjn = ncapij(k) - (1.0D0 - dabs(phi)) * ngone
+				davg(ntimes) = davg(ntimes) + dose(k) * adjn
+				totaln(ntimes) = totaln(ntimes) + adjn
+				}
+D 3
+			if (davg(ntimes) != 0.0D0) {
+E 3
+I 3
+			if (dabs(davg(ntimes)) > 1.0D-10) {
+E 3
+				davg(ntimes) = davg(ntimes) / totaln(ntimes)
+D 3
+				ntum(ntimes) = nj 
+E 3
+I 3
+				ntum(ntimes) = nj
+E 3
+			} else
+# Bandaid to patch up problem of control tumors after all dose animals dead
+				ntimes = ntimes - 1
+			if (dold <= 0)
+D 3
+				break
+E 3
+I 3
+				return
+E 3
+#			At last dosed animal, break loop.
+#			Forget about tumors when only controls left (page 8).
+#			Assumes no machine roundoff error in adding and then
+#			subtracting all the doses.
+			if (j == ncap)
+				next
+			nj = 0
+			totaln(ntimes + 1) = 0.0D0
+			davg(ntimes + 1) = 0.0D0
+			}
+		do k = 1, nd {
+			nij(k) = 0
+			ncapij(k) = ncapij(k) - ndead(k)
+			ndead(k) = 0
+			}
+		}
+	do k = 1, nd
+		if (dabs(dosej - dose(k)) < deltad)
+D 3
+			go to 3 
+E 3
+I 3
+			go to 3
+E 3
+	stop 1
+3	continue
+	nij(k) = nij(k) + itum
+D 3
+	ndead(k) = ndead(k) + 1 
+E 3
+I 3
+	ndead(k) = ndead(k) + 1
+E 3
+	nj = nj + itum # nj = number of tumors in current time interval
+	if (j == ncap)
+		go to 2 # Last animal; wrap it up, go back to 2
+	}
+E 2
+return
+I 2
+}
+E 2
+D 3
+end 
+E 3
+I 3
+end
+E 3
+D 2
+c.	The following is an "ed" script with "c.	" prefixed
+c.	which may be used to recreate the original:
+c.	83c
+c.								if(test < 1.0e-6)go to 3 
+c.	.
+c.	53,63c
+c.						davg(ntimes) = davg(ntimes) / totaln(ntimes)
+c.						ntum(ntimes) = nj 
+c.	.
+c.	38,39d
+c.	25,26d
+c.	19d
+E 2
+E 1

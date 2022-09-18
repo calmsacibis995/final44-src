@@ -1,0 +1,475 @@
+From parmelee@wayback.cs.cornell.edu  Thu Mar 16 07:48:56 1989
+Date: Thu, 16 Mar 89 10:46:51 -0500
+From: parmelee@wayback.cs.cornell.edu (Larry Parmelee)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU, cert@sei.cmu.edu, hotline@sun.com,
+        mtxinu!more-bugs@ucbvax.Berkeley.EDU,
+        ncar!isis!security@wrath.cs.cornell.edu
+Subject: Another Sendmail security hole +Fix
+Cc: becker@cs.rochester.edu, bostic@okeeffe.Berkeley.EDU,
+        emv@starbarlounge.cc.umich.edu, george@vax5.cit.cornell.edu,
+        hurf@ionvax.tn.cornell.edu, lrj@helios.tn.cornell.edu,
+        postmaster@devvax.tn.cornell.edu, postmaster@mathvax.tn,
+        postmaster@tesla.ee.cornell.edu, reeder@emx.utexas.edu
+
+Subject: Sendmail security hole +Fix
+Index: usr.lib/sendmail/src 4.3BSD
+
+SECURITY-HOLE:
+	This bug will allow a user already on your machine a
+	way to break into other user's accounts and/or a means
+	of acquiring root privileges.  If a local person sends
+	you mail, you can break into that person's account.
+
+SCOPE:
+	It appears to be a sendmail bug of long standing.  5.61
+	has it, and probably all prior versions as well.
+
+Description:
+	Early expansion of .forward file information followed by
+	a decision to queue the message for later delivery causes
+	information about who's .forward file was being processed
+	to be lost.  When actual delivery occurs, delivery to a 
+	program or file will be done as the SENDER (if the sender
+	is a local user; as the default mailer uid/gid otherwise).
+	Delivery to a program which resulted due to the contents
+	of a recipient's .forward file should always be done as
+	the recipient.  This is what normally happens if the message
+	is not queued.
+
+Repeat-By:
+	Change /usr/lib/sendmail.cf to specify the default delivery
+	mode as "queue only"  (Odq) (not the only way to cause the
+	bug, but the easiest and most consistant).  To see the effects
+	on local mail, it is necessary to change the .cf file rather than
+	just restarting sendmail with an "-odq" option on the command
+	line.  Rebuild the .fc file if appropriate and restart sendmail.
+
+	Put the following shell script in your home directory in a
+	file called "doit".  Throughout, you'll need to change
+	"HOME" to be the full pathname to your home directory.
+
+-----------File doit ------- BEGIN
+#! /bin/sh
+/usr/ucb/whoami > /HOME/X/f.$$
+echo " " >> /HOME/X/f.$$
+/bin/cat >> /HOME/X/f.$$
+-----------File doit ------- END
+
+	Your home directory should have at least permissions 0755,
+	and "whosit" and "doit" should also both have permissions 0755.
+	In your home directory, create a directory called "X" with
+	permissions 0777.
+
+	Lastly, put "|/HOME/doit" (omit the "s) in your .forward
+	file (Replace "HOME" with the path to your home directory,
+	as before.)
+
+	Send yourself mail, get other people on the local machine
+	to send you mail, get someone on a remote machine to send you 
+	mail, and observe the files created in X when the mail arrives.
+	(you may want to force a queue run after some mail for you has
+	accumulated).
+
+BINARY-SITE-FIX:
+	Can't.  Don't use "q" - "queue only" delivery mode in your
+	sendmail.cf file.  Set the "x" - "Queue only if system 
+	load too high" factor in the .cf file to something
+	extremely high.
+
+	The foregoing will make it unlikely that anyone will 
+	*accidentally* have problems with this bug.  But a clever
+	user can have their mail piped to a program which exits
+	with the return code "75" ("EX_TEMPFAIL" from 	
+	/usr/include/sysexits.h) which causes the message to be
+	queued for later retry, and lets the bug appear.
+
+Fix:
+	These patches are for sendmail 5.61.  I've tested it some,
+	and everything appears fine *, but I haven't used it extensively
+	yet.  I'd love to hear some comments from a/the sendmail
+	maintainer, just to be sure they're aware of the bug and
+	fixing it, if nothing else.  Your line numbers may vary.
+
+	IMPORTANT NOTE:  This patch adds a new "C" type record to
+	the queue file (qf* file) in /usr/spool/mqueue.  If you put
+	this patch in, then switch back to an unpatched version, the
+	unpatched version may choke on some of the queued mail, due
+	to the unrecognized C record.  There's no problem when going
+	from an unpatched sendmail to a patched version (other than
+	the bug itself.....).  The solution is to make sure all mail
+	is flushed before switching, or edit the qf* files by hand
+	before starting the unpatched sendmail, removing all lines
+	starting with "C".
+	
+	The format of the "C" record is "Cuserid".  "C" records
+	preceed the (single) address they apply to in the qf* file,
+	and may appear before either "R" or "E" type lines.  The
+	"C" record will be present only when the following address
+	is a "| program" or a "/file/name" form.  The effect is that
+	the program or filename delivery will be done as the user
+	(and group as listed for the user in /etc/passwd) specified
+	on the preceeding "C" line.  Ocassionally the userid will be
+	omitted, and the line will be just "C".  This indicates
+	that the default mailer uid/gid should be used.
+
+	* Only quirk I see, is that when you send mail to yourself,
+	the "C" records come up empty, but the delivery seems to be
+	done with the appropriate uid/gid anyway, so I haven't
+	investigated too hard.
+
+	-Larry Parmelee
+	parmelee@cs.cornell.edu
+
+*** /tmp/,RCSt1003946	Thu Mar 16 08:56:18 1989
+--- queue.c	Thu Mar 16 08:52:13 1989
+***************
+*** 26,31 ****
+--- 26,32 ----
+  #endif
+  #endif /* not lint */
+  
++ # include <pwd.h>					/* LCP 9Mar89 */
+  # include <sys/stat.h>
+  # include <sys/dir.h>
+  # include <signal.h>
+***************
+*** 78,83 ****
+--- 79,85 ----
+  	register HDR *h;
+  	register ADDRESS *q;
+  	MAILER nullmailer;
++ 	extern chkctladdr();				/* LCP 9Mar89 */
+  
+  	/*
+  	**  Create control file.
+***************
+*** 146,151 ****
+--- 148,154 ----
+  		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+  			       bitset(QQUEUEUP, q->q_flags))
+  		{
++ 			chkctladdr(tfp,q);		/* LCP 9Mar89 */
+  			fprintf(tfp, "R%s\n", q->q_paddr);
+  			if (announce)
+  			{
+***************
+*** 167,173 ****
+--- 170,179 ----
+  	for (q = e->e_errorqueue; q != NULL; q = q->q_next)
+  	{
+  		if (!bitset(QDONTSEND, q->q_flags))
++ 		{					/* LCP 9Mar89 */
++ 			chkctladdr(tfp,q);		/* LCP 9Mar89 */
+  			fprintf(tfp, "E%s\n", q->q_paddr);
++ 		}					/* LCP 9Mar89 */
+  	}
+  
+  	/*
+***************
+*** 247,253 ****
+--- 253,388 ----
+  		syslog(LOG_DEBUG, "%s: queueup, qf=%s, df=%s\n", e->e_id, qf, e->e_df);
+  # endif LOG
+  }
++ 
+  /*
++ **  CHKCTLADDR -- Check for a controlling address	** LCP 9Mar89 **
++ **
++ **	Check for a "|" or "/" type address.  If found, try to
++ **	find the proper Controlling Address for it's uid and gid
++ **	info.  If found, emit a new "C" type record in to the queuefile.
++ **	This should be called immediately before outputing a "R" or
++ **	"E" type line, and probably before "S" as well, just in case.
++ **	
++ **	A "C" record looks like: "Cusername" or just "C", the later
++ **	case meaning that the default uid/gid should be used.  The
++ **	"C" record is emitted just prior to the address it applies to.
++ **
++ **	Parameters:
++ **		tfp - The open queuefile to write to.
++ **		a - The address to check out.
++ **	Side Effects:
++ **		May add a "C" record to the queuefile.
++ **
++ **	Discussion:
++ **		Bugfix:  Mail to a file or program is occasionally
++ **		delivered with an inappropriate uid/gid.  Problem
++ **		arises usually because of a .forward file and the
++ **		fact the message got queued instead of immediately
++ **		delivered.  The proper Control Address info (and it's
++ **		uid/gid info) is usually lost irretrievably when a
++ **		program or file recipient is written into the queuefile.
++ **
++ **		I think it may be best to emit a "C" record in all
++ **		cases where a "ctladdr" can be found, but this change
++ **		("C" type records in the queuefile) is incompatible
++ **		with prior versions of sendmail.  To minimize the
++ **		incompatibility problems, I only emit the "C" record
++ **		when it's absolutely essential, which I believe is
++ **		only when the recipient is a program or a file.
++ **			-Larry Parmelee		9-Mar-89
++ **			parmelee@cs.cornell.edu
++ **
++ */
++ 
++ chkctladdr(tfp,a)
++ 	register FILE *tfp;
++ 	register ADDRESS *a;
++ {
++ 	char buf[MAXNAME];		/* unquoted image of the user name */
++ 	extern ADDRESS *getctladdr();
++ 	extern struct passwd *getpwuid();
++ 	register struct passwd *pw;
++ 
++ 	/* mimicing code in recipient(), file recipient.c...	*/
++ 	/* get unquoted user for file, program or user.name check */
++ 	(void) strcpy(buf, a->q_paddr);
++ 	stripquotes(buf, TRUE);
++ 
++ 	a = getctladdr(a);	/* Find a controlling address */
++ 
++ 	if (buf[0] == '|' || buf[0] == '/') 
++ 	{
++ 		if (tTd(40, 5))
++ 			printf("C record for %s, ctrladdr %s\n",buf,
++ 			(a == NULL)? "not found" : "found");
++ 			
++ 		if (a != NULL && a->q_uid != 0 && a->q_uid != DefUid 
++ 		    && (pw = getpwuid(a->q_uid)) != NULL)
++ 			fprintf(tfp, "C%s\n", pw->pw_name);
++ 		else		/* Use default uid/gid */
++ 			fprintf(tfp, "C\n");
++ 
++ 		if (tTd(40, 5) && pw == NULL)
++ 			printf("C record getpwuid(%d) failed\n",a->q_uid);
++ 	}
++ }
++ 
++ /*
++ **  SETCTLADDR -- Create a controlling address		** LCP 9Mar89 **
++ **
++ **	Make address a valid "ctladdr"- set uid/gid info
++ **
++ **	Parameters:
++ **		a - Address for which control uid/gid info may apply
++ **		ctlinfo - The saved C record.
++ **		
++ **	Returns:
++ **		None.	
++ **
++ **	Side Effects:
++ **		Fills in uid/gid fields in address and sets "GOODUID"
++ **		flag if appropriate.
++ **
++ **	Discussion:
++ **		This proved to be more of a pain than chkctladdr above.
++ **		My change to recipient.c: sendtolist() seems rather dirty,
++ **		but any alternative seemed to require much more new code.
++ **
++ **		THIS HACK MAY FAIL FOR GENERAL ADDRESSES (i.e. if a C
++ **		record is generated any time a control address is found)
++ **		but should work for the cases of mail to a program or
++ **		file, which currently is the only time a C record would
++ **		be used.
++ **			-Larry Parmelee		9-Mar-89
++ **			parmelee@cs.cornell.edu
++ */
++ setctladdr(a,ctlinfo)
++ register ADDRESS *a;		/* address to adjust */
++ register char *ctlinfo;			/* username	*/
++ {
++ 	extern struct passwd *getpwnam();
++ 	register struct passwd *pw;
++ 
++ 	if (tTd(40, 5) && pw == NULL)
++ 		printf("Restore ctladdr '%s', addr=%s\n",ctlinfo,a->q_paddr);
++ 	if (ctlinfo != NULL && ctlinfo[0] != '\0'
++ 	    && (pw = getpwnam(ctlinfo)) != NULL)
++ 	{
++ 		a->q_home = newstr(pw->pw_dir);
++ 		a->q_uid = pw->pw_uid;
++ 		a->q_gid = pw->pw_gid;
++ 	}
++ 	else
++ 	{	/* This insures that the sender's uid/gid is 	*/
++ 		/* not used inadvertantly.			*/
++ 		a->q_uid = DefUid;
++ 		a->q_gid = DefGid;
++ 	}
++ 
++ 	a->q_flags |= QGOODUID;		/* Flag as a "ctladdr"	*/
++ }
++ 
++ /*
+  **  RUNQUEUE -- run the jobs in the queue.
+  **
+  **	Gets the stuff out of the queue in some presumably logical
+***************
+*** 679,684 ****
+--- 814,822 ----
+  	char *qf;
+  	register FILE *qfp;
+  	char buf[MAXFIELD];
++ 	char ctlinfo[MAXNAME];	/* Control uid info	** LCP 9Mar89 */
++ 	ADDRESS *a;		/* Address just input	** LCP 9Mar89 */
++ 	extern ADDRESS *sendtolist();	/* New return	** LCP 9Mar89 */
+  	extern char *fgetfolded();
+  	extern long atol();
+  
+***************
+*** 695,700 ****
+--- 833,839 ----
+  	}
+  	FileName = qf;
+  	LineNumber = 0;
++ 	ctlinfo[0] = '\0';	/* No control info yet  	** LCP 9Mar89 */
+  	if (Verbose && full)
+  		printf("\nRunning %s\n", e->e_id);
+  	while (fgetfolded(buf, sizeof buf, qfp) != NULL)
+***************
+*** 703,714 ****
+  			printf("+++++ %s\n", buf);
+  		switch (buf[0])
+  		{
+  		  case 'R':		/* specify recipient */
+! 			sendtolist(&buf[1], (ADDRESS *) NULL, &e->e_sendqueue);
+  			break;
+  
+  		  case 'E':		/* specify error recipient */
+! 			sendtolist(&buf[1], (ADDRESS *) NULL, &e->e_errorqueue);
+  			break;
+  
+  		  case 'H':		/* header */
+--- 842,865 ----
+  			printf("+++++ %s\n", buf);
+  		switch (buf[0])
+  		{
++ 		  case 'C':	/* specify controlling uid	** LCP 9Mar89 */
++ 				/* for 'E' or 'R' to follow.	** LCP 9Mar89 */
++ 			strcpy(ctlinfo,buf);			/* LCP 9Mar89 */
++ 			break;					/* LCP 9Mar89 */
+  		  case 'R':		/* specify recipient */
+! 			a = sendtolist(&buf[1],			/* LCP 9Mar89 */
+! 			    (ADDRESS *) NULL, &e->e_sendqueue); /* LCP 9Mar89 */
+! 			if (ctlinfo[0] != '\0' && a != NULL)	/* LCP 9Mar89 */
+! 				setctladdr(a,&ctlinfo[1]);	/* LCP 9Mar89 */
+! 			ctlinfo[0] = '\0';			/* LCP 9Mar89 */
+  			break;
+  
+  		  case 'E':		/* specify error recipient */
+! 			a = sendtolist(&buf[1],			/* LCP 9Mar89 */
+! 			    (ADDRESS *) NULL, &e->e_errorqueue);/* LCP 9Mar89 */
+! 			if (ctlinfo[0] != '\0' && a != NULL)	/* LCP 9Mar89 */
+! 				setctladdr(a,&ctlinfo[1]);	/* LCP 9Mar89 */
+! 			ctlinfo[0] = '\0';			/* LCP 9Mar89 */
+  			break;
+  
+  		  case 'H':		/* header */
+*** /tmp/,RCSt1003951	Thu Mar 16 08:56:26 1989
+--- recipient.c	Thu Mar 16 08:45:54 1989
+***************
+*** 1,4 ****
+! /*
+   * Copyright (c) 1983 Eric P. Allman
+   * Copyright (c) 1988 Regents of the University of California.
+   * All rights reserved.
+--- 1,4 ----
+! /* $Header$
+   * Copyright (c) 1983 Eric P. Allman
+   * Copyright (c) 1988 Regents of the University of California.
+   * All rights reserved.
+***************
+*** 41,46 ****
+--- 41,51 ----
+  **
+  **	Returns:
+  **		none
++ **		If the list consists of only one address,  ** LCP 9Mar89 **
++ **		return a pointer to that address, else 	   ** LCP 9Mar89 **
++ **		NULL.  Kludge.  Used in queue.c: readqf(), ** LCP 9Mar89 **
++ **		which see. --LCParmelee 9-Mar-89	   ** LCP 9Mar89 **
++ **			parmelee@cs.cornell.edu		   ** LCP 9Mar89 **
+  **
+  **	Side Effects:
+  **		none.
+***************
+*** 48,53 ****
+--- 53,59 ----
+  
+  # define MAXRCRSN	10
+  
++ ADDRESS *						/* LCP 9Mar89 */
+  sendtolist(list, ctladdr, sendq)
+  	char *list;
+  	ADDRESS *ctladdr;
+***************
+*** 55,62 ****
+--- 61,70 ----
+  {
+  	register char *p;
+  	register ADDRESS *al;	/* list of addresses to send to */
++ 	register ADDRESS *a;	/* for manipulating al 	** LCP 9Mar89 */
+  	bool firstone;		/* set on first address sent */
+  	bool selfref;		/* set if this list includes ctladdr */
++ 	bool singleton;		/* list of only one addr** LCP 9Mar89 */
+  	char delimiter;		/* the address delimiter */
+  
+  	if (tTd(25, 1))
+***************
+*** 80,86 ****
+  
+  	for (p = list; *p != '\0'; )
+  	{
+! 		register ADDRESS *a;
+  		extern char *DelimChar;		/* defined in prescan */
+  
+  		/* parse the address */
+--- 88,94 ----
+  
+  	for (p = list; *p != '\0'; )
+  	{
+! /****		register ADDRESS *a;			** LCP 9Mar89 */
+  		extern char *DelimChar;		/* defined in prescan */
+  
+  		/* parse the address */
+***************
+*** 110,121 ****
+  	if (!selfref && ctladdr != NULL)
+  		ctladdr->q_flags |= QDONTSEND;
+  
+  	/* arrange to send to everyone on the local send list */
+  	while (al != NULL)
+  	{
+! 		register ADDRESS *a = al;
+  		extern ADDRESS *recipient();
+  
+  		al = a->q_next;
+  		a = recipient(a, sendq);
+  
+--- 118,132 ----
+  	if (!selfref && ctladdr != NULL)
+  		ctladdr->q_flags |= QDONTSEND;
+  
++ 	singleton = al != NULL && al->q_next == NULL;	/* LCP 9Mar89 */
++ 
+  	/* arrange to send to everyone on the local send list */
+  	while (al != NULL)
+  	{
+! /****		register ADDRESS *a = al;		** LCP 9Mar89 */
+  		extern ADDRESS *recipient();
+  
++ 		a = al;					/* LCP 9Mar89 */
+  		al = a->q_next;
+  		a = recipient(a, sendq);
+  
+***************
+*** 125,130 ****
+--- 136,143 ----
+  	}
+  
+  	CurEnv->e_to = NULL;
++ 
++ 	return (singleton ? a : NULL);			/* LCP 9Mar89 */
+  }
+  /*
+  **  RECIPIENT -- Designate a message recipient

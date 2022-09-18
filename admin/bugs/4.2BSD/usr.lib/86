@@ -1,0 +1,109 @@
+Return-Path: <allegra!jpl@ucbvax.berkeley.edu>
+Date: Tue, 10 Dec 85 22:15:34 PST
+From: allegra!jpl@ucbvax.berkeley.edu
+Subject: Two lpd daemons can open same printer, trashing print jobs
+Index: usr.lib/lpr/printjob.c 4.2BSD
+Keywords: printjob, race, lpd, exclusive lock
+
+Description:
+	If more than one entry in /etc/printcap uses the same line
+	printer tty device, a race condition can allow both to open it
+	at the same time, and the print jobs can be intermingled.
+Repeat-By:
+	Like most race conditions, this is most likely to recur when
+	you'd least like it to happen.  It is much easier to reproduce
+	if the device can be put in a state that will cause opens to
+	block, not merely fail, as will be discussed below.
+Grousing:
+	It is most unfortunate that open() flag O_EXCL only applies
+	when O_CREAT is also in effect.  If there were a flag that
+	meant ``succeed only if you can get me the file with nobody
+	else having it opened, and nobody else able to open it,''
+	then that atomic operation could have been used here.
+	This would be a more satisfactory solution than the one
+	posted here, because it wouldn't rely on processes using
+	flock().  ANY process that had the file open would prevent
+	the open from succeeding, and, conversely, NO process could
+	open the file once the open succeeded.  Such a mechanism
+	would save a lot of misguided hacking to achieve exclusive
+	use of a resource.
+Fix:
+	The following pseudo program outlines the way printer devices
+	are opened in printjob.c:
+
+	    for (;;) {
+		if open succeeds, break out of loop
+		sleep a while
+	    }
+	    if printer is a tty {
+		prevent additional opens from succeeding
+		set tty characteristic
+	    }
+	
+	The problem arises because there is a ``window'' between the
+	time the printer is opened, and the time an ioctl is done to
+	prevent additional opens.  If another daemon attempts an open
+	during this window, it will succeed.  This is particularly
+	likely to happen if the device was in a state (like no carrier)
+	that causes opens to block.  In that case, all the daemons
+	will be waiting in the opens, not sleeping.  When the first
+	daemon does an isatty, it may be scheduled out, and the other
+	daemon can complete the open.
+
+	I fixed the problem here by doing explicit file locking
+	instead of relying on the ioctl.  Although there are
+	threatening terms in the manual about flock failing if
+	``the argument file descriptor refers to an object other
+	than a file,'' it seems to work fine for the devices we
+	use as printers (tty lines and lp devices).  Diffs follow.
+
+John P. Linderman  Department of Grousing and Flocks  allegra!jpl
+
+	*** old printjob.c
+	--- new printjob.c
+	***************
+	*** 978,983
+					status("waiting for %s to become ready (offline ?)", printer);
+				sleep(i);
+			}
+			if (isatty(pfd))
+				setty();
+			status("%s is ready and printing", printer);
+
+	--- 978,993 -----
+					status("waiting for %s to become ready (offline ?)", printer);
+				sleep(i);
+			}
+	+ 		if ((i = flock(pfd, LOCK_EX | LOCK_NB)) < 0) {
+	+ 			if (errno == EWOULDBLOCK) {
+	+ 				status("waiting for lock on %s", LP);
+	+ 				i = flock(pfd, LOCK_EX);
+	+ 			}
+	+ 			if (i < 0) {
+	+ 				log("broken lock on %s", LP);
+	+ 				exit(1);
+	+ 			}
+	+ 		}
+			if (isatty(pfd))
+				setty();
+			status("%s is ready and printing", printer);
+	***************
+	*** 1064,1073
+		struct sgttyb ttybuf;
+		register struct bauds *bp;
+	  
+	- 	if (ioctl(pfd, TIOCEXCL, (char *)0) < 0) {
+	- 		log("cannot set exclusive-use");
+	- 		exit(1);
+	- 	}
+		if (ioctl(pfd, TIOCGETP, (char *)&ttybuf) < 0) {
+			log("cannot get tty parameters");
+			exit(1);
+
+	--- 1074,1079 -----
+		struct sgttyb ttybuf;
+		register struct bauds *bp;
+	  
+		if (ioctl(pfd, TIOCGETP, (char *)&ttybuf) < 0) {
+			log("cannot get tty parameters");
+			exit(1);

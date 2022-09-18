@@ -1,0 +1,54 @@
+From ihnp4!inmet!faust:nrh  Fri Oct 19 07:13:35 1984
+From: ihnp4!inmet!faust:nrh
+Date: 19 Oct 84 02:50:38 CDT (Fri)
+Subject: Process hangs after writing past the EOT mark on a tape
+Index: 	sys/dev/ht.c 2.9BSD
+
+Description:
+	Processes hang uninterruptibly if they attempt to write
+	past the End-Of-Tape mark on a tape.  After the first write
+	past the EOT marker, the process doing the writing gets
+	an error (error 0!) and then when it tries to exit, it hangs.
+
+Repeat-By:
+	dd if=/dev/rxpHUGE of=/dev/rmt0 bs=32b
+	write: Error 0
+	XXXX+0 records in
+	XXXX+0 records out
+	(dd process hangs)
+
+Fix:
+	In the case of an attempt to write past EOT, httab.b_active
+	should be set to zero because no interrupt is expected to 
+	cause htstart to be called again.  As the code stands, the
+	last write finishes, returning in such a way that "dd" (or
+	other reasonable code) exits.  Since httab.b_active is left
+	set to SIO (indicating that an interrupt will happen and
+	therefore htstrategy shouldn't call htstart), the control
+	requests to write the first EOF mark is queued, but will
+	wait endlessly for an interrupt that will not occur.
+
+	Fix ht.c as follows:
+
+*** /tmp/,RCSt1000175	Fri Oct 19 03:34:27 1984
+--- /tmp/,RCSt2000175	Fri Oct 19 03:34:30 1984
+***************
+*** 270,276
+  		else {
+  			if(HTADDR->htfs & HTFS_EOT) {
+  				bp->b_resid = bp->b_bcount;
+! 				goto next;
+  			}
+  			den |= HT_WCOM;
+  		}
+
+--- 270,278 -----
+  		else {
+  			if(HTADDR->htfs & HTFS_EOT) {
+  				bp->b_resid = bp->b_bcount;
+! 				bp->b_error = ENXIO; 	/* past end of tape */
+! 				httab.b_active = 0;	/* not expecting intr */
+! 				goto abort;
+  			}
+  			den |= HT_WCOM;
+  		}

@@ -1,0 +1,133 @@
+Return-Path: <forwarder@wisc-crys.arpa>
+Date: Tue, 29 May 84 16:50:41 cdt
+Subject: Bug in refer
+From: solomon@wisc-crys.arpa
+Subject: refer -s doesn't work
+Index: usr.bin/refer/refer2.c 4.2BSD
+
+Description:
+	When refer is called with the -s flag (sort references) and the -e flag
+	(delay the bibliography to the end) and the document contains multiple
+	references to the same document, the bibliography may not be completely
+	sorted, and some of the citations in the text may listed as [0].
+Repeat-By:
+	refer -e -s test
+	Where "test" is the following file:
+		Here are some references.
+		to yacc
+		.[
+		yacc
+		.]
+		a forward
+		.[
+		foreword
+		.]
+		another yacc
+		.[
+		yacc
+		.]
+		and a preface to unix
+		.[
+		preface
+		.]
+
+
+		references:
+		.[
+		$LIST$
+		.]
+Fix:
+	On the first pass through the document, when a citation is processed, a
+	"signal" (such as [1]) is written to the output file and a line consisting
+	of a sort key followed by a copy of the cited reference is written to a temp
+	file.  After the first pass, the temp file is sorted and re-read (to
+	establish a mapping from old to new reference numbers) and a second pass
+	through the document fixes the signals.  If a duplicate citation is
+	discovered, the cited reference is not written to the temp file, but
+	the sort key is written, thus screwing up the format of the temp file.
+	Unfortunately, the same procedure (putsig()) is used to transfer
+	the signal to the output file (which must be done on every citation)
+	and to write the sort key to the temp file (which must not be done
+	for duplicates).  One fix is to add an argument to putsig() to indicate
+	whether the sort key should be written.
+
+	The following fix has not been exhaustively tested for all combinations
+	of options, but at least it works both with and without the -l flag.
+
+*** refer2.c.old	Tue May 29 15:48:58 1984
+--- refer2.c	Tue May 29 15:52:29 1984
+***************
+*** 112,118
+  						nf = tabs(flds, one);
+  						nf += tabs(flds+nf, dbuff);
+  						assert(nf < NFLD);
+! 						putsig(nf,flds,nr,line1,line);
+  					}
+  					return;
+  				}
+
+--- 112,118 -----
+  						nf = tabs(flds, one);
+  						nf += tabs(flds+nf, dbuff);
+  						assert(nf < NFLD);
+! 						putsig(nf,flds,nr,line1,line,0);
+  					}
+  					return;
+  				}
+***************
+*** 129,135
+  	if (sort)
+  		putkey(nf, flds, refnum, keystr);
+  	if (bare < 2)
+! 		putsig(nf, flds, refnum, line1, line);
+  	else
+  		flout();
+  	putref(nf, flds);
+
+--- 129,135 -----
+  	if (sort)
+  		putkey(nf, flds, refnum, keystr);
+  	if (bare < 2)
+! 		putsig(nf, flds, refnum, line1, line, 1);
+  	else
+  		flout();
+  	putref(nf, flds);
+
+*** refer5.c.old	Tue May 29 15:49:17 1984
+--- refer5.c	Tue May 29 15:52:37 1984
+***************
+*** 15,21
+  static char stbuff[50];
+  static int  prevsig;
+  
+! putsig (nf, flds, nref, nstline, endline)	/* choose signal style */
+  char *flds[], *nstline, *endline;
+  {
+  	char t[100], t1[100], t2[100], format[10], *sd, *stline;
+
+--- 15,21 -----
+  static char stbuff[50];
+  static int  prevsig;
+  
+! putsig (nf, flds, nref, nstline, endline, toindex)	/* choose signal style */
+  char *flds[], *nstline, *endline;
+  {
+  	char t[100], t1[100], t2[100], format[10], *sd, *stline;
+***************
+*** 138,144
+  		}
+  	}
+  	if (bare < 2)
+! 		if (nf > 0)
+  			fprintf(fo,".ds [F %s%c",t,sep);
+  	if (bare > 0)
+  		flout();
+
+--- 138,144 -----
+  		}
+  	}
+  	if (bare < 2)
+! 		if (nf > 0 && toindex)
+  			fprintf(fo,".ds [F %s%c",t,sep);
+  	if (bare > 0)
+  		flout();

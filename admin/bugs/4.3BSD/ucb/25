@@ -1,0 +1,570 @@
+Return-Path: <sun!gorodish!guy>
+Date: Fri, 9 Aug 85 14:43:11 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: Mail doesn't handle RFC822 addresses properly
+Index: 	ucb/Mail/aux.c 4.3BSD
+
+Description:
+	1) The routines "isatty" and "strncmp" should not be here - the
+	   C library provide perfectly good ones.
+
+	2) The routine "skin" does not understand RFC822 addresses (in fact,
+	the comment at the front explicitly says it's for RFC733 addresses).
+Fix:
+	Here's the patches for 4.2BSD and 4.3BSD (one of the problems
+	with 822 addresses, having to do with parentheses, was fixed in
+	4.3; that fix is included here for 4.2).
+
+aux.c (4.2BSD):
+*** aux.c.orig	Fri Aug  9 02:51:57 1985
+--- aux.c	Fri Aug  9 14:20:31 1985
+***************
+*** 166,185
+  }
+  
+  /*
+-  * Determine if the passed file is actually a tty, via a call to
+-  * gtty.  This is not totally reliable, but . . .
+-  */
+- 
+- isatty(f)
+- {
+- 	struct sgttyb buf;
+- 
+- 	if (gtty(f, &buf) < 0)
+- 		return(0);
+- 	return(1);
+- }
+- 
+- /*
+   * Return the desired header line from the passed message
+   * pointer (or NOSTR if the desired header field is not available).
+   */
+
+--- 166,171 -----
+  }
+  
+  /*
+   * Return the desired header line from the passed message
+   * pointer (or NOSTR if the desired header field is not available).
+   */
+***************
+*** 532,538
+  }
+  
+  /*
+!  * Skin an arpa net address according to the RFC 733 interpretation
+   * of "host-phrase."
+   */
+  char *
+
+--- 518,524 -----
+  }
+  
+  /*
+!  * Skin an arpa net address according to the RFC 822 interpretation
+   * of "host-phrase."
+   */
+  char *
+***************
+*** 541,546
+  {
+  	register int c;
+  	register char *cp, *cp2;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
+  
+
+--- 527,533 -----
+  {
+  	register int c;
+  	register char *cp, *cp2;
++ 	char *bufend;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
+  	int nesting;
+***************
+*** 543,548
+  	register char *cp, *cp2;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
+  
+  	if (name == NOSTR)
+  		return(NOSTR);
+
+--- 530,536 -----
+  	char *bufend;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
++ 	int nesting;
+  
+  	if (name == NOSTR)
+  		return(NOSTR);
+***************
+*** 551,557
+  		return(name);
+  	gotlt = 0;
+  	lastsp = 0;
+! 	for (cp = name, cp2 = nbuf; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+  			while (*cp != ')' && *cp != 0)
+
+--- 539,546 -----
+  		return(name);
+  	gotlt = 0;
+  	lastsp = 0;
+! 	bufend = nbuf;
+! 	for (cp = name, cp2 = bufend; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+  			/*
+***************
+*** 554,560
+  	for (cp = name, cp2 = nbuf; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+! 			while (*cp != ')' && *cp != 0)
+  				cp++;
+  			if (*cp)
+  				cp++;
+
+--- 543,554 -----
+  	for (cp = name, cp2 = bufend; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+! 			/*
+! 			 * Start of a "comment".
+! 			 * Ignore it.
+! 			 */
+! 			nesting = 1;
+! 			while ((c = *cp) != 0) {
+  				cp++;
+  				switch (c) {
+  				case '\\':
+***************
+*** 556,562
+  		case '(':
+  			while (*cp != ')' && *cp != 0)
+  				cp++;
+! 			if (*cp)
+  				cp++;
+  			lastsp = 0;
+  			break;
+
+--- 550,583 -----
+  			nesting = 1;
+  			while ((c = *cp) != 0) {
+  				cp++;
+! 				switch (c) {
+! 				case '\\':
+! 					if (*cp == 0)
+! 						goto outcm;
+! 					cp++;
+! 					break;
+! 				case '(':
+! 					nesting++;
+! 					break;
+! 
+! 				case ')':
+! 					--nesting;
+! 					break;
+! 				}
+! 
+! 				if (nesting <= 0)
+! 					break;
+! 			}
+! 		outcm:
+! 			lastsp = 0;
+! 			break;
+! 
+! 		case '"':
+! 			/*
+! 			 * Start of a "quoted-string".
+! 			 * Copy it in its entirety.
+! 			 */
+! 			while ((c = *cp) != 0) {
+  				cp++;
+  				switch (c) {
+  				case '\\':
+***************
+*** 558,563
+  				cp++;
+  			if (*cp)
+  				cp++;
+  			lastsp = 0;
+  			break;
+  
+
+--- 579,596 -----
+  			 */
+  			while ((c = *cp) != 0) {
+  				cp++;
++ 				switch (c) {
++ 				case '\\':
++ 					if ((c = *cp) == 0)
++ 						goto outqs;
++ 					cp++;
++ 					break;
++ 				case '"':
++ 					goto outqs;
++ 				}
++ 				*cp2++ = c;
++ 			}
++ 		outqs:
+  			lastsp = 0;
+  			break;
+  
+***************
+*** 572,578
+  			break;
+  
+  		case '<':
+! 			cp2 = nbuf;
+  			gotlt++;
+  			lastsp = 0;
+  			break;
+
+--- 605,611 -----
+  			break;
+  
+  		case '<':
+! 			cp2 = bufend;
+  			gotlt++;
+  			lastsp = 0;
+  			break;
+***************
+*** 578,585
+  			break;
+  
+  		case '>':
+! 			if (gotlt)
+! 				goto done;
+  
+  			/* Fall into . . . */
+  
+
+--- 611,627 -----
+  			break;
+  
+  		case '>':
+! 			if (gotlt) {
+! 				gotlt = 0;
+! 				while (*cp != ',' && *cp != 0)
+! 					cp++;
+! 				if (*cp == 0 )
+! 					goto done;
+! 				*cp2++ = ',';
+! 				*cp2++ = ' ';
+! 				bufend = cp2;
+! 				break;
+! 			}
+  
+  			/* Fall into . . . */
+  
+***************
+*** 739,763
+  		if (*cp == c)
+  			return(cp);
+  	return(NOSTR);
+- }
+- 
+- /*
+-  * String compare two strings of bounded length.
+-  */
+- 
+- strncmp(as1, as2, an)
+- 	char *as1, *as2;
+- {
+- 	register char *s1, *s2;
+- 	register int n;
+- 
+- 	s1 = as1;
+- 	s2 = as2;
+- 	n = an;
+- 	while (--n >= 0 && *s1 == *s2++)
+- 		if (*s1++ == '\0')
+- 			return(0);
+- 	return(n<0 ? 0 : *s1 - *--s2);
+  }
+  
+  /*
+
+--- 781,786 -----
+  		if (*cp == c)
+  			return(cp);
+  	return(NOSTR);
+  }
+  
+  /*
+
+aux.c (4.3BSD):
+*** aux.c.orig	Fri Aug  9 01:58:57 1985
+--- aux.c	Fri Aug  9 01:57:28 1985
+***************
+*** 172,191
+  }
+  
+  /*
+-  * Determine if the passed file is actually a tty, via a call to
+-  * gtty.  This is not totally reliable, but . . .
+-  */
+- 
+- isatty(f)
+- {
+- 	struct sgttyb buf;
+- 
+- 	if (gtty(f, &buf) < 0)
+- 		return(0);
+- 	return(1);
+- }
+- 
+- /*
+   * Return the desired header line from the passed message
+   * pointer (or NOSTR if the desired header field is not available).
+   */
+
+--- 172,177 -----
+  }
+  
+  /*
+   * Return the desired header line from the passed message
+   * pointer (or NOSTR if the desired header field is not available).
+   */
+***************
+*** 538,544
+  }
+  
+  /*
+!  * Skin an arpa net address according to the RFC 733 interpretation
+   * of "host-phrase."
+   */
+  char *
+
+--- 524,530 -----
+  }
+  
+  /*
+!  * Skin an arpa net address according to the RFC 822 interpretation
+   * of "host-phrase."
+   */
+  char *
+***************
+*** 547,552
+  {
+  	register int c;
+  	register char *cp, *cp2;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
+  	int nesting;
+
+--- 533,539 -----
+  {
+  	register int c;
+  	register char *cp, *cp2;
++ 	char *bufend;
+  	int gotlt, lastsp;
+  	char nbuf[BUFSIZ];
+  	int nesting;
+***************
+*** 558,564
+  		return(name);
+  	gotlt = 0;
+  	lastsp = 0;
+! 	for (cp = name, cp2 = nbuf; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+  			nesting = 1;
+
+--- 545,552 -----
+  		return(name);
+  	gotlt = 0;
+  	lastsp = 0;
+! 	bufend = nbuf;
+! 	for (cp = name, cp2 = bufend; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+  			/*
+***************
+*** 561,566
+  	for (cp = name, cp2 = nbuf; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
+  			nesting = 1;
+  			while (*cp != '\0') {
+  				switch (*cp++) {
+
+--- 549,558 -----
+  	for (cp = name, cp2 = bufend; c = *cp++; ) {
+  		switch (c) {
+  		case '(':
++ 			/*
++ 			 * Start of a "comment".
++ 			 * Ignore it.
++ 			 */
+  			nesting = 1;
+  			while ((c = *cp) != 0) {
+  				cp++;
+***************
+*** 562,569
+  		switch (c) {
+  		case '(':
+  			nesting = 1;
+! 			while (*cp != '\0') {
+! 				switch (*cp++) {
+  				case '(':
+  					nesting++;
+  					break;
+
+--- 554,567 -----
+  			 * Ignore it.
+  			 */
+  			nesting = 1;
+! 			while ((c = *cp) != 0) {
+! 				cp++;
+! 				switch (c) {
+! 				case '\\':
+! 					if (*cp == 0)
+! 						goto outcm;
+! 					cp++;
+! 					break;
+  				case '(':
+  					nesting++;
+  					break;
+***************
+*** 576,581
+  				if (nesting <= 0)
+  					break;
+  			}
+  			lastsp = 0;
+  			break;
+  
+
+--- 574,580 -----
+  				if (nesting <= 0)
+  					break;
+  			}
++ 		outcm:
+  			lastsp = 0;
+  			break;
+  
+***************
+*** 579,584
+  			lastsp = 0;
+  			break;
+  
+  		case ' ':
+  			if (cp[0] == 'a' && cp[1] == 't' && cp[2] == ' ')
+  				cp += 3, *cp2++ = '@';
+
+--- 578,605 -----
+  			lastsp = 0;
+  			break;
+  
++ 		case '"':
++ 			/*
++ 			 * Start of a "quoted-string".
++ 			 * Copy it in its entirety.
++ 			 */
++ 			while ((c = *cp) != 0) {
++ 				cp++;
++ 				switch (c) {
++ 				case '\\':
++ 					if ((c = *cp) == 0)
++ 						goto outqs;
++ 					cp++;
++ 					break;
++ 				case '"':
++ 					goto outqs;
++ 				}
++ 				*cp2++ = c;
++ 			}
++ 		outqs:
++ 			lastsp = 0;
++ 			break;
++ 
+  		case ' ':
+  			if (cp[0] == 'a' && cp[1] == 't' && cp[2] == ' ')
+  				cp += 3, *cp2++ = '@';
+***************
+*** 590,596
+  			break;
+  
+  		case '<':
+! 			cp2 = nbuf;
+  			gotlt++;
+  			lastsp = 0;
+  			break;
+
+--- 611,617 -----
+  			break;
+  
+  		case '<':
+! 			cp2 = bufend;
+  			gotlt++;
+  			lastsp = 0;
+  			break;
+***************
+*** 596,603
+  			break;
+  
+  		case '>':
+! 			if (gotlt)
+! 				goto done;
+  
+  			/* Fall into . . . */
+  
+
+--- 617,633 -----
+  			break;
+  
+  		case '>':
+! 			if (gotlt) {
+! 				gotlt = 0;
+! 				while (*cp != ',' && *cp != 0)
+! 					cp++;
+! 				if (*cp == 0 )
+! 					goto done;
+! 				*cp2++ = ',';
+! 				*cp2++ = ' ';
+! 				bufend = cp2;
+! 				break;
+! 			}
+  
+  			/* Fall into . . . */
+  
+***************
+*** 757,781
+  		if (*cp == c)
+  			return(cp);
+  	return(NOSTR);
+- }
+- 
+- /*
+-  * String compare two strings of bounded length.
+-  */
+- 
+- strncmp(as1, as2, an)
+- 	char *as1, *as2;
+- {
+- 	register char *s1, *s2;
+- 	register int n;
+- 
+- 	s1 = as1;
+- 	s2 = as2;
+- 	n = an;
+- 	while (--n >= 0 && *s1 == *s2++)
+- 		if (*s1++ == '\0')
+- 			return(0);
+- 	return(n<0 ? 0 : *s1 - *--s2);
+  }
+  
+  /*
+
+--- 787,792 -----
+  		if (*cp == c)
+  			return(cp);
+  	return(NOSTR);
+  }
+  
+  /*

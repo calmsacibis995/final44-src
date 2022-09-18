@@ -1,0 +1,101 @@
+#!/bin/sh
+#
+#	$Id: config,v 1.17.2.1 1994/07/25 00:24:17 jch Exp $
+#
+# %(Copyright.header)
+#
+
+TMP=/tmp/$$
+
+DCONFIG=Config
+CONFIG=${DCONFIG}
+CONFIG_SCRIPT=config_script
+SED=sed
+AWK=awk
+CONFIG_AWK=config.awk
+FILES=files
+CONFIG_FILES=config.files.awk
+DEFINES_H=defines.h
+UTILDIR=`pwd`/util
+
+case $# in
+	0)
+		ARCHTYPE=`${UTILDIR}/archtype` ;
+		DIRS="obj.`hostname | sed -e 's/\..*//'` obj.${ARCHTYPE} obj" ;
+		for dir in ${DIRS}; do
+			if [ -r ${dir}/${DCONFIG} ]; then
+				CONFIG=${dir}/${DCONFIG} ;
+				break ;
+			fi
+		done
+		if [ ! -r ${CONFIG} ]; then
+			echo "$0: could not find ${CONFIG} in ${DIRS}" ;
+			exit 1;
+		fi
+		;;
+	1)
+		CONFIG=$1
+		if [ ! -r ${CONFIG} ]; then
+			echo "$0: can not read ${CONFIG}" ;
+			exit 1;
+		fi
+		;;
+	*)
+		echo "usage: $0: [config_file]"
+		exit 1;
+esac
+
+#	Set default object directory
+OBJDIR=`echo ${CONFIG} | ${SED} -e "s/\/${DCONFIG}//"`
+case ${OBJDIR} in
+	${DCONFIG})
+		OBJDIR="obj";;
+esac
+
+echo "Parsing ${CONFIG}" ;
+${AWK} -f ${UTILDIR}/${CONFIG_AWK} OBJDIR=${OBJDIR} ${CURDIR+SRCDIR=${CURDIR}} CONFIG_SCRIPT=${TMP}.3 DEFINES_H=${TMP}.4 ${CONFIG} || exit $?
+chmod 755 ${TMP}.3
+
+cat > ${TMP}.1 <<EOF
+CONFIG_SCRIPT="@(CONFIG_SCRIPT)"
+SED="@(SED)"
+OBJDIR="@(OBJDIR)"
+MAKECMD="@(MAKE)"
+TEMPLATE="@(TEMPLATE)"
+UTILDIR="@(SRCDIR)/@(UTILDIR)"
+EOF
+${TMP}.3 < ${TMP}.1 > ${TMP}.2
+. ${TMP}.2
+rm -r -f ${TMP}.{1,2}
+
+echo "Directory:	${OBJDIR}" ;
+
+if [ -f ${OBJDIR} ]; then
+	echo "$0: ${OBJDIR} is not a directory" ;
+	exit 1 ;
+fi
+
+if [ ! -d ${OBJDIR} ]; then
+	echo "Creating object directory ${OBJDIR}" ;
+	mkdir ${OBJDIR} || exit $? ;
+# XXX - set permissions and stuff
+fi
+
+mv ${TMP}.3 ${OBJDIR}/${CONFIG_SCRIPT} || exit $? ;
+mv ${TMP}.4 ${OBJDIR}/${DEFINES_H} || exit $? ;
+cd ${OBJDIR} || exit $? ;
+
+echo "Building Makefile from ${TEMPLATE}" ;
+./${CONFIG_SCRIPT} < ${UTILDIR}/${FILES} > ${TMP}.1
+${AWK} -f ${UTILDIR}/${CONFIG_FILES} MAKEFILE=Makefile ${TMP}.1 || exit $?
+rm -r -f ${TMP}.1
+./${CONFIG_SCRIPT} < ${UTILDIR}/${TEMPLATE} >> Makefile || exit $?
+
+echo "${MAKECMD} links depend" ;
+${MAKECMD} links depend || exit $? ;
+
+echo "done" ;
+
+#
+# %(Copyright)
+#

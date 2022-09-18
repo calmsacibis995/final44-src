@@ -1,0 +1,346 @@
+<html>
+<!--
+$Header: /vol/src/devel/gated/master/gated/doc/config_guide/rip_stmt.html,v 1.5 1994/06/10 02:45:59 jch Exp $
+
+%(Copyright)
+>
+<head>
+<TITLE>GateD Configuration Guide - RIP Configuration</TITLE>
+</head>
+<body>
+
+<H1>Routing Information Protocol (RIP)</H1>
+
+One of the most widely used interior gateway protocols is the Routing
+Information Protocol (RIP).  RIP is an implementation of a
+distance-vector, or Bellman-Ford routing protocol for local networks.
+It classifies routers as active and passive (silent).  Active routers
+advertise their routes (reachability information) to others; passive
+routers listen and update their routes based on advertisements, but do
+not advertise.  Typically, routers run RIP in active mode, while hosts
+use passive mode.
+<P>
+     
+A router running RIP in active mode broadcasts updates at set
+intervals.  Each update contains paired values where each pair
+consists of an IP network address and an integer distance to that
+network.  RIP uses a hop count metric to measure the distance to a
+destination.  In the RIP metric, a router advertises directly
+connected networks at a metric of 1.  Networks which are reachable
+through one other gateway are two hops etc.  Thus, the number of hops
+or hop count along a path from a given source to a given destination
+refers to the number of gateways that a datagram would encounter along
+that path.  Using hop counts to calculate shortest paths does not
+always produce optimal results.  For example, a path with hop count 3
+that crosses three Ethernets may be substantially faster that a path
+with a hop count 2 that crosses two slow-speed serial lines.  To
+compensate for differences in technology many routers advertise
+artificially high hop counts for slow links.
+<P>
+     
+As delivered with most UNIX systems, RIP is run by the routing 
+daemon, <code>routed</code> (pronounced route-"d").  A RIP routing 
+daemon dynamically builds on information received through RIP updates.  
+When started up, it issues a REQUEST for routing information 
+and then listens for responses to the request.  If a system configured
+to supply RIP hears the request, it responds with a RESPONSE packet 
+based on information in its routing database.  The RESPONSE packet 
+contains destination network addresses and the routing metric for each 
+destination.
+<P>
+     
+When a RIP RESPONSE packet is received, the routing daemon takes the information 
+and rebuilds the routing database adding new routes and "better" 
+(lower metric) routes to destinations already listed in the database.
+RIP also deletes routes from the database if the next router to that 
+destination says the route contains more than 15 hops, or if the route 
+is deleted.  All routes through a gateway are deleted if no updates 
+are received from that gateway for a specified time period.  In 
+general, routing updates are issued every 30 seconds.  In many 
+implementations, if a gateway is not heard from for 180 seconds, all
+routes from that gateway are deleted from the routing database.  This 
+180 second interval also applies to deletion of specific routes.  
+<P>
+
+RIP version 2 (more commonly known as RIP II) add additional
+capabilities to RIP.  Some of these capabilities are compatible with
+RIP I and some are not.  To avoid supplying information to RIP I
+routes that could be mis-interpreted, RIP II can only use
+non-compatible features when it's packets are multicast.  On
+interfaces that are not capable of IP multicast, RIP I compatible
+packets are used that do not contain potentially confusing
+information.
+<P>
+Some of the most notable RIP II enhancements are:
+
+<dl>
+<dt> Next hop
+<dd> The primary ones are the ability to advertise a
+     next hop to use other than the router supplying the routing update.
+     This is quite useful when advertising a static route to a
+     <em>dumb</em> that does not run RIP as it avoids having packets
+     destined through the dumb router from having to cross a network
+     twice.
+     <P>
+     RIP I routers will ignore next hop information in RIP II packets.
+     This may result in packets crossing a network twice, which is
+     exactly what happens with RIP I.  So this information is provided
+     in RIP I compatible RIP II packets.
+
+<dt> Network Mask
+<dd> RIP I assumes that all subnetworks of a given network have the
+     same network mask.  It uses this assumption to calculate the
+     network masks for all routes received.  This assumption prevents
+     subnets with different netmasks from being included in RIP
+     packets.  RIP II adds the ability to explicitly specify the
+     network mask with each network in a packet. 
+     <P>
+     While RIP I routers will ignore the network mask in RIP II
+     packets, their calculation of the network mask will quite
+     possibly be wrong.  For this reason, RIP I compatible RIP II
+     packets must not contain networks that would be mis-interpreted.
+     These network must only be provided in natve RIP II packets that
+     are multicast.
+
+<dt> Authentication
+<dd> RIP II packets may also contain an authentication string that can
+     be used to verify the validity of the supplied routing data.  The
+     simple password method used provides very little security in the
+     presence of network monitoring software.  Authentication can be
+     used in RIP I compatible RIP II packets, but be aware that RIP I
+     routers will ignore it.
+
+</dl>
+
+<p>
+<h3> RIP-I and network masks
+
+RIP-I derrives the network mask of received networks and hosts from
+the network mask of the interface the packet via which the packet was
+received.  If a received network or host is on the same natural
+network as the interface over which it was received and that network
+is subnetted (the specified mask is more specific than the
+<em>natural</em> netmask), the subnet mask is applied to the
+destination.  If bits outside the mask are set it is assumed to be a
+host, otherwise it is assumed to be a subnet.  
+
+<p>
+On point-to-point interfaces, the netmask is applied to the remote
+address.  The netmask on these interfaces is ignored if it matches the
+natural network of the remote address or is all ones.
+
+<p>
+Unlike in previous releases, the zero subnet mask (a network that
+matches the natural network of the interface, but has a more specific,
+or longer, network mask) is ignored.  If this is not desirable, a <a
+href="#route filter">route filter</a> may be used to reject it.
+
+<hr>     
+<H2>The RIP Statement</H2>
+     
+<pre>
+<strong>rip</strong> <strong>yes</strong> | <strong>no</strong> | <strong>on</strong> | <strong>off</strong> [ <strong>{</strong>
+    <strong>broadcast</strong> <strong>;</strong>
+    <strong>nobroadcast</strong> <strong>;</strong>
+    <strong>nocheckzero</strong> <strong>;</strong>
+    <strong>preference</strong> <var><a href="pref.html">preference</a></var> <strong>;</strong>
+    <strong>defaultmetric</strong> <var>metric</var> <strong>;</strong>
+    <strong>interface</strong> <var><a href="intfcs.html#interface list">interface_list</a></var>
+        [<strong>noripin</strong>] | [<strong>ripin</strong>]
+        [<strong>noripout</strong>] | [<strong>ripout</strong>]
+        [<strong>metricin</strong> <var>metric</var>] 
+        [<strong>metricout</strong> <var>metric</var>]
+        [<strong>version 1</strong>]|[<strong>version 2</strong> [<strong>multicast</strong>|<strong>broadcast</strong>]] 
+        [<strong>authentication</strong> [<strong>none</strong> | <var>password</var>]] <strong>;</strong>
+    <strong>trustedgateways</strong> <var>gateway_list</var> <strong>;</strong>
+    <strong>sourcegateways</strong> <var>gateway_list</var> <strong>;</strong>
+    <strong>traceoptions</strong> <var>trace_options</var> <strong>;</strong>
+<strong>}</strong> ] <strong>;</strong>
+</pre>
+<P>
+
+The <CODE>rip</CODE> statement enables or disables RIP.  If the
+<CODE>rip</CODE> statement is not specified the default is <CODE>rip
+on ;</CODE>.  If enabled, RIP will assume <CODE>nobroadcast</CODE> when
+there is only one interface and <CODE>broadcast</CODE> when there is
+more than one.
+<P>
+
+The options are as follows:
+
+<dl>
+<dt> <strong>broadcast</strong>
+<dd> Specifies that RIP packets will be broadcast regardless of the
+number of interfaces present.  This is useful when propagating static
+routes or routes learned from anther protocol into RIP.  In some
+cases, the use of <code>broadcast</code> when only one network
+interface is present can cause data packets to traverse a single
+network twice.
+
+<dt> <strong>nobroadcast</strong>
+<dd> Specifies that RIP packets will not be broadcast on attached
+interfaces, even if there are more than one.
+If a <CODE>sourcegateways</CODE> clause is present, routes will still
+be unicast directly to that gateway.
+
+<dt> <strong>nocheckzero</strong>
+<dd> Specifies that RIP should not make sure that reserved fields in
+incoming version 1 RIP packets are zero.  Normally RIP will reject
+packets where the reserved fields are zero.
+     
+<dt> <strong>preference</strong> <var><a href="pref.html">preference</a></var>
+<dd> Sets the preference for routes learned from RIP.  The default
+preference is 100.  This preference may be overridden by a preference
+specified in import policy.
+	
+<dt> <strong>defaultmetric</strong> <var>metric</var> 
+<dd> Defines the metric used when advertising routes via RIP that were
+learned from other protocols.  If not specified, the default value is
+16 (unreachable).  This choice of values requires you to explicitly
+specify a metric in order to export routes from other protocols into
+RIP.  This metric may be overridden by a metric specified in export
+policy.
+	
+<dt> <strong>interface</strong> <var><a href="intfcs.html#interface list">interface_list</a></var>
+<dd> Controls various attributes of sending RIP on specific
+     interfaces.  See the section on <a href="intfcs.html#interface
+     list">inteface list</a> specification for the description of the
+     <var>interface_list</var>.
+     <p>
+     Note that if there are multiple interfaces configured on the same
+     subnet, HELLO updates will only be sent from first one one which
+     HELLO output is configured.  This limitation is required because of
+     the way the Unix kernel operates.  It will hopefully be removed
+     in a future release. 
+     <p>
+     The possible parameters are:
+                    
+	<dl>
+	<dt> <STRONG>noripin</strong>
+	<dd> Specifies that RIP packets received via  the specified
+	     interface will be ignored.  The default is to listen to
+	     RIP on all interfaces.
+	<dt> <STRONG>ripin</strong>
+	<dd> This is the default.  This argument may be necessary
+	     when <code>noripin</code> is used on a wildcard interface
+	     descriptor.
+	<dt> <strong>noripout</strong>
+	<dd> Specifies that no RIP packets will be sent on the
+	     specified interfaces.  The default is to send RIP on all
+	     interfaces when in <code>broadcast</code> mode.
+	<dt> <STRONG>ripout</strong>
+	<dd> This is the default.  This argument may be necessary
+	     when <code>noripin</code> is used on a wildcard interface
+	     descriptor.
+
+	<dt> <strong>metricin</strong> <var>metric</var>
+	<dd> Specifies the RIP metric to add to incoming routes before
+	     they are installed in the routing table.  The default is
+	     the kernel interface metric plus 1 (which is the default
+	     RIP hop count).  If this value is specified it will be
+	     used as the absolute value, the kernel metric will not be
+	     added.  This option is used to make this router prefer
+	     RIP routes learned via the specified interface(s) less
+	     than RIP routes from other interfaces. 
+
+	<dt> <strong>metricout</strong> <var>metric</var>
+	<dd> Specifies the RIP metric to be added to routes that are
+	     send via the specified interface(s).  The default is
+	     zero.  This option is used to make other routers prefer
+	     other sources of RIP routes over this router.
+
+	<dt> <strong>version 1</strong>
+	<dd> Specifies that RIP packets send via the specified
+	     interface(s) will be version 1 packets.  This is the
+	     default.
+
+	<dt> <strong>version 2</strong> 
+	<dd> Specifies that RIP version 2 packets will be sent on the
+	     specified interfaces(s).  If IP multicast support is
+	     available on this interface the default is to send full
+	     version 2 packets.  If it is not available, version 1
+	     compatible version 2 packets will be sent.
+
+	<dt> <strong>multicast</strong>
+	<dd> Specifies that RIP version 2 packets should be multicast
+	     on this interface.  This is the default.
+
+	<dt> <strong>broadcast</strong>
+	<dd> Specifies that RIP version 1 compatible version 2 packets
+	     should be broadcast on this interface, even if IP
+	     multicast is available.
+
+	<dt> <strong>authentication</strong>
+	<dd> This defines the authentication type to 
+	     use.  It applies only to RIP version 2 and is 
+	     ignored for RIP-1 packets.  The default 
+	     authentication type is <CODE>none</CODE>.  If a 
+	     password is specified, the authentication type 
+	     used will be <CODE>simple</CODE>.  The password 
+	     should be a quoted string with between 0 and 16 
+	     characters.
+                     	
+        </dl>
+                    
+<dt> <strong>trustedgateways</strong> <var>gateway_list</var>
+<dd> Defines the list of gateways from which RIP will accept updates.
+     The <var>gateway_list</var> is simply a list of host names or IP
+     addresses.  By default, all routers on the shared network are
+     trusted to supply routing information.  But if the
+     <CODE>trustedgateways</CODE> clause is specified only updates
+     from the gateways in the list are accepted.
+	
+<dt> <strong>sourcegateways</strong> <var>gateway_list</var>
+<dd> Defines a list of routers to which RIP sends packets directly,
+     not through multicast or broadcast.  Normally RIP packets are
+     broadcast to all systems on a shared network.  When
+     <code>sourcegateways</code> is specified, RIP packets are
+     addressed directly to the specified gateways, even if
+     <code>nobroadcast</code> is specified.
+
+
+<dt> <strong>traceoptions</strong> <var>trace_options</var>
+<dd> Specifies the tracing options for RIP.
+(See <A HREF="trace.html">Trace Statements</A> and the RIP specific
+tracing options below.)
+</dl>
+                    
+<hr>
+<h2>Tracing options</h2>     
+
+Packet tracing options (which may be modified with
+<code>detail</code>, <code>send</code> or <code>recv</code>):
+                    
+<dl>
+<dt> <strong>packets</strong>
+<dd> All RIP packets.
+	
+<dt> <strong>request</strong>
+<dd> RIP information request packets, such as
+     <code>REQUEST</code>, <code>POLL</code> and
+     <code>POLLENTRY</code>
+	
+<dt> <strong>response</strong>
+<dd> RIP <code>RESPONSE</CODE> packets, which is the type of
+     packet that actually contains routing
+     information.
+	
+<dt> <strong>other</strong>
+<dd> Any other type of packet.  The only valid
+     ones are <code>TRACE_ON</code> and <code>TRACE_OFF</code> both of
+     which are ignored.
+</dl>
+
+<hr>     
+<H2>Sample RIP configurations</H2>
+     
+See the <A HREF="samp_host.html">sample host configurations</A> and 
+the <A HREF="samp_ig.html">sample interior gateway configurations</A>.
+  
+<hr>
+
+Last updated $Date: 1994/06/10 02:45:59 $.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

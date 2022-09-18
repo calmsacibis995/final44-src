@@ -1,0 +1,92 @@
+From leres@helios.ee.lbl.gov  Sun Mar  5 18:40:10 1989
+Received: from ace.ee.lbl.gov by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA23657; Sun, 5 Mar 89 18:40:10 -0800
+Received: by helios.ee.lbl.gov (5.59/s2.2)
+	id AA06587; Sun, 5 Mar 89 18:39:26 PST
+Message-Id: <8903060239.AA06587@helios.ee.lbl.gov>
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: Latest ctags bug
+Index: ucb/ctags/C.c 4.3BSD +FIX
+Date: Sun, 05 Mar 89 18:39:24 PST
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+Description:
+	A macro define that has white space between the hash character
+	and the define token is ignored by ctags.
+
+	While I can't prove that such white space is legal, all known
+	compilers accept it so I think that ctags should too.
+
+Repeat-By:
+	Create a C source with such a define:
+
+		% echo "# define lose(x) (x / 0)" > lose.c
+	
+	Try to create a tags file:
+
+		% rm -f tags ; ctags lose.c ; cat tags
+		tags: No such file or directory
+
+Fix:
+	Redo hash_entry() to eat white space between the hash and
+	define token. (The context diff is based on my ctags bug report
+	of January which has not be installed yet.)
+
+------
+*** C.c.new	Sun Mar  5 18:30:31 1989
+--- C.c.newer	Sun Mar  5 18:33:30 1989
+***************
+*** 16,22 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)C.c	5.3++ (Berkeley) 12/31/88";
+  #endif /* not lint */
+  
+  #include <stdio.h>
+--- 16,22 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)C.c	5.3+2 (Berkeley) 12/31/88";
+  #endif /* not lint */
+  
+  #include <stdio.h>
+***************
+*** 253,266 ****
+  	char	tok[MAXTOKEN];		/* storage buffer */
+  
+  	curline = lineno;
+! 	for (sp = tok;;) {		/* get next token */
+  		if (GETC(==,EOF))
+  			return;
+! 		if (iswhite(c))
+! 			break;
+  		*sp++ = c;
+! 	}
+  	*sp = EOS;
+  	if (bcmp(tok,"define",6))	/* only interested in #define's */
+  		goto skip;
+  	for (;;) {			/* this doesn't handle "#define \n" */
+--- 253,273 ----
+  	char	tok[MAXTOKEN];		/* storage buffer */
+  
+  	curline = lineno;
+! 	/* Eat optional white space between hash and token */
+! 	do {
+  		if (GETC(==,EOF))
+  			return;
+! 	} while (iswhite(c) && c != '\n');
+! 
+! 	/* Get token */
+! 	sp = tok;
+! 	do {
+  		*sp++ = c;
+! 		if (GETC(==,EOF))
+! 			return;
+! 	} while (!iswhite(c));
+  	*sp = EOS;
++ 
+  	if (bcmp(tok,"define",6))	/* only interested in #define's */
+  		goto skip;
+  	for (;;) {			/* this doesn't handle "#define \n" */

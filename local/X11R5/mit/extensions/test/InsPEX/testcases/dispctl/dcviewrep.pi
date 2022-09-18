@@ -1,0 +1,136 @@
+
+/* $XConsortium: dcviewrep.pi,v 5.2 91/11/26 14:58:53 hersh Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+
+## dcviewrep.pi -  
+## Test requirements:
+##   test display update with view representation modification 
+
+source macro.pi
+source dcmacro.pi
+
+macro im_confirm_viewrep(@expupdatest,@expcurrep,@expreqrep,@textstring)
+	pinq_view_rep(1,1,&err,&updatest,&cur_rep,&req_rep);
+	im_ifneq(err,0,"ERROR: %d in pinq_view_rep",e);
+
+	if (updatest != @expupdatest)
+        	tfprintf("failed: %s, update state=%d, expected %d\n",
+			@textstring,updatest,@expupdatest);
+	endif
+
+	status = i_compare_Pview_rep3(cur_rep,@expcurrep);
+	im_ifneq(status,1,
+	"failed: %s, current view representation != expected\n",@textstring);
+
+	status = i_compare_Pview_rep3(req_rep,@expreqrep);
+	im_ifneq(status,1,
+	"failed: %s, requested view representation != expected\n",@textstring);
+endmacro
+
+tbegintest("dcviewrep","display update with view representation modification ");
+
+# INITIALIZE: data for a line and a view representation
+line = IA_Ppoint(2, 0.25,0.25, 0.75,0.75);
+testpt = I_Ppoint3( 0.75,0.75,0.0);
+pl = I_Ppoint_list(2,line);
+oldcliplimit3 = I_Plimit3(0.0,1.0, 0.0,1.0, 0.0,1.0);
+newcliplimit3 = I_Plimit3(0.0,1.0, 0.0,0.5, 0.0,1.0);
+i_identity3(mapmtx3);
+i_identity3(orimtx3);
+oldviewrep3 = I_Pview_rep3(orimtx3,mapmtx3,oldcliplimit3,PIND_CLIP,PIND_CLIP,PIND_CLIP);
+newviewrep3 = I_Pview_rep3(orimtx3,mapmtx3,newcliplimit3,PIND_CLIP,PIND_CLIP,PIND_CLIP);
+
+# SETUP: open phigs and a workstation, create and post structure 1,
+#   which contains a polyline element
+
+i_open_phigs(NULL,0);
+i_open_x_ws(1,&xdisplay,&xwindow,0,0,200,200);
+pset_view_rep3(1,1,&oldviewrep3);
+popen_struct(1);
+pset_view_ind(1);
+ppolyline(&pl);
+pclose_struct();
+ppost_struct(1,1,1.0);
+
+#OPERATION: set display update modes to WAIT/UQUM, 
+#  change view representation of view index 1
+pset_disp_upd_st(1,PDEFER_WAIT,PMODE_UQUM);
+pset_view_rep3(1,1,&newviewrep3);
+
+#VERIFICATION: 
+dynmod = i_get_ws_dyn_mod(1,"view representation modification");
+if (dynmod == PDYN_IRG) # if reference mod's dynamic modification is IRG
+	# verify that view rep 
+	im_confirm_viewrep(PUPD_PEND,oldviewrep3,newviewrep3,"before updatews");
+	# verify that visual rep state is PVISUAL_ST_DEFER
+	im_confirm_visual_rep(1,PVISUAL_ST_DEFER,
+  		"failed: visual rep=%d,expected PVISUAL_ST_DEFER before updatews\n");
+	# verify that line is not clipped 
+	status = i_check_pixel3(xdisplay,xwindow,1,1,testpt,5,1);
+	im_ifneq(status,1,"failed: before updatews, line is clipped\n",NULL);
+endif
+
+if (dynmod == PDYN_CBS) # if reference mod's dynamic modification is CBS
+	# verify that view rep 
+	im_confirm_viewrep(PUPD_PEND,oldviewrep3,newviewrep3,"before updatews");
+	# verify that visual rep state is PVISUAL_ST_SIMULATED
+	im_confirm_visual_rep(1,PVISUAL_ST_SIMULATED,
+  		"failed: visual rep=%d,expected PVISUAL_ST_SIMULATED before updatews\n");
+endif
+
+if (dynmod == PDYN_IMM) # if reference mod's dynamic modification is IMM
+	# verify that view rep 
+	im_confirm_viewrep(PUPD_NOT_PEND,newviewrep3,newviewrep3,"before updatews");
+	# verify that visual rep state is PVISUAL_ST_CORRECT
+	im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  		"failed: visual rep=%d,expected PVISUAL_ST_CORRECT before updatews\n");
+	# verify that line is clipped 
+	status = i_check_pixel3(xdisplay,xwindow,1,1,testpt,5,1);
+	im_ifneq(status,1,"failed: before updatews, line is not clipped\n",NULL);
+endif
+tvprintf(2,"before updatews\n");
+i_pause();
+
+#OPERATION: update workstation with PERFORM
+pupd_ws(1,PFLAG_PERFORM);
+
+#VERIFICATION: 
+# verify that view rep 
+im_confirm_viewrep(PUPD_NOT_PEND,newviewrep3,newviewrep3,"after updatews");
+
+#verify visual rep state is PVISUAL_ST_CORRECT
+im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  "failed: visual rep=%d,expected PVISUAL_ST_CORRECT after updatews\n");
+
+# verify that line is clipped 
+status = i_check_pixel3(xdisplay,xwindow,1,1,testpt,5,1);
+im_ifneq(status,0,"failed: after updatews, line is not clipped\n",NULL);
+tvprintf(2,"after updatews\n");
+i_pause();
+
+tendtest();

@@ -1,0 +1,199 @@
+Return-Path: <dpk@BRL-VGR.ARPA>
+Date:     Thu, 7 Mar 85 16:18:56 EST
+From: dpk@BRL-VGR.ARPA
+Sender: dpk@BRL-VGR.ARPA
+Subject: RSH can hang in rcmd()
+Index: ucb/rsh.c 4.2BSD Fix
+Index: lib/libc/net/rcmd.c 4.2BSD Fix
+
+Description:
+	Rsh can hang indefinitly in rcmd for two reasons:
+
+	1.  The accept for the second TCP connection can fail to complete
+	    do to remote failure,
+
+	2.  If the remote end fails at the right time, the local end
+	    will never discover the failure if it has no data to send
+	    (which results in the send side being shutdown).
+
+Repeat-By:
+	1.  Wait for rsh to connect to the remote end and send the name
+	of the local reserved socket, and then have the daemon exit.
+	The rcmd() subroutine will have gone into an accept waiting
+	for the remote side to issue a connect() which it never will.
+
+	2.  Difficult, but happened regularly with our rsh'ing of batch
+	and unbatch for news.  Create an rsh connection where the local
+	end only reads from the connection.  Kill the remote side.
+	The rsh will not discover the fact.  The "right time" is when
+	the local side has acked all the data received so far, and has
+	yet to receive more.  In this state he is content forever unless
+	he is doing keepalives.
+Fix:
+	1.  Add a sanity time in the startup code of rsh to about the program
+	with an error indication if the rcmd function takes too long.  While
+	I was modifing rsh.c, I removed an extraneous external definition for
+	"error()" which does not exist.
+
+	2.  In the rcmd() function, set keepalive on both of the sockets
+	to the remote host to allow detection of a downed host.
+
+---------------------------------------------
+
+Context diffs follow for ucb/rsh.c and lib/libc/net/rcmd.c
+
+RCS file: RCS/rsh.c,v
+retrieving revision 1.2
+diff -c -r1.2 rsh.c
+*** /tmp/,RCSt1010538	Thu Mar  7 15:54:48 1985
+--- rsh.c	Thu Mar  7 15:44:14 1985
+***************
+*** 19,25
+   * rsh - remote shell
+   */
+  /* VARARGS */
+- int	error();
+  char	*index(), *rindex(), *malloc(), *getpass(), *sprintf(), *strcpy();
+  
+  struct	passwd *getpwuid();
+
+--- 19,24 -----
+   * rsh - remote shell
+   */
+  /* VARARGS */
+  char	*index(), *rindex(), *malloc(), *getpass(), *sprintf(), *strcpy();
+  
+  struct	passwd *getpwuid();
+***************
+*** 28,33
+  int	options;
+  int	rfd2;
+  int	sendsig();
+  
+  #define	mask(s)	(1 << ((s) - 1))
+  
+
+--- 27,33 -----
+  int	options;
+  int	rfd2;
+  int	sendsig();
++ int	timeout();
+  
+  #define	mask(s)	(1 << ((s) - 1))
+  
+***************
+*** 115,120
+  		fprintf(stderr, "rsh: shell/tcp: unknown service\n");
+  		exit(1);
+  	}
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    user ? user : pwd->pw_name, args, &rfd2);
+          if (rem < 0)
+
+--- 115,122 -----
+  		fprintf(stderr, "rsh: shell/tcp: unknown service\n");
+  		exit(1);
+  	}
++ 	signal (SIGALRM, timeout);
++ 	alarm(120);		/* Sanity timer */
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    user ? user : pwd->pw_name, args, &rfd2);
+  	alarm(0);
+***************
+*** 117,122
+  	}
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    user ? user : pwd->pw_name, args, &rfd2);
+          if (rem < 0)
+                  exit(1);
+  	if (rfd2 < 0) {
+
+--- 119,125 -----
+  	alarm(120);		/* Sanity timer */
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    user ? user : pwd->pw_name, args, &rfd2);
++ 	alarm(0);
+          if (rem < 0)
+                  exit(1);
+  	if (rfd2 < 0) {
+***************
+*** 218,221
+  {
+  
+  	(void) write(rfd2, (char *)&signo, 1);
+  }
+
+--- 221,230 -----
+  {
+  
+  	(void) write(rfd2, (char *)&signo, 1);
++ }
++ 
++ timeout()
++ {
++ 	fputs("rsh: rcmd: timeout\n", stderr);
++ 	exit(14);
+  }
+
+-------------------------------------------------------------------
+
+
+RCS file: RCS/rcmd.c,v
+retrieving revision 1.1
+diff -c -r1.1 rcmd.c
+*** /tmp/,RCSt1010907	Thu Mar  7 16:14:34 1985
+--- rcmd.c	Fri Mar  1 01:00:01 1985
+***************
+*** 25,30
+  	char c;
+  	int lport = IPPORT_RESERVED - 1;
+  	struct hostent *hp;
+  
+  	hp = gethostbyname(*ahost);
+  	if (hp == 0) {
+
+--- 25,31 -----
+  	char c;
+  	int lport = IPPORT_RESERVED - 1;
+  	struct hostent *hp;
++ 	int on = 1;
+  
+  	hp = gethostbyname(*ahost);
+  	if (hp == 0) {
+***************
+*** 54,59
+  		perror(hp->h_name);
+  		return (-1);
+  	}
+  	lport--;
+  	if (fd2p == 0) {
+  		write(s, "", 1);
+
+--- 54,62 -----
+  		perror(hp->h_name);
+  		return (-1);
+  	}
++ 	if (setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof on) < 0)
++ 		perror("setsockopt (SO_KEEPALIVE)");
++ 
+  	lport--;
+  	if (fd2p == 0) {
+  		write(s, "", 1);
+***************
+*** 82,87
+  			goto bad;
+  		  }
+  		}
+  		*fd2p = s3;
+  		from.sin_port = ntohs((u_short)from.sin_port);
+  		if (from.sin_family != AF_INET ||
+
+--- 82,89 -----
+  			lport = 0;
+  			goto bad;
+  		}
++ 		if (setsockopt(s3, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof on) < 0)
++ 			perror("setsockopt (SO_KEEPALIVE)");
+  		*fd2p = s3;
+  		from.sin_port = ntohs((u_short)from.sin_port);
+  		if (from.sin_family != AF_INET ||

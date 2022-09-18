@@ -1,0 +1,73 @@
+Path: seismo!uunet!mcvax!ukc!warwick!cudcv
+From: cudcv@daisy.warwick.ac.uk (Rob McMahon)
+Newsgroups: comp.bugs.4bsd
+Subject: C-Shell expression bug with fix
+Index: ucb/csh 4.3BSD
+
+One of our students reported the following bug to me:
+
+	% if ( abc =~ * ) echo yes
+	<silence>
+	% if ( abc =~ ** ) echo yes
+	yes
+
+Further investigation gave the following:
+
+	% if ( 0 =~ * ) echo yes
+	yes
+	% if ( 2 == 2 + ) echo yes
+	yes
+	% if ( 2 == + 2 ) echo yes
+	yes
+
+The * is being treated as multiply, and the shell doesn't care that it's
+got no operands, it just fills them in with 0.  I've applied the
+following fix, but I'm slightly unsure about it because I may have
+broken something---that check for an operator and return("") looks very
+deliberate, what did they have in mind ?  In particular "if ( x == - y )"
+now breaks, it has to be "if ( x == 0 - y )", but then it seems these
+only worked by accident anyway, and surely "if ( x = * y )" should be a
+syntax error ?  Any comments ?
+
+Here's the fix:
+
+RCS file: sh.exp.c,v
+retrieving revision 1.1
+diff -c -r1.1 sh.exp.c
+*** /tmp/,RCSt1a05867	Sun Mar 13 19:06:09 1988
+--- sh.exp.c	Sun Mar 13 18:50:36 1988
+***************
+*** 419,426 ****
+  #endif
+  		return (putn(egetn(value("status")) == 0));
+  	}
+  	if (isa(**vp, ANYOP))
+! 		return ("");
+  	cp = *(*vp)++;
+  	if (*cp == '-' && any(cp[1], "erwxfdzo")) {
+  		struct stat stb;
+--- 419,436 ----
+  #endif
+  		return (putn(egetn(value("status")) == 0));
+  	}
++ 	/*
++ 	 * if we're looking for a pattern the globbing chars count as strings,
++ 	 * not operators.
++ 	 */
++ 	if ((ignore&NOGLOB) && (***vp == '[' || ***vp == '*'))
++ 		return (savestr(*(*vp)++));
++ 	/*
++ 	 * if we've got an operator now, then we haven't got an operand
++ 	 * for it.
++ 	 */
+  	if (isa(**vp, ANYOP))
+! 		bferr("Expression syntax");
+  	cp = *(*vp)++;
+  	if (*cp == '-' && any(cp[1], "erwxfdzo")) {
+  		struct stat stb;
+
+-- 
+UUCP:   ...!mcvax!ukc!warwick!cudcv	PHONE:  +44 203 523037
+JANET:  cudcv@uk.ac.warwick.cu          ARPA:   cudcv@cu.warwick.ac.uk
+Rob McMahon, Computing Services, Warwick University, Coventry CV4 7AL, England
+

@@ -1,0 +1,96 @@
+Return-Path: <amd!nsc!glenn>
+Date: Wed, 18 Jul 84 17:25:55 pdt
+From: amd!nsc!glenn (Glenn Skinner)
+Subject: make runs out of file descriptors
+Index: 	bin/make/dosys.c 4.2BSD Fix
+To: amd!ucbvax!4bsd-bugs
+
+Description:
+	When make executes a command, it vforks, closes open directories,
+	and then execs a shell to run the command.  The code for closing
+	open directories violates the constraints on what can be done between
+	vfork and exec, leaving the parent process in a state where it
+	appears that descriptors have been closed when they really haven't.
+	When the parent later reexamines these directories, it reopens them,
+	piling up extra file descriptors.  Eventually it runs out and
+	terminates prematurely.  (See Fix: below for a more complete
+	description.)
+
+Repeat-By:
+	The only test cases I have are too large to reproduce here.
+	Set up a makefile that has to examine several directories and
+	that builds many objects ((# of dirs) * (# of objects) > NOFILE).
+	Issue a make to rebuild all the objects.
+
+	Alternatively, instrument srchdir() in files.c to print a diagnostic
+	whenever it opens a directory, printing out the resulting descriptor.
+	Old descriptors won't get reused.
+
+Fix:
+	The following diff -c listing contains the cure, as well as
+	a more detailed description of the problem.  Line numbers won't
+	match, as we've added our own header to the file.
+
+		-- Glenn Skinner
+		National Semiconductor, Microprocessor Systems Division
+		(408) 733-2600 x 335
+		{amd,fortune,ihnp4}!nsc!glenn
+
+*** dosys.c-1.1	Wed Jul 18 16:51:26 1984
+--- dosys.c-1.2	Wed Jul 18 15:04:47 1984
+***************
+*** 82,88
+  
+  
+! doclose()	/* Close open directory files before exec'ing */
+  {
+  register struct dirhdr *od;
+  
+
+--- 82,108 -----
+  
+  
+! /*
+!  * Close open directory files before exec'ing.
+!  *	Warning!  This routine can be called ONLY by a child
+!  *	process after a fork or vfork.  It leaves the directory
+!  *	data structures in an inconsistent state.  This is OK for
+!  *	the child, since it will exec before any harm can come of
+!  *	it, but disastrous for the parent.
+!  *
+!  *	The routine works this way to avoid another subtle problem.
+!  *	If we're to leave things consistent, we must call closedir
+!  *	to clean up malloc'ed data structures when we close the
+!  *	descriptor for the directory itself.  However, we must then
+!  *	change od->dirfc to NULL, since we'd otherwise have a dangling
+!  *	pointer.  This will (later) convince the parent that the
+!  *	directory has been closed, leading it to reopen the directory.
+!  *	Unfortunately, in the parent process, the directory descriptor
+!  *	hasn't been closed (the child did it, not the parent), so
+!  *	reopening the directory gets us an extra descriptor.  If this
+!  *	happens often enough, we run out of descriptors unnecessarily.
+!  */
+! doclose()
+  {
+  register struct dirhdr *od;
+  
+***************
+*** 87,96
+  register struct dirhdr *od;
+  
+  for (od = firstod; od; od = od->nxtopendir)
+! 	if (od->dirfc != NULL) {
+! 		closedir(od->dirfc);
+! 		od->dirfc = NULL;
+! 	}
+  }
+  
+
+--- 107,114 -----
+  register struct dirhdr *od;
+  
+  for (od = firstod; od; od = od->nxtopendir)
+! 	if (od->dirfc != NULL)
+! 		(void) close(od->dirfc->dd_fd);
+  }
+  

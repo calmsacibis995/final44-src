@@ -1,0 +1,335 @@
+Return-Path: <keith@seismo.css.gov>
+Received: by ucbarpa.Berkeley.EDU (5.53/1.14)
+	id AA05127; Wed, 9 Jul 86 15:22:23 PDT
+Received: by ucbvax.Berkeley.EDU (5.52/1.14)
+	id AA07337; Wed, 9 Jul 86 15:21:29 PDT
+Return-Path: <keith@seismo.CSS.GOV>
+Received: by seismo.CSS.GOV; Wed, 9 Jul 86 18:21:14 EDT
+Date: Wed, 9 Jul 86 18:21:14 EDT
+From: Keith Bostic <keith@seismo.css.gov>
+Message-Id: <8607092221.AA18311@seismo.CSS.GOV>
+Subject: cmp has undocumented features, is too slow
+Index: bin/cmp.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY
+
+Description:
+	1: cmp has undocumented arguments that allow you to start
+		the comparison some number of bytes into the
+		file.
+	2: cmp is much slower than it needs to be; it doesn't use
+		bcmp(3) and it does use stdio.
+Repeat-By:
+	1: try the command "cmp file1 file2" and "cmp file1 file2 1"
+		and notice how the behavior differs.
+	2: Here are some performance stats of the original cmp and a "fixed"
+		cmp.  All measurements were on a VAX 11/780 running something
+		between 4.2 and 4.3.
+
+text	data	bss	dec	hex
+7168	1024	0	8192	2000	/bin/cmp
+8192	2048	0	10240	2800	newcmp
+
+-rwxr-xr-x  1 root       317440 Jul  3 15:20 /vmunix
+-rwxr-xr-x  1 bin         31744 Dec 20  1985 /bin/tar
+
+/bin/time cmp /vmunix /vmunix
+      109.4 real         7.4 user         1.6 sys  
+/bin/time newcmp /vmunix /vmunix
+       18.0 real         1.5 user         0.9 sys  
+===============================
+
+/bin/time cmp -l /bin/tar /bin/tar 50
+      247.6 real        23.7 user         3.3 sys  
+/bin/time newcmp -l /bin/tar /bin/tar 50
+      211.1 real        23.5 user         4.0 sys  
+===============================
+
+/bin/time cmp -l /bin/tar /bin/tar
+        2.6 real         0.7 user         0.3 sys  
+/bin/time newcmp -l /bin/tar /bin/tar
+        0.7 real         0.0 user         0.2 sys  
+===============================
+Fix:
+	Attached is a shar of an updated man page and a new cmp.c.  The
+	only non backward compatible thing I did was to put in a real usage
+	statement instead of the old "cmp: arg count".
+
+echo x - cmp.1
+sed 's/^X//' >cmp.1 << 'END-of-cmp.1'
+X.\"	@(#)cmp.1	6.1 (Berkeley) 4/29/85
+X.\"
+X.TH CMP 1 "April 29, 1985"
+X.AT 3
+X.SH NAME
+Xcmp \- compare two files
+X.SH SYNOPSIS
+X.B cmp
+X[
+X.B \-l
+X] [
+X.B \-s
+X]
+Xfile1 file2 skip1 skip2
+X.SH DESCRIPTION
+XThe two files are compared.  (If \fIfile1\fP is `\-', the standard input is
+Xused.)  Under default options, \fIcmp\fP makes no comment if the files are
+Xthe same; if they differ, it announces the byte and line number at which the
+Xdifference occurred.  If one file is an initial subsequence of the other,
+Xthat fact is noted.  \fIskip1\fP and \fIskip2\fP are initial byte offsets
+Xinto \fIfile1\f\P and \f\Ifile2\f\P respectively and may be either octal
+Xor decimal.
+X.PP
+XOptions:
+X.TP 6
+X.B \-l
+XPrint the byte number (decimal) and the differing bytes (octal)
+Xfor each difference.
+X.TP 6
+X.B \-s
+XPrint nothing for differing files; return codes only.
+X.SH "SEE ALSO"
+Xdiff(1), comm(1)
+X.SH DIAGNOSTICS
+XExit code 0 is returned for identical files, 1 for different files,
+Xand 2 for an inaccessible or missing argument, or a system error.
+END-of-cmp.1
+echo x - cmp.c
+sed 's/^X//' >cmp.c << 'END-of-cmp.c'
+Xstatic char *sccsid = "@(#)cmp.c	4.2 (Berkeley) 4/29/83";
+X
+X#include <sys/param.h>
+X#include <sys/file.h>
+X#include <sys/stat.h>
+X#include <stdio.h>
+X#include <ctype.h>
+X
+X#define YES		1		/* yes/true */
+X#define NO		0		/* no/false */
+X
+X#define ERROREXIT	2		/* error during run */
+X#define DIFFEXIT	1		/* found differences */
+X#define OKEXIT		0		/* didn't find differences */
+X
+Xstatic int	fd1,			/* descriptor, file 1 */
+X		fd2,			/* descriptor, file 2 */
+X		silent = NO;		/* if silent on error */
+Xstatic short	all = NO;		/* if report all differences */
+Xstatic char	*file1,			/* name, file 1 */
+X		*file2;			/* name, file 2 */
+X
+Xmain(argc,argv)
+Xint	argc;
+Xchar	**argv;
+X{
+X	extern char	*optarg;	/* getopt externals */
+X	extern int	optind;
+X	struct stat	sbuf;		/* stat structure */
+X	long	skip,			/* amount to skip in file */
+X		otoi(), lseek();
+X	int	ch;			/* arguments */
+X
+X	while ((ch = getopt(argc,argv,"ls")) != EOF)
+X		switch(ch) {
+X			case 'l':		/* print differences */
+X				all = YES;
+X				break;
+X			case 's':		/* silent return */
+X				silent = YES;
+X				break;
+X			case '?':
+X			default:
+X				usage();
+X		}
+X	argv += optind;
+X	argc -= optind;
+X
+X	if (argc < 2)
+X		usage();
+X
+X	/*
+X	 * open up files; file1 can be stdin
+X	 * file1 really should be set to "stdin", I think.
+X	 */
+X	file1 = argv[0];
+X	if (strcmp(argv[0],"-") && (fd1 = open(file1,O_RDONLY)) < 0) {
+X		if (!silent)
+X			perror(file1);
+X		exit(ERROREXIT);
+X	}
+X	file2 = argv[1];
+X	if ((fd2 = open(file2,O_RDONLY)) < 0) {
+X		if (!silent)
+X			perror(file2);
+X		exit(ERROREXIT);
+X	}
+X
+X	/*
+X	 * handle skip argument for file 1
+X	 */
+X	if (argc > 2) {
+X		skip = otoi(argv[2]);
+X		if (!fd1)
+X			while (skip--) {
+X				char	c;	/* stdin input character */
+X
+X				if (!read(fd1,&c,sizeof(c))) {
+X					if (!silent)
+X						printf("cmp: EOF on %s\n",file1);
+X					exit(DIFFEXIT);
+X				}
+X			}
+X		else {
+X			if (fstat(fd1,&sbuf)) {
+X				if (!silent)
+X					perror("cmp: fstat");
+X				exit(ERROREXIT);
+X			}
+X			if (sbuf.st_size <= skip) {
+X				if (!silent)
+X					printf("cmp: EOF on %s\n",file1);
+X				exit(DIFFEXIT);
+X			}
+X			if (lseek(fd1,skip,L_INCR) != skip) {
+X				if (!silent)
+X					perror("cmp: lseek");
+X				exit(ERROREXIT);
+X			}
+X		}
+X	}
+X
+X	/*
+X	 * handle skip argument for file 2
+X	 */
+X	if (argc == 4) {
+X		skip = otoi(argv[3]);
+X		if (fstat(fd2,&sbuf)) {
+X			if (!silent)
+X				perror("cmp: fstat");
+X			exit(ERROREXIT);
+X		}
+X		if (sbuf.st_size <= skip) {
+X			if (!silent)
+X				printf("cmp: EOF on %s\n",file2);
+X			exit(DIFFEXIT);
+X		}
+X		else if (lseek(fd2,skip,L_INCR) != skip) {
+X			if (!silent)
+X				perror("cmp: lseek");
+X			exit(ERROREXIT);
+X		}
+X	}
+X	cmp();
+X}
+X
+Xstatic
+Xcmp()
+X{
+X	register u_char	*C1,		/* traveling pointers */
+X			*C2;
+X	register int	cnt,		/* counter */
+X			len1,		/* read length 1 */
+X			len2;		/* read length 2 */
+X	register long	byte,		/* byte count */
+X			line;		/* line count */
+X	short	dfound = NO;		/* if difference found */
+X	u_char	buf1[MAXBSIZE],		/* read buffers */
+X		buf2[MAXBSIZE];
+X
+X	for (byte = 0,line = 1;;) {
+X		switch(len1 = read(fd1,buf1,MAXBSIZE)) {
+X			case -1:
+X				if (!silent)
+X					perror("cmp: read");
+X				exit(ERROREXIT);
+X			case 0:
+X				/*
+X				 * read of file 1 just failed, find out
+X				 * if there's anything left in file 2
+X				 */
+X				switch(read(fd2,buf2,1)) {
+X					case -1:
+X						if (!silent)
+X							perror("cmp: read");
+X						exit(ERROREXIT);
+X					case 0:
+X						exit(dfound ? DIFFEXIT : OKEXIT);
+X					default:
+X						if (!silent)
+X							printf("cmp: EOF on %s\n",file1);
+X						exit(DIFFEXIT);
+X				}
+X		}
+X		/*
+X		 * file1 might be stdio, which means that a read of less than
+X		 * MAXBSIZE might not mean an EOF.  So, read whatever we read
+X		 * from file1 from file2.
+X		 */
+X		if ((len2 = read(fd2,buf2,len1)) == -1)  {
+X			if (!silent)
+X				perror("cmp: read");
+X			exit(ERROREXIT);
+X		}
+X		if (bcmp(buf1,buf2,len2))
+X			if (all) {
+X				dfound = YES;
+X				for (C1 = buf1,C2 = buf2,cnt = len2;cnt--;++C1,++C2) {
+X					++byte;
+X					if (*C1 != *C2)
+X						printf("%6ld %3o %3o\n",byte,*C1,*C2);
+X				}
+X			}
+X			else for (C1 = buf1,C2 = buf2;;++C1,++C2) {
+X				++byte;
+X				if (*C1 != *C2) {
+X					if (!silent)
+X						printf("%s %s differ: char %ld, line %ld\n",file1,file2,byte,line);
+X					exit(DIFFEXIT);
+X				}
+X				if (*C1 == '\n')
+X					++line;
+X			}
+X		else {
+X			byte += len2;
+X			/*
+X			 * here's the real performance problem, we've
+X			 * got to count the stupid lines
+X			 */
+X			if (!all)
+X				for (C1 = buf1,cnt = len2;cnt--;)
+X					if (*C1++ == '\n')
+X						++line;
+X		}
+X		/*
+X		 * couldn't read as much from file2 as from file1; checked
+X		 * here because there might be a difference before we got
+X		 * to this point, which would have precedence.
+X		 */
+X		if (len2 < len1) {
+X			if (!silent)
+X				printf("cmp: EOF on %s\n",file2);
+X			exit(DIFFEXIT);
+X		}
+X	}
+X}
+X
+Xstatic long
+Xotoi(C)
+Xregister char	*C;		/* argument string */
+X{
+X	register long	val;	/* return value */
+X	register int	base;	/* number base */
+X
+X	base = (*C == '0') ? 8 : 10;
+X	for (val = 0;isdigit(*C);++C)
+X		val = val * base + *C - '0';
+X	return(val);
+X}
+X
+Xstatic
+Xusage()
+X{
+X	puts("usage: cmp [-sl] file1 file2 [skip1] [skip2]");
+X	exit(ERROREXIT);
+X}
+END-of-cmp.c
+exit

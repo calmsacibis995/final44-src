@@ -1,0 +1,376 @@
+From seindal@skinfaxe.diku.dk  Thu Nov  9 20:55:50 1989
+To: mtxinu@mtxinu.com, 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Minor changes to syslogd
+Date: Fri, 10 Nov 89 05:54:51 +0100
+From: Rene' Seindal <seindal@diku.dk>
+Index: etc/syslogd 4.3BSD-tahoe
+
+Here are some minor changes I did to syslogd, to make it possible to use
+another port for forwarding messages to another host.  We use it here to stuff
+the messages from other hosts into other files, and to print different subsets
+of the messages on the console.  These changes also make this version of
+syslogd work on Suns (we use in on Vaxes running MORE/bsd and Suns running
+SunOS 4.0).
+
+With these changes, syslogd has an `-sservice' option, which makes it listen
+for messages on this services port.  It also suppresses reading /dev/klog and
+/dev/log.
+
+To make syslogd forward messages to another host on a different port, the
+destination of the messages are specified as `@host/service', i.e., 
+
+*.err;kern.notice;auth.notice;user.none                 @freja/syslog-uvax
+
+If you put this in the master copy, I won't have to do it all again, next time
+we get a new release :-)
+
+Rene' Seindal (seindal@diku.dk)
+
+
+
+The SCCS ids of this version of syslogd is:
+
+#ifndef lint
+static char sccsid[] = "@(#)syslogd.c   3.5     89/03/14        mt Xinu";
+/*
+static char sccsid[] = "@(#)syslogd.c   5.19 (Berkeley) 4/6/87";
+ */
+#endif not lint
+
+------------------------------------------------------------------------
+*** /tmp/,RCSt1a10377	Fri Nov 10 05:30:41 1989
+--- syslogd.c	Fri Nov 10 05:28:46 1989
+***************
+*** 71,79 ****
+  #include <netinet/in.h>
+  #include <netdb.h>
+  
+  char	*LogName = "/dev/log";
+  char	*ConfFile = "/etc/syslog.conf";
+! char	*PidFile = "/etc/syslog.pid";
+  char	ctty[] = "/dev/console";
+  
+  #define FDMASK(fd)	(1 << (fd))
+--- 71,86 ----
+  #include <netinet/in.h>
+  #include <netdb.h>
+  
++ #ifdef sun
++ #define SIGTYPE	void
++ #else
++ #define SIGTYPE int
++ #endif
++ 
+  char	*LogName = "/dev/log";
+  char	*ConfFile = "/etc/syslog.conf";
+! char	*PidFile = "/var/run/syslog.pid";
+! char	*AltPidFile = "/var/run/%s.pid"; /* Uses alternate service name */
+  char	ctty[] = "/dev/console";
+  
+  #define FDMASK(fd)	(1 << (fd))
+***************
+*** 137,142 ****
+--- 144,151 ----
+  char	LocalHostName[MAXHOSTNAMELEN+1];	/* our hostname */
+  char	*LocalDomain;		/* our local domain name */
+  int	InetInuse = 0;		/* non-zero if INET sockets are being used */
++ int	InetOnly = 0;		/* true iff listening on inet only */
++ char	*LogService;		/* service name for INET connections */
+  int	LogPort;		/* port number for INET connections */
+  char	PrevLine[MAXLINE + 1];	/* copy of last line to supress repeats */
+  char	PrevHost[MAXHOSTNAMELEN+1];		/* previous host */
+***************
+*** 157,169 ****
+  {
+  	register int i;
+  	register char *p;
+! 	int funix, finet, inetm, fklog, klogm, len;
+  	struct sockaddr_un s_un, fromunix;
+  	struct sockaddr_in sin, frominet;
+  	FILE *fp;
+  	char line[MSG_BSIZE + 1];
+! 	extern int die(), domark(), reapchild();
+  
+  	while (--argc > 0) {
+  		p = *++argv;
+  		if (p[0] != '-')
+--- 166,181 ----
+  {
+  	register int i;
+  	register char *p;
+! 	int funix, unixm, finet, inetm, fklog, klogm, len;
+  	struct sockaddr_un s_un, fromunix;
+  	struct sockaddr_in sin, frominet;
+  	FILE *fp;
+  	char line[MSG_BSIZE + 1];
+! 	extern SIGTYPE die();
+! 	extern int domark(), reapchild();
+  
++ 	LogService = "syslog";
++ 
+  	while (--argc > 0) {
+  		p = *++argv;
+  		if (p[0] != '-')
+***************
+*** 183,188 ****
+--- 195,207 ----
+  				LogName = &p[2];
+  			break;
+  
++ 		case 's':		/* service */
++ 			if (p[2] != '\0') {
++ 				LogService =  &p[2];
++ 				InetOnly = 1;
++ 			}
++ 			break;
++ 
+  		case 'm':		/* mark interval */
+  			if (p[2] != '\0')
+  				MarkInterval = atoi(&p[2]);
+***************
+*** 218,248 ****
+  	(void) signal(SIGCHLD, reapchild);
+  	(void) signal(SIGALRM, domark);
+  	(void) alarm(MarkInterval * 60 / MARKCOUNT);
+- 	(void) unlink(LogName);
+  
+! 	s_un.sun_family = AF_UNIX;
+! 	(void) strncpy(s_un.sun_path, LogName, sizeof s_un.sun_path);
+! 	funix = socket(AF_UNIX, SOCK_DGRAM, 0);
+! 	if (funix < 0 || bind(funix, (struct sockaddr *) &s_un,
+! 	    sizeof(s_un.sun_family)+strlen(s_un.sun_path)) < 0 ||
+! 	    chmod(LogName, 0666) < 0) {
+! 		(void) sprintf(line, "cannot create %s", LogName);
+! 		logerror(line);
+! 		dprintf("cannot create %s (%d)\n", LogName, errno);
+! 		die(0);
+! 	}
+  	finet = socket(AF_INET, SOCK_DGRAM, 0);
+  	if (finet >= 0) {
+  		struct servent *sp;
+  
+! 		sp = getservbyname("syslog", "udp");
+  		if (sp == NULL) {
+  			errno = 0;
+! 			logerror("syslog/udp: unknown service");
+  			die(0);
+  		}
+  		sin.sin_family = AF_INET;
+! 		sin.sin_port = LogPort = sp->s_port;
+  		if (bind(finet, &sin, sizeof(sin)) < 0) {
+  			logerror("bind");
+  			if (!Debug)
+--- 237,277 ----
+  	(void) signal(SIGCHLD, reapchild);
+  	(void) signal(SIGALRM, domark);
+  	(void) alarm(MarkInterval * 60 / MARKCOUNT);
+  
+! 	/* Do not accept kernel or local messages, if not listening on std-port. */
+! 	if (!InetOnly) {
+! 		(void) unlink(LogName);
+! 
+! 		s_un.sun_family = AF_UNIX;
+! 		(void) strncpy(s_un.sun_path, LogName, sizeof s_un.sun_path);
+! 		funix = socket(AF_UNIX, SOCK_DGRAM, 0);
+! 		if (funix < 0 || bind(funix, (struct sockaddr *) &s_un,
+! 			      sizeof(s_un.sun_family)+strlen(s_un.sun_path)) < 0 ||
+! 		    chmod(LogName, 0666) < 0) {
+! 			(void) sprintf(line, "cannot create %s", LogName);
+! 			logerror(line);
+! 			dprintf("cannot create %s (%d)\n", LogName, errno);
+! 			die(0);
+! 		}
+! 		unixm = FDMASK(funix);
+! 	} else
+! 		unixm = 0;
+! 
+  	finet = socket(AF_INET, SOCK_DGRAM, 0);
+  	if (finet >= 0) {
+  		struct servent *sp;
+  
+! 		sp = getservbyname(LogService, "udp");
+  		if (sp == NULL) {
++ 			char buf[1024];
++ 			sprintf(buf, "%s/udp: unknown service", LogService);
+  			errno = 0;
+! 			logerror(buf);
+  			die(0);
+  		}
+  		sin.sin_family = AF_INET;
+! 		sin.sin_addr.s_addr = htonl(INADDR_ANY);
+! 		sin.sin_port = LogPort = htons(sp->s_port);
+  		if (bind(finet, &sin, sizeof(sin)) < 0) {
+  			logerror("bind");
+  			if (!Debug)
+***************
+*** 252,266 ****
+  			InetInuse = 1;
+  		}
+  	}
+! 	if ((fklog = open("/dev/klog", O_RDONLY)) >= 0)
+! 		klogm = FDMASK(fklog);
+! 	else {
+! 		dprintf("can't open /dev/klog (%d)\n", errno);
+! 		klogm = 0;
+  	}
+  
+  	/* tuck my process id away */
+! 	fp = fopen(PidFile, "w");
+  	if (fp != NULL) {
+  		fprintf(fp, "%d\n", getpid());
+  		(void) fclose(fp);
+--- 281,304 ----
+  			InetInuse = 1;
+  		}
+  	}
+! 
+! 	if (!InetOnly) {
+! 		if ((fklog = open("/dev/klog", O_RDONLY)) >= 0)
+! 			klogm = FDMASK(fklog);
+! 		else {
+! 			dprintf("can't open /dev/klog (%d)\n", errno);
+! 			klogm = 0;
+! 		}
+  	}
+  
+  	/* tuck my process id away */
+! 	if (InetOnly) {
+! 		char buf[MAXPATHLEN+1];
+! 		(void)sprintf(buf, AltPidFile, LogService);
+! 		fp = fopen(buf, "w");
+! 	} else
+! 		fp = fopen(PidFile, "w");
+! 
+  	if (fp != NULL) {
+  		fprintf(fp, "%d\n", getpid());
+  		(void) fclose(fp);
+***************
+*** 272,278 ****
+  	(void) signal(SIGHUP, init);
+  
+  	for (;;) {
+! 		int nfds, readfds = FDMASK(funix) | inetm | klogm;
+  
+  		errno = 0;
+  		dprintf("readfds = %#x\n", readfds);
+--- 310,316 ----
+  	(void) signal(SIGHUP, init);
+  
+  	for (;;) {
+! 		int nfds, readfds = unixm | inetm | klogm;
+  
+  		errno = 0;
+  		dprintf("readfds = %#x\n", readfds);
+***************
+*** 323,329 ****
+  
+  usage()
+  {
+! 	fprintf(stderr, "usage: syslogd [-d] [-mmarkinterval] [-ppath] [-fconffile]\n");
+  	exit(1);
+  }
+  
+--- 361,367 ----
+  
+  usage()
+  {
+! 	fprintf(stderr, "usage: syslogd [-d] [-mmarkinterval] [-ppath] [-sservice] [-fconffile]\n");
+  	exit(1);
+  }
+  
+***************
+*** 772,778 ****
+  	logmsg(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
+  }
+  
+! die(sig)
+  {
+  	char buf[100];
+  
+--- 810,816 ----
+  	logmsg(LOG_SYSLOG|LOG_ERR, buf, LocalHostName, ADDDATE);
+  }
+  
+! SIGTYPE die(sig)
+  {
+  	char buf[100];
+  
+***************
+*** 917,925 ****
+  	"mark",		LOG_MARK,
+  	"syslog",	LOG_SYSLOG,
+  	"lpr",		LOG_LPR,
+! 	"news",		LOG_NEWS,
+  	"nfs",		LOG_RPC,
+  	"rpc",		LOG_RPC,
+  	"local0",	LOG_LOCAL0,
+  	"local1",	LOG_LOCAL1,
+  	"local2",	LOG_LOCAL2,
+--- 955,967 ----
+  	"mark",		LOG_MARK,
+  	"syslog",	LOG_SYSLOG,
+  	"lpr",		LOG_LPR,
+! #ifdef LOG_NEWS
+!  	"news",		LOG_NEWS,
+! #endif
+! #ifdef LOG_RPC
+  	"nfs",		LOG_RPC,
+  	"rpc",		LOG_RPC,
++ #endif
+  	"local0",	LOG_LOCAL0,
+  	"local1",	LOG_LOCAL1,
+  	"local2",	LOG_LOCAL2,
+***************
+*** 941,946 ****
+--- 983,990 ----
+  	char *bp;
+  	int pri;
+  	struct hostent *hp;
++ 	struct servent *sp;
++ 	int forwport;
+  	char buf[MAXLINE];
+  
+  	dprintf("cfline(%s)\n", line);
+***************
+*** 1015,1020 ****
+--- 1059,1081 ----
+  		if (!InetInuse)
+  			break;
+  		(void) strcpy(f->f_un.f_forw.f_hname, ++p);
++ 
++ 		q = index(p, '/');
++ 		if (q != NULL) {
++ 			struct servent *sp;
++ 			*q++ = '\0';
++ 			sp = getservbyname(q, "udp");
++ 			if (sp == NULL) {
++ 				char buf[1024];
++ 				sprintf(buf, "%s/udp: unknown service", q);
++ 				errno = 0;
++ 				logerror(buf);
++ 				die(0);
++ 			}
++ 			forwport = sp->s_port;
++ 		} else
++ 			forwport = LogPort;
++ 		
+  		hp = gethostbyname(p);
+  		if (hp == NULL) {
+  			char buf[100];
+***************
+*** 1027,1033 ****
+  		bzero((char *) &f->f_un.f_forw.f_addr,
+  			 sizeof f->f_un.f_forw.f_addr);
+  		f->f_un.f_forw.f_addr.sin_family = AF_INET;
+! 		f->f_un.f_forw.f_addr.sin_port = LogPort;
+  		bcopy(hp->h_addr, (char *) &f->f_un.f_forw.f_addr.sin_addr, hp->h_length);
+  		f->f_file = socket(AF_INET, SOCK_DGRAM, 0);
+  		if (f->f_file < 0) {
+--- 1088,1094 ----
+  		bzero((char *) &f->f_un.f_forw.f_addr,
+  			 sizeof f->f_un.f_forw.f_addr);
+  		f->f_un.f_forw.f_addr.sin_family = AF_INET;
+! 		f->f_un.f_forw.f_addr.sin_port = forwport;
+  		bcopy(hp->h_addr, (char *) &f->f_un.f_forw.f_addr.sin_addr, hp->h_length);
+  		f->f_file = socket(AF_INET, SOCK_DGRAM, 0);
+  		if (f->f_file < 0) {

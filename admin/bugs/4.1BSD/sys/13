@@ -1,0 +1,81 @@
+Return-Path: <ralph>
+Date: 25 May 83 10:04:00 PDT (Wed)
+From: ralph (Ralph Campbell)
+Subject: paging subsystem bug `dup page unlock' panic
+Index: sys/vmpage.c 4.1BSD Fix
+
+Description:
+a bug in the paging subsystem in 4.1bsd, which can cause
+somewhat inexplicable crashes (eg `dup page unlock' panics):
+
+due to a logic error in vmpage.c/cleanup,
+it's possible that in cleaning up after a dirty page push, the pageout
+daemon will end up looking at the page tables of the process with the
+dirty page, rather than at its own as it intended.  most of the time
+this doesn't matter, but if, while the dirty page (and its dirty
+neighbors) are being written out, the offending process happens to
+do an sbrk and toss away some of the pages, the pt's won't be the
+same anymore ... in particular, if the process then does another sbrk
+to allocate more memory, it might end up with zero-fill pte's; this
+will cause cleanup to call munlock with an argument of zero, which
+is illegal; munlock doesn't check, but on my system at least, it happens
+to make munlock think that the middle of the proc table is a struct cmap;
+it happens that c_lock in the alleged cmap isn't set, hence a `dup page unlock'
+panic results.
+
+Repeat-By:
+the offender in all the crashes i've seen here was the bourne shell,
+which seems to do an sbrk after every command (although i'm not sure,
+as i don't read pseudo-algol very well).
+
+my apologies if this is a confused explanation (which it is).
+
+the exact problem: in the inner loop in cleanup, the variable `pte'
+is meant to be pointing to the daemon's page table entry for each
+page in the cleaned kluster in succession.  unfortunately, the code
+at the bottom of the loop (which sets pte to the users' pte --
+inside the second switch) leaves it pointing to the user's page table
+instead ... which may have changed since the push was started ...
+a quick and dirty fix is to invent a new struct pte * variable, and
+to use that in the bottom of the loop, instead of pte.
+
+Fix:
+a diff between a fixed vmpage.c and the original 4.1bsd one follows:
+
+810d809
+< 	struct pte *upte;		/* ntw - quick hack */
+861c860
+< 					upte = tptopte(xp->x_caddr, c->c_page);
+---
+> 					pte = tptopte(xp->x_caddr, c->c_page);
+865c864
+< 					upte = dptopte(rp, c->c_page);
+---
+> 					pte = dptopte(rp, c->c_page);
+869c868
+< 					upte = sptopte(rp, c->c_page);
+---
+> 					pte = sptopte(rp, c->c_page);
+872c871
+< 				if (upte->pg_v) 
+---
+> 				if (pte->pg_v) 
+
+i would claim that the real cure for this is to rewrite cleanup
+to separate the code which frees `gone' pages from that which,
+if possible, frees the centre page; since the criteria for these
+are different, it would seem clearer (and less error-prone) to
+take the latter out of the loop.
+after proving the above fix, i performed such a rewrite; since it's
+longer than the existing text of this letter, i'll send it only if asked.
+
+i've managed (with a bit of screwing around) to reproduce the problem
+at will, and am therefore reasonably confident of the fix; i've also
+been running with the rewritten cleanup for a week or so here, with
+no problems.
+
+norman wilson
+caltech high energy physics group
+cithep!norman
+
+

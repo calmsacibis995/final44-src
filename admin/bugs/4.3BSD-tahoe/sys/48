@@ -1,0 +1,65 @@
+From steve@umiacs.UMD.EDU  Sat Nov  4 07:58:45 1989
+To: 4bsd-bugs@okeeffe.Berkeley.EDU
+Cc: karels@okeeffe.Berkeley.EDU, petry@trantor.umd.edu, chris@cs.umd.edu
+Subject: Minor bug in tcp_output.c
+Date: Sat, 04 Nov 89 10:59:14 EST
+From: steve@umiacs.UMD.EDU
+Index: sys/netinet/tcp_output.c 4.3BSD-tahoe [Fix]
+
+Description:
+	Although a tcp_ttl variable is defined in tcp_subr.c (and used there),
+	the mainline TCP output code doesn't look at this variable when
+	initializing the IP TTL field just before calling ip_output.  Instead,
+	it refers directly to the TCP_TTL #define in tcp_timer.h.  This is
+	inconsistent (in the case where someone sets tcp_ttl with adb), and
+	also in minor violation of RFC 1122 (which says the ttl should be
+	configurable) at least when nameless vendor droids pick up your
+	code, don't read it, and ship it out.
+
+	This bug is true of version 7.16 of tcp_output.c on monet; it may
+	well have been fixed already on okeeffe, but I don't know.  (Update:
+	Chris says no.)
+
+Repeat-By:
+	Read the code, down around line 400 or so.
+
+Fix:
+	Apply the following diff.  This is untested, but should work fine.
+	While you're at it, it's perhaps worth upping the TCP_TTL define to
+	be sixty or so, unless Internet Wit and Wisdom indicates something
+	to the contrary.
+
+	-Steve
+
+Spoken: Steve Miller    Domain: steve@umiacs.umd.edu    UUCP: uunet!mimsy!steve
+Phone: +1-301-454-1808  USPS: UMIACS, Univ. of Maryland, College Park, MD 20742
+
+*** tcp_output.c	Sat Nov  4 10:53:07 1989
+--- new tcp_output.c	Sat Nov  4 10:53:08 1989
+***************
+*** 56,61 ****
+--- 56,62 ----
+  	u_char *opt;
+  	unsigned optlen = 0;
+  	int idle, sendalot;
++ 	extern int tcp_ttl;
+  
+  	/*
+  	 * Determine length of data that should be transmitted,
+***************
+*** 397,403 ****
+  	 * send to IP level.
+  	 */
+  	((struct ip *)ti)->ip_len = sizeof (struct tcpiphdr) + optlen + len;
+! 	((struct ip *)ti)->ip_ttl = TCP_TTL;
+  	error = ip_output(m, tp->t_inpcb->inp_options, &tp->t_inpcb->inp_route,
+  	    so->so_options & SO_DONTROUTE);
+  	if (error) {
+--- 398,404 ----
+  	 * send to IP level.
+  	 */
+  	((struct ip *)ti)->ip_len = sizeof (struct tcpiphdr) + optlen + len;
+! 	((struct ip *)ti)->ip_ttl = tcp_ttl;
+  	error = ip_output(m, tp->t_inpcb->inp_options, &tp->t_inpcb->inp_route,
+  	    so->so_options & SO_DONTROUTE);
+  	if (error) {

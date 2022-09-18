@@ -1,0 +1,82 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Mon, 28 May 84 00:13:19 pdt
+Subject: f(x) ** 2 produces f(x) * f(x) in f77
+Index: usr.bin/f77/src/f77pass1/optim.c 4.2BSD
+
+Description:
+	When an f77 program is compiled with the optimizer enabled,
+	side effects of an expression are evaluated twice if that
+	expression is squared.  This was originally pointed out to
+	me by Jerry Berkman at UC Berkeley.
+
+Repeat-By:
+	Put the following f77 subroutine in a file fsq.f and compile
+	it to assembly language with the optimizer turned on:
+
+	----------------------------------------------------------------
+		subroutine fsq( x )
+
+		real f, x
+
+		x = f( x ) ** 2
+
+		return
+		end
+	----------------------------------------------------------------
+
+	If the bug is present in your compiler you should see the
+	following (although probably not so pretty):
+
+	----------------------------------------------------------------
+		.globl	_fsq_
+		.set	LF1,4
+	_fsq_:
+		.word	LWM1
+		subl2	$LF1,sp
+		jmp	L12
+	L15:
+		pushl	4(ap)
+		calls	$1,_f_
+		movl	r0,-4(fp)
+		pushl	4(ap)
+		calls	$1,_f_
+		mulf2	-4(fp),r0
+		movl	r0,*4(ap)
+		ret
+		.align	1
+	L12:
+		jmp	L15
+	----------------------------------------------------------------
+
+Fix:
+	In the code for buffpower() in optim.c, the comment mentions
+	that the routine was ripped off from putpower() in putpcc.c;
+	unfortunately the thieves did not also steal the bug fix when
+	it was installed in putpower()...  Sigh.  Here is the fix:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1009277	Mon May 28 00:02:50 1984
+	--- optim.c	Fri May  4 21:03:06 1984
+	***************
+	*** 632,638
+		fatal("buffpower: bad call");
+	  base = p->exprblock.leftp;
+	  
+	! if (k == 2)
+	  {
+		expptr prod;
+		prod = mkexpr (OPSTAR,cpexpr(base),cpexpr(base));
+
+	--- 660,666 -----
+		fatal("buffpower: bad call");
+	  base = p->exprblock.leftp;
+	  
+	! if (k == 2 && base->tag == TADDR && ISCONST(base->addrblock.memoffset))
+	  {
+		expptr prod;
+		prod = mkexpr (OPSTAR,cpexpr(base),cpexpr(base));
+	----------------------------------------------------------------
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016  sdcsvax!sdchema!donn@nosc.ARPA

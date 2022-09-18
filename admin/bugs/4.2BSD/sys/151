@@ -1,0 +1,260 @@
+Return-Path: <@cmu-cs-pt.arpa,@CMU-ITC-LINUS:dave%CMU-ITC-LINUS@CMU-CS-PT.ARPA>
+From: Dave Rosenthal <dave%CMU-ITC-LINUS@CMU-CS-PT.ARPA>
+Date: 28 Jan 1985 12:18-EST
+Subject: select for exceptional condition on socket
+Index: sys/sys/sys_socket.c 4.2BSD
+
+Description:
+It should be possible to select for an exceptional condition on a
+descriptor.  For sockets,  exceptional conditions should at least
+include the presence of out-of-band data.  4.2BSD includes no code
+supporting selecting on exceptional conditions at all.
+
+Repeat-By:
+The following program is a bit of a mess,  but it illustrates the
+problem.  On the vanilla system,  it will never receive any OOB data.
+On a fixed system,  it illustrates why this isn't a perfect fix.  The
+socket will continue to select for an exceptional condition (and
+provide the same data to repeated recv MSG_OOB's) until the ATMARK
+condition goes away.  It does so only when a normal read removes some
+data from the socket.  So the process using the select for exceptional
+needs to remove the descriptor from the mask once it has selected until
+a normal read is indicated.
+
+#include	<stdio.h>
+#include	<sys/types.h>
+#include	<sys/socket.h>
+#include	<sys/ioctl.h>
+#include	<netinet/in.h>
+#include	<signal.h>
+#include	<errno.h>
+#include	<netdb.h>
+
+static int SeenUrg = 0;
+
+int
+urg_handler() {
+    SeenUrg++;
+    fprintf(stderr, "URG is here\n");
+    signal(SIGURG, urg_handler);
+}
+
+main(argc,argv)
+int	argc;
+char	**argv;
+{
+    int	af = AF_INET;
+    int	ty = SOCK_STREAM;
+    u_short pt = 2044;
+    struct sockaddr_in name;
+    int	s, pid, namelen;
+    struct hostent *hp;
+    char hostname[1024];
+
+    while (--argc && **++argv == '-') switch (*++*argv) {
+	default:
+	    fprintf(stderr, "Bad option -%c\n", **argv);
+    }
+    if ((s = socket(af, ty, 0)) < 0) {
+	perror("listen socket()");
+	exit(1);
+    }
+    if (gethostname(hostname, sizeof (hostname)) < 0) {
+	perror("gethostname()");
+	exit(1);
+    }
+    if ((hp = gethostbyname(hostname)) == NULL) {
+	fprintf(stderr, "gethostbyname(%s) == NULL", hostname);
+	exit(1);
+    }
+    bzero(&name, sizeof (name));
+    bcopy(hp->h_addr, (char *)&name.sin_addr, hp->h_length);
+    name.sin_family = hp->h_addrtype;
+    name.sin_port = htons(pt);
+    if (bind(s, (char *)&name, namelen = sizeof (name)) < 0) {
+	perror("bind()");
+	exit(1);
+    }
+#ifdef	notdef
+    if (getsockname(s, &name, &namelen) < 0) {
+	perror("getsockname()");
+	exit(1);
+    }
+#endif
+    if (listen(s, 5) < 0) {
+	perror("listen()");
+	exit(1);
+    }
+    if ((pid = fork()) == 0) {
+	/* Child - connect and wait for SIGURG */
+	int pgrp = getpid();
+
+	setpgrp(0, pgrp);
+	close(s);
+	if ((s = socket(af, ty, 0)) < 0) {
+	    perror("connect socket()");
+	    exit(1);
+	}
+	if (ioctl(s, SIOCSPGRP, &pgrp) < 0) {
+	    perror("ioctl(SIOCSPGRP)");
+	    exit(1);
+	}
+	if (connect(s, &name, sizeof (name)) < 0) {
+	    perror("connect()");
+	    exit(1);
+	}
+	signal(SIGURG, urg_handler);
+	do {
+	    int	res;
+	    int	rmask, xmask;
+	    int	nfds = getdtablesize();
+	    extern int errno;
+
+	    rmask = 1<<s; xmask = 1<<s;
+	    if ((res = select(nfds, &rmask, 0, &xmask, 0)) < 0) {
+		if (SeenUrg) {
+		    fprintf(stderr, "Seen Urg < 0\n");
+		    SeenUrg = 0;
+		}
+		if (errno == EINTR) {
+		    fprintf(stderr, "EINTR - r 0X%x x 0x%x\n",
+		        rmask, xmask);
+		    continue;
+		} else {
+		    perror("select()");
+		    exit(1);
+		}
+	    }
+	    if (SeenUrg) {
+		fprintf(stderr, "Seen Urg > 0\n");
+		SeenUrg = 0;
+	    }
+	    fprintf(stderr, "%d -> r 0x%x x 0x%x", res, rmask, xmask);
+	    if (ioctl(s, SIOCATMARK, &res) < 0) {
+		perror("ioctl()");
+		exit(1);
+	    }
+	    fprintf(stderr, " %sat mark\n", res ? "" : "not ");
+	    if (rmask & 1<<s) {
+		char buf[1024];
+
+		bzero(buf, sizeof (buf));
+		if ((res = read(s, buf, sizeof (buf))) < 0) {
+		    perror("read()");
+		    exit(1);
+		} else if (res > 0) {
+		    fprintf(stderr, "Read %d bytes %c\n", res, *buf);
+		} else {
+		    fprintf(stderr, "Read EOF\n");
+		    exit(0);
+		}
+	    }
+	    if (xmask & 1<<s) {
+		char buf[1024];
+
+		bzero(buf, sizeof (buf));
+		if ((res = recv(s, buf, sizeof (buf), MSG_OOB)) < 0) {
+		    perror("recv()");
+		    exit(1);
+		} else {
+		    fprintf(stderr, "Received %d bytes %c\n", res, *buf);
+		}
+	    }
+	} while (SeenUrg == 0);
+    } else {
+	/* Parent - accept and send OOB */
+	int t;
+	struct sockaddr_in other;
+	int otherlen = sizeof (other);
+
+	if ((t = accept(s, &other, &otherlen)) < 0) {
+	    perror("accept()");
+	    exit(1);
+	}
+	sleep(5);
+	fprintf(stderr, "About to write %d\n", pid);
+	if (write(t, "a", 1) < 0) {
+	    perror("write()");
+	    exit(1);
+	}
+	sleep(5);
+	fprintf(stderr, "About to SIGURG %d\n", pid);
+	if (send(t, "b", 1, MSG_OOB) < 0) {
+	    perror("send()");
+	    exit(1);
+	}
+	sleep(5);
+	fprintf(stderr, "About to write %d\n", pid);
+	if (write(t, "c", 1) < 0) {
+	    perror("write()");
+	    exit(1);
+	}
+	sleep(5);
+    }
+}
+
+
+Fix:
+
+Well,  sort of.  It isn't clear to me that the behaviour this
+implements,  of selecting true while the socket is at the mark,  is
+wrong.  The behaviour of recv MSG_OOB (implicitly setting MSG_PEEK) is odd
+but perhaps justifiable.  Anyway,  this part of the fix is easy and the
+rest isn't,  so.....
+
+*** socketvar.h	Sat Jan 12 23:29:56 1985
+--- socketvar.h.old	Sat Jan 12 16:22:27 1985
+***************
+*** 98,107
+  	  ((so)->so_proto->pr_flags&PR_CONNREQUIRED)==0) || \
+       ((so)->so_state & SS_CANTSENDMORE))
+  
+- /* Is there an exceptional condition on so */
+- #define	soexceptional(so) \
+- 	((so)->so_oobmark || ((so)->so_state & SS_RCVATMARK))
+- 
+  /* adjust counters in sb reflecting allocation of m */
+  #define	sballoc(sb, m) { \
+  	(sb)->sb_cc += (m)->m_len; \
+
+--- 98,103 -----
+  	  ((so)->so_proto->pr_flags&PR_CONNREQUIRED)==0) || \
+       ((so)->so_state & SS_CANTSENDMORE))
+  
+  /* adjust counters in sb reflecting allocation of m */
+  #define	sballoc(sb, m) { \
+  	(sb)->sb_cc += (m)->m_len; \
+
+*** sys_socket.c	Sat Jan 12 23:29:57 1985
+--- sys_socket.c.old	Sat Jan 12 17:03:17 1985
+***************
+*** 113,133
+  		}
+  		sbselqueue(&so->so_snd);
+  		break;
+- 
+- 	case 0:		/* exceptional condition - XXX only SIGURG */
+- 		if (soexceptional(so)) {
+- 			splx(s);
+- 			return (1);
+- 		}
+- 		/*
+- 		 *  Slight specification problem:  does it make sense to
+- 		 *  select() with a timeout for a condition that will in
+- 		 *  any case cause a signal (and terminate the wait)?  But
+- 		 *  if we return 0 select() will sleep,  so there must be a
+- 		 *  wakeup coming.  I'm lazy,  so we'll wake on any write.
+- 		 */
+- 		sbselqueue(&so->so_rcv);
+- 		break;
+  	}
+  	splx(s);
+  	return (0);
+
+--- 113,118 -----
+  		}
+  		sbselqueue(&so->so_snd);
+  		break;
+  	}
+  	splx(s);
+  	return (0);

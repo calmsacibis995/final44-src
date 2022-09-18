@@ -1,0 +1,132 @@
+From elsie!ado@seismo.CSS.GOV Tue Apr 21 18:45:56 1987
+Date: Tue, 21 Apr 87 21:42:45 EDT
+From: elsie!ado@seismo.CSS.GOV (Arthur David Olson)
+Subject: lint boost--handling -lcurses (part 2)
+Index: 	usr.bin/lint/lpass2.c 4.3BSD
+
+Description:
+	The changes in the previous message fix lint's behavior when you
+	use the command
+		lint -x whatever.c -lcurses -ltermlib
+	but there are still problems if you
+		lint -px whatever.c -lcurses -ltermlib
+
+Repeat-By:
+	Script started on Tue Apr 21 21:34:06 1987
+	$ echo '#include "curses.h"
+	> main(){}' > try.c
+	$ lint -px try.c -lcurses -ltermlib
+	try.c:
+	...
+	am declared( ???(40) ), but never used or defined
+	bs declared( ???(40) ), but never used or defined
+	ca declared( ???(40) ), but never used or defined
+	da declared( ???(40) ), but never used or defined
+	...
+	$ exit
+	script done on Tue Apr 21 21:34:49 1987
+
+	(where about 100 lines of "never used or defined" messages have
+	been deleted).
+
+	The problem is this:  when you
+
+		lint -px whatever.c -lcurses
+
+	lint truncates the names in "whatever.c" to six letters and makes
+	them all lower case--this lets it check that the names you've used
+	will be portable to dumb sites.  But when the "llib-lcurses.ln" library
+	was created, such truncation and monocasing was *not* done--and so
+	even though variables such as "AM" and "BS" and so on are carefully
+	defined and used in "llib-lcurses.ln", this fact is lost on lint.
+
+Fix:
+	The easy fix is to "lpass2.c", where we'll add in code to do
+	name truncation and monocasing.
+
+	*** OLD/lpass2.c	Tue Apr 21 21:41:36 1987
+	--- NEW/lpass2.c	Tue Apr 21 21:41:14 1987
+	***************
+	*** 146,160 ****
+	--- 146,172 ----
+			if( r.l.decflag & LFN ){
+				/* new filename */
+	  #ifdef FLEXNAMES
+	+ #ifdef ASWAS
+				r.f.fn = getstr();
+	+ #else /* !ASWAS */
+	+ 			r.f.fn = getstr(0);
+	+ #endif /* !ASWAS */
+	  #endif
+				if( Pflag ) return( 1 );
+				setfno( r.f.fn );
+				continue;
+				}
+	+ #ifdef ASWAS
+	  #ifdef FLEXNAMES
+			r.l.name = getstr();
+	  #endif
+	+ #else /* !ASWAS */
+	+ #ifdef FLEXNAMES
+	+ 		r.l.name = getstr(1);
+	+ #else /* !FLEXNAMES */
+	+ 		portify(r.l.name);
+	+ #endif /* !FLEXNAMES */
+	+ #endif /* !ASWAS */
+			n = r.l.nargs;
+			if( n<0 ) n = -n;
+			if( n>=NTY ) error( "more than %d args?", n );
+	***************
+	*** 668,674 ****
+	--- 680,690 ----
+	  
+	  #ifdef FLEXNAMES
+	  char *
+	+ #ifdef ASWAS
+	  getstr()
+	+ #else /* !ASWAS */
+	+ getstr(doport)
+	+ #endif /* !ASWAS */
+	  {
+		char buf[BUFSIZ];
+		register char *cp = buf;
+	***************
+	*** 683,688 ****
+	--- 699,708 ----
+			exit(1);
+		}
+		*cp++ = 0;
+	+ #ifndef ASWAS
+	+ 	if (doport)
+	+ 		portify(buf);
+	+ #endif /* !ASWAS */
+		return (hash(buf));
+	  }
+	  
+	***************
+	*** 783,785 ****
+	--- 803,823 ----
+	  }
+	  char	*tstrbuf[1];
+	  #endif
+	+ #ifndef ASWAS
+	+ #include "ctype.h"
+	+ 
+	+ portify(cp)
+	+ register char *	cp;
+	+ {
+	+ 	register int	i;
+	+ 
+	+ 	if (!pflag)
+	+ 		return;
+	+ 	for (i = 0; i < 6; ++i)
+	+ 		if (cp[i] == '\0')
+	+ 			return;
+	+ 		else if (isascii(cp[i]) && isupper(cp[i]))
+	+ 			cp[i] = tolower(cp[i]);
+	+ 	cp[i] = '\0';
+	+ }
+	+ #endif /* !ASWAS */
+
+				--ado
+

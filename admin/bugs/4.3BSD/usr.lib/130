@@ -1,0 +1,65 @@
+From steve@eleazar.Dartmouth.EDU  Fri Feb 17 11:21:10 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA16281; Fri, 17 Feb 89 11:21:10 -0800
+Received: from dartvax.dartmouth.edu by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA05471; Fri, 17 Feb 89 11:20:01 -0800
+Received: from eleazar.dartmouth.edu by dartvax.dartmouth.edu with SMTP (5.61D/3.10R)
+	id AA19846; Fri, 17 Feb 89 14:20:16 -0500
+Received: by eleazar.dartmouth.edu (5.61D/3.3MXLEAF)
+	id AA17016; Fri, 17 Feb 89 14:19:20 -0500
+Date: Fri, 17 Feb 89 14:19:20 -0500
+From: steve@eleazar.Dartmouth.EDU (Steve Campbell)
+Message-Id: <8902171919.AA17016@eleazar.dartmouth.edu>
+Subject: non-[IPC] SMTP mailers broken (5.59, 5.61) +FIX
+Index: 	usr.lib/sendmail/src 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Sendmail makes the assumption that any mailer that speaks SMTP,
+	ie which has no $u in its argv, is an IPC mailer.  In
+	particular it will call getmxrr for the "host" name.  But the
+	assumption is wrong.  You can have (and we do) a mailer that is
+	a program on the local host and speaks SMTP with sendmail.
+	Since this is a "local" mailer, ie its "l" flag is set, there
+	is no host associated with it, ie there is no $@host in the
+	ruleset zero resolution line for this mailer.  Thus "host" is
+	null, getmxrr fails, and sendmail returns "host unknown" even
+	though the message is correct and could be delivered.
+Repeat-By:
+	Create a local mailer that talks SMTP with sendmail.
+	Send mail to it.  Watch the "host unknown."
+Fix:
+	Have sendmail check for a null host name before calling
+	getmxrr.  The patch is in deliver.c.  A minor efficiency gain
+	is obtained by moving the expand() call to where it's needed.
+	These are patches to version 5.61, but the code in earlier
+	versions is similar.
+
+*** /tmp/,RCSt1006583	Sun Feb 12 13:04:50 1989
+--- deliver.c	Thu Feb  9 18:39:02 1989
+***************
+*** 379,389 ****
+  #ifdef SMTP
+  	if (clever)
+  	{
+- 		expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+  		rcode = EX_OK;
+  #ifdef NAMED_BIND
+! 		if (host[0] != '[')
+  		{
+  			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+  		}
+  		else
+--- 379,389 ----
+  #ifdef SMTP
+  	if (clever)
+  	{
+  		rcode = EX_OK;
+  #ifdef NAMED_BIND
+! 		if (host[0] && host[0] != '[')
+  		{
++ 			expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+  			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+  		}
+  		else
+

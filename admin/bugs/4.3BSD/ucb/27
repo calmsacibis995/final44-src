@@ -1,0 +1,67 @@
+Return-Path: <jbn@FORD-WDL1>
+Date: 10-Jan-86 14:24:23-PST
+From: jbn@FORD-WDL1
+Subject: TCP retransmit timer bug
+
+Index: ucb/netinet/tcp_timer.c 4.3BSD
+
+Description:
+	Excessive retransmissions on long-haul nets.  Serious congestion
+	in Internet gateways.  File transfer speeds under 10% of expected
+	values over 9600 baud point-to-point links.  Angry network
+	managers.
+
+	The basic machinery is right but some of the special cases
+	are wrong, resulting in bad host behavior on slow links.
+	Several problems combine to result in very short retransmit
+	intervals:
+	1) The smoothed round-trip time is zero until the first
+	   successful round-trip without retransmission.  If there
+	   is a retransmission of the first packet, the zero value
+	   is actually used to compute the round-trip time, resulting
+	   in a minumum retransmission time.
+
+	2) The standard backoff algorithm not only backs off rather
+	   slowly, but due to an incorrect calculation, the first
+	   retransmit interval is 2.0*t_srtt, but the second is only
+	   1.0*t_srtt, and not until retransmit #4 or so does the
+	   retransmit time get back up to 2*t_srtt.  The supplied
+	   "experimental" backoff algorithm backs off at rate 2**n,
+	   which reduces retransmits under overload conditions.
+
+					John Nagle
+
+Repeat-By:
+	Connect two 4.3BSD systems via a 9600 baud DMR link.  Try a
+	big file transfer with ftp(I).  Be prepared for a long wait.
+
+Fix:
+tcp_timer.c
+112c112
+< int	tcpexprexmtbackoff = 0;
+---
+> int	tcpexprexmtbackoff = 1;		/* use exponential backoff if 1 */
+154a155,169
+> 		/*
+> 		 * Calculate retransmit timer for non-first try.
+> 		 * Start with the same value used for the first retransmit.
+> 		 * Then use either the table tcp_backoff to scale this up
+> 		 * based on the number of retransmits, or if the patchable
+> 		 * flag tcpexprexmtbackoff is set, just multiply it by
+> 		 * 2**number of retransmits.
+> 		 * If t_srtt is zero when we get here, we have never
+> 		 * had a successful round-trip and are already retransmitting,
+> 		 * which indicates trouble, so we apply a larger initial guess
+> 		 * for the round-trip time.  This prevents serious network 
+> 		 * overload when talking to faraway hosts, especially when
+> 		 * they aren't answering.
+> 		*/
+> 		if (tp->t_srtt == 0) tp->t_srtt = TCPTV_SRTTRTRAN;
+156c171
+< 		    (int)tp->t_srtt, TCPTV_MIN, TCPTV_MAX);
+---
+> 		    (int)(tcp_beta * tp->t_srtt), TCPTV_MIN, TCPTV_MAX);
+tcp_timer.h:
+60a61,62
+> #define TCPTV_SRTTRTRAN ( 10*PR_SLOWHZ)		/* base roundtrip time if retran
+> 						   before 1st good roundtrip */

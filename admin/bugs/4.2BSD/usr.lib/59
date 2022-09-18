@@ -1,0 +1,83 @@
+Return-Path: <ucdavis!chico:cche>
+From: ucdavis!chico:cche
+Date: Mon, 5 Nov 84 12:49:30 pst
+Subject: Truly obscure bug in termcap
+Index: usr.lib/termlib/termcap.c 4.2BSD
+
+Description:
+	Programs which use termcap core dump under certain circumstances.  A
+	termcap entry which contains a tc= field not terminated by a colon will
+	occasionally result in a core dump.  Other less visible errors probably
+	also occur.
+Repeat-By:
+	The program and script below will detect the bug 
+========================================================================
+/*	tcaptest.c
+		detect obscure bug in Bill Joy's termcap
+		(not Mark Horton's termlib)
+*/
+main()
+{
+	register int res;
+	char tbuf[1024];
+	int colon = ':';
+
+	res = tgetent(tbuf, "bad");
+	if(res != 1)
+		printf("tgetent returns %d\n", res);
+	if(colon != ':')
+		printf("You've got the bug\n");
+	else printf("No bug found here!\n");
+}
+/*	end of tcaptest.c */
+:	Bourne shell script to test /etc/termcap reader routine
+:	replace 'yourterm' by your favorite TERM value
+:	I hear that some systems name the library 'termcap'
+:		adjust the compile accordingly
+cc -O -o tcaptest tcaptest.c -ltermlib
+:	note that the test program will fail if TERMCAP has a terminal ':'
+:	or begins with '/'.
+TERMCAP='BD|bad:tc=yourterm'
+TERM=bad
+export TERM TERMCAP
+tcaptest
+:	end of script
+========================================================================
+Fix:
+	Two solutions (I recommend both):
+	1)	The following patch is from a 2.8bsd source.  The 4.2 source
+		looks the same as far as I could see.
+
+		*** termcap.c	Sat Sep 13 13:59:44 1980
+		--- termcapa.c	Fri Nov  2 14:41:07 1984
+		***************
+		*** 134,140
+  				return(1);
+  			strcpy(tcname,p+3);
+  			q = tcname;
+		! 	while (q && *q != ':')
+  				q++;
+  			*q = 0;
+  			if (++hopcount > MAXHOP) {
+
+		--- 134,140 -----
+  				return(1);
+  			strcpy(tcname,p+3);
+  			q = tcname;
+		! 	while (*q && *q != ':')
+  				q++;
+  			*q = 0;
+  			if (++hopcount > MAXHOP) {
+
+	2)	The following command should make sure every line
+		in /etc/termcap which contains a tc field ends with
+		a colon.
+
+		sed '/:tc=[^:]$/s/$/:/' /etc/termcap
+
+========================================================================
+	From the dumb terminal of
+	Hugh Everett			Phone:	(916) 752-7458
+	Computer Center
+	U. C. Davis			Uucp:	ucbvax!ucdavis!cche
+	Davis, Ca. 95616

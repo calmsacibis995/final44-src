@@ -1,0 +1,163 @@
+From chris@gyre.umd.edu  Sat Feb 13 22:25:42 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.58/1.26)
+	id AA25349; Sat, 13 Feb 88 22:25:42 PST
+Received: from gyre.umd.edu by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA04808; Sat, 13 Feb 88 22:24:39 PST
+Received: by gyre.umd.edu (5.58/4.7)
+	id AA17440; Sun, 14 Feb 88 01:23:44 EST
+Date: Sun, 14 Feb 88 01:23:44 EST
+From: Chris Torek <chris@gyre.umd.edu>
+Message-Id: <8802140623.AA17440@gyre.umd.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: uucp cntrl.c faults if sending inaccessible file
+
+Index: usr.bin/uucp/cntrl.c 4.3BSD Fix
+
+Description:
+	If chkpth() disallows sending some file after a request
+	is queued, cntrl.c calls fclose(trash) (usually trash==NULL).
+
+Repeat-by:
+	I have forgotten just how, but examination shows clearly that
+	fp is not set when the code does a `goto e_access'.
+
+Fix:
+	The shortest fix is to move the e_access label down two
+	statements (so that it is in front of the line
+
+		TransferSucceeded = 1; /* else will keep sending */
+
+	).  The code itself is a mess; there are numerous lines
+	that set fp=NULL, although the value of fp is tested against
+	NULL only once.
+
+	While I was poking around, I moved all the `COMMAND FILE
+	CORRUPT' code (3 occurrences) to a common routine, and
+	deleted the extra fp=NULLs.
+
+RCS file: RCS/cntrl.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 cntrl.c
+*** /tmp/,RCSt1017433	Sun Feb 14 01:19:51 1988
+--- cntrl.c	Sun Feb 14 01:19:34 1988
+***************
+*** 114,117 ****
+--- 114,135 ----
+  
+  /*
++  * Called when a command file is found to be bad.
++  * Log the problem and save the file for future
++  * examination.
++  */
++ static
++ goofed(cmdfile)
++ 	char *cmdfile;
++ {
++ 	char *p = rindex(cmdfile, '/');
++ 	char save[BUFSIZ];
++ 
++ 	(void) sprintf(save, "%s/%s", CORRUPT, p != NULL ? p + 1 : cmdfile);
++ 	xmv(cmdfile, save);
++ 	logent(cmdfile, "CMD FILE CORRUPTED");
++ 	*cmdfile = 0;
++ }
++ 
++ /*
+   *	cntrl  -  this routine will execute the conversation
+   *	between the two machines after both programs are
+***************
+*** 195,204 ****
+  
+  		if (narg < 5) {
+! 			char *bnp;
+! 			bnp = rindex(Wfile, '/');
+! 			sprintf(rqstr, "%s/%s", CORRUPT, bnp ? bnp + 1 : Wfile);
+! 			xmv(Wfile, rqstr);
+! 			logent(Wfile, "CMD FILE CORRUPTED");
+! 			Wfile[0] = '\0';
+  			goto top;
+  		}
+--- 213,217 ----
+  
+  		if (narg < 5) {
+! 			goofed(Wfile);
+  			goto top;
+  		}
+***************
+*** 233,240 ****
+  			if (i != 0 && fstat(fileno(fp), &stbuf) == 0
+  			&&  (stbuf.st_mode & ANYREAD) == 0) {
+- 		e_access:;
+  				/*  access denied  */
+  				fclose(fp);
+! 				fp = NULL;
+  				TransferSucceeded = 1; /* else will keep sending */
+  				logent("DENIED", "ACCESS");
+--- 246,252 ----
+  			if (i != 0 && fstat(fileno(fp), &stbuf) == 0
+  			&&  (stbuf.st_mode & ANYREAD) == 0) {
+  				/*  access denied  */
+  				fclose(fp);
+! 		e_access:
+  				TransferSucceeded = 1; /* else will keep sending */
+  				logent("DENIED", "ACCESS");
+***************
+*** 384,388 ****
+  			USRF( 1 << i );
+  			fclose(fp);
+- 			fp = NULL;
+  			/* dont send him files he can't save */
+  			if (strcmp(&msg[1], EM_NOTMP) == 0) {
+--- 396,399 ----
+***************
+*** 410,414 ****
+  			ret = (*Wrdata)(fp, Ofn);
+  			fclose(fp);
+- 			fp = NULL;
+  			if (ret != SUCCESS) {
+  				(*Turnoff)();
+--- 421,424 ----
+***************
+*** 428,437 ****
+  		i = getargs(msg, wrkvec, 20);
+  		if (i < 5) {
+! 			char *bnp;
+! 			bnp = rindex(Wfile, '/');
+! 			sprintf(rqstr, "%s/%s", CORRUPT, bnp ? bnp + 1 : Wfile);
+! 			xmv(Wfile, rqstr);
+! 			logent(Wfile, "CMD FILE CORRUPTED");
+! 			Wfile[0] = '\0';
+  			goto top;
+  		}
+--- 438,442 ----
+  		i = getargs(msg, wrkvec, 20);
+  		if (i < 5) {
+! 			goofed(Wfile);
+  			goto top;
+  		}
+***************
+*** 541,545 ****
+  			USRF( 1 << i );
+  			fclose(fp);
+- 			fp = NULL;
+  			notify(mailopt, W_USER, W_FILE1, Rmtname, &msg[1]);
+  			ASSERT(role == MASTER, "WRONG ROLE - RN", CNULL, role);
+--- 546,549 ----
+***************
+*** 603,612 ****
+  		i = getargs(msg, wrkvec, 20);
+  		if (i < 4) {
+! 			char *bnp;
+! 			bnp = rindex(Wfile, '/');
+! 			sprintf(rqstr, "%s/%s", CORRUPT, bnp ? bnp + 1 : Wfile);
+! 			xmv(Wfile, rqstr);
+! 			logent(Wfile, "CMD FILE CORRUPTED");
+! 			Wfile[0] = '\0';
+  			goto top;
+  		}
+--- 607,611 ----
+  		i = getargs(msg, wrkvec, 20);
+  		if (i < 4) {
+! 			goofed(Wfile);
+  			goto top;
+  		}

@@ -1,0 +1,3390 @@
+Subject: security problem in ftpd.
+Index: etc/ftpd 4.3BSD,4.3BSD-tahoe
+
+Description:
+	There's a security problem associated with anonymous ftp in all
+	systems with Berkeley derived networking.  If your site doesn't
+	permit anonymous ftp logins, you're not affected.
+Fix:
+	The attached shar has three fixes.  The file context.diff.4.3
+	is for 4.3BSD systems, context.diff.4.3-tahoe is for 4.3BSD-tahoe
+	systems.  The rest of the files are complete source for the
+	ftpd(8) program, in case you're a binary site.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	Makefile
+#	context.diff.4.3
+#	context.diff.4.3-tahoe
+#	ftpcmd.y
+#	ftpd.c
+#	glob.c
+#	logwtmp.c
+#	newvers.sh
+#	popen.c
+#	vers.c
+#	version
+#
+echo x - Makefile
+sed 's/^X//' >Makefile << 'END-of-Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation,
+X# advertising materials, and other materials related to such
+X# distribution and use acknowledge that the software was developed
+X# by the University of California, Berkeley.  The name of the
+X# University may not be used to endorse or promote products derived
+X# from this software without specific prior written permission.
+X# THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X# IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X# WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X#	@(#)Makefile	5.8 (Berkeley) 9/22/88
+X#
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	ftpd.c ftpcmd.c glob.c logwtmp.c popen.c vers.c
+XOBJS=	ftpd.o ftpcmd.o glob.o logwtmp.o popen.o vers.o
+XMAN=	ftpd.0
+X
+Xall: ftpd
+X
+Xftpd: ${OBJS} ${LIBC}
+X	${CC} -o $@ ${OBJS}
+X
+Xvers.o: ftpd.c ftpcmd.y
+X	sh newvers.sh
+X	${CC} ${CFLAGS} -c vers.c
+X
+Xclean:
+X	rm -f ${OBJS} ftpd core ftpcmd.c
+X
+Xcleandir: clean
+X	rm -f ${MAN} tags .depend
+X
+Xdepend: ${SRCS}
+X	mkdep ${CFLAGS} ${SRCS}
+X
+Xinstall:
+X	install -s -o bin -g bin -m 755 ftpd ${DESTDIR}/etc/ftpd
+X
+Xlint: ${SRCS}
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: ${SRCS}
+X	ctags ${SRCS}
+END-of-Makefile
+echo x - context.diff.4.3
+sed 's/^X//' >context.diff.4.3 << 'END-of-context.diff.4.3'
+XRCS file: RCS/ftpcmd.y,v
+Xretrieving revision 1.2
+Xdiff -c2 -r1.2 ftpcmd.y
+X*** /tmp/,RCSt1026617	Sat Oct 29 23:52:42 1988
+X--- ftpcmd.y	Sat Oct 29 23:16:59 1988
+X***************
+X*** 87,91 ****
+X  cmd:		USER SP username CRLF
+X  		= {
+X! 			extern struct passwd *getpwnam();
+X  
+X  			logged_in = 0;
+X--- 87,91 ----
+X  cmd:		USER SP username CRLF
+X  		= {
+X! 			extern struct passwd *sgetpwnam();
+X  
+X  			logged_in = 0;
+X***************
+X*** 92,96 ****
+X  			if (strcmp((char *) $3, "ftp") == 0 ||
+X  			  strcmp((char *) $3, "anonymous") == 0) {
+X! 				if ((pw = getpwnam("ftp")) != NULL) {
+X  					guest = 1;
+X  					reply(331,
+X--- 92,96 ----
+X  			if (strcmp((char *) $3, "ftp") == 0 ||
+X  			  strcmp((char *) $3, "anonymous") == 0) {
+X! 				if ((pw = sgetpwnam("ftp")) != NULL) {
+X  					guest = 1;
+X  					reply(331,
+X***************
+X*** 102,106 ****
+X  			} else if (checkuser((char *) $3)) {
+X  				guest = 0;
+X! 				pw = getpwnam((char *) $3);
+X  				if (pw == NULL) {
+X  					reply(530, "User %s unknown.", $3);
+X--- 102,106 ----
+X  			} else if (checkuser((char *) $3)) {
+X  				guest = 0;
+X! 				pw = sgetpwnam((char *) $3);
+X  				if (pw == NULL) {
+X  					reply(530, "User %s unknown.", $3);
+X
+X*** ftpd.c.orig	Mon Oct 31 12:13:20 1988
+X--- ftpd.c	Mon Oct 31 12:36:14 1988
+X***************
+X*** 191,201 ****
+X  	dologout(-1);
+X  }
+X  
+X  pass(passwd)
+X  	char *passwd;
+X  {
+X! 	char *xpasswd, *savestr();
+X! 	static struct passwd save;
+X  
+X  	if (logged_in || pw == NULL) {
+X  		reply(503, "Login with USER first.");
+X--- 191,257 ----
+X  	dologout(-1);
+X  }
+X  
+X+ /*
+X+  * Helper function for sgetpwnam().
+X+  */
+X+ char *
+X+ sgetsave(s)
+X+ 	char *s;
+X+ {
+X+ #ifdef notdef
+X+ 	char *new = strdup(s);
+X+ #else
+X+ 	char *malloc();
+X+ 	char *new = malloc((unsigned) strlen(s) + 1);
+X+ #endif
+X+ 	
+X+ 	if (new == NULL) {
+X+ 		reply(553, "Local resource failure");	/* ??? */
+X+ 		dologout(1);
+X+ 	}
+X+ #ifndef notdef
+X+ 	(void) strcpy(new, s);
+X+ #endif
+X+ 	return (new);
+X+ }
+X+ 
+X+ /*
+X+  * Save the result of a getpwnam.  Used for USER command, since
+X+  * the data returned must not be clobbered by any other command
+X+  * (e.g., globbing).
+X+  */
+X+ struct passwd *
+X+ sgetpwnam(name)
+X+ 	char *name;
+X+ {
+X+ 	static struct passwd save;
+X+ 	register struct passwd *p;
+X+ 	char *sgetsave();
+X+ 
+X+ 	if ((p = getpwnam(name)) == NULL)
+X+ 		return (p);
+X+ 	if (save.pw_name) {
+X+ 		free(save.pw_name);
+X+ 		free(save.pw_passwd);
+X+ 		free(save.pw_comment);
+X+ 		free(save.pw_gecos);
+X+ 		free(save.pw_dir);
+X+ 		free(save.pw_shell);
+X+ 	}
+X+ 	save = *p;
+X+ 	save.pw_name = sgetsave(p->pw_name);
+X+ 	save.pw_passwd = sgetsave(p->pw_passwd);
+X+ 	save.pw_comment = sgetsave(p->pw_comment);
+X+ 	save.pw_gecos = sgetsave(p->pw_gecos);
+X+ 	save.pw_dir = sgetsave(p->pw_dir);
+X+ 	save.pw_shell = sgetsave(p->pw_shell);
+X+ 	return (&save);
+X+ }
+X+ 
+X  pass(passwd)
+X  	char *passwd;
+X  {
+X! 	char *xpasswd;
+X  
+X  	if (logged_in || pw == NULL) {
+X  		reply(503, "Login with USER first.");
+X***************
+X*** 235,252 ****
+X  	logged_in = 1;
+X  	dologin(pw);
+X  	seteuid(pw->pw_uid);
+X- 	/*
+X- 	 * Save everything so globbing doesn't
+X- 	 * clobber the fields.
+X- 	 */
+X- 	save = *pw;
+X- 	save.pw_name = savestr(pw->pw_name);
+X- 	save.pw_passwd = savestr(pw->pw_passwd);
+X- 	save.pw_comment = savestr(pw->pw_comment);
+X- 	save.pw_gecos = savestr(pw->pw_gecos);
+X- 	save.pw_dir = savestr(pw->pw_dir);
+X- 	save.pw_shell = savestr(pw->pw_shell);
+X- 	pw = &save;
+X  	home = pw->pw_dir;		/* home dir for globbing */
+X  	return;
+X  bad:
+X--- 291,296 ----
+X***************
+X*** 254,271 ****
+X  	pw = NULL;
+X  }
+X  
+X- char *
+X- savestr(s)
+X- 	char *s;
+X- {
+X- 	char *malloc();
+X- 	char *new = malloc((unsigned) strlen(s) + 1);
+X- 	
+X- 	if (new != NULL)
+X- 		(void) strcpy(new, s);
+X- 	return (new);
+X- }
+X- 
+X  retrieve(cmd, name)
+X  	char *cmd, *name;
+X  {
+X--- 298,303 ----
+X***************
+X*** 771,778 ****
+X  /*
+X   * Record login in wtmp file.
+X   */
+X! dologin(pw)
+X! 	struct passwd *pw;
+X  {
+X  	char line[32];
+X  
+X--- 803,810 ----
+X  /*
+X   * Record login in wtmp file.
+X   */
+X! dologin(p)
+X! 	struct passwd *p;
+X  {
+X  	char line[32];
+X  
+X***************
+X*** 780,786 ****
+X  		/* hack, but must be unique and no tty line */
+X  		(void) sprintf(line, "ftp%d", getpid());
+X  		SCPYN(utmp.ut_line, line);
+X! 		SCPYN(utmp.ut_name, pw->pw_name);
+X  		SCPYN(utmp.ut_host, remotehost);
+X  		utmp.ut_time = (long) time((time_t *) 0);
+X  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+X--- 812,818 ----
+X  		/* hack, but must be unique and no tty line */
+X  		(void) sprintf(line, "ftp%d", getpid());
+X  		SCPYN(utmp.ut_line, line);
+X! 		SCPYN(utmp.ut_name, p->pw_name);
+X  		SCPYN(utmp.ut_host, remotehost);
+X  		utmp.ut_time = (long) time((time_t *) 0);
+X  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+X***************
+X*** 934,960 ****
+X  	register char *name;
+X  {
+X  	register char *cp;
+X- 	char line[BUFSIZ], *index(), *getusershell();
+X  	FILE *fd;
+X! 	struct passwd *pw;
+X  	int found = 0;
+X  
+X! 	pw = getpwnam(name);
+X! 	if (pw == NULL)
+X  		return (0);
+X  	while ((cp = getusershell()) != NULL)
+X! 		if (strcmp(cp, pw->pw_shell) == 0)
+X  			break;
+X  	endpwent();
+X  	endusershell();
+X  	if (cp == NULL)
+X  		return (0);
+X! 	fd = fopen(FTPUSERS, "r");
+X! 	if (fd == NULL)
+X  		return (1);
+X  	while (fgets(line, sizeof (line), fd) != NULL) {
+X! 		cp = index(line, '\n');
+X! 		if (cp)
+X  			*cp = '\0';
+X  		if (strcmp(line, name) == 0) {
+X  			found++;
+X--- 966,992 ----
+X  	register char *name;
+X  {
+X  	register char *cp;
+X  	FILE *fd;
+X! 	struct passwd *p;
+X! 	char *shell;
+X  	int found = 0;
+X+ 	char line[BUFSIZ], *index(), *getusershell();
+X  
+X! 	if ((p = getpwnam(name)) == NULL)
+X  		return (0);
+X+ 	if ((shell = p->pw_shell) == NULL || *shell == 0)
+X+ 		shell = "/bin/sh";
+X  	while ((cp = getusershell()) != NULL)
+X! 		if (strcmp(cp, shell) == 0)
+X  			break;
+X  	endpwent();
+X  	endusershell();
+X  	if (cp == NULL)
+X  		return (0);
+X! 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+X  		return (1);
+X  	while (fgets(line, sizeof (line), fd) != NULL) {
+X! 		if ((cp = index(line, '\n')) != NULL)
+X  			*cp = '\0';
+X  		if (strcmp(line, name) == 0) {
+X  			found++;
+END-of-context.diff.4.3
+echo x - context.diff.4.3-tahoe
+sed 's/^X//' >context.diff.4.3-tahoe << 'END-of-context.diff.4.3-tahoe'
+XRCS file: RCS/ftpcmd.y,v
+Xretrieving revision 1.2
+Xdiff -c2 -r1.2 ftpcmd.y
+X*** /tmp/,RCSt1026617	Sat Oct 29 23:52:42 1988
+X--- ftpcmd.y	Sat Oct 29 23:16:59 1988
+X***************
+X*** 87,91 ****
+X  cmd:		USER SP username CRLF
+X  		= {
+X! 			extern struct passwd *getpwnam();
+X  
+X  			logged_in = 0;
+X--- 87,91 ----
+X  cmd:		USER SP username CRLF
+X  		= {
+X! 			extern struct passwd *sgetpwnam();
+X  
+X  			logged_in = 0;
+X***************
+X*** 92,96 ****
+X  			if (strcmp((char *) $3, "ftp") == 0 ||
+X  			  strcmp((char *) $3, "anonymous") == 0) {
+X! 				if ((pw = getpwnam("ftp")) != NULL) {
+X  					guest = 1;
+X  					reply(331,
+X--- 92,96 ----
+X  			if (strcmp((char *) $3, "ftp") == 0 ||
+X  			  strcmp((char *) $3, "anonymous") == 0) {
+X! 				if ((pw = sgetpwnam("ftp")) != NULL) {
+X  					guest = 1;
+X  					reply(331,
+X***************
+X*** 102,106 ****
+X  			} else if (checkuser((char *) $3)) {
+X  				guest = 0;
+X! 				pw = getpwnam((char *) $3);
+X  				if (pw == NULL) {
+X  					reply(530, "User %s unknown.", $3);
+X--- 102,106 ----
+X  			} else if (checkuser((char *) $3)) {
+X  				guest = 0;
+X! 				pw = sgetpwnam((char *) $3);
+X  				if (pw == NULL) {
+X  					reply(530, "User %s unknown.", $3);
+X
+X
+XRCS file: RCS/ftpd.c,v
+Xretrieving revision 1.3
+Xdiff -c2 -r1.3 ftpd.c
+X*** /tmp/,RCSt1026617	Sat Oct 29 23:52:48 1988
+X--- ftpd.c	Sat Oct 29 23:49:01 1988
+X***************
+X*** 194,202 ****
+X  }
+X  
+X  pass(passwd)
+X  	char *passwd;
+X  {
+X! 	char *xpasswd, *savestr();
+X! 	static struct passwd save;
+X  
+X  	if (logged_in || pw == NULL) {
+X--- 194,258 ----
+X  }
+X  
+X+ /*
+X+  * Helper function for sgetpwnam().
+X+  */
+X+ char *
+X+ sgetsave(s)
+X+ 	char *s;
+X+ {
+X+ #ifdef notdef
+X+ 	char *new = strdup(s);
+X+ #else
+X+ 	char *malloc();
+X+ 	char *new = malloc((unsigned) strlen(s) + 1);
+X+ #endif
+X+ 	
+X+ 	if (new == NULL) {
+X+ 		reply(553, "Local resource failure");	/* ??? */
+X+ 		dologout(1);
+X+ 	}
+X+ #ifndef notdef
+X+ 	(void) strcpy(new, s);
+X+ #endif
+X+ 	return (new);
+X+ }
+X+ 
+X+ /*
+X+  * Save the result of a getpwnam.  Used for USER command, since
+X+  * the data returned must not be clobbered by any other command
+X+  * (e.g., globbing).
+X+  */
+X+ struct passwd *
+X+ sgetpwnam(name)
+X+ 	char *name;
+X+ {
+X+ 	static struct passwd save;
+X+ 	register struct passwd *p;
+X+ 	char *sgetsave();
+X+ 
+X+ 	if ((p = getpwnam(name)) == NULL)
+X+ 		return (p);
+X+ 	if (save.pw_name) {
+X+ 		free(save.pw_name);
+X+ 		free(save.pw_passwd);
+X+ 		free(save.pw_comment);
+X+ 		free(save.pw_gecos);
+X+ 		free(save.pw_dir);
+X+ 		free(save.pw_shell);
+X+ 	}
+X+ 	save = *p;
+X+ 	save.pw_name = sgetsave(p->pw_name);
+X+ 	save.pw_passwd = sgetsave(p->pw_passwd);
+X+ 	save.pw_comment = sgetsave(p->pw_comment);
+X+ 	save.pw_gecos = sgetsave(p->pw_gecos);
+X+ 	save.pw_dir = sgetsave(p->pw_dir);
+X+ 	save.pw_shell = sgetsave(p->pw_shell);
+X+ 	return (&save);
+X+ }
+X+ 
+X  pass(passwd)
+X  	char *passwd;
+X  {
+X! 	char *xpasswd;
+X  
+X  	if (logged_in || pw == NULL) {
+X***************
+X*** 238,253 ****
+X  	dologin(pw);
+X  	seteuid(pw->pw_uid);
+X- 	/*
+X- 	 * Save everything so globbing doesn't
+X- 	 * clobber the fields.
+X- 	 */
+X- 	save = *pw;
+X- 	save.pw_name = savestr(pw->pw_name);
+X- 	save.pw_passwd = savestr(pw->pw_passwd);
+X- 	save.pw_comment = savestr(pw->pw_comment);
+X- 	save.pw_gecos = savestr(pw->pw_gecos);
+X- 	save.pw_dir = savestr(pw->pw_dir);
+X- 	save.pw_shell = savestr(pw->pw_shell);
+X- 	pw = &save;
+X  	home = pw->pw_dir;		/* home dir for globbing */
+X  	return;
+X--- 294,297 ----
+X***************
+X*** 257,272 ****
+X  }
+X  
+X- char *
+X- savestr(s)
+X- 	char *s;
+X- {
+X- 	char *malloc();
+X- 	char *new = malloc((unsigned) strlen(s) + 1);
+X- 	
+X- 	if (new != NULL)
+X- 		(void) strcpy(new, s);
+X- 	return (new);
+X- }
+X- 
+X  retrieve(cmd, name)
+X  	char *cmd, *name;
+X--- 301,304 ----
+X***************
+X*** 785,790 ****
+X   * Record login in wtmp file.
+X   */
+X! dologin(pw)
+X! 	struct passwd *pw;
+X  {
+X  	char line[32];
+X--- 817,822 ----
+X   * Record login in wtmp file.
+X   */
+X! dologin(p)
+X! 	struct passwd *p;
+X  {
+X  	char line[32];
+X***************
+X*** 794,798 ****
+X  		(void) sprintf(line, "ftp%d", getpid());
+X  		SCPYN(utmp.ut_line, line);
+X! 		SCPYN(utmp.ut_name, pw->pw_name);
+X  		SCPYN(utmp.ut_host, remotehost);
+X  		utmp.ut_time = (long) time((time_t *) 0);
+X--- 826,830 ----
+X  		(void) sprintf(line, "ftp%d", getpid());
+X  		SCPYN(utmp.ut_line, line);
+X! 		SCPYN(utmp.ut_name, p->pw_name);
+X  		SCPYN(utmp.ut_host, remotehost);
+X  		utmp.ut_time = (long) time((time_t *) 0);
+X***************
+X*** 948,963 ****
+X  {
+X  	register char *cp;
+X- 	char line[BUFSIZ], *index(), *getusershell();
+X  	FILE *fd;
+X! 	struct passwd *pw;
+X  	int found = 0;
+X  
+X! 	pw = getpwnam(name);
+X! 	if (pw == NULL)
+X  		return (0);
+X! 	if (pw ->pw_shell == NULL || pw->pw_shell[0] == NULL)
+X! 		pw->pw_shell = "/bin/sh";
+X  	while ((cp = getusershell()) != NULL)
+X! 		if (strcmp(cp, pw->pw_shell) == 0)
+X  			break;
+X  	endusershell();
+X--- 980,995 ----
+X  {
+X  	register char *cp;
+X  	FILE *fd;
+X! 	struct passwd *p;
+X! 	char *shell;
+X  	int found = 0;
+X+ 	char line[BUFSIZ], *index(), *getusershell();
+X  
+X! 	if ((p = getpwnam(name)) == NULL)
+X  		return (0);
+X! 	if ((shell = p->pw_shell) == NULL || *shell == 0)
+X! 		shell = "/bin/sh";
+X  	while ((cp = getusershell()) != NULL)
+X! 		if (strcmp(cp, shell) == 0)
+X  			break;
+X  	endusershell();
+X***************
+X*** 964,973 ****
+X  	if (cp == NULL)
+X  		return (0);
+X! 	fd = fopen(FTPUSERS, "r");
+X! 	if (fd == NULL)
+X  		return (1);
+X  	while (fgets(line, sizeof (line), fd) != NULL) {
+X! 		cp = index(line, '\n');
+X! 		if (cp)
+X  			*cp = '\0';
+X  		if (strcmp(line, name) == 0) {
+X--- 996,1003 ----
+X  	if (cp == NULL)
+X  		return (0);
+X! 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+X  		return (1);
+X  	while (fgets(line, sizeof (line), fd) != NULL) {
+X! 		if ((cp = index(line, '\n')) != NULL)
+X  			*cp = '\0';
+X  		if (strcmp(line, name) == 0) {
+X
+END-of-context.diff.4.3-tahoe
+echo x - ftpcmd.y
+sed 's/^X//' >ftpcmd.y << 'END-of-ftpcmd.y'
+X/*
+X * Copyright (c) 1985 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X *	@(#)ftpcmd.y	5.12 (Berkeley) 10/30/88
+X */
+X
+X/*
+X * Grammar for FTP commands.
+X * See RFC 765.
+X */
+X
+X%{
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)ftpcmd.y	5.12 (Berkeley) 10/30/88";
+X#endif /* not lint */
+X
+X#include <sys/types.h>
+X#include <sys/socket.h>
+X
+X#include <netinet/in.h>
+X
+X#include <arpa/ftp.h>
+X
+X#include <stdio.h>
+X#include <signal.h>
+X#include <ctype.h>
+X#include <pwd.h>
+X#include <setjmp.h>
+X#include <syslog.h>
+X
+Xextern	struct sockaddr_in data_dest;
+Xextern	int logged_in;
+Xextern	struct passwd *pw;
+Xextern	int guest;
+Xextern	int logging;
+Xextern	int type;
+Xextern	int form;
+Xextern	int debug;
+Xextern	int timeout;
+Xextern  int pdata;
+Xextern	char hostname[];
+Xextern	char *globerr;
+Xextern	int usedefault;
+Xextern	int unique;
+Xextern  int transflag;
+Xextern  char tmpline[];
+Xchar	**glob();
+X
+Xstatic	int cmd_type;
+Xstatic	int cmd_form;
+Xstatic	int cmd_bytesz;
+Xchar cbuf[512];
+Xchar *fromname;
+X
+Xchar	*index();
+X%}
+X
+X%token
+X	A	B	C	E	F	I
+X	L	N	P	R	S	T
+X
+X	SP	CRLF	COMMA	STRING	NUMBER
+X
+X	USER	PASS	ACCT	REIN	QUIT	PORT
+X	PASV	TYPE	STRU	MODE	RETR	STOR
+X	APPE	MLFL	MAIL	MSND	MSOM	MSAM
+X	MRSQ	MRCP	ALLO	REST	RNFR	RNTO
+X	ABOR	DELE	CWD	LIST	NLST	SITE
+X	STAT	HELP	NOOP	XMKD	XRMD	XPWD
+X	XCUP	STOU
+X
+X	LEXERR
+X
+X%start	cmd_list
+X
+X%%
+X
+Xcmd_list:	/* empty */
+X	|	cmd_list cmd
+X		= {
+X			fromname = (char *) 0;
+X		}
+X	|	cmd_list rcmd
+X	;
+X
+Xcmd:		USER SP username CRLF
+X		= {
+X			extern struct passwd *sgetpwnam();
+X
+X			logged_in = 0;
+X			if (strcmp((char *) $3, "ftp") == 0 ||
+X			  strcmp((char *) $3, "anonymous") == 0) {
+X				if ((pw = sgetpwnam("ftp")) != NULL) {
+X					guest = 1;
+X					reply(331,
+X				  "Guest login ok, send ident as password.");
+X				}
+X				else {
+X					reply(530, "User %s unknown.", $3);
+X				}
+X			} else if (checkuser((char *) $3)) {
+X				guest = 0;
+X				pw = sgetpwnam((char *) $3);
+X				if (pw == NULL) {
+X					reply(530, "User %s unknown.", $3);
+X				}
+X				else {
+X				    reply(331, "Password required for %s.", $3);
+X				}
+X			} else {
+X				reply(530, "User %s access denied.", $3);
+X			}
+X			free((char *) $3);
+X		}
+X	|	PASS SP password CRLF
+X		= {
+X			pass((char *) $3);
+X			free((char *) $3);
+X		}
+X	|	PORT SP host_port CRLF
+X		= {
+X			usedefault = 0;
+X			if (pdata > 0) {
+X				(void) close(pdata);
+X			}
+X			pdata = -1;
+X			reply(200, "PORT command successful.");
+X		}
+X	|	PASV CRLF
+X		= {
+X			passive();
+X		}
+X	|	TYPE SP type_code CRLF
+X		= {
+X			switch (cmd_type) {
+X
+X			case TYPE_A:
+X				if (cmd_form == FORM_N) {
+X					reply(200, "Type set to A.");
+X					type = cmd_type;
+X					form = cmd_form;
+X				} else
+X					reply(504, "Form must be N.");
+X				break;
+X
+X			case TYPE_E:
+X				reply(504, "Type E not implemented.");
+X				break;
+X
+X			case TYPE_I:
+X				reply(200, "Type set to I.");
+X				type = cmd_type;
+X				break;
+X
+X			case TYPE_L:
+X				if (cmd_bytesz == 8) {
+X					reply(200,
+X					    "Type set to L (byte size 8).");
+X					type = cmd_type;
+X				} else
+X					reply(504, "Byte size must be 8.");
+X			}
+X		}
+X	|	STRU SP struct_code CRLF
+X		= {
+X			switch ($3) {
+X
+X			case STRU_F:
+X				reply(200, "STRU F ok.");
+X				break;
+X
+X			default:
+X				reply(504, "Unimplemented STRU type.");
+X			}
+X		}
+X	|	MODE SP mode_code CRLF
+X		= {
+X			switch ($3) {
+X
+X			case MODE_S:
+X				reply(200, "MODE S ok.");
+X				break;
+X
+X			default:
+X				reply(502, "Unimplemented MODE type.");
+X			}
+X		}
+X	|	ALLO SP NUMBER CRLF
+X		= {
+X			reply(202, "ALLO command ignored.");
+X		}
+X	|	RETR check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				retrieve((char *) 0, (char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	STOR check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				store((char *) $4, "w");
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	APPE check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				store((char *) $4, "a");
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	NLST check_login CRLF
+X		= {
+X			if ($2)
+X				retrieve("/bin/ls", "");
+X		}
+X	|	NLST check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				retrieve("/bin/ls %s", (char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	LIST check_login CRLF
+X		= {
+X			if ($2)
+X				retrieve("/bin/ls -lg", "");
+X		}
+X	|	LIST check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				retrieve("/bin/ls -lg %s", (char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	DELE check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				delete((char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	RNTO SP pathname CRLF
+X		= {
+X			if (fromname) {
+X				renamecmd(fromname, (char *) $3);
+X				free(fromname);
+X				fromname = (char *) 0;
+X			} else {
+X				reply(503, "Bad sequence of commands.");
+X			}
+X			free((char *) $3);
+X		}
+X	|	ABOR CRLF
+X		= {
+X			reply(225, "ABOR command successful.");
+X		}
+X	|	CWD check_login CRLF
+X		= {
+X			if ($2)
+X				cwd(pw->pw_dir);
+X		}
+X	|	CWD check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				cwd((char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	HELP CRLF
+X		= {
+X			help((char *) 0);
+X		}
+X	|	HELP SP STRING CRLF
+X		= {
+X			help((char *) $3);
+X		}
+X	|	NOOP CRLF
+X		= {
+X			reply(200, "NOOP command successful.");
+X		}
+X	|	XMKD check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				makedir((char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	XRMD check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL)
+X				removedir((char *) $4);
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	XPWD check_login CRLF
+X		= {
+X			if ($2)
+X				pwd();
+X		}
+X	|	XCUP check_login CRLF
+X		= {
+X			if ($2)
+X				cwd("..");
+X		}
+X	|	STOU check_login SP pathname CRLF
+X		= {
+X			if ($2 && $4 != NULL) {
+X				unique++;
+X				store((char *) $4, "w");
+X				unique = 0;
+X			}
+X			if ($4 != NULL)
+X				free((char *) $4);
+X		}
+X	|	QUIT CRLF
+X		= {
+X			reply(221, "Goodbye.");
+X			dologout(0);
+X		}
+X	|	error CRLF
+X		= {
+X			yyerrok;
+X		}
+X	;
+X
+Xrcmd:		RNFR check_login SP pathname CRLF
+X		= {
+X			char *renamefrom();
+X
+X			if ($2 && $4) {
+X				fromname = renamefrom((char *) $4);
+X				if (fromname == (char *) 0 && $4) {
+X					free((char *) $4);
+X				}
+X			}
+X		}
+X	;
+X		
+Xusername:	STRING
+X	;
+X
+Xpassword:	STRING
+X	;
+X
+Xbyte_size:	NUMBER
+X	;
+X
+Xhost_port:	NUMBER COMMA NUMBER COMMA NUMBER COMMA NUMBER COMMA 
+X		NUMBER COMMA NUMBER
+X		= {
+X			register char *a, *p;
+X
+X			a = (char *)&data_dest.sin_addr;
+X			a[0] = $1; a[1] = $3; a[2] = $5; a[3] = $7;
+X			p = (char *)&data_dest.sin_port;
+X			p[0] = $9; p[1] = $11;
+X			data_dest.sin_family = AF_INET;
+X		}
+X	;
+X
+Xform_code:	N
+X	= {
+X		$$ = FORM_N;
+X	}
+X	|	T
+X	= {
+X		$$ = FORM_T;
+X	}
+X	|	C
+X	= {
+X		$$ = FORM_C;
+X	}
+X	;
+X
+Xtype_code:	A
+X	= {
+X		cmd_type = TYPE_A;
+X		cmd_form = FORM_N;
+X	}
+X	|	A SP form_code
+X	= {
+X		cmd_type = TYPE_A;
+X		cmd_form = $3;
+X	}
+X	|	E
+X	= {
+X		cmd_type = TYPE_E;
+X		cmd_form = FORM_N;
+X	}
+X	|	E SP form_code
+X	= {
+X		cmd_type = TYPE_E;
+X		cmd_form = $3;
+X	}
+X	|	I
+X	= {
+X		cmd_type = TYPE_I;
+X	}
+X	|	L
+X	= {
+X		cmd_type = TYPE_L;
+X		cmd_bytesz = 8;
+X	}
+X	|	L SP byte_size
+X	= {
+X		cmd_type = TYPE_L;
+X		cmd_bytesz = $3;
+X	}
+X	/* this is for a bug in the BBN ftp */
+X	|	L byte_size
+X	= {
+X		cmd_type = TYPE_L;
+X		cmd_bytesz = $2;
+X	}
+X	;
+X
+Xstruct_code:	F
+X	= {
+X		$$ = STRU_F;
+X	}
+X	|	R
+X	= {
+X		$$ = STRU_R;
+X	}
+X	|	P
+X	= {
+X		$$ = STRU_P;
+X	}
+X	;
+X
+Xmode_code:	S
+X	= {
+X		$$ = MODE_S;
+X	}
+X	|	B
+X	= {
+X		$$ = MODE_B;
+X	}
+X	|	C
+X	= {
+X		$$ = MODE_C;
+X	}
+X	;
+X
+Xpathname:	pathstring
+X	= {
+X		/*
+X		 * Problem: this production is used for all pathname
+X		 * processing, but only gives a 550 error reply.
+X		 * This is a valid reply in some cases but not in others.
+X		 */
+X		if ($1 && strncmp((char *) $1, "~", 1) == 0) {
+X			$$ = (int)*glob((char *) $1);
+X			if (globerr != NULL) {
+X				reply(550, globerr);
+X				$$ = NULL;
+X			}
+X			free((char *) $1);
+X		} else
+X			$$ = $1;
+X	}
+X	;
+X
+Xpathstring:	STRING
+X	;
+X
+Xcheck_login:	/* empty */
+X	= {
+X		if (logged_in)
+X			$$ = 1;
+X		else {
+X			reply(530, "Please login with USER and PASS.");
+X			$$ = 0;
+X		}
+X	}
+X	;
+X
+X%%
+X
+Xextern jmp_buf errcatch;
+X
+X#define	CMD	0	/* beginning of command */
+X#define	ARGS	1	/* expect miscellaneous arguments */
+X#define	STR1	2	/* expect SP followed by STRING */
+X#define	STR2	3	/* expect STRING */
+X#define	OSTR	4	/* optional STRING */
+X
+Xstruct tab {
+X	char	*name;
+X	short	token;
+X	short	state;
+X	short	implemented;	/* 1 if command is implemented */
+X	char	*help;
+X};
+X
+Xstruct tab cmdtab[] = {		/* In order defined in RFC 765 */
+X	{ "USER", USER, STR1, 1,	"<sp> username" },
+X	{ "PASS", PASS, STR1, 1,	"<sp> password" },
+X	{ "ACCT", ACCT, STR1, 0,	"(specify account)" },
+X	{ "REIN", REIN, ARGS, 0,	"(reinitialize server state)" },
+X	{ "QUIT", QUIT, ARGS, 1,	"(terminate service)", },
+X	{ "PORT", PORT, ARGS, 1,	"<sp> b0, b1, b2, b3, b4" },
+X	{ "PASV", PASV, ARGS, 1,	"(set server in passive mode)" },
+X	{ "TYPE", TYPE, ARGS, 1,	"<sp> [ A | E | I | L ]" },
+X	{ "STRU", STRU, ARGS, 1,	"(specify file structure)" },
+X	{ "MODE", MODE, ARGS, 1,	"(specify transfer mode)" },
+X	{ "RETR", RETR, STR1, 1,	"<sp> file-name" },
+X	{ "STOR", STOR, STR1, 1,	"<sp> file-name" },
+X	{ "APPE", APPE, STR1, 1,	"<sp> file-name" },
+X	{ "MLFL", MLFL, OSTR, 0,	"(mail file)" },
+X	{ "MAIL", MAIL, OSTR, 0,	"(mail to user)" },
+X	{ "MSND", MSND, OSTR, 0,	"(mail send to terminal)" },
+X	{ "MSOM", MSOM, OSTR, 0,	"(mail send to terminal or mailbox)" },
+X	{ "MSAM", MSAM, OSTR, 0,	"(mail send to terminal and mailbox)" },
+X	{ "MRSQ", MRSQ, OSTR, 0,	"(mail recipient scheme question)" },
+X	{ "MRCP", MRCP, STR1, 0,	"(mail recipient)" },
+X	{ "ALLO", ALLO, ARGS, 1,	"allocate storage (vacuously)" },
+X	{ "REST", REST, STR1, 0,	"(restart command)" },
+X	{ "RNFR", RNFR, STR1, 1,	"<sp> file-name" },
+X	{ "RNTO", RNTO, STR1, 1,	"<sp> file-name" },
+X	{ "ABOR", ABOR, ARGS, 1,	"(abort operation)" },
+X	{ "DELE", DELE, STR1, 1,	"<sp> file-name" },
+X	{ "CWD",  CWD,  OSTR, 1,	"[ <sp> directory-name]" },
+X	{ "XCWD", CWD,	OSTR, 1,	"[ <sp> directory-name ]" },
+X	{ "LIST", LIST, OSTR, 1,	"[ <sp> path-name ]" },
+X	{ "NLST", NLST, OSTR, 1,	"[ <sp> path-name ]" },
+X	{ "SITE", SITE, STR1, 0,	"(get site parameters)" },
+X	{ "STAT", STAT, OSTR, 0,	"(get server status)" },
+X	{ "HELP", HELP, OSTR, 1,	"[ <sp> <string> ]" },
+X	{ "NOOP", NOOP, ARGS, 1,	"" },
+X	{ "MKD",  XMKD, STR1, 1,	"<sp> path-name" },
+X	{ "XMKD", XMKD, STR1, 1,	"<sp> path-name" },
+X	{ "RMD",  XRMD, STR1, 1,	"<sp> path-name" },
+X	{ "XRMD", XRMD, STR1, 1,	"<sp> path-name" },
+X	{ "PWD",  XPWD, ARGS, 1,	"(return current directory)" },
+X	{ "XPWD", XPWD, ARGS, 1,	"(return current directory)" },
+X	{ "CDUP", XCUP, ARGS, 1,	"(change to parent directory)" },
+X	{ "XCUP", XCUP, ARGS, 1,	"(change to parent directory)" },
+X	{ "STOU", STOU, STR1, 1,	"<sp> file-name" },
+X	{ NULL,   0,    0,    0,	0 }
+X};
+X
+Xstruct tab *
+Xlookup(cmd)
+X	char *cmd;
+X{
+X	register struct tab *p;
+X
+X	for (p = cmdtab; p->name != NULL; p++)
+X		if (strcmp(cmd, p->name) == 0)
+X			return (p);
+X	return (0);
+X}
+X
+X#include <arpa/telnet.h>
+X
+X/*
+X * getline - a hacked up version of fgets to ignore TELNET escape codes.
+X */
+Xchar *
+Xgetline(s, n, iop)
+X	char *s;
+X	register FILE *iop;
+X{
+X	register c;
+X	register char *cs;
+X
+X	cs = s;
+X/* tmpline may contain saved command from urgent mode interruption */
+X	for (c = 0; tmpline[c] != '\0' && --n > 0; ++c) {
+X		*cs++ = tmpline[c];
+X		if (tmpline[c] == '\n') {
+X			*cs++ = '\0';
+X			if (debug) {
+X				syslog(LOG_DEBUG, "FTPD: command: %s", s);
+X			}
+X			tmpline[0] = '\0';
+X			return(s);
+X		}
+X		if (c == 0) {
+X			tmpline[0] = '\0';
+X		}
+X	}
+X	while (--n > 0 && (c = getc(iop)) != EOF) {
+X		c = 0377 & c;
+X		while (c == IAC) {
+X			switch (c = 0377 & getc(iop)) {
+X			case WILL:
+X			case WONT:
+X				c = 0377 & getc(iop);
+X				printf("%c%c%c", IAC, WONT, c);
+X				(void) fflush(stdout);
+X				break;
+X			case DO:
+X			case DONT:
+X				c = 0377 & getc(iop);
+X				printf("%c%c%c", IAC, DONT, c);
+X				(void) fflush(stdout);
+X				break;
+X			default:
+X				break;
+X			}
+X			c = 0377 & getc(iop); /* try next character */
+X		}
+X		*cs++ = c;
+X		if (c=='\n')
+X			break;
+X	}
+X	if (c == EOF && cs == s)
+X		return (NULL);
+X	*cs++ = '\0';
+X	if (debug) {
+X		syslog(LOG_DEBUG, "FTPD: command: %s", s);
+X	}
+X	return (s);
+X}
+X
+Xstatic int
+Xtoolong()
+X{
+X	time_t now;
+X	extern char *ctime();
+X	extern time_t time();
+X
+X	reply(421,
+X	  "Timeout (%d seconds): closing control connection.", timeout);
+X	(void) time(&now);
+X	if (logging) {
+X		syslog(LOG_INFO,
+X			"FTPD: User %s timed out after %d seconds at %s",
+X			(pw ? pw -> pw_name : "unknown"), timeout, ctime(&now));
+X	}
+X	dologout(1);
+X}
+X
+Xyylex()
+X{
+X	static int cpos, state;
+X	register char *cp;
+X	register struct tab *p;
+X	int n;
+X	char c;
+X
+X	for (;;) {
+X		switch (state) {
+X
+X		case CMD:
+X			(void) signal(SIGALRM, toolong);
+X			(void) alarm((unsigned) timeout);
+X			if (getline(cbuf, sizeof(cbuf)-1, stdin) == NULL) {
+X				reply(221, "You could at least say goodbye.");
+X				dologout(0);
+X			}
+X			(void) alarm(0);
+X			if (index(cbuf, '\r')) {
+X				cp = index(cbuf, '\r');
+X				cp[0] = '\n'; cp[1] = 0;
+X			}
+X			if (index(cbuf, ' '))
+X				cpos = index(cbuf, ' ') - cbuf;
+X			else
+X				cpos = index(cbuf, '\n') - cbuf;
+X			if (cpos == 0) {
+X				cpos = 4;
+X			}
+X			c = cbuf[cpos];
+X			cbuf[cpos] = '\0';
+X			upper(cbuf);
+X			p = lookup(cbuf);
+X			cbuf[cpos] = c;
+X			if (p != 0) {
+X				if (p->implemented == 0) {
+X					nack(p->name);
+X					longjmp(errcatch,0);
+X					/* NOTREACHED */
+X				}
+X				state = p->state;
+X				yylval = (int) p->name;
+X				return (p->token);
+X			}
+X			break;
+X
+X		case OSTR:
+X			if (cbuf[cpos] == '\n') {
+X				state = CMD;
+X				return (CRLF);
+X			}
+X			/* FALL THRU */
+X
+X		case STR1:
+X			if (cbuf[cpos] == ' ') {
+X				cpos++;
+X				state = STR2;
+X				return (SP);
+X			}
+X			break;
+X
+X		case STR2:
+X			cp = &cbuf[cpos];
+X			n = strlen(cp);
+X			cpos += n - 1;
+X			/*
+X			 * Make sure the string is nonempty and \n terminated.
+X			 */
+X			if (n > 1 && cbuf[cpos] == '\n') {
+X				cbuf[cpos] = '\0';
+X				yylval = copy(cp);
+X				cbuf[cpos] = '\n';
+X				state = ARGS;
+X				return (STRING);
+X			}
+X			break;
+X
+X		case ARGS:
+X			if (isdigit(cbuf[cpos])) {
+X				cp = &cbuf[cpos];
+X				while (isdigit(cbuf[++cpos]))
+X					;
+X				c = cbuf[cpos];
+X				cbuf[cpos] = '\0';
+X				yylval = atoi(cp);
+X				cbuf[cpos] = c;
+X				return (NUMBER);
+X			}
+X			switch (cbuf[cpos++]) {
+X
+X			case '\n':
+X				state = CMD;
+X				return (CRLF);
+X
+X			case ' ':
+X				return (SP);
+X
+X			case ',':
+X				return (COMMA);
+X
+X			case 'A':
+X			case 'a':
+X				return (A);
+X
+X			case 'B':
+X			case 'b':
+X				return (B);
+X
+X			case 'C':
+X			case 'c':
+X				return (C);
+X
+X			case 'E':
+X			case 'e':
+X				return (E);
+X
+X			case 'F':
+X			case 'f':
+X				return (F);
+X
+X			case 'I':
+X			case 'i':
+X				return (I);
+X
+X			case 'L':
+X			case 'l':
+X				return (L);
+X
+X			case 'N':
+X			case 'n':
+X				return (N);
+X
+X			case 'P':
+X			case 'p':
+X				return (P);
+X
+X			case 'R':
+X			case 'r':
+X				return (R);
+X
+X			case 'S':
+X			case 's':
+X				return (S);
+X
+X			case 'T':
+X			case 't':
+X				return (T);
+X
+X			}
+X			break;
+X
+X		default:
+X			fatal("Unknown state in scanner.");
+X		}
+X		yyerror((char *) 0);
+X		state = CMD;
+X		longjmp(errcatch,0);
+X	}
+X}
+X
+Xupper(s)
+X	char *s;
+X{
+X	while (*s != '\0') {
+X		if (islower(*s))
+X			*s = toupper(*s);
+X		s++;
+X	}
+X}
+X
+Xcopy(s)
+X	char *s;
+X{
+X	char *p;
+X	extern char *malloc(), *strcpy();
+X
+X	p = malloc((unsigned) strlen(s) + 1);
+X	if (p == NULL)
+X		fatal("Ran out of memory.");
+X	(void) strcpy(p, s);
+X	return ((int)p);
+X}
+X
+Xhelp(s)
+X	char *s;
+X{
+X	register struct tab *c;
+X	register int width, NCMDS;
+X
+X	width = 0, NCMDS = 0;
+X	for (c = cmdtab; c->name != NULL; c++) {
+X		int len = strlen(c->name) + 1;
+X
+X		if (len > width)
+X			width = len;
+X		NCMDS++;
+X	}
+X	width = (width + 8) &~ 7;
+X	if (s == 0) {
+X		register int i, j, w;
+X		int columns, lines;
+X
+X		lreply(214,
+X	  "The following commands are recognized (* =>'s unimplemented).");
+X		columns = 76 / width;
+X		if (columns == 0)
+X			columns = 1;
+X		lines = (NCMDS + columns - 1) / columns;
+X		for (i = 0; i < lines; i++) {
+X			printf("   ");
+X			for (j = 0; j < columns; j++) {
+X				c = cmdtab + j * lines + i;
+X				printf("%s%c", c->name,
+X					c->implemented ? ' ' : '*');
+X				if (c + lines >= &cmdtab[NCMDS])
+X					break;
+X				w = strlen(c->name) + 1;
+X				while (w < width) {
+X					putchar(' ');
+X					w++;
+X				}
+X			}
+X			printf("\r\n");
+X		}
+X		(void) fflush(stdout);
+X		reply(214, "Direct comments to ftp-bugs@%s.", hostname);
+X		return;
+X	}
+X	upper(s);
+X	c = lookup(s);
+X	if (c == (struct tab *)0) {
+X		reply(502, "Unknown command %s.", s);
+X		return;
+X	}
+X	if (c->implemented)
+X		reply(214, "Syntax: %s %s", c->name, c->help);
+X	else
+X		reply(214, "%-*s\t%s; unimplemented.", width, c->name, c->help);
+X}
+END-of-ftpcmd.y
+echo x - ftpd.c
+sed 's/^X//' >ftpd.c << 'END-of-ftpd.c'
+X/*
+X * Copyright (c) 1985 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1985 Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)ftpd.c	5.16 (Berkeley) 10/30/88";
+X#endif /* not lint */
+X
+X/*
+X * FTP server.
+X */
+X#include <sys/param.h>
+X#include <sys/stat.h>
+X#include <sys/ioctl.h>
+X#include <sys/socket.h>
+X#include <sys/file.h>
+X#include <sys/wait.h>
+X
+X#include <netinet/in.h>
+X
+X#include <arpa/ftp.h>
+X#include <arpa/inet.h>
+X#include <arpa/telnet.h>
+X
+X#include <stdio.h>
+X#include <signal.h>
+X#include <pwd.h>
+X#include <setjmp.h>
+X#include <netdb.h>
+X#include <errno.h>
+X#include <strings.h>
+X#include <syslog.h>
+X
+X/*
+X * File containing login names
+X * NOT to be used on this machine.
+X * Commonly used to disallow uucp.
+X */
+X#define	FTPUSERS	"/etc/ftpusers"
+X
+Xextern	int errno;
+Xextern	char *sys_errlist[];
+Xextern	char *crypt();
+Xextern	char version[];
+Xextern	char *home;		/* pointer to home directory for glob */
+Xextern	FILE *popen(), *fopen(), *freopen();
+Xextern	int  pclose(), fclose();
+Xextern	char *getline();
+Xextern	char cbuf[];
+X
+Xstruct	sockaddr_in ctrl_addr;
+Xstruct	sockaddr_in data_source;
+Xstruct	sockaddr_in data_dest;
+Xstruct	sockaddr_in his_addr;
+X
+Xint	data;
+Xjmp_buf	errcatch, urgcatch;
+Xint	logged_in;
+Xstruct	passwd *pw;
+Xint	debug;
+Xint	timeout = 900;    /* timeout after 15 minutes of inactivity */
+Xint	logging;
+Xint	guest;
+Xint	wtmp;
+Xint	type;
+Xint	form;
+Xint	stru;			/* avoid C keyword */
+Xint	mode;
+Xint	usedefault = 1;		/* for data transfers */
+Xint	pdata;			/* for passive mode */
+Xint	unique;
+Xint	transflag;
+Xchar	tmpline[7];
+Xchar	hostname[32];
+Xchar	remotehost[32];
+X
+X/*
+X * Timeout intervals for retrying connections
+X * to hosts that don't accept PORT cmds.  This
+X * is a kludge, but given the problems with TCP...
+X */
+X#define	SWAITMAX	90	/* wait at most 90 seconds */
+X#define	SWAITINT	5	/* interval between retries */
+X
+Xint	swaitmax = SWAITMAX;
+Xint	swaitint = SWAITINT;
+X
+Xint	lostconn();
+Xint	myoob();
+XFILE	*getdatasock(), *dataconn();
+X
+Xmain(argc, argv)
+X	int argc;
+X	char *argv[];
+X{
+X	int addrlen, on = 1;
+X	long pgid;
+X	char *cp;
+X
+X	addrlen = sizeof (his_addr);
+X	if (getpeername(0, &his_addr, &addrlen) < 0) {
+X		syslog(LOG_ERR, "getpeername (%s): %m",argv[0]);
+X		exit(1);
+X	}
+X	addrlen = sizeof (ctrl_addr);
+X	if (getsockname(0, (char *) &ctrl_addr, &addrlen) < 0) {
+X		syslog(LOG_ERR, "getsockname (%s): %m",argv[0]);
+X		exit(1);
+X	}
+X	data_source.sin_port = htons(ntohs(ctrl_addr.sin_port) - 1);
+X	debug = 0;
+X	openlog("ftpd", LOG_PID, LOG_DAEMON);
+X	argc--, argv++;
+X	while (argc > 0 && *argv[0] == '-') {
+X		for (cp = &argv[0][1]; *cp; cp++) switch (*cp) {
+X
+X		case 'v':
+X			debug = 1;
+X			break;
+X
+X		case 'd':
+X			debug = 1;
+X			break;
+X
+X		case 'l':
+X			logging = 1;
+X			break;
+X
+X		case 't':
+X			timeout = atoi(++cp);
+X			goto nextopt;
+X			break;
+X
+X		default:
+X			fprintf(stderr, "ftpd: Unknown flag -%c ignored.\n",
+X			     *cp);
+X			break;
+X		}
+Xnextopt:
+X		argc--, argv++;
+X	}
+X	(void) freopen("/dev/null", "w", stderr);
+X	(void) signal(SIGPIPE, lostconn);
+X	(void) signal(SIGCHLD, SIG_IGN);
+X	if ((int)signal(SIGURG, myoob) < 0)
+X		syslog(LOG_ERR, "signal: %m");
+X
+X	/* handle urgent data inline */
+X#ifdef SO_OOBINLINE
+X	if (setsockopt(0, SOL_SOCKET, SO_OOBINLINE, (char *)&on, sizeof(on)) < 0) {
+X		syslog(LOG_ERR, "setsockopt: %m");
+X	}
+X#endif SO_OOBINLINE
+X	pgid = getpid();
+X	if (ioctl(fileno(stdin), SIOCSPGRP, (char *) &pgid) < 0) {
+X		syslog(LOG_ERR, "ioctl: %m");
+X	}
+X	dolog(&his_addr);
+X	/* do telnet option negotiation here */
+X	/*
+X	 * Set up default state
+X	 */
+X	logged_in = 0;
+X	data = -1;
+X	type = TYPE_A;
+X	form = FORM_N;
+X	stru = STRU_F;
+X	mode = MODE_S;
+X	tmpline[0] = '\0';
+X	(void) gethostname(hostname, sizeof (hostname));
+X	reply(220, "%s FTP server (%s) ready.",
+X		hostname, version);
+X	for (;;) {
+X		(void) setjmp(errcatch);
+X		(void) yyparse();
+X	}
+X}
+X
+Xlostconn()
+X{
+X
+X	if (debug)
+X		syslog(LOG_DEBUG, "lost connection");
+X	dologout(-1);
+X}
+X
+Xstatic char ttyline[20];
+X
+X/*
+X * Helper function for sgetpwnam().
+X */
+Xchar *
+Xsgetsave(s)
+X	char *s;
+X{
+X#ifdef notdef
+X	char *new = strdup(s);
+X#else
+X	char *malloc();
+X	char *new = malloc((unsigned) strlen(s) + 1);
+X#endif
+X	
+X	if (new == NULL) {
+X		reply(553, "Local resource failure");
+X		dologout(1);
+X	}
+X#ifndef notdef
+X	(void) strcpy(new, s);
+X#endif
+X	return (new);
+X}
+X
+X/*
+X * Save the result of a getpwnam.  Used for USER command, since
+X * the data returned must not be clobbered by any other command
+X * (e.g., globbing).
+X */
+Xstruct passwd *
+Xsgetpwnam(name)
+X	char *name;
+X{
+X	static struct passwd save;
+X	register struct passwd *p;
+X	char *sgetsave();
+X
+X	if ((p = getpwnam(name)) == NULL)
+X		return (p);
+X	if (save.pw_name) {
+X		free(save.pw_name);
+X		free(save.pw_passwd);
+X		free(save.pw_comment);
+X		free(save.pw_gecos);
+X		free(save.pw_dir);
+X		free(save.pw_shell);
+X	}
+X	save = *p;
+X	save.pw_name = sgetsave(p->pw_name);
+X	save.pw_passwd = sgetsave(p->pw_passwd);
+X	save.pw_comment = sgetsave(p->pw_comment);
+X	save.pw_gecos = sgetsave(p->pw_gecos);
+X	save.pw_dir = sgetsave(p->pw_dir);
+X	save.pw_shell = sgetsave(p->pw_shell);
+X	return (&save);
+X}
+X
+Xpass(passwd)
+X	char *passwd;
+X{
+X	char *xpasswd;
+X
+X	if (logged_in || pw == NULL) {
+X		reply(503, "Login with USER first.");
+X		return;
+X	}
+X	if (!guest) {		/* "ftp" is only account allowed no password */
+X		xpasswd = crypt(passwd, pw->pw_passwd);
+X		/* The strcmp does not catch null passwords! */
+X		if (*pw->pw_passwd == '\0' || strcmp(xpasswd, pw->pw_passwd)) {
+X			reply(530, "Login incorrect.");
+X			pw = NULL;
+X			return;
+X		}
+X	}
+X	setegid(pw->pw_gid);
+X	initgroups(pw->pw_name, pw->pw_gid);
+X	if (chdir(pw->pw_dir)) {
+X		reply(530, "User %s: can't change directory to %s.",
+X			pw->pw_name, pw->pw_dir);
+X		goto bad;
+X	}
+X
+X	/* grab wtmp before chroot */
+X	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+X	if (guest && chroot(pw->pw_dir) < 0) {
+X		reply(550, "Can't set guest privileges.");
+X		if (wtmp >= 0) {
+X			(void) close(wtmp);
+X			wtmp = -1;
+X		}
+X		goto bad;
+X	}
+X	if (!guest)
+X		reply(230, "User %s logged in.", pw->pw_name);
+X	else
+X		reply(230, "Guest login ok, access restrictions apply.");
+X	logged_in = 1;
+X	(void)sprintf(ttyline, "ftp%d", getpid());
+X	logwtmp(ttyline, pw->pw_name, remotehost);
+X	seteuid(pw->pw_uid);
+X	home = pw->pw_dir;		/* home dir for globbing */
+X	return;
+Xbad:
+X	seteuid(0);
+X	pw = NULL;
+X}
+X
+Xretrieve(cmd, name)
+X	char *cmd, *name;
+X{
+X	FILE *fin, *dout;
+X	struct stat st;
+X	int (*closefunc)(), tmp;
+X
+X	if (cmd == 0) {
+X#ifdef notdef
+X		/* no remote command execution -- it's a security hole */
+X		if (*name == '|')
+X			fin = popen(name + 1, "r"), closefunc = pclose;
+X		else
+X#endif
+X			fin = fopen(name, "r"), closefunc = fclose;
+X	} else {
+X		char line[BUFSIZ];
+X
+X		(void) sprintf(line, cmd, name), name = line;
+X		fin = popen(line, "r"), closefunc = pclose;
+X	}
+X	if (fin == NULL) {
+X		if (errno != 0)
+X			reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return;
+X	}
+X	st.st_size = 0;
+X	if (cmd == 0 &&
+X	    (stat(name, &st) < 0 || (st.st_mode&S_IFMT) != S_IFREG)) {
+X		reply(550, "%s: not a plain file.", name);
+X		goto done;
+X	}
+X	dout = dataconn(name, st.st_size, "w");
+X	if (dout == NULL)
+X		goto done;
+X	if ((tmp = send_data(fin, dout)) > 0 || ferror(dout) > 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X	}
+X	else if (tmp == 0) {
+X		reply(226, "Transfer complete.");
+X	}
+X	(void) fclose(dout);
+X	data = -1;
+X	pdata = -1;
+Xdone:
+X	(*closefunc)(fin);
+X}
+X
+Xstore(name, mode)
+X	char *name, *mode;
+X{
+X	FILE *fout, *din;
+X	int (*closefunc)(), dochown = 0, tmp;
+X	char *gunique(), *local;
+X
+X#ifdef notdef
+X	/* no remote command execution -- it's a security hole */
+X	if (name[0] == '|')
+X		fout = popen(&name[1], "w"), closefunc = pclose;
+X	else
+X#endif
+X	{
+X		struct stat st;
+X
+X		local = name;
+X		if (stat(name, &st) < 0) {
+X			dochown++;
+X		}
+X		else if (unique) {
+X			if ((local = gunique(name)) == NULL) {
+X				return;
+X			}
+X			dochown++;
+X		}
+X		fout = fopen(local, mode), closefunc = fclose;
+X	}
+X	if (fout == NULL) {
+X		reply(553, "%s: %s.", local, sys_errlist[errno]);
+X		return;
+X	}
+X	din = dataconn(local, (off_t)-1, "r");
+X	if (din == NULL)
+X		goto done;
+X	if ((tmp = receive_data(din, fout)) > 0 || ferror(fout) > 0) {
+X		reply(552, "%s: %s.", local, sys_errlist[errno]);
+X	}
+X	else if (tmp == 0 && !unique) {
+X		reply(226, "Transfer complete.");
+X	}
+X	else if (tmp == 0 && unique) {
+X		reply(226, "Transfer complete (unique file name:%s).", local);
+X	}
+X	(void) fclose(din);
+X	data = -1;
+X	pdata = -1;
+Xdone:
+X	if (dochown)
+X		(void) chown(local, pw->pw_uid, -1);
+X	(*closefunc)(fout);
+X}
+X
+XFILE *
+Xgetdatasock(mode)
+X	char *mode;
+X{
+X	int s, on = 1;
+X
+X	if (data >= 0)
+X		return (fdopen(data, mode));
+X	s = socket(AF_INET, SOCK_STREAM, 0);
+X	if (s < 0)
+X		return (NULL);
+X	seteuid(0);
+X	if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof (on)) < 0)
+X		goto bad;
+X	/* anchor socket to avoid multi-homing problems */
+X	data_source.sin_family = AF_INET;
+X	data_source.sin_addr = ctrl_addr.sin_addr;
+X	if (bind(s, &data_source, sizeof (data_source)) < 0)
+X		goto bad;
+X	seteuid(pw->pw_uid);
+X	return (fdopen(s, mode));
+Xbad:
+X	seteuid(pw->pw_uid);
+X	(void) close(s);
+X	return (NULL);
+X}
+X
+XFILE *
+Xdataconn(name, size, mode)
+X	char *name;
+X	off_t size;
+X	char *mode;
+X{
+X	char sizebuf[32];
+X	FILE *file;
+X	int retry = 0;
+X
+X	if (size >= 0)
+X		(void) sprintf (sizebuf, " (%ld bytes)", size);
+X	else
+X		(void) strcpy(sizebuf, "");
+X	if (pdata > 0) {
+X		struct sockaddr_in from;
+X		int s, fromlen = sizeof(from);
+X
+X		s = accept(pdata, &from, &fromlen);
+X		if (s < 0) {
+X			reply(425, "Can't open data connection.");
+X			(void) close(pdata);
+X			pdata = -1;
+X			return(NULL);
+X		}
+X		(void) close(pdata);
+X		pdata = s;
+X		reply(150, "Opening data connection for %s (%s mode)%s.",
+X		     name, type == TYPE_A ? "ascii" : "binary", sizebuf);
+X		return(fdopen(pdata, mode));
+X	}
+X	if (data >= 0) {
+X		reply(125, "Using existing data connection for %s%s.",
+X		    name, sizebuf);
+X		usedefault = 1;
+X		return (fdopen(data, mode));
+X	}
+X	if (usedefault)
+X		data_dest = his_addr;
+X	usedefault = 1;
+X	file = getdatasock(mode);
+X	if (file == NULL) {
+X		reply(425, "Can't create data socket (%s,%d): %s.",
+X		    inet_ntoa(data_source.sin_addr),
+X		    ntohs(data_source.sin_port),
+X		    sys_errlist[errno]);
+X		return (NULL);
+X	}
+X	data = fileno(file);
+X	while (connect(data, &data_dest, sizeof (data_dest)) < 0) {
+X		if (errno == EADDRINUSE && retry < swaitmax) {
+X			sleep((unsigned) swaitint);
+X			retry += swaitint;
+X			continue;
+X		}
+X		reply(425, "Can't build data connection: %s.",
+X		    sys_errlist[errno]);
+X		(void) fclose(file);
+X		data = -1;
+X		return (NULL);
+X	}
+X	reply(150, "Opening data connection for %s (%s mode)%s.",
+X	    name, type == TYPE_A ? "ascii" : "binary", sizebuf);
+X	return (file);
+X}
+X
+X/*
+X * Tranfer the contents of "instr" to
+X * "outstr" peer using the appropriate
+X * encapulation of the date subject
+X * to Mode, Structure, and Type.
+X *
+X * NB: Form isn't handled.
+X */
+Xsend_data(instr, outstr)
+X	FILE *instr, *outstr;
+X{
+X	register int c;
+X	int netfd, filefd, cnt;
+X	char buf[BUFSIZ];
+X
+X	transflag++;
+X	if (setjmp(urgcatch)) {
+X		transflag = 0;
+X		return(-1);
+X	}
+X	switch (type) {
+X
+X	case TYPE_A:
+X		while ((c = getc(instr)) != EOF) {
+X			if (c == '\n') {
+X				if (ferror (outstr)) {
+X					transflag = 0;
+X					return (1);
+X				}
+X				(void) putc('\r', outstr);
+X			}
+X			(void) putc(c, outstr);
+X		/*	if (c == '\r')			*/
+X		/*		putc ('\0', outstr);	*/
+X		}
+X		transflag = 0;
+X		if (ferror (instr) || ferror (outstr)) {
+X			return (1);
+X		}
+X		return (0);
+X		
+X	case TYPE_I:
+X	case TYPE_L:
+X		netfd = fileno(outstr);
+X		filefd = fileno(instr);
+X
+X		while ((cnt = read(filefd, buf, sizeof (buf))) > 0) {
+X			if (write(netfd, buf, cnt) < 0) {
+X				transflag = 0;
+X				return (1);
+X			}
+X		}
+X		transflag = 0;
+X		return (cnt < 0);
+X	}
+X	reply(550, "Unimplemented TYPE %d in send_data", type);
+X	transflag = 0;
+X	return (-1);
+X}
+X
+X/*
+X * Transfer data from peer to
+X * "outstr" using the appropriate
+X * encapulation of the data subject
+X * to Mode, Structure, and Type.
+X *
+X * N.B.: Form isn't handled.
+X */
+Xreceive_data(instr, outstr)
+X	FILE *instr, *outstr;
+X{
+X	register int c;
+X	int cnt;
+X	char buf[BUFSIZ];
+X
+X
+X	transflag++;
+X	if (setjmp(urgcatch)) {
+X		transflag = 0;
+X		return(-1);
+X	}
+X	switch (type) {
+X
+X	case TYPE_I:
+X	case TYPE_L:
+X		while ((cnt = read(fileno(instr), buf, sizeof buf)) > 0) {
+X			if (write(fileno(outstr), buf, cnt) < 0) {
+X				transflag = 0;
+X				return (1);
+X			}
+X		}
+X		transflag = 0;
+X		return (cnt < 0);
+X
+X	case TYPE_E:
+X		reply(553, "TYPE E not implemented.");
+X		transflag = 0;
+X		return (-1);
+X
+X	case TYPE_A:
+X		while ((c = getc(instr)) != EOF) {
+X			while (c == '\r') {
+X				if (ferror (outstr)) {
+X					transflag = 0;
+X					return (1);
+X				}
+X				if ((c = getc(instr)) != '\n')
+X					(void) putc ('\r', outstr);
+X			/*	if (c == '\0')			*/
+X			/*		continue;		*/
+X			}
+X			(void) putc (c, outstr);
+X		}
+X		transflag = 0;
+X		if (ferror (instr) || ferror (outstr))
+X			return (1);
+X		return (0);
+X	}
+X	transflag = 0;
+X	fatal("Unknown type in receive_data.");
+X	/*NOTREACHED*/
+X}
+X
+Xfatal(s)
+X	char *s;
+X{
+X	reply(451, "Error in server: %s\n", s);
+X	reply(221, "Closing connection due to server error.");
+X	dologout(0);
+X}
+X
+Xreply(n, s, p0, p1, p2, p3, p4)
+X	int n;
+X	char *s;
+X{
+X
+X	printf("%d ", n);
+X	printf(s, p0, p1, p2, p3, p4);
+X	printf("\r\n");
+X	(void) fflush(stdout);
+X	if (debug) {
+X		syslog(LOG_DEBUG, "<--- %d ", n);
+X		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+X	}
+X}
+X
+Xlreply(n, s, p0, p1, p2, p3, p4)
+X	int n;
+X	char *s;
+X{
+X	printf("%d-", n);
+X	printf(s, p0, p1, p2, p3, p4);
+X	printf("\r\n");
+X	(void) fflush(stdout);
+X	if (debug) {
+X		syslog(LOG_DEBUG, "<--- %d- ", n);
+X		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+X	}
+X}
+X
+Xack(s)
+X	char *s;
+X{
+X	reply(250, "%s command successful.", s);
+X}
+X
+Xnack(s)
+X	char *s;
+X{
+X	reply(502, "%s command not implemented.", s);
+X}
+X
+Xyyerror(s)
+X	char *s;
+X{
+X	char *cp;
+X
+X	cp = index(cbuf,'\n');
+X	*cp = '\0';
+X	reply(500, "'%s': command not understood.",cbuf);
+X}
+X
+Xdelete(name)
+X	char *name;
+X{
+X	struct stat st;
+X
+X	if (stat(name, &st) < 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return;
+X	}
+X	if ((st.st_mode&S_IFMT) == S_IFDIR) {
+X		if (rmdir(name) < 0) {
+X			reply(550, "%s: %s.", name, sys_errlist[errno]);
+X			return;
+X		}
+X		goto done;
+X	}
+X	if (unlink(name) < 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return;
+X	}
+Xdone:
+X	ack("DELE");
+X}
+X
+Xcwd(path)
+X	char *path;
+X{
+X
+X	if (chdir(path) < 0) {
+X		reply(550, "%s: %s.", path, sys_errlist[errno]);
+X		return;
+X	}
+X	ack("CWD");
+X}
+X
+Xmakedir(name)
+X	char *name;
+X{
+X	struct stat st;
+X	int dochown = stat(name, &st) < 0;
+X	
+X	if (mkdir(name, 0777) < 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return;
+X	}
+X	if (dochown)
+X		(void) chown(name, pw->pw_uid, -1);
+X	reply(257, "MKD command successful.");
+X}
+X
+Xremovedir(name)
+X	char *name;
+X{
+X
+X	if (rmdir(name) < 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return;
+X	}
+X	ack("RMD");
+X}
+X
+Xpwd()
+X{
+X	char path[MAXPATHLEN + 1];
+X
+X	if (getwd(path) == NULL) {
+X		reply(550, "%s.", path);
+X		return;
+X	}
+X	reply(257, "\"%s\" is current directory.", path);
+X}
+X
+Xchar *
+Xrenamefrom(name)
+X	char *name;
+X{
+X	struct stat st;
+X
+X	if (stat(name, &st) < 0) {
+X		reply(550, "%s: %s.", name, sys_errlist[errno]);
+X		return ((char *)0);
+X	}
+X	reply(350, "File exists, ready for destination name");
+X	return (name);
+X}
+X
+Xrenamecmd(from, to)
+X	char *from, *to;
+X{
+X
+X	if (rename(from, to) < 0) {
+X		reply(550, "rename: %s.", sys_errlist[errno]);
+X		return;
+X	}
+X	ack("RNTO");
+X}
+X
+Xdolog(sin)
+X	struct sockaddr_in *sin;
+X{
+X	struct hostent *hp = gethostbyaddr(&sin->sin_addr,
+X		sizeof (struct in_addr), AF_INET);
+X	time_t t;
+X	extern char *ctime();
+X
+X	if (hp) {
+X		(void) strncpy(remotehost, hp->h_name, sizeof (remotehost));
+X		endhostent();
+X	} else
+X		(void) strncpy(remotehost, inet_ntoa(sin->sin_addr),
+X		    sizeof (remotehost));
+X	if (!logging)
+X		return;
+X	t = time((time_t *) 0);
+X	syslog(LOG_INFO,"FTPD: connection from %s at %s", remotehost, ctime(&t));
+X}
+X
+X/*
+X * Record logout in wtmp file
+X * and exit with supplied status.
+X */
+Xdologout(status)
+X	int status;
+X{
+X	if (logged_in) {
+X		(void) seteuid(0);
+X		logwtmp(ttyline, "", "");
+X	}
+X	/* beware of flushing buffers after a SIGPIPE */
+X	_exit(status);
+X}
+X
+X/*
+X * Check user requesting login priviledges.
+X * Disallow anyone who does not have a standard
+X * shell returned by getusershell() (/etc/shells).
+X * Disallow anyone mentioned in the file FTPUSERS
+X * to allow people such as uucp to be avoided.
+X */
+Xcheckuser(name)
+X	register char *name;
+X{
+X	register char *cp;
+X	FILE *fd;
+X	struct passwd *p;
+X	char *shell;
+X	int found = 0;
+X	char line[BUFSIZ], *index(), *getusershell();
+X
+X	if ((p = getpwnam(name)) == NULL)
+X		return (0);
+X	if ((shell = p->pw_shell) == NULL || *shell == 0)
+X		shell = "/bin/sh";
+X	while ((cp = getusershell()) != NULL)
+X		if (strcmp(cp, shell) == 0)
+X			break;
+X	endusershell();
+X	if (cp == NULL)
+X		return (0);
+X	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+X		return (1);
+X	while (fgets(line, sizeof (line), fd) != NULL) {
+X		if ((cp = index(line, '\n')) != NULL)
+X			*cp = '\0';
+X		if (strcmp(line, name) == 0) {
+X			found++;
+X			break;
+X		}
+X	}
+X	(void) fclose(fd);
+X	return (!found);
+X}
+X
+Xmyoob()
+X{
+X	char *cp;
+X
+X	/* only process if transfer occurring */
+X	if (!transflag) {
+X		return;
+X	}
+X	cp = tmpline;
+X	if (getline(cp, 7, stdin) == NULL) {
+X		reply(221, "You could at least say goodby.");
+X		dologout(0);
+X	}
+X	upper(cp);
+X	if (strcmp(cp, "ABOR\r\n"))
+X		return;
+X	tmpline[0] = '\0';
+X	reply(426,"Transfer aborted. Data connection closed.");
+X	reply(226,"Abort successful");
+X	longjmp(urgcatch, 1);
+X}
+X
+X/*
+X * Note: The 530 reply codes could be 4xx codes, except nothing is
+X * given in the state tables except 421 which implies an exit.  (RFC959)
+X */
+Xpassive()
+X{
+X	int len;
+X	struct sockaddr_in tmp;
+X	register char *p, *a;
+X
+X	pdata = socket(AF_INET, SOCK_STREAM, 0);
+X	if (pdata < 0) {
+X		reply(530, "Can't open passive connection");
+X		return;
+X	}
+X	tmp = ctrl_addr;
+X	tmp.sin_port = 0;
+X	seteuid(0);
+X	if (bind(pdata, (struct sockaddr *) &tmp, sizeof(tmp)) < 0) {
+X		seteuid(pw->pw_uid);
+X		(void) close(pdata);
+X		pdata = -1;
+X		reply(530, "Can't open passive connection");
+X		return;
+X	}
+X	seteuid(pw->pw_uid);
+X	len = sizeof(tmp);
+X	if (getsockname(pdata, (char *) &tmp, &len) < 0) {
+X		(void) close(pdata);
+X		pdata = -1;
+X		reply(530, "Can't open passive connection");
+X		return;
+X	}
+X	if (listen(pdata, 1) < 0) {
+X		(void) close(pdata);
+X		pdata = -1;
+X		reply(530, "Can't open passive connection");
+X		return;
+X	}
+X	a = (char *) &tmp.sin_addr;
+X	p = (char *) &tmp.sin_port;
+X
+X#define UC(b) (((int) b) & 0xff)
+X
+X	reply(227, "Entering Passive Mode (%d,%d,%d,%d,%d,%d)", UC(a[0]),
+X		UC(a[1]), UC(a[2]), UC(a[3]), UC(p[0]), UC(p[1]));
+X}
+X
+Xchar *
+Xgunique(local)
+X	char *local;
+X{
+X	static char new[MAXPATHLEN];
+X	char *cp = rindex(local, '/');
+X	int d, count=0;
+X	char ext = '1';
+X
+X	if (cp) {
+X		*cp = '\0';
+X	}
+X	d = access(cp ? local : ".", 2);
+X	if (cp) {
+X		*cp = '/';
+X	}
+X	if (d < 0) {
+X		syslog(LOG_ERR, "%s: %m", local);
+X		return((char *) 0);
+X	}
+X	(void) strcpy(new, local);
+X	cp = new + strlen(new);
+X	*cp++ = '.';
+X	while (!d) {
+X		if (++count == 100) {
+X			reply(452, "Unique file name not cannot be created.");
+X			return((char *) 0);
+X		}
+X		*cp++ = ext;
+X		*cp = '\0';
+X		if (ext == '9') {
+X			ext = '0';
+X		}
+X		else {
+X			ext++;
+X		}
+X		if ((d = access(new, 0)) < 0) {
+X			break;
+X		}
+X		if (ext != '0') {
+X			cp--;
+X		}
+X		else if (*(cp - 2) == '.') {
+X			*(cp - 1) = '1';
+X		}
+X		else {
+X			*(cp - 2) = *(cp - 2) + 1;
+X			cp--;
+X		}
+X	}
+X	return(new);
+X}
+END-of-ftpd.c
+echo x - glob.c
+sed 's/^X//' >glob.c << 'END-of-glob.c'
+X/*
+X * Copyright (c) 1980 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)glob.c	5.4 (Berkeley) 6/29/88";
+X#endif /* not lint */
+X
+X/*
+X * C-shell glob for random programs.
+X */
+X
+X#include <sys/param.h>
+X#include <sys/stat.h>
+X#include <sys/dir.h>
+X
+X#include <stdio.h>
+X#include <errno.h>
+X#include <pwd.h>
+X
+X#define	QUOTE 0200
+X#define	TRIM 0177
+X#define	eq(a,b)		(strcmp(a, b)==0)
+X#define	GAVSIZ		(NCARGS/6)
+X#define	isdir(d)	((d.st_mode & S_IFMT) == S_IFDIR)
+X
+Xstatic	char **gargv;		/* Pointer to the (stack) arglist */
+Xstatic	short gargc;		/* Number args in gargv */
+Xstatic	short gnleft;
+Xstatic	short gflag;
+Xstatic	int tglob();
+Xchar	**glob();
+Xchar	*globerr;
+Xchar	*home;
+Xstruct	passwd *getpwnam();
+Xextern	int errno;
+Xstatic	char *strspl(), *strend();
+Xchar	*malloc(), *strcpy(), *strcat();
+Xchar	**copyblk();
+X
+Xstatic	int globcnt;
+X
+Xchar	*globchars = "`{[*?";
+X
+Xstatic	char *gpath, *gpathp, *lastgpathp;
+Xstatic	int globbed;
+Xstatic	char *entp;
+Xstatic	char **sortbas;
+X
+Xchar **
+Xglob(v)
+X	register char *v;
+X{
+X	char agpath[BUFSIZ];
+X	char *agargv[GAVSIZ];
+X	char *vv[2];
+X	vv[0] = v;
+X	vv[1] = 0;
+X	gflag = 0;
+X	rscan(vv, tglob);
+X	if (gflag == 0)
+X		return (copyblk(vv));
+X
+X	globerr = 0;
+X	gpath = agpath; gpathp = gpath; *gpathp = 0;
+X	lastgpathp = &gpath[sizeof agpath - 2];
+X	ginit(agargv); globcnt = 0;
+X	collect(v);
+X	if (globcnt == 0 && (gflag&1)) {
+X		blkfree(gargv), gargv = 0;
+X		return (0);
+X	} else
+X		return (gargv = copyblk(gargv));
+X}
+X
+Xstatic
+Xginit(agargv)
+X	char **agargv;
+X{
+X
+X	agargv[0] = 0; gargv = agargv; sortbas = agargv; gargc = 0;
+X	gnleft = NCARGS - 4;
+X}
+X
+Xstatic
+Xcollect(as)
+X	register char *as;
+X{
+X	if (eq(as, "{") || eq(as, "{}")) {
+X		Gcat(as, "");
+X		sort();
+X	} else
+X		acollect(as);
+X}
+X
+Xstatic
+Xacollect(as)
+X	register char *as;
+X{
+X	register int ogargc = gargc;
+X
+X	gpathp = gpath; *gpathp = 0; globbed = 0;
+X	expand(as);
+X	if (gargc != ogargc)
+X		sort();
+X}
+X
+Xstatic
+Xsort()
+X{
+X	register char **p1, **p2, *c;
+X	char **Gvp = &gargv[gargc];
+X
+X	p1 = sortbas;
+X	while (p1 < Gvp-1) {
+X		p2 = p1;
+X		while (++p2 < Gvp)
+X			if (strcmp(*p1, *p2) > 0)
+X				c = *p1, *p1 = *p2, *p2 = c;
+X		p1++;
+X	}
+X	sortbas = Gvp;
+X}
+X
+Xstatic
+Xexpand(as)
+X	char *as;
+X{
+X	register char *cs;
+X	register char *sgpathp, *oldcs;
+X	struct stat stb;
+X
+X	sgpathp = gpathp;
+X	cs = as;
+X	if (*cs == '~' && gpathp == gpath) {
+X		addpath('~');
+X		for (cs++; letter(*cs) || digit(*cs) || *cs == '-';)
+X			addpath(*cs++);
+X		if (!*cs || *cs == '/') {
+X			if (gpathp != gpath + 1) {
+X				*gpathp = 0;
+X				if (gethdir(gpath + 1))
+X					globerr = "Unknown user name after ~";
+X				(void) strcpy(gpath, gpath + 1);
+X			} else
+X				(void) strcpy(gpath, home);
+X			gpathp = strend(gpath);
+X		}
+X	}
+X	while (!any(*cs, globchars)) {
+X		if (*cs == 0) {
+X			if (!globbed)
+X				Gcat(gpath, "");
+X			else if (stat(gpath, &stb) >= 0) {
+X				Gcat(gpath, "");
+X				globcnt++;
+X			}
+X			goto endit;
+X		}
+X		addpath(*cs++);
+X	}
+X	oldcs = cs;
+X	while (cs > as && *cs != '/')
+X		cs--, gpathp--;
+X	if (*cs == '/')
+X		cs++, gpathp++;
+X	*gpathp = 0;
+X	if (*oldcs == '{') {
+X		(void) execbrc(cs, ((char *)0));
+X		return;
+X	}
+X	matchdir(cs);
+Xendit:
+X	gpathp = sgpathp;
+X	*gpathp = 0;
+X}
+X
+Xstatic
+Xmatchdir(pattern)
+X	char *pattern;
+X{
+X	struct stat stb;
+X	register struct direct *dp;
+X	DIR *dirp;
+X
+X	dirp = opendir(gpath);
+X	if (dirp == NULL) {
+X		if (globbed)
+X			return;
+X		goto patherr2;
+X	}
+X	if (fstat(dirp->dd_fd, &stb) < 0)
+X		goto patherr1;
+X	if (!isdir(stb)) {
+X		errno = ENOTDIR;
+X		goto patherr1;
+X	}
+X	while ((dp = readdir(dirp)) != NULL) {
+X		if (dp->d_ino == 0)
+X			continue;
+X		if (match(dp->d_name, pattern)) {
+X			Gcat(gpath, dp->d_name);
+X			globcnt++;
+X		}
+X	}
+X	closedir(dirp);
+X	return;
+X
+Xpatherr1:
+X	closedir(dirp);
+Xpatherr2:
+X	globerr = "Bad directory components";
+X}
+X
+Xstatic
+Xexecbrc(p, s)
+X	char *p, *s;
+X{
+X	char restbuf[BUFSIZ + 2];
+X	register char *pe, *pm, *pl;
+X	int brclev = 0;
+X	char *lm, savec, *sgpathp;
+X
+X	for (lm = restbuf; *p != '{'; *lm++ = *p++)
+X		continue;
+X	for (pe = ++p; *pe; pe++)
+X	switch (*pe) {
+X
+X	case '{':
+X		brclev++;
+X		continue;
+X
+X	case '}':
+X		if (brclev == 0)
+X			goto pend;
+X		brclev--;
+X		continue;
+X
+X	case '[':
+X		for (pe++; *pe && *pe != ']'; pe++)
+X			continue;
+X		continue;
+X	}
+Xpend:
+X	brclev = 0;
+X	for (pl = pm = p; pm <= pe; pm++)
+X	switch (*pm & (QUOTE|TRIM)) {
+X
+X	case '{':
+X		brclev++;
+X		continue;
+X
+X	case '}':
+X		if (brclev) {
+X			brclev--;
+X			continue;
+X		}
+X		goto doit;
+X
+X	case ','|QUOTE:
+X	case ',':
+X		if (brclev)
+X			continue;
+Xdoit:
+X		savec = *pm;
+X		*pm = 0;
+X		(void) strcpy(lm, pl);
+X		(void) strcat(restbuf, pe + 1);
+X		*pm = savec;
+X		if (s == 0) {
+X			sgpathp = gpathp;
+X			expand(restbuf);
+X			gpathp = sgpathp;
+X			*gpathp = 0;
+X		} else if (amatch(s, restbuf))
+X			return (1);
+X		sort();
+X		pl = pm + 1;
+X		if (brclev)
+X			return (0);
+X		continue;
+X
+X	case '[':
+X		for (pm++; *pm && *pm != ']'; pm++)
+X			continue;
+X		if (!*pm)
+X			pm--;
+X		continue;
+X	}
+X	if (brclev)
+X		goto doit;
+X	return (0);
+X}
+X
+Xstatic
+Xmatch(s, p)
+X	char *s, *p;
+X{
+X	register int c;
+X	register char *sentp;
+X	char sglobbed = globbed;
+X
+X	if (*s == '.' && *p != '.')
+X		return (0);
+X	sentp = entp;
+X	entp = s;
+X	c = amatch(s, p);
+X	entp = sentp;
+X	globbed = sglobbed;
+X	return (c);
+X}
+X
+Xstatic
+Xamatch(s, p)
+X	register char *s, *p;
+X{
+X	register int scc;
+X	int ok, lc;
+X	char *sgpathp;
+X	struct stat stb;
+X	int c, cc;
+X
+X	globbed = 1;
+X	for (;;) {
+X		scc = *s++ & TRIM;
+X		switch (c = *p++) {
+X
+X		case '{':
+X			return (execbrc(p - 1, s - 1));
+X
+X		case '[':
+X			ok = 0;
+X			lc = 077777;
+X			while (cc = *p++) {
+X				if (cc == ']') {
+X					if (ok)
+X						break;
+X					return (0);
+X				}
+X				if (cc == '-') {
+X					if (lc <= scc && scc <= *p++)
+X						ok++;
+X				} else
+X					if (scc == (lc = cc))
+X						ok++;
+X			}
+X			if (cc == 0)
+X				if (ok)
+X					p--;
+X				else
+X					return 0;
+X			continue;
+X
+X		case '*':
+X			if (!*p)
+X				return (1);
+X			if (*p == '/') {
+X				p++;
+X				goto slash;
+X			}
+X			s--;
+X			do {
+X				if (amatch(s, p))
+X					return (1);
+X			} while (*s++);
+X			return (0);
+X
+X		case 0:
+X			return (scc == 0);
+X
+X		default:
+X			if (c != scc)
+X				return (0);
+X			continue;
+X
+X		case '?':
+X			if (scc == 0)
+X				return (0);
+X			continue;
+X
+X		case '/':
+X			if (scc)
+X				return (0);
+Xslash:
+X			s = entp;
+X			sgpathp = gpathp;
+X			while (*s)
+X				addpath(*s++);
+X			addpath('/');
+X			if (stat(gpath, &stb) == 0 && isdir(stb))
+X				if (*p == 0) {
+X					Gcat(gpath, "");
+X					globcnt++;
+X				} else
+X					expand(p);
+X			gpathp = sgpathp;
+X			*gpathp = 0;
+X			return (0);
+X		}
+X	}
+X}
+X
+Xstatic
+XGmatch(s, p)
+X	register char *s, *p;
+X{
+X	register int scc;
+X	int ok, lc;
+X	int c, cc;
+X
+X	for (;;) {
+X		scc = *s++ & TRIM;
+X		switch (c = *p++) {
+X
+X		case '[':
+X			ok = 0;
+X			lc = 077777;
+X			while (cc = *p++) {
+X				if (cc == ']') {
+X					if (ok)
+X						break;
+X					return (0);
+X				}
+X				if (cc == '-') {
+X					if (lc <= scc && scc <= *p++)
+X						ok++;
+X				} else
+X					if (scc == (lc = cc))
+X						ok++;
+X			}
+X			if (cc == 0)
+X				if (ok)
+X					p--;
+X				else
+X					return 0;
+X			continue;
+X
+X		case '*':
+X			if (!*p)
+X				return (1);
+X			for (s--; *s; s++)
+X				if (Gmatch(s, p))
+X					return (1);
+X			return (0);
+X
+X		case 0:
+X			return (scc == 0);
+X
+X		default:
+X			if ((c & TRIM) != scc)
+X				return (0);
+X			continue;
+X
+X		case '?':
+X			if (scc == 0)
+X				return (0);
+X			continue;
+X
+X		}
+X	}
+X}
+X
+Xstatic
+XGcat(s1, s2)
+X	register char *s1, *s2;
+X{
+X	register int len = strlen(s1) + strlen(s2) + 1;
+X
+X	if (len >= gnleft || gargc >= GAVSIZ - 1)
+X		globerr = "Arguments too long";
+X	else {
+X		gargc++;
+X		gnleft -= len;
+X		gargv[gargc] = 0;
+X		gargv[gargc - 1] = strspl(s1, s2);
+X	}
+X}
+X
+Xstatic
+Xaddpath(c)
+X	char c;
+X{
+X
+X	if (gpathp >= lastgpathp)
+X		globerr = "Pathname too long";
+X	else {
+X		*gpathp++ = c;
+X		*gpathp = 0;
+X	}
+X}
+X
+Xstatic
+Xrscan(t, f)
+X	register char **t;
+X	int (*f)();
+X{
+X	register char *p, c;
+X
+X	while (p = *t++) {
+X		if (f == tglob)
+X			if (*p == '~')
+X				gflag |= 2;
+X			else if (eq(p, "{") || eq(p, "{}"))
+X				continue;
+X		while (c = *p++)
+X			(*f)(c);
+X	}
+X}
+X/*
+Xstatic
+Xscan(t, f)
+X	register char **t;
+X	int (*f)();
+X{
+X	register char *p, c;
+X
+X	while (p = *t++)
+X		while (c = *p)
+X			*p++ = (*f)(c);
+X} */
+X
+Xstatic
+Xtglob(c)
+X	register char c;
+X{
+X
+X	if (any(c, globchars))
+X		gflag |= c == '{' ? 2 : 1;
+X	return (c);
+X}
+X/*
+Xstatic
+Xtrim(c)
+X	char c;
+X{
+X
+X	return (c & TRIM);
+X} */
+X
+X
+Xletter(c)
+X	register char c;
+X{
+X
+X	return (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_');
+X}
+X
+Xdigit(c)
+X	register char c;
+X{
+X
+X	return (c >= '0' && c <= '9');
+X}
+X
+Xany(c, s)
+X	register int c;
+X	register char *s;
+X{
+X
+X	while (*s)
+X		if (*s++ == c)
+X			return(1);
+X	return(0);
+X}
+Xblklen(av)
+X	register char **av;
+X{
+X	register int i = 0;
+X
+X	while (*av++)
+X		i++;
+X	return (i);
+X}
+X
+Xchar **
+Xblkcpy(oav, bv)
+X	char **oav;
+X	register char **bv;
+X{
+X	register char **av = oav;
+X
+X	while (*av++ = *bv++)
+X		continue;
+X	return (oav);
+X}
+X
+Xblkfree(av0)
+X	char **av0;
+X{
+X	register char **av = av0;
+X
+X	while (*av)
+X		free(*av++);
+X	free((char *)av0);
+X}
+X
+Xstatic
+Xchar *
+Xstrspl(cp, dp)
+X	register char *cp, *dp;
+X{
+X	register char *ep = malloc((unsigned)(strlen(cp) + strlen(dp) + 1));
+X
+X	if (ep == (char *)0)
+X		fatal("Out of memory");
+X	(void) strcpy(ep, cp);
+X	(void) strcat(ep, dp);
+X	return (ep);
+X}
+X
+Xchar **
+Xcopyblk(v)
+X	register char **v;
+X{
+X	register char **nv = (char **)malloc((unsigned)((blklen(v) + 1) *
+X						sizeof(char **)));
+X	if (nv == (char **)0)
+X		fatal("Out of memory");
+X
+X	return (blkcpy(nv, v));
+X}
+X
+Xstatic
+Xchar *
+Xstrend(cp)
+X	register char *cp;
+X{
+X
+X	while (*cp)
+X		cp++;
+X	return (cp);
+X}
+X/*
+X * Extract a home directory from the password file
+X * The argument points to a buffer where the name of the
+X * user whose home directory is sought is currently.
+X * We write the home directory of the user back there.
+X */
+Xgethdir(home)
+X	char *home;
+X{
+X	register struct passwd *pp = getpwnam(home);
+X
+X	if (pp == 0)
+X		return (1);
+X	(void) strcpy(home, pp->pw_dir);
+X	return (0);
+X}
+END-of-glob.c
+echo x - logwtmp.c
+sed 's/^X//' >logwtmp.c << 'END-of-logwtmp.c'
+X/*
+X * Copyright (c) 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X * static char sccsid[] = "@(#)logwtmp.c	5.2 (Berkeley) 9/20/88";
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)logwtmp.c	5.2 (Berkeley) 9/22/88";
+X#endif /* not lint */
+X
+X#include <sys/types.h>
+X#include <sys/file.h>
+X#include <sys/time.h>
+X#include <sys/stat.h>
+X#include <utmp.h>
+X
+X#define	WTMPFILE	"/usr/adm/wtmp"
+X
+Xstatic int fd;
+X
+Xlogwtmp(line, name, host)
+X	char *line, *name, *host;
+X{
+X	struct utmp ut;
+X	struct stat buf;
+X	time_t time();
+X	char *strncpy();
+X
+X	if (!fd && (fd = open(WTMPFILE, O_WRONLY|O_APPEND, 0)) < 0)
+X		return;
+X	if (!fstat(fd, &buf)) {
+X		(void)strncpy(ut.ut_line, line, sizeof(ut.ut_line));
+X		(void)strncpy(ut.ut_name, name, sizeof(ut.ut_name));
+X		(void)strncpy(ut.ut_host, host, sizeof(ut.ut_host));
+X		(void)time(&ut.ut_time);
+X		if (write(fd, (char *)&ut, sizeof(struct utmp)) !=
+X		    sizeof(struct utmp))
+X			(void)ftruncate(fd, buf.st_size);
+X	}
+X}
+END-of-logwtmp.c
+echo x - newvers.sh
+sed 's/^X//' >newvers.sh << 'END-of-newvers.sh'
+X#!/bin/sh -
+X#
+X# Copyright (c) 1983 The Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation,
+X# advertising materials, and other materials related to such
+X# distribution and use acknowledge that the software was developed
+X# by the University of California, Berkeley.  The name of the
+X# University may not be used to endorse or promote products derived
+X# from this software without specific prior written permission.
+X# THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X# IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X# WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X#	@(#)newvers.sh	5.3 (Berkeley) 10/31/88
+X#
+Xif [ ! -r version ]; then echo 0 > version; fi
+Xtouch version
+Xawk '	{	version = $1 + 1; }\
+XEND	{	printf "char version[] = \"Version 4.%d ", version > "vers.c";\
+X		printf "%d\n", version > "version"; }' < version
+Xecho `date`'";' >> vers.c
+END-of-newvers.sh
+echo x - popen.c
+sed 's/^X//' >popen.c << 'END-of-popen.c'
+X/*
+X * Copyright (c) 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * This code is derived from software written by Ken Arnold and
+X * published in UNIX Review, Vol. 6, No. 8.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X * static char sccsid[] = "@(#)popen.c	5.7 (Berkeley) 9/1/88";
+X */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)popen.c	5.2 (Berkeley) 9/22/88";
+X#endif /* not lint */
+X
+X#include <sys/types.h>
+X#include <sys/signal.h>
+X#include <stdio.h>
+X
+X/*
+X * Special version of popen which avoids call to shell.  This insures noone
+X * may create a pipe to a hidden program as a side effect of a list or dir
+X * command.
+X */
+Xstatic uid_t *pids;
+Xstatic int fds;
+X
+XFILE *
+Xpopen(program, type)
+X	char *program, *type;
+X{
+X	register char *cp;
+X	FILE *iop;
+X	int argc, gargc, pdes[2], pid;
+X	char **pop, *argv[100], *gargv[1000], *vv[2];
+X	extern char **glob(), **copyblk(), *strtok();
+X
+X	if (*type != 'r' && *type != 'w' || type[1])
+X		return(NULL);
+X
+X	if (!pids) {
+X		if ((fds = getdtablesize()) <= 0)
+X			return(NULL);
+X		if (!(pids =
+X		    (uid_t *)malloc((u_int)(fds * sizeof(uid_t)))))
+X			return(NULL);
+X		bzero(pids, fds * sizeof(uid_t));
+X	}
+X	if (pipe(pdes) < 0)
+X		return(NULL);
+X
+X	/* break up string into pieces */
+X	for (argc = 0, cp = program;; cp = NULL)
+X		if (!(argv[argc++] = strtok(cp, " \t\n")))
+X			break;
+X
+X	/* glob each piece */
+X	gargv[0] = argv[0];
+X	for (gargc = argc = 1; argv[argc]; argc++) {
+X		if (!(pop = glob(argv[argc]))) {	/* globbing failed */
+X			vv[0] = argv[argc];
+X			vv[1] = NULL;
+X			pop = copyblk(vv);
+X		}
+X		argv[argc] = (char *)pop;		/* save to free later */
+X		while (*pop && gargc < 1000)
+X			gargv[gargc++] = *pop++;
+X	}
+X	gargv[gargc] = NULL;
+X
+X	iop = NULL;
+X	switch(pid = vfork()) {
+X	case -1:			/* error */
+X		(void)close(pdes[0]);
+X		(void)close(pdes[1]);
+X		goto free;
+X		/* NOTREACHED */
+X	case 0:				/* child */
+X		if (*type == 'r') {
+X			if (pdes[1] != 1) {
+X				dup2(pdes[1], 1);
+X				(void)close(pdes[1]);
+X			}
+X			(void)close(pdes[0]);
+X		} else {
+X			if (pdes[0] != 0) {
+X				dup2(pdes[0], 0);
+X				(void)close(pdes[0]);
+X			}
+X			(void)close(pdes[1]);
+X		}
+X		execv(gargv[0], gargv);
+X		_exit(1);
+X	}
+X	/* parent; assume fdopen can't fail...  */
+X	if (*type == 'r') {
+X		iop = fdopen(pdes[0], type);
+X		(void)close(pdes[1]);
+X	} else {
+X		iop = fdopen(pdes[1], type);
+X		(void)close(pdes[0]);
+X	}
+X	pids[fileno(iop)] = pid;
+X
+Xfree:	for (argc = 1; argv[argc] != NULL; argc++)
+X		blkfree((char **)argv[argc]);
+X	return(iop);
+X}
+X
+Xpclose(iop)
+X	FILE *iop;
+X{
+X	register int fdes;
+X	long omask;
+X	int pid, stat_loc;
+X	u_int waitpid();
+X
+X	/*
+X	 * pclose returns -1 if stream is not associated with a
+X	 * `popened' command, or, if already `pclosed'.
+X	 */
+X	if (pids[fdes = fileno(iop)] == 0)
+X		return(-1);
+X	(void)fclose(iop);
+X	omask = sigblock(sigmask(SIGINT)|sigmask(SIGQUIT)|sigmask(SIGHUP));
+X	while ((pid = wait(&stat_loc)) != pids[fdes] && pid != -1);
+X	(void)sigsetmask(omask);
+X	pids[fdes] = 0;
+X	return(stat_loc);
+X}
+END-of-popen.c
+echo x - vers.c
+sed 's/^X//' >vers.c << 'END-of-vers.c'
+Xchar version[] = "Version 4.160 Mon Oct 31 11:50:39 PST 1988";
+END-of-vers.c
+echo x - version
+sed 's/^X//' >version << 'END-of-version'
+X160
+END-of-version
+exit
+

@@ -1,0 +1,107 @@
+From allegra!jpl@ucbvax.Berkeley.EDU  Tue Mar 31 00:10:22 1987
+From: allegra!jpl@ucbvax.berkeley.edu
+Date: Mon, 30 Mar 87 20:19:39 est
+To: ucbvax!bugs
+Subject: Bad symbolic link data can make dumps unrestorable
+Index: etc/restore/tape.c 4.3BSD
+Keywords: "resync restore" dump restore
+
+Description:
+	If symbolic link information is not properly null-terminated,
+	/etc/restore can cannibalize itself, rendering dumps
+	unrestorable.  The symptoms I observed involved a hail of
+	"resync restore" messages, but the way restore destroys itself
+	is data dependent, and almost anything could happen.
+Repeat-By:
+	Fortunately, this problem is hard to reproduce.  It takes some
+	file system corruption.  Unfortunately, neither fsck not dump
+	detect this corruption, so unusable dump tapes can be produced
+	for a very long time before you have to restore one.  Then you
+	can't.  One way to reproduce the problem is to use adb to
+	doctor the path name associated with a symbolic link.  Another
+	way is to get some new disks from a manufacturer you used to
+	trust, and have your file systems totally trashed.  I recommend
+	the former (but not on a file system you value).  I found out
+	via the latter.
+Fix:
+	In short, restore trusts dump to put out symbolic link names
+	that are null terminated strings.  It looks as though neither
+	fsck nor dump worry about the format of symbolic links.  Dump,
+	at least, ought not to tolerate corruption that restore cannot
+	handle.  Too late now.  The tapes are on the shelf.  So even if
+	dump or fsck get fixed, it will be necessary to make restore do
+	something reasonable with bad link data.  Here's what I did:
+
+***************
+*** 551,563 ****
+  	long	size;
+  {
+  
+! 	pathlen += size;
+! 	if (pathlen > MAXPATHLEN) {
+! 		fprintf(stderr, "symbolic link name: %s->%s%s; too long %d\n",
+! 		    curfile.name, lnkbuf, buf, pathlen);
+! 		done(1);
+  	}
+- 	(void) strcat(lnkbuf, buf);
+  }
+  
+  xtrlnkskip(buf, size)
+--- 551,577 ----
+  	long	size;
+  {
+  
+! 	/*
+! 	 * We dare not copy the name into lnkbuf unless there is enough room.
+! 	 * If pathlen and size do not correspond to the current sizes of
+! 	 * lnkbuf and the new component, respectively, we have a logic error
+! 	 * or corrupt link data.  We could punt, but it seems kinder to
+! 	 * suppress the link (by setting pathlen to 0) and continue.
+! 	 */
+! 	if ((strlen(lnkbuf) != pathlen) ||
+! 	    (strlen(buf) != size) ||
+! 	    ((pathlen + size) >= sizeof(lnkbuf))) {
+! 		fprintf(stderr,
+! 		    "symbolic link %s corrupt: coercing to length 0\n",
+! 		    curfile.name);
+! 		vprintf(stderr,
+! 		    "\tstrlen(lnkbuf+buf) = %d+%d, pathlen+size = %d+%ld\n",
+! 		    strlen(lnkbuf), strlen(buf), pathlen, size);
+! 		pathlen = 0;
+! 	} else {
+! 		(void) strcpy(lnkbuf + pathlen, buf);
+! 		pathlen += size;
+  	}
+  }
+  
+  xtrlnkskip(buf, size)
+
+	Restore is relying on dump to set ``size'' to the length of the
+	path name of the symbolic link.  Although the code is careful to
+	check for a plausible ``pathlen'', it doesn't verify that the
+	length advertised is the length passed.  lnkbuf can hold
+	MAXPATHLEN characters (and terminating null) but, in the case I
+	saw, ``size'' was 30 but strlen(buf) was actually more than 6000.
+	The strcat() therefore overran the buffer and corrupted many
+	static variables, causing restore to ignore all subsequent files
+	on the tape.
+
+	It's difficult to know what's ``right'' when dealing with bogus
+	data.  The call to done(1) above terminates the restore.  That's
+	better than silently trashing static variables, but it means you
+	have to restart the restore.  That's what I originally did,
+	explicitly removing the corrupted file from the list of files
+	to be interactively restored.  But this would get tedious real
+	fast if several links were corrupted.  So I simply coerced the
+	length to 0, noting that the calling routine treated a path of
+	length 0 as a non-fatal error that would simply ignore the link
+	and continue the dump.  Here's an example of the diagnostic output
+	when I ran with option -v.
+
+symbolic link ./src/sc2d/build/iconv corrupt: coercing to length 0
+	strlen(lnkbuf+buf) = 0+6144, pathlen+size = 0+30
+./src/sc2d/build/iconv: zero length symbolic link (ignored)
+
+	I have run the revised code on both good and bad symbolic link
+	data, and it performs ``the way I want it to''.  But I haven't
+	run extensive tests.  Caveat user.

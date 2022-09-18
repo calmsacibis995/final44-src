@@ -1,0 +1,618 @@
+head     4.7;
+branch   ;
+access   ;
+symbols  PATCH8:4.7 PATCH7:4.7 KPATCH6:4.7 ASRSNAP1001:4.7 PATCH5:4.7 ADAMS_NSA:4.7 KPATCH4:4.7 KPATCH3:4.7 KPATCH2:4.7 KREL1:4.7 BETA5/24/88:4.6;
+locks    ; strict;
+comment  @ * @;
+
+
+4.7
+date     88.11.15.11.25.09;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.14.20.20;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.18.42.17;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.23.10.46.18;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.09.10.16.14.07;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.04.14.55.10;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.40.36;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     87.01.13.16.34.29;  author wesommer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     87.01.13.11.27.54;  author wesommer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.12.16.13.50.52;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.7
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h
+make debug routines consistent
+@
+text
+@/*
+ * $Source: //ra/mit/wesommer/des/RCS/cbc_noop.c,v $
+ * $Author: steiner $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * These routines perform encryption and decryption using the DES
+ * private key algorithm, or else a subset of it-- fewer inner loops.
+ * (AUTH_DES_ITER defaults to 16, may be less.)
+ *
+ * Under U.S. law, this software may not be exported outside the US
+ * without license from the U.S. Commerce department.
+ *
+ * These routines form the library interface to the des facilities.
+ *
+ * des_cbc_noop.c	SPECIAL DEBUGGING VERSION
+ *
+ *	spm	8/85	MIT project athena
+ */
+
+#ifndef	lint
+static char rcsid_cbc_noop_c[] =
+"$Header: cbc_noop.c,v 4.6 88/02/24 14:20:20 steiner Exp $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <des.h>
+
+extern int des_debug;
+extern int des_debug_print();
+
+/*
+ * Performs DES cipher-block-chaining operation, either encrypting
+ * from cleartext to ciphertext, if encrypt != 0 or decrypting from
+ * ciphertext to cleartext, if encrypt == 0.
+ *
+ * The key schedule is passed as an arg, as well as the cleartext or
+ * ciphertext.	The cleartext and ciphertext should be in host order.
+ *
+ * NOTE-- the output is ALWAYS an multiple of 8 bytes long.  If not
+ * enough space was provided, your program will get trashed.
+ *
+ * For encryption, the cleartext string is null padded, at the end, to
+ * an integral multiple of eight bytes.
+ *
+ * For decryption, the ciphertext will be used in integral multiples
+ * of 8 bytes, but only the first "length" bytes returned into the
+ * cleartext.
+ */
+
+int
+des_cbc_encrypt(in,out,length,key,iv,encrypt)
+    des_cblock *in;		/* >= length bytes of inputtext */
+    des_cblock *out;		/* >= length bytes of outputtext */
+    register long length;	/* in bytes */
+    int encrypt;		/* 0 ==> decrypt, else encrypt */
+    des_key_schedule key;		/* precomputed key schedule */
+    des_cblock *iv;		/* 8 bytes of ivec */
+{
+    register unsigned long *input = (unsigned long *) in;
+    register unsigned long *output = (unsigned long *) out;
+    register unsigned long *ivec = (unsigned long *) iv;
+
+    unsigned long i,j;
+    static unsigned long t_input[2];
+    static unsigned long t_output[8];
+    static unsigned char *t_in_p = (unsigned char *) t_input;
+    static unsigned long xor_0, xor_1;
+
+    if (encrypt) {
+	t_output[0] = *ivec++;
+	t_output[1] = *ivec;
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+	    t_input[0] = *input++;
+	    t_input[1] = *input++;
+	    /* zero pad */
+	    if (length < 8)
+		for (j = length; j <= 7; j++)
+		    *(t_in_p+j)= 0;
+
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",length,t_input[0],t_input[1]);
+#endif
+#ifdef notdef
+	    /* do the xor for cbc into the temp */
+	    t_input[0] ^= t_output[0] ;
+	    t_input[1] ^= t_output[1] ;
+	    /* encrypt */
+#endif
+	    /* NO xor for debugging */
+	    /* encrypt */
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+	    /* copy temp output and save it for cbc */
+	    *output++ = t_output[0];
+	    *output++ = t_output[1];
+#ifdef DEBUG
+	    if (des_debug) {
+		des_debug_print("xor'ed",i,t_input[0],t_input[1]);
+		des_debug_print("cipher",i,t_output[0],t_output[1]);
+	    }
+#endif
+	}
+	return 0;
+    }
+
+    else	/* decrypt */
+    {
+	xor_0 = *ivec++;
+	xor_1 = *ivec;
+
+	for (i = 0; length > 0; i++, length -= 8) {
+	    /* get input */
+	    t_input[0] = *input++;
+	    t_input[1] = *input++;
+	    /* no padding for decrypt */
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("cipher",i,t_input[0],t_input[1]);
+#endif
+	    /* encrypt */
+	    des_ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("out pre xor",i,t_output[0],t_output[1]);
+#endif
+#ifdef notdef
+	    /* do the xor for cbc into the output */
+	    t_output[0] ^= xor_0 ;
+	    t_output[1] ^= xor_1 ;
+#endif
+	    /* NO xor -- debugging */
+
+	    /* copy temp output */
+	    *output++ = t_output[0];
+	    *output++ = t_output[1];
+	    /* save xor value for next round */
+	    xor_0 = t_input[0];
+	    xor_1 = t_input[1];
+#ifdef DEBUG
+	    if (des_debug)
+		des_debug_print("clear",i,t_output[0],t_output[1]);
+#endif
+	}
+    }
+}
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d27 1
+a27 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d34 2
+a35 2
+extern int debug;
+extern int debug_print();
+d57 3
+a59 3
+cbc_encrypt(in,out,length,key,iv,encrypt)
+    C_Block *in;		/* >= length bytes of inputtext */
+    C_Block *out;		/* >= length bytes of outputtext */
+d62 2
+a63 2
+    Key_schedule key;		/* precomputed key schedule */
+    C_Block *iv;		/* 8 bytes of ivec */
+d89 2
+a90 2
+	    if (debug)
+		debug_print("clear",length,t_input[0],t_input[1]);
+d100 1
+a100 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d105 3
+a107 3
+	    if (debug) {
+		debug_print("xor'ed",i,t_input[0],t_input[1]);
+		debug_print("cipher",i,t_output[0],t_output[1]);
+d125 2
+a126 2
+	    if (debug)
+		debug_print("cipher",i,t_input[0],t_input[1]);
+d129 1
+a129 1
+	    ecb_encrypt(t_input,t_output,key,encrypt);
+d131 2
+a132 2
+	    if (debug)
+		debug_print("out pre xor",i,t_output[0],t_output[1]);
+d148 2
+a149 2
+	    if (debug)
+		debug_print("clear",i,t_output[0],t_output[1]);
+@
+
+
+4.5
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d2 2
+a3 1
+ * des_cbc_noop.c	SPECIAL DEBUGGING VERSION
+d5 2
+a6 2
+ *	spm	8/85	MIT project athena
+ *				copyright MIT	1985
+d8 2
+a10 4
+ *	$Source: /u3/kerberos.new/lib/des/bsd/RCS/des_cbc_noop.c,v $
+ *	$Author: steiner $
+ *	$Locker:  $
+ *
+d19 4
+d25 6
+@
+
+
+4.4
+log
+@Moved ./des_conf.h to .../include/krb_conf.h; .../include/des.h
+includes it now.
+@
+text
+@d1 2
+a2 1
+/* des_cbc_noop.c	SPECIAL DEBUGGING VERSION
+d10 1
+a10 3
+ *	$Locker: steiner $
+ * Initial revision
+ * 
+d12 3
+a14 3
+ *	These routines perform encryption and decryption using the DES
+ *  private key algorithm, or else a subset of it-- fewer inner loops.
+ *  ( AUTH_DES_ITER defaults to 16, may be less)
+d16 2
+a17 2
+ *	Under U.S. law, this software may not be exported outside the US
+ *  without license from the U.S. Commerce department.
+d19 1
+a19 4
+ *	The key schedule is passed as an arg, as well as the cleartext or
+ *  ciphertext.  The cleartext and ciphertext should be in host order.
+ *
+ *	These routines form the library interface to the des facilities.
+d22 2
+a23 2
+# include	<stdio.h>
+# include	<des.h>
+d25 2
+a26 2
+extern	int	debug;
+extern	int	debug_print();
+d28 4
+a31 13
+int	
+	cbc_encrypt(in,out,length,key,iv,encrypt)
+
+	C_Block				 		*in;		/* >= length bytes of inputtext	 */
+	C_Block					 	*out	;	/* >= length bytes of outputtext */
+	register 	long			length;		/* in bytes						*/
+	int							encrypt;	/* 0 ==> decrypt, else encrypt */
+	Key_schedule				key;		/* precomputed key schedule	   */
+	C_Block						*iv;		/* 8 bytes of ivec			   */
+
+/*	performs des cipher-block-chaining operation
+ *	either encrypts from cleartext to ciphertext, if encrypt != 0
+ *	or decrypts from ciphertext to cleartext, if encrypt == 0
+d33 2
+a34 3
+ *	NOTE--
+ *  the output is ALWAYS an multiple of 8 bytes long.  If not enough
+ *	space was provided, your program will get trashed.
+d36 2
+a37 2
+ *  for encryption, the cleartext string is null padded, at the end, 
+ *  to an integral multiple of eight bytes.
+d39 6
+a44 2
+ *	for decryption, the ciphertext will be used in integral multiples of
+ *  8 bytes, but only the first "length" bytes returned into the cleartext.
+d46 9
+d56 3
+a58 3
+	register	unsigned long 	*input = (unsigned long *) in;
+	register	unsigned long 	*output = (unsigned long *) out;
+	register	unsigned long 	*ivec = (unsigned long *) iv;
+d60 5
+a64 5
+	unsigned long	i,j;
+	static	unsigned long	t_input[2];
+	static	unsigned long	t_output[8];
+	static	unsigned char	*t_in_p = (unsigned char *) t_input;
+	static	unsigned long	xor_0, xor_1;
+d66 3
+a68 4
+	if (encrypt)
+		{
+		t_output[0] = *ivec++;
+		t_output[1] = *ivec;
+d70 12
+a81 25
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input++;
+			t_input[1] = *input++;
+			/* zero pad													   */
+			if (length <8)
+				{
+				for (j = length; j<=7; j++)
+					{
+					*(t_in_p+j)= 0;
+					}
+				}
+					
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",length,t_input[0],t_input[1]);
+				}
+#endif			
+#ifdef	notdef
+			/* do the xor for cbc into the temp						   */
+			t_input[0] ^= t_output[0] ;
+			t_input[1] ^= t_output[1] ;
+			/* encrypt												   */
+d83 5
+a87 12
+			/* NO xor for debugging						   */
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+			/* copy temp output	and save it for cbc						   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("xor'ed",i,t_input[0],t_input[1]);
+				debug_print("cipher",i,t_output[0],t_output[1]);
+				}	
+d89 15
+a103 3
+			}
+		return 0;
+		}
+d105 4
+a108 4
+	else	/* decrypt */
+		{
+		xor_0 = *ivec++;
+		xor_1 = *ivec;
+d110 8
+a117 11
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input++;
+			t_input[1] = *input++;
+			/* no padding for decrypt									   */
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("cipher",i,t_input[0],t_input[1]);
+				}
+d119 5
+a123 7
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("out pre xor",i,t_output[0],t_output[1]);
+				}
+d125 4
+a128 4
+#ifdef	notdef
+			/* do the xor for cbc into the output						   */
+			t_output[0] ^= xor_0 ;
+			t_output[1] ^= xor_1 ;
+d130 1
+a130 1
+			/* NO xor -- debugging						   */
+d132 9
+a140 11
+			/* copy temp output											   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+			/* save xor value for next round							   */
+			xor_0 = t_input[0];
+			xor_1 = t_input[1];
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",i,t_output[0],t_output[1]);
+				}	
+d142 2
+a143 3
+			}
+					
+		}
+@
+
+
+4.3
+log
+@Changed include files configuration and referencing.
+@
+text
+@d7 1
+a7 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_cbc_noop.c,v $
+a9 11
+ *	$Log:	des_cbc_noop.c,v $
+ * Revision 4.2  87/09/04  14:55:10  steiner
+ * Changes for PC compatibility, from Jerry Saltzer.
+ * 
+ * Revision 1.3  87/01/13  16:34:29  wesommer
+ * Added include of des_conf.h
+ * 
+ * Revision 1.2  87/01/13  11:27:54  wesommer
+ * Un-checked-in changes.
+ * 
+ * Revision 1.1  85/12/16  13:50:52  spm
+a11 6
+ * Revision 1.2  85/08/19  15:25:26  spm
+ * fix print, int
+ * 
+ * Revision 1.1  85/08/16  12:48:04  spm
+ * Initial revision
+ * 
+a25 1
+#include "des_conf.h"
+@
+
+
+4.2
+log
+@Changes for PC compatibility, from Jerry Saltzer.
+@
+text
+@d7 3
+a9 3
+ *	$Source: /source/kerberos/lib/des/bsd/RCS/des_cbc_noop.c,v $
+ *	$Author: wesommer $
+ *	$Locker:  $
+d11 3
+d43 1
+a43 1
+#include "./des_conf.h"
+d45 1
+a45 1
+# include	"./des.h"
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d7 1
+a7 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_cbc_noop.c,v $
+d9 1
+a9 1
+ *	$Locker: steiner $
+a41 1
+# include	<strings.h>
+a42 4
+
+#ifdef	BSDUNIX
+#include	<sys/time.h>
+#endif
+@
+
+
+1.3
+log
+@Added include of des_conf.h
+@
+text
+@d7 1
+a7 1
+ *	$Source: /altsource/kerberos/lib/des/vax/RCS/des_cbc_noop.c,v $
+d9 1
+a9 1
+ *	$Locker: wesommer $
+d11 3
+@
+
+
+1.2
+log
+@Un-checked-in changes.
+@
+text
+@d7 3
+a9 3
+ *	$Source: /mit/projects/auth/src/lib/des/vax/RCS/des_cbc_noop.c,v $
+ *	$Author: spm $
+ *	$Locker: spm $
+d11 3
+d37 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+a7 1
+ *	$Source: /usr/mit/spm/auth/deslib/RCS/des_lib.c,v $
+d10 4
+a13 1
+ *	$Log:	des_lib.c,v $
+d38 1
+a38 1
+#ifdef	VAX
+d50 1
+a50 1
+	register 	int				length;		/* in bytes						*/
+@

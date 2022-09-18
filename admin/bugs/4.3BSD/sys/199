@@ -1,0 +1,105 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:04:55 1988
+Date: Mon, 18 Apr 88 13:21:21 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (4/13/87) locore.s muffs profile sampling overflow (w/fix)
+Index: sys/vax/locore.s 4.3BSD
+
+Description:
+	The addupc function in locore.s fails to catch sampling overflow;
+	this can make for misleading results when "prof" is run on a "mon.out"
+	file.
+
+Repeat-By:
+	Use "cc -p -O" to compile the program below on a VAX 11/750,
+	then use the commands
+		time a.out
+		prof a.out
+	and note the differing times reported by "time" and "prof".
+
+		main()
+		{
+			register int	i;
+
+			for (i = 0; i < 400; ++i)
+				func();
+		}
+
+		func()
+		{
+			register int	i;
+
+			i = 1000000;
+			while (--i > 0)
+				;
+		}
+Fix:
+	Comes in two parts.  First, locore.s needs to peg sample counts
+	at 65535:
+
+*** 3.3/locore.s	Wed Aug 19 15:15:41 1987
+--- 3.4/locore.s	Wed Aug 19 15:15:45 1987
+***************
+*** 1,4 ****
+! /*	@(#)locore.s	3.3	86/10/21	mt Xinu
+   *
+   * Copyright (c) 1980, 1986 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+--- 1,4 ----
+! /*	@(#)locore.s	3.4	87/08/19	mt Xinu
+   *
+   * Copyright (c) 1980, 1986 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 985,990 ****
+--- 985,994 ----
+	probew	$3,$2,(r0)
+	beql	8f
+	addw2	12(ap),(r0)
++ #ifndef ASWAS
++ 	bcc	9f
++ 	movw	$-1,(r0)
++ #endif /* !ASWAS */
+  9:
+	ret
+  8:
+
+	Second, the "prof" command needs to look for overflowed sampling counts
+	and issue a warning if they're found.  This change is to
+	"/usr/src/usr.bin/prof/prof.c":
+
+*** 3.1/prof.c	Wed Aug 19 15:21:25 1987
+--- 3.2/prof.c	Wed Aug 19 15:21:27 1987
+***************
+*** 1,3 ****
+--- 1,6 ----
++ #if !defined(ASWAS) && !defined(lint) && !defined(NOID)
++ static char	elsieid[] = "@(#)prof.c	3.2";
++ #endif /* !defined(ASWAS) && !defined(lint) && !defined(NOID) */
+  #ifndef lint
+  static	char *sccsid = "@(#)prof.c	4.4 (Berkeley) 3/24/85";
+  #endif
+***************
+*** 424,429 ****
+--- 427,443 ----
+  		ccnt = samples[i];
+  		if (ccnt == 0)
+  			continue;
++ #ifndef ASWAS
++ 		if (ccnt == ~0) {
++ 			static int	warned;
++ 
++ 			if (!warned) {
++ 				(void) fprintf(stderr,
++ 					"prof: sampling overflow occurred\n");
++ 				warned = 1;
++ 			}
++ 		}
++ #endif /* !ASWAS */
+  		pcl = lowpc + scale*i;
+  		pch = lowpc + scale*(i+1);
+  		time = ccnt;
+
+	The "gprof" command should surely be changed in similar fashion;
+	since we're too simple-minded around here to use it, someone else
+	will get to generate the change.
+

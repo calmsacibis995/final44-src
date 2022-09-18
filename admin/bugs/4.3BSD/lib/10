@@ -1,0 +1,129 @@
+Return-Path: <elsie!ado@seismo.css.gov>
+Return-Path: <elsie!ado>
+Date: Wed, 2 Jul 86 21:17:22 EDT
+From: elsie!ado@seismo.css.gov
+Subject: 4.[123]bsd C compiler muffs baroque unsigned constants (with fix)
+
+Index:	lib/pcc 4.3BSD Fix
+
+Description:
+	The 4.[123]bsd C compiler misevaluates some unsigned constants.
+
+Repeat-By:
+	Compile and run this source code on a 4.3 system:
+
+		#include "stdio.h"
+
+		main()
+		{
+			printf("%x\n", (((unsigned) 0x80000000) | 0x20) >> 2);
+			printf("%x\n", (0x20 | ((unsigned) 0x80000000)) >> 2);
+		}
+
+	and note the output:
+
+		20000008
+		e0000008
+
+	where, of course, both printf statements should cause the same output.
+
+Fix:
+	When the compiler combines two constants with a binary operation
+	(as in the "|" operations above), it gives the result the type of the
+	left-hand constant rather than applying the usual rules to divine the
+	type of the result.  This can lead to errors if the result is in turn
+	combined (as in the ">>" operations above).
+
+	Here's the fix, as applied to the end of the function "conval" in
+	the file "trees.c".  The fix both corrects the problem and arranges
+	for "lint -p" to produce a warning. 
+	The change is conditioned on "OLDVERSION".
+
+	...
+	case NE:
+		p->tn.lval = p->tn.lval != val;
+		break;
+	default:
+		return(0);
+		}
+#ifndef OLDVERSION
+	if (u && p->tn.rval == NONAME && !ISUNSIGNED(p->in.type)) {
+		p->in.type = DEUNSIGN(p->in.type);
+		if (pflag)
+werror("4.[123]bsd mistypes constant expressions with unsigned");
+	}
+#endif /* !OLDVERSION */
+	return(1);
+	}
+
+chkpun(p) register NODE *p; {
+
+	/* checks p for the existance of a pun */
+	...
+--
+Bug/s is a Volkswagen/Warner Brothers trademark.
+--
+	UUCP: ..decvax!seismo!elsie!ado		ARPA: elsie!ado@seismo.ARPA
+	DEC, VAX, Elsie & Ado are Digital, Borden & Shakespeare trademarks.
+
+=======================================================================
+From: donn@utah-cs.UUCP (Donn Seeley)
+Newsgroups: net.lang.c,net.bugs.4bsd
+Subject: Re: Bug converting unsigned to double in BSD 4.[23]
+Date: 9 Nov 86 04:08:38 GMT
+References: <213@cartan.Berkeley.EDU>
+
+A fair bit of code was added to make conversions from unsigned to
+floating types work right in the 4.3 BSD VAX C compiler, but
+unfortunately conversions of unsigned constants were never tested.
+That's the way the cookie bounces.
+
+The fix is very simple.  Change the following two lines in makety() in
+the compiler source file lib/mip/trees.c:
+
+------------------------------------------------------------------------
+RCS file: RCS/trees.c,v
+retrieving revision 1.17
+diff -c -r1.17 trees.c
+*** /tmp/,RCSt1007207	Sat Nov  8 21:02:34 1986
+--- trees.c	Sat Nov  8 20:52:03 1986
+***************
+*** 1210,1216 ****
+  		if (t == DOUBLE) {
+  			p->in.op = DCON;
+  			if (ISUNSIGNED(p->in.type))
+! 				p->dpn.dval = /* (unsigned CONSZ) */ p->tn.lval;
+  			else
+  				p->dpn.dval = p->tn.lval;
+  			p->in.type = p->fn.csiz = t;
+--- 1210,1216 ----
+  		if (t == DOUBLE) {
+  			p->in.op = DCON;
+  			if (ISUNSIGNED(p->in.type))
+! 				p->dpn.dval = (unsigned CONSZ) p->tn.lval;
+  			else
+  				p->dpn.dval = p->tn.lval;
+  			p->in.type = p->fn.csiz = t;
+***************
+*** 1219,1225 ****
+  		if (t == FLOAT) {
+  			p->in.op = FCON;
+  			if( ISUNSIGNED(p->in.type) ){
+! 				p->fpn.fval = /* (unsigned CONSZ) */ p->tn.lval;
+  				}
+  			else {
+  				p->fpn.fval = p->tn.lval;
+--- 1219,1225 ----
+  		if (t == FLOAT) {
+  			p->in.op = FCON;
+  			if( ISUNSIGNED(p->in.type) ){
+! 				p->fpn.fval = (unsigned CONSZ) p->tn.lval;
+  				}
+  			else {
+  				p->fpn.fval = p->tn.lval;
+------------------------------------------------------------------------
+
+Don't ask me why these casts were commented out (argh!),
+
+Donn Seeley    University of Utah CS Dept    donn@utah-cs.arpa
+40 46' 6"N 111 50' 34"W    (801) 581-5668    decvax!utah-cs!donn

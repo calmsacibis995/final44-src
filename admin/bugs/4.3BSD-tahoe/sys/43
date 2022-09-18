@@ -1,0 +1,75 @@
+From ghb@elrond.LOCUS  Thu Jun 29 22:05:49 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA08286; Thu, 29 Jun 89 22:05:49 -0700
+Received: from Sphinx.SEAS.UCLA.EDU by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA02090; Thu, 29 Jun 89 22:04:16 -0700
+Received: by devnet (1.0L/0.07) id AA2503904; Thu, 29 Jun 89 21:14:04 PDT
+Received: by elrond.la.locus.com (5.61/1.34)
+        id AA18406; Thu, 29 Jun 89 21:13:07 -0700
+Message-Id: <8906300413.AA18406@elrond.la.locus.com>
+Date: Thu, 29 Jun 89 21:13:04 PDT
+X-Mailer: Mail User's Shell (6.5.4 6/12/89)
+From: ghb@elrond.LOCUS (George Bray)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Vax GENERIC doesn't accept any input to "Root device?" prompt
+
+Index: sys 4.3BSD-tahoe
+
+Description:
+	When booting a 4.3tahoe Vax generic kernel from a non-A partition
+	(e.g., up(0,6)vmunix), the kernel asks "Root device" after auto-
+	configuration completes.  If one answers "up0", the error message
+	says "use hp%d, up%d, ...".  If one answers "up", the error message
+	says "bad/missing unit number".  The same errors are given no
+	matter what input is provided.  No input will be accepted at this
+	point.
+
+	The problem was caused when the code in vax/swapgeneric was changed
+	(relative to 4.3) to support device types with more than 2 characters
+	(specifically, "kra").  The code was incorrectly changed, and tried
+	to look for both strings to end with a null at the same point.
+	Thus, if one entered "up0", the code compares it against "up", and
+	fails because one ends before the other.  If one enters "up", that
+	part of the code passes it, and the second check (correctly) fails
+	to find the unit number.
+
+Repeat-By:
+	I created the 4.3tahoe system in the "g" partition of an
+	eagle disk.  This work was done on a VAX 730.  Up0g was
+	mounted on /tahoe, and the kernel was built as /tahoe/vmunix.
+	I booted with "up(0,6)genvmunix".  At the "Root device?"
+	prompt, the kernel accepted no input.
+
+Fix:
+
+RCS file: RCS/swapgeneric.c,v
+retrieving revision 1.1
+diff -c -r1.1 swapgeneric.c
+*** /tmp/,RCSt1004595	Sat Jun 24 01:14:10 1989
+--- swapgeneric.c	Thu Jun 22 00:31:57 1989
+***************
+*** 80,89 ****
+  retry:
+  		printf("root device? ");
+  		gets(name);
+! 		for (gc = genericconf; gc->gc_driver; gc++)
+  		    for (cp = name, gp = gc->gc_name; *cp == *gp; cp++, gp++)
+! 			if (*gp == 0)
+! 				goto gotit;
+  		printf(
+  		  "use hp%%d, up%%d, ra%%d, rb%%d, rl%%d, hk%%d or kra%%d\n");
+  		goto retry;
+--- 80,91 ----
+  retry:
+  		printf("root device? ");
+  		gets(name);
+! 		for (gc = genericconf; gc->gc_driver; gc++) {
+  		    for (cp = name, gp = gc->gc_name; *cp == *gp; cp++, gp++)
+! 			;
+! 		    if (*gp == 0)
+! 			goto gotit;
+! 		}
+  		printf(
+  		  "use hp%%d, up%%d, ra%%d, rb%%d, rl%%d, hk%%d or kra%%d\n");
+  		goto retry;
+

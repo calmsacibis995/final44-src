@@ -1,0 +1,216 @@
+From ucbvax!decwrl!ogicse!bruce Thu Feb 15 11:40:54 PST 1990
+Article 1542 of comp.bugs.4bsd:
+Path: ucbvax!decwrl!ogicse!bruce
+>From: bruce@ogicse.ogc.edu (Bruce Jerrick)
+Newsgroups: comp.bugs.4bsd
+Subject: Huge uucico Debug trace files in /usr/spool/uucp/AUDIT
+Keywords: uucico AUDIT Debug UUCP SIGFPE
+Message-ID: <7240@ogicse.ogc.edu>
+Date: 10 Feb 90 05:23:18 GMT
+Organization: Oregon Graduate Institute (formerly OGC), Beaverton, OR
+Lines: 202
+Posted: Fri Feb  9 21:23:18 1990
+Index:  usr.bin/uucp/[fgt]io.c 4.3BSD-tahoe
+ 
+Description:
+	Bogus Debug trace files in /usr/spool/uucp/AUDIT can occur
+	spontaneously.  This is a result of a divide by zero, which can
+	generate a SIGFPE, which is the signal used to toggle Debug'ing.
+ 
+	(This happens on a Sequent Symmetry S81; perhaps other systems don't
+	generate SIGFPE upon a divide by zero.)
+
+	The files in AUDIT are typically large, with the first two lines
+	like this:
+
+	... ... (...) DEBUG Signal Enabled
+	sent data ... bytes 0.00 secs ... bps
+
+	Note the 0.00 secs.  The bps figure is calculated by dividing by
+	that.  On our system, SIGFPE is generated, setting Debug level to
+	30 (well, yes, debugging is called for, but not like that).
+ 
+	By the way, now that SIGUSR* exists, why do we still use SIGFPE
+	for Debug toggling??? 
+	 
+Repeat-By:
+	0.00 elapsed times occur normally (for packet times below the
+	clock's resolution), at least at high baudrates or when using TCP/IP.
+	Examine /usr/spool/uucp/AUDIT.  Look for files as described above.
+	If there are 0.00 elapsed times in SYSLOG, but no AUDIT files,
+	your system probably isn't generating SIGFPE upon a divide by zero.
+ 
+Fix:
+	In fio.c, gio.c, and tio.c, check for 0.0 elapsed times; avoid
+	the bps calculation if so:
+ 
+
+*** /tmp/,RCSt1019280	Fri Feb  9 20:57:11 1990
+--- fio.c	Fri Feb  9 20:18:48 1990
+***************
+*** 238,245 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(ibuf, "sent data %ld bytes %.2f secs %ld bps",
+! 		fbytes, ft, (long)((float)fbytes*8./ft));
+  	sysacct(abytes, t2.time);
+  	Bytes_Sent += fbytes;
+  	if (retries > 0)
+--- 241,254 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(ibuf, "sent data %ld bytes %.2f secs %ld bps",
+! 			fbytes, ft, (long)((float)fbytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(ibuf, "sent data %ld bytes %.2f secs",
+! 			fbytes, ft);
+! 	}
+  	sysacct(abytes, t2.time);
+  	Bytes_Sent += fbytes;
+  	if (retries > 0)
+***************
+*** 311,318 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(ibuf, "received data %ld bytes %.2f secs %ld bps",
+! 		fbytes, ft, (long)((float)fbytes*8./ft));
+  	if (retries > 0) 
+  		sprintf(&ibuf[strlen(ibuf)]," %d retries", retries);
+  	sysacct(abytes, t2.time);
+--- 320,333 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(ibuf, "received data %ld bytes %.2f secs %ld bps",
+! 			fbytes, ft, (long)((float)fbytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(ibuf, "received data %ld bytes %.2f secs",
+! 			fbytes, ft);
+! 	}
+  	if (retries > 0) 
+  		sprintf(&ibuf[strlen(ibuf)]," %d retries", retries);
+  	sysacct(abytes, t2.time);
+
+*** /tmp/,RCSt1019280	Fri Feb  9 20:57:14 1990
+--- gio.c	Fri Feb  9 20:18:51 1990
+***************
+*** 130,137 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(text, "sent data %ld bytes %.2f secs %ld bps",
+! 		bytes, ft, (long)((float)bytes*8./ft));
+  	sysacct(bytes, t2.time);
+  	Bytes_Sent += bytes;
+  	if (Retries > 0) 
+--- 133,146 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(text, "sent data %ld bytes %.2f secs %ld bps",
+! 			bytes, ft, (long)((float)bytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(text, "sent data %ld bytes %.2f secs",
+! 			bytes, ft);
+! 	}
+  	sysacct(bytes, t2.time);
+  	Bytes_Sent += bytes;
+  	if (Retries > 0) 
+***************
+*** 187,194 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(text, "received data %ld bytes %.2f secs %ld bps",
+! 		bytes, ft, (long)((float)bytes*8./ft));
+  	sysacct(bytes, t2.time);
+  	Bytes_Received += bytes;
+  	if (Retries > 0) 
+--- 196,209 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(text, "received data %ld bytes %.2f secs %ld bps",
+! 			bytes, ft, (long)((float)bytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(text, "received data %ld bytes %.2f secs",
+! 			bytes, ft);
+! 	}
+  	sysacct(bytes, t2.time);
+  	Bytes_Received += bytes;
+  	if (Retries > 0) 
+
+*** /tmp/,RCSt1019286	Fri Feb  9 20:58:04 1990
+--- tio.c	Fri Feb  9 20:18:54 1990
+***************
+*** 150,157 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(text, "sent data %ld bytes %.2f secs %ld bps",
+! 		bytes, ft, (long)((float)bytes*8./ft));
+  	sysacct(bytes, t2.time);
+  	Bytes_Sent += bytes;
+  	DEBUG(1, "%s\n", text);
+--- 150,163 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(text, "sent data %ld bytes %.2f secs %ld bps",
+! 			bytes, ft, (long)((float)bytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(text, "sent data %ld bytes %.2f secs",
+! 			bytes, ft);
+! 	}
+  	sysacct(bytes, t2.time);
+  	Bytes_Sent += bytes;
+  	DEBUG(1, "%s\n", text);
+***************
+*** 219,226 ****
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	sprintf(bufr, "received data %ld bytes %.2f secs %ld bps",
+! 		bytes, ft, (long)((float)bytes*8./ft));
+  	sysacct(bytes, t2.time);
+  	Bytes_Received += bytes;
+  	DEBUG(1, "%s\n", bufr);
+--- 225,238 ----
+  		mil += 1000;
+  	}
+  	ft = (float)t2.time + (float)mil/1000.;
+! 	if (ft != 0.0) {
+! 		sprintf(bufr, "received data %ld bytes %.2f secs %ld bps",
+! 			bytes, ft, (long)((float)bytes*8./ft));
+! 	} else {
+! 		/* skip the bps calculation */
+! 		sprintf(bufr, "received data %ld bytes %.2f secs",
+! 			bytes, ft);
+! 	}
+  	sysacct(bytes, t2.time);
+  	Bytes_Received += bytes;
+  	DEBUG(1, "%s\n", bufr);
+
+
+========================================================================
+
+        Bruce Jerrick
+        Oregon Graduate Center, er, uh, Institute
+        InterNet:  bruce@cse.ogi.edu
+        UUCP:      ogicse!bruce
+        Voice:     (503) 690-1157
+
+

@@ -1,0 +1,103 @@
+/* 
+ * Mach Operating System
+ * Copyright (c) 1990 Carnegie-Mellon University
+ * All rights reserved.  The CMU software License Agreement specifies
+ * the terms and conditions for use and redistribution.
+ */
+/*
+ * HISTORY
+ * $Log:	if_arp.h,v $
+ * Revision 2.6  90/07/03  16:40:49  mrt
+ * 	Merged mt Xinu 2.6 MSD changes.
+ * 	[90/05/17            emg]
+ * 
+ */
+/*
+ * Copyright (c) 1986 Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms are permitted
+ * provided that the above copyright notice and this paragraph are
+ * duplicated in all such forms and that any documentation,
+ * advertising materials, and other materials related to such
+ * distribution and use acknowledge that the software was developed
+ * by the University of California, Berkeley.  The name of the
+ * University may not be used to endorse or promote products derived
+ * from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+ * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ *
+ *	@(#)if_arp.h	7.3 (Berkeley) 6/27/88
+ */
+
+/*
+ * Address Resolution Protocol.
+ *
+ * See RFC 826 for protocol description.  ARP packets are variable
+ * in size; the arphdr structure defines the fixed-length portion.
+ * Protocol type values are the same as those for 10 Mb/s Ethernet.
+ * It is followed by the variable-sized fields ar_sha, arp_spa,
+ * arp_tha and arp_tpa in that order, according to the lengths
+ * specified.  Field names used correspond to RFC 826.
+ */
+struct	arphdr {
+	u_short	ar_hrd;		/* format of hardware address */
+#define ARPHRD_ETHER 	1	/* ethernet hardware address */
+#define ARPHRD_XETHER 	2	/* experimental ethernet hardware address */
+#define	ARPHRD_802	6	/* 802 net hardware address */
+	u_short	ar_pro;		/* format of protocol address */
+	u_char	ar_hln;		/* length of hardware address */
+	u_char	ar_pln;		/* length of protocol address */
+	u_short	ar_op;		/* one of: */
+#define	ARPOP_REQUEST	1	/* request to resolve address */
+#define	ARPOP_REPLY	2	/* response to previous request */
+#define	REVARP_REQUEST	3	/* request to resolve hardware address */
+#define	REVARP_REPLY	4	/* response to previous hardware request */
+/*
+ * The remaining fields are variable in size,
+ * according to the sizes above.
+ */
+/*	u_char	ar_sha[];	/* sender hardware address */
+/*	u_char	ar_spa[];	/* sender protocol address */
+/*	u_char	ar_tha[];	/* target hardware address */
+/*	u_char	ar_tpa[];	/* target protocol address */
+};
+
+/*
+ * ARP ioctl request
+ */
+struct arpreq {
+	struct	sockaddr arp_pa;		/* protocol address */
+	struct	sockaddr arp_ha;		/* hardware address */
+	int	arp_flags;			/* flags */
+};
+/*  arp_flags and at_flags field values */
+#define	ATF_INUSE	0x01	/* entry in use */
+#define ATF_COM		0x02	/* completed entry (enaddr valid) */
+#define	ATF_PERM	0x04	/* permanent entry */
+#define	ATF_PUBL	0x08	/* publish entry (respond for other host) */
+#define	ATF_USETRAILERS	0x10	/* has requested trailers */
+#define	ATF_ISAT	0x20	/* this is an appletalk segment */
+
+#ifdef GATEWAY
+#define	ARPTAB_BSIZ	16	/* bucket size */
+#define	ARPTAB_NB	37	/* number of buckets */
+#else
+#define	ARPTAB_BSIZ	9	/* bucket size */
+#define	ARPTAB_NB	19	/* number of buckets */
+#endif
+#define	ARPTAB_SIZE	(ARPTAB_BSIZ * ARPTAB_NB)
+
+#define	ARPTAB_HASH(a) \
+	((u_long)(a) % ARPTAB_NB)
+
+#define	ARPTAB_LOOK(at,addr) { \
+	register int ATL_n; \
+	at = &arptab[ARPTAB_HASH(addr) * ARPTAB_BSIZ]; \
+	for (ATL_n = 0 ; ATL_n < ARPTAB_BSIZ ; ATL_n++,at++) \
+		if (at->at_iaddr.s_addr == addr) \
+			break; \
+	if (ATL_n >= ARPTAB_BSIZ) \
+		at = 0; \
+}

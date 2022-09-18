@@ -1,0 +1,176 @@
+This file explains the machine-dependent code changes needed to upgrade
+to this kernel (X113) from older kernels. Don't be put off by the length
+of this file; the changes take at most a couple of hours to put in.
+
+New multiprocessor feature - use of interprocessor interrupts to schedule
+bound threads.  This is an optimization that speeds up some processor
+allocation operations; an interrupt is sent to cause ast_check() to be
+invoked on another processor.  These changes only affect multiprocessors.
+
+	machine/ast_types.h  - define the type ast_check_t.  This is the type
+	of an element in the processor structure declared:
+		ast_check_t	ast_check_data;
+	that can be used by the routine that sends the interprocessor
+	interrupt.  (e.g. If it needs a vector, this is the place to stash it).
+	
+	machine/ast.c -  two interface routines:
+		init_ast_check(processor) - initialize whatever state is
+			necessary to send an ast_check interrupt to this
+			processor.  (e.g. set up interrupt vector).
+		cause_ast_check(processor) - send designated processor
+			an interrupt that will cause ast_check() to be done.
+	Both of these routines may be no-ops in an implementation, as absence
+	of this functionality only affects performance, not correctness.
+
+New options -- no changes if these are left off:
+
+	HW_AST - Turn this on if your machine has hardware support for
+		asts (e.g. vax, sun3).  Leave off if it doesn't
+		(e.g. mmax, ibmrt).  If it's on, supply 
+		definitions of macros in machine/ast.h; see
+		vax/ast.h and sun3/ast.h for examples.
+
+	HW_FOOTPRINT - No machine dependencies.  Causes scheduler to
+		prefer processor that thread last ran on.  For
+		multiprocessors only.  Untested.
+
+	MACH_KM - Kernel monitoring support.  No machine dependencies.
+
+	FAST_CSW - supply new routines in locore.s.  Can do faster switch
+		within task than between tasks; see new internals of
+		thread_block() and thread_switch() in kern/sched_prim.c.
+		New machine dependent routines to implement this and:
+			o Ignore interrupt state.
+			o Maintain active_threads.
+			o Call thread_continue().
+		All machines should eventually turn this on.  Common
+		cases of thread_continue can be inlined to save a
+		procedure call (esp. on vax).  Common cases are:
+			o TH_RUN		call thread_setrun().
+			o TH_RUN | TH_WAIT	clear TH_RUN.
+			o TH_RUN | TH_IDLE	do nothing.
+		Of course all access and modification of this state
+		must be done with the thread locked (these routines are
+		only called at splsched()).
+
+mach/machine/time_stamp.h - the kern_timestamp function supported by this
+	file is obsolete.  Defunct this file.
+
+cpu.c - dummy file for multiprocessor control stubs.  Only required on
+	multiprocessors.  Copy from mmax to other machines.
+	Can make functional later.
+
+genassym.c - delete definitions for THREAD_EXIT_CODE, THREAD_EXIT
+
+locore.s - Check need_ast array instead of thread->exit_code.
+	If hardware does ast's, implement and enable HW_AST option
+	instead of doing this.
+
+machdep.c - new vm_map_pageable calling sequence. Fix mb_map size
+	if not already fixed.  New shutdown logic
+	for multiprocessors replaces should_exit[]:
+
+Old:
+	splhigh();	/* extreme priority */
+	ourcpu = getcpuid();
+	for (i = 0; i < NCPUS; i++) {
+		if ( i != ourcpu)
+			should_exit[i] = TRUE;
+	}
+
+#define WAITCOUNT 10000
+
+	for (i = 0; i < WAITCOUNT; i++)
+	  ;
+	halted = TRUE;
+	for (i=0; i < NCPUS; i++)
+	    if ((i != ourcpu) && (machine_slot[i].running == TRUE)) {
+		halted = FALSE;
+		printf("Processor %d not halted\n", i);
+	}
+
+New:
+	splhigh();	/* extreme priority */
+	ourprocessor = current_processor();
+	halted = TRUE;
+	for (i = 0; i< NCPUS; i++) {
+	    register int j,k;
+
+#define LOOPCOUNT 1000
+#define WAITCOUNT 1000
+
+	    if ((processor_ptr[i]->state != PROCESSOR_OFF_LINE) &&
+		processor_ptr[i] != ourprocessor) {
+		processor_shutdown(processor_ptr[i]);
+
+		j = 0;
+		while ( machine_slot[i].running && j < LOOPCOUNT) {
+
+		    for (k=0; k < WAITCOUNT; k++);
+
+		    j++;
+		}
+
+		if (machine_slot[i].running) {
+		    printf("Processor %d not halted\n",i);
+		    halted = FALSE;
+		    break;
+		}
+	    }
+	}
+
+pcb.c - Changes needed only if thread starting convention is changed
+	by FAST_CSW.  [no changes if FAST_CSW is off].
+
+phys.c - vm_map_pageable calling sequence change.  This only applies to
+	architectures that use vm_map_pageable as part of accessing physical
+	memory to speed up copyin/copyout.  Probably unique to multimax.
+
+pmap.h - define new PMAP_CONTEXT macro that updates pmap context
+	in a thread pcb.  This macro is invoked instead of a PMAP_DEACTIVATE/
+	PMAP_ACTIVATE pair when context switching between two threads
+	in the same task.  Vax needs this to copy base and length
+	registers into the pcb; macro is probably a no-op for most others.
+	Check PMAP_[DE]ACTIVATE macros to be sure.  Vax also needed
+	modifications to PMAP_[DE]ACTIVATE macros to preserve ast
+	state for threads (caused by questionable optimization in
+	vax pcb structure as used by hardware); should be vax-specific.
+
+trap.c - Only check for termination after ast trap (delete added check
+	after page faults - ast handles that now).  CHECK_SIGNALS macro
+	invocation change.  Use csw_needed(thread, processor) instead of
+	runrun/csw_check() to check for context switch:
+
+Old:
+	while (th->exit_code != THREAD_EXIT)
+		thread_halt_self();
+
+	if (runrun[getcpuid()] && csw_check()) {
+		(void) splhigh();
+		utaskp->uu_ru.ru_nivcsw++;
+		runrun[cpu_number()] = 0;
+		thread_block();
+	}
+
+New:
+	if (csw_needed(th, current_processor())) {
+		utaskp->uu_ru.ru_nivcsw++;
+		thread_block();
+	}
+
+device drivers - vm_map_pageable calling sequence has changed.  Updating
+	to new calling sequence suffices, but see NOTE in vm/vm_unix.c.
+	THIS AFFECTS ALL CALLS to vm_map_pageable in machine-dependent code.
+
+Old sequence: last argument was pageability boolean_t.
+
+New sequence: last argument is a vm_prot_t indicating the types of
+	accesses that must not fault, e.g.
+		VM_PROT_NONE	- make memory pageable
+		VM_PROT_READ	- non-pageable for read-only
+	VM_PROT_READ|VM_PROT_WRITE - non-pageable for read/write.
+
+	vm_map_pageable now incorporates a protection check; separate
+	calls to vm_map_check_protection are no longer needed.
+	vm_map_pageable may fail for this reason, so its return code
+	needs to be checked.

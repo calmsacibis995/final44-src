@@ -1,0 +1,92 @@
+From tas@mcnc.org  Fri Jun 19 09:25:42 1987
+Date: Fri, 19 Jun 87 12:24:10 EDT
+From: Tim Seaver <tas@mcnc.org>
+Subject: Certain arguments to setsockopt can crash the kernel
+Index: sys/netinet/ip_output.c 4.3BSD
+
+Description:
+	Passing an invalid level and null option value to the setsockopt
+	system call, e.g., setsockopt(soc, -1, SO_DEBUG, 0, 0), on an INET
+	socket will pass a null mbuf pointer down to ip_ctloutput, where
+	it will be m_free'd, causing a protection fault crash.
+
+Repeat-By:
+	Run the following program on a 4.3 BSD system:
+
+	
+	#include <stdio.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+
+	main()
+	{
+		int soc;
+	
+		soc = socket(AF_INET, SOCK_STREAM, 0);
+		if (soc < 0) {
+			perror("socket");
+			exit(1);
+		}
+		fprintf(stderr, "got socket\n");
+		fflush(stderr);
+		if (setsockopt(soc, SOL_SOCKET, SO_DEBUG, 0, 0) < 0) {
+			perror("setsockopt");
+			exit(2);
+		}
+		fprintf(stderr, "set socket options at level SOL_SOCKET\n");
+		fflush(stderr);
+		if (setsockopt(soc, -1, SO_DEBUG, 0, 0) < 0) {
+			perror("setsockopt");
+			exit(3);
+		}
+		fprintf(stderr, "set socket options at level -1\n");
+		fflush(stderr);
+		exit(0);
+	}
+
+Fix:
+	Apply the following diff to sys/netinet/ip_output.c:
+
+	349c349
+	< 	if (op == PRCO_SETOPT)
+	---
+	> 	if (op == PRCO_SETOPT && *m != NULL)
+====================================================================
+From tas@mcnc.org  Fri Jun 19 14:05:20 1987
+Date: Fri, 19 Jun 87 12:50:07 EDT
+From: Tim Seaver <tas@mcnc.org>
+Subject: Revision of previous ip_output bug report.
+Index: sys/netinet/ip_output.c 4.3BSD
+
+Description:
+	The example program submitted in my previous bug report on
+	ip_output will not work as advertised. The following one will.
+
+Repeat-By:
+	
+	Compile and run the following program to crash a 4.3 bsd
+	system with the ip_ctloutput null mbuf free bug:
+
+	#include <stdio.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+
+	main()
+	{
+		int soc;
+	
+		soc = socket(AF_INET, SOCK_STREAM, 0);
+		if (soc < 0) {
+			perror("socket");
+			exit(1);
+		}
+		fprintf(stderr, "got socket\n");
+		fflush(stderr);
+		if (setsockopt(soc, -1, SO_DEBUG, 0, 0) < 0) {
+			perror("setsockopt");
+			exit(3);
+		}
+		fprintf(stderr, "set socket options at level -1\n");
+		fflush(stderr);
+		exit(0);
+	}

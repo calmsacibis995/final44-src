@@ -1,0 +1,98 @@
+From ucbvax!tut.cis.ohio-state.edu!zaphod.mps.ohio-state.edu!usc!snorkelwacker!mintaka!ogicse!bruce Thu Feb 15 11:41:34 PST 1990
+Article 1543 of comp.bugs.4bsd:
+Path: ucbvax!tut.cis.ohio-state.edu!zaphod.mps.ohio-state.edu!usc!snorkelwacker!mintaka!ogicse!bruce
+>From: bruce@ogicse.ogc.edu (Bruce Jerrick)
+Newsgroups: comp.bugs.4bsd
+Subject: Tahoe UUCP mlogent() can cause null FILE pointer dereference
+Keywords: Tahoe UUCP mlogent null FILE pointer dereference
+Message-ID: <7243@ogicse.ogc.edu>
+Date: 10 Feb 90 05:51:09 GMT
+Organization: Oregon Graduate Institute (formerly OGC), Beaverton, OR
+Lines: 85
+Index:	usr.bin/uucp/logent.c 4.3BSD-tahoe
+
+Description:
+	mlogent() (in logent.c) can pass a null FILE pointer to fprintf(),
+	resulting in null pointer dereferencing.
+
+	In each of logent(), log_xferstats(), and syslog(), look at the calls
+	to mlogent() and the few lines preceding them.  get_logfd() can return
+	a null FILE pointer if its fopen() fails (and it has code to handle
+	that case), but it gets passed into mlogent(), which passes it into
+	fprintf(), which dereferences it.
+
+Repeat-By:
+	Only happens under duress (for us it was when the kernel's file
+	table temporarily overflowed).  May result in core dumps in
+	/usr/spool/uucp.
+	Examine code discussed above, in logent.c .
+
+Fix:
+	In mlogent() in logent.c, surround the use of FILE pointer fp with
+	the conditional "if (fp != NULL) { ... }" .  The rest of the code
+	in mlogent() is still useful even if fp is null.
+
+	(The diff below isn't as bad as it looks; all the ! lines are
+	just re-indented.)
+
+
+*** /tmp/,RCSt1019411	Fri Feb  9 21:38:51 1990
+--- logent.c	Fri Feb  9 18:38:54 1990
+***************
+*** 86,105 ****
+  	ftime(&Now);
+  #endif !USG
+  	tp = localtime(&Now.time);
+  #ifdef USG
+! 	fprintf(fp, "%s %s (%d/%d-%2.2d:%2.2d-%d) ",
+  #else !USG
+! 	fprintf(fp, "%s %s (%d/%d-%02d:%02d-%d) ",
+  #endif !USG
+! 		User, Rmtname, tp->tm_mon + 1, tp->tm_mday,
+! 		tp->tm_hour, tp->tm_min, pid);
+! 	fprintf(fp, "%s %s\n", status, text);
+  
+! 	/* Since it's buffered */
+  #ifndef F_SETFL
+! 	lseek (fileno(fp), (long)0, 2);
+  #endif !F_SETFL
+! 	fflush (fp);
+  	if (Debug) {
+  		fprintf(stderr, "%s %s ", User, Rmtname);
+  #ifdef USG
+--- 86,109 ----
+  	ftime(&Now);
+  #endif !USG
+  	tp = localtime(&Now.time);
++ 
++ 	if (fp != NULL) {
+  #ifdef USG
+! 		fprintf(fp, "%s %s (%d/%d-%2.2d:%2.2d-%d) ",
+  #else !USG
+! 		fprintf(fp, "%s %s (%d/%d-%02d:%02d-%d) ",
+  #endif !USG
+! 			User, Rmtname, tp->tm_mon + 1, tp->tm_mday,
+! 			tp->tm_hour, tp->tm_min, pid);
+! 		fprintf(fp, "%s %s\n", status, text);
+  
+! 		/* Since it's buffered */
+  #ifndef F_SETFL
+! 		lseek (fileno(fp), (long)0, 2);
+  #endif !F_SETFL
+! 		fflush (fp);
++ 	}
++ 
+  	if (Debug) {
+  		fprintf(stderr, "%s %s ", User, Rmtname);
+  #ifdef USG
+
+
+========================================================================
+
+        Bruce Jerrick
+        Oregon Graduate Center, er, uh, Institute
+        InterNet:  bruce@cse.ogi.edu
+        UUCP:      ogicse!bruce
+        Voice:     (503) 690-1157
+
+

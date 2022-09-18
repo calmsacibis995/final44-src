@@ -1,0 +1,165 @@
+Return-Path: <gilligan@sri-spam>
+Date: Wed, 7 Dec 83 12:56:55 pst
+From: gilligan@sri-spam (Bob Gilligan)
+Subject: TCP code improperly selects and negotiates maximum segment size
+Index: sys/netinet/tcp_subr.c 4.2BSD
+
+Description:
+
+	The TCP code selects its default maximum segment size, and
+negotiates the foreign end of the connection maximum segment size,
+based upon constants hard-wired into the code.  These constants are
+appropriate only for connections over certain types of networks.
+For most networks, this causes large packets to be passed to the IP
+layer which will have to be fragmented.  The result this unnecessary
+fragmentation is poor performance.  The increased overhead of
+fragmentation and re-assembly, as well as the case where one
+fragment in a group is lost, forcing the discarding of all of the
+received fragments of a TCP segment, will degrade performance.  Jon
+Postel, in his RFC 879 titled "The TCP maximum segment size and
+related topics" advises that the TCP maximum segment size should be
+selected and negotiated base upon the maximum transmission unit
+(MTU) of the attached network being used.
+
+	The problem manifests itself in three places in the TCP code:
+1) The initial maximum send segment size is set to a constant in
+tcp_subr.c; 2) If a TCP maximum segment size option is received, the
+maximum send segment size is automatically set to the requested size in
+tcp_input.c; and 3) A constant sized TCP maximum segment size option is
+always sent to the foreign side in tcp_output.c.
+
+	The appropriate action in each of these cases is:  1) Choose an
+initial maximum send segment size that is:
+
+		max_send_size = min (f (MTU), 536);
+
+2) Upon receiving a TCP maximum segment size option, set the maximum
+send segment size to:
+
+		max_send_size = min (f (MTU), requested_size);
+
+3) Negotiate a foreign maximum segment size that is:
+
+		foreign_seg_size = f (MTU);
+
+	In the above three examples, f (mtu) translates a network
+mtu (maximum transmission unit) into a maximum appropriate TCP
+segment by subtracting the tcp and ip header sizes.
+
+Repeat-By:
+
+	Open TCP connections between two 4.2 BSD Vaxes over a network
+with MTU less than 1024 (e.g. Arpanet with MTU = 1007, or PRNET
+with MTU = 254).  Use an external packet monitor to see fragmented
+packets passing between the two machines.
+
+Fix:
+	Install the following patches to tcp_subr.c, tcp_input.c and
+tcp_output.c.  Diffs are of patched version vs. versions distributed
+with 4.2 BSD.
+
+Diff of tcp_subr.c:
+
+152a153,154
+> 	struct ifnet *ifp;
+> 	u_short ifmss;
+163a166,167
+> 	 * But per RFC 879:
+> 	 * 	"The default TCP Maximum Segment Size is 536"
+165d168
+< 	tp->t_maxseg = 512;		/* satisfy the rest of the world */
+168a172,178
+> 	ifp = (struct ifnet *) tcp_getif (tp);
+> 	if (ifp != 0) {
+> 		ifmss = ifp->if_mtu - (sizeof (struct tcpiphdr));
+> 	 	/* satisfy the rest of the world */
+> 		tp->t_maxseg = MIN (ifmss, 536);
+> 	} else
+> 		tp->t_maxseg = 536;
+265a276,313
+> }
+> 
+> 
+> /*
+>  * Given a tcpcb, discover route and determine interface to send 
+>  * packets over.
+>  */
+> tcp_getif (tp)
+> 	struct tcpcb *tp;
+> {
+> 	struct route iproute;
+> 	struct route *ro;
+> 	struct in_addr faddr;
+> 	struct ifnet ifn;
+> 	struct ifnet *ifp;
+> 
+> 	if (ro = &tp->t_inpcb->inp_route) {
+> 		if ((ro->ro_rt == 0) || (ifp = ro->ro_rt->rt_ifp))
+> 			return (0);
+> 		else 
+> 			return ((u_long) ifp);
+> 	}
+> 	ro = &iproute;
+> 	ro->ro_dst.sa_family = AF_INET;
+> 	faddr = tp->t_inpcb->inp_faddr;
+> 		if (faddr.s_addr ==  0)
+> 			return (0);
+> 	((struct sockaddr_in *) &iproute.ro_dst)->sin_addr = faddr;
+> 	rtalloc (ro);
+> 	if ((ro->ro_rt == 0) || (ro->ro_rt->rt_ifp == 0))
+> 		return (0);
+> 	bcopy ((caddr_t) &ifn, (caddr_t) ro->ro_rt->rt_ifp,
+> 		sizeof (struct ifnet));
+> 	rtfree (ro->ro_rt);
+> 	return ((u_long)&ifn);
+> 	
+> noroute:
+> 	return (0);
+
+
+
+diff of tcp_input.c:
+
+767a768,770
+> 	struct ifnet *ifp;
+> 	u_short optmss;
+> 	u_short ifmss;
+768a772
+> 
+790,791c794,800
+< 			tp->t_maxseg = *(u_short *)(cp + 2);
+< 			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
+---
+> 			ifp = (struct ifnet *) tcp_getif (tp);
+> 			if ((u_long) ifp == 0)
+> 				continue;
+> 			ifmss = ifp->if_mtu - sizeof (struct tcpiphdr);
+> 			optmss = *(u_short *)(cp + 2);
+> 			optmss = ntohs(optmss);
+> 			tp->t_maxseg = MIN (optmss, ifmss);
+
+
+
+diff of tcp_output.c:
+
+11a12
+> #include "../net/if.h"
+170a172,173
+> 		struct ifnet *ifp;
+> 		short ifmss;
+172a176,179
+> 		ifp = (struct ifnet *) tcp_getif (tp);
+> 		if ((u_long) ifp == 0)
+> 			goto noopt;
+> 		ifmss = (ifp->if_mtu) - sizeof (struct tcpiphdr);
+175c182
+< 		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, 1024);
+---
+> 		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, ifmss);
+
+
+		Bob Gilligan
+		SRI International
+		gilligan@sri-spam
+		gilligan@sri-kl
+		415-859-6201

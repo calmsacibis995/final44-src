@@ -1,0 +1,65 @@
+Return-Path: <keith@seismo.css.gov>
+Date: Sun, 27 Jul 86 14:55:51 EDT
+From: Keith Bostic <keith@seismo.css.gov>
+Subject: stderr messages can get lost
+Index: 	lib/libc/perror.c 4.3BSD
+
+Description:
+	If stderr gets moved from its default stream number, messages
+	can get lost, or worse, placed in the wrong file.
+Repeat-By:
+	Run the following program:
+
+		#include <stdio.h>
+		main()
+		{
+			fclose(stdin);
+			if (!(freopen("logfile","w",stderr))) {
+				perror("reopen logfile failed");
+				exit(-1);
+			}
+			perror("perror to logfile");
+		}
+
+	According to the man page, perror "produces a short error message
+	on the standard error file".  The above message, "perror to logfile"
+	never gets to logfile.
+Fix:
+	There are several modules in the C library that explicitly write
+	error messages to file descriptor 2.  These should be changed to
+	reference "fileno(stderr)" instead.  The modules I found were:
+
+		lib/libc/gen/perror.c
+		lib/libc/gen/psignal.c
+		lib/libc/vax/csu/gmon.c
+		lib/libc/vax/csu/mon.c
+		lib/libc/vax/gen/disktab.c
+		lib/libc/vax/gen/setjmperr.c
+
+	For example, in perror.c, it should be:
+
+*** /usr/src/4.3/lib/libc/gen/perror.c	Sun Mar  9 22:52:16 1986
+--- perror.new.c	Sun Jul 27 14:49:18 1986
+***************
+*** 14,19 ****
+--- 14,20 ----
+   */
+  #include <sys/types.h>
+  #include <sys/uio.h>
++ #include <stdio.h>
+  
+  int	errno;
+  int	sys_nerr;
+***************
+*** 37,41 ****
+  	v++;
+  	v->iov_base = "\n";
+  	v->iov_len = 1;
+! 	writev(2, iov, (v - iov) + 1);
+  }
+--- 38,42 ----
+  	v++;
+  	v->iov_base = "\n";
+  	v->iov_len = 1;
+! 	writev(fileno(stderr), iov, (v - iov) + 1);
+  }

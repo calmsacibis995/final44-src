@@ -1,0 +1,163 @@
+From jik@ATHENA.MIT.EDU  Sun Sep 10 16:40:24 1989
+Date: Sun, 10 Sep 89 19:39:43 -0400
+From: Jonathan I. Kamens <jik@Athena.MIT.EDU>
+Sender: jik@ATHENA.MIT.EDU
+To: bugs@ATHENA.MIT.EDU, bugs@ucbvax.Berkeley.EDU
+Index: usr.bin/whois 4.3BSD-tahoe
+Subject: whois(1) in 4.3 and 4.3tahoe -- patches
+
+\begin{sarcasm}
+
+  The source code in ~source/ucb/whois.c is a prime example of BSD
+programming at its finest.  It features a fine assortment of bugs,
+including:
+
+ * trying to use the return value of getc() as a signed value (i.e.
+   comparing it to EOF), even though it isn't signed on many
+   architectures
+
+ * failing to properly set the exit status to 0 before exiting from
+   main after successful completion
+
+ * failing to initialize important values in a structure, and
+   therefore depending on the operating system to initialize them to 0
+   for you
+
+ * passing the wrong number of arguments into library functions
+
+ * failing to cast pointers to the correct type when necessary
+
+ * failing to explicitly discard function return values when they are
+   not wanted (a minor complaint, but nevertheless it shouldn't be
+   done)
+
+\end{sarcasm}
+
+  The patch below to whois.c should make it quite a bit more portable.
+In fact, it will actually work correctly on an IBM RT running BSD, as
+opposed to the previous behavior (i.e. it didn't work).
+
+Jonathan Kamens			              USnail:
+MIT Project Athena				11 Ashford Terrace
+jik@Athena.MIT.EDU				Allston, MA  02134
+Office: 617-253-4261			      Home: 617-782-0710
+
+*** /minos/source/4.3/ucb/whois.c	Sun Nov 10 18:32:13 1985
+--- whois.c	Sun Sep 10 19:26:17 1989
+***************
+*** 22,28 ****
+  #include <stdio.h>
+  #include <netdb.h>
+  
+! #define	NICHOST	"sri-nic.arpa"
+  
+  main(argc, argv)
+  	int argc;
+--- 22,28 ----
+  #include <stdio.h>
+  #include <netdb.h>
+  
+! #define	NICHOST	"nic.ddn.mil"
+  
+  main(argc, argv)
+  	int argc;
+***************
+*** 30,36 ****
+  {
+  	int s;
+  	register FILE *sfi, *sfo;
+! 	register char c;
+  	char *host = NICHOST;
+  	struct sockaddr_in sin;
+  	struct hostent *hp;
+--- 30,36 ----
+  {
+  	int s;
+  	register FILE *sfi, *sfo;
+! 	register int c;
+  	char *host = NICHOST;
+  	struct sockaddr_in sin;
+  	struct hostent *hp;
+***************
+*** 52,68 ****
+  		exit(1);
+  	}
+  	host = hp->h_name;
+! 	s = socket(hp->h_addrtype, SOCK_STREAM, 0, 0);
+  	if (s < 0) {
+  		perror("whois: socket");
+  		exit(2);
+  	}
+  	sin.sin_family = hp->h_addrtype;
+! 	if (bind(s, &sin, sizeof (sin), 0) < 0) {
+  		perror("whois: bind");
+  		exit(3);
+  	}
+! 	bcopy(hp->h_addr, &sin.sin_addr, hp->h_length);
+  	sp = getservbyname("whois", "tcp");
+  	if (sp == NULL) {
+  		fprintf(stderr, "whois: whois/tcp: unknown service\n");
+--- 52,70 ----
+  		exit(1);
+  	}
+  	host = hp->h_name;
+! 	s = socket(hp->h_addrtype, SOCK_STREAM, 0);
+  	if (s < 0) {
+  		perror("whois: socket");
+  		exit(2);
+  	}
+  	sin.sin_family = hp->h_addrtype;
+! 	sin.sin_port = 0;
+! 	sin.sin_addr.s_addr = INADDR_ANY;
+! 	if (bind(s, (struct sockaddr *) &sin, sizeof (sin)) < 0) {
+  		perror("whois: bind");
+  		exit(3);
+  	}
+! 	bcopy(hp->h_addr, (char *) &sin.sin_addr, hp->h_length);
+  	sp = getservbyname("whois", "tcp");
+  	if (sp == NULL) {
+  		fprintf(stderr, "whois: whois/tcp: unknown service\n");
+***************
+*** 69,75 ****
+  		exit(4);
+  	}
+  	sin.sin_port = sp->s_port;
+! 	if (connect(s, &sin, sizeof (sin), 0) < 0) {
+  		perror("whois: connect");
+  		exit(5);
+  	}
+--- 71,77 ----
+  		exit(4);
+  	}
+  	sin.sin_port = sp->s_port;
+! 	if (connect(s, (struct sockaddr *) &sin, sizeof (sin)) < 0) {
+  		perror("whois: connect");
+  		exit(5);
+  	}
+***************
+*** 77,87 ****
+  	sfo = fdopen(s, "w");
+  	if (sfi == NULL || sfo == NULL) {
+  		perror("fdopen");
+! 		close(s);
+  		exit(1);
+  	}
+  	fprintf(sfo, "%s\r\n", *argv);
+! 	fflush(sfo);
+  	while ((c = getc(sfi)) != EOF)
+! 		putchar(c);
+  }
+--- 79,91 ----
+  	sfo = fdopen(s, "w");
+  	if (sfi == NULL || sfo == NULL) {
+  		perror("fdopen");
+! 		(void) close(s);
+  		exit(1);
+  	}
+  	fprintf(sfo, "%s\r\n", *argv);
+! 	(void) fflush(sfo);
+  	while ((c = getc(sfi)) != EOF)
+! 		(void) putchar((char) c);
+! 
+! 	exit(0);
+  }

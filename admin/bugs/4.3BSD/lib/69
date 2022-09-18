@@ -1,0 +1,117 @@
+Path: seismo!gatech!hao!ames!oliveb!sun!guy
+From: guy@sun.uucp (Guy Harris)
+Newsgroups: comp.lang.c,comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: static char (*b)[6]; /* an unusual declaration */
+Followup-To: comp.lang.c
+Index: lib 4.3BSD
+
+> >      b = d;			/* So b == d ... Watch. */
+> This statement should have encountered an error, since b and d are not
+> of compatible types.
+
+In fact, if you fix a bug in the type-checking code, PCC will issue
+an error for this.  The compiler running on my machine (basically the
+SunOS 3.2 compiler) prints
+
+	"foo.c", line 7: warning: illegal pointer combination
+
+The problem is that the routine "chkpun" in "mip/trees.c" is
+extremely bogus.  It certainly checks for something, but that
+something certainly isn't any reasonable form of type-equality - for
+one thing, it treats pointers and arrays as equivalent.  (And no,
+that isn't necessary; array-valued expressions are converted to
+pointer-valued expressions, according to the ANSI C standard, and
+this isn't too bad a description of what C does according to K&R.  By
+the time you get to "chkpun", the conversion has already been
+performed, so you don't even have to treat them as equivalent at the
+outermost level of the declaration; treating them as equivalent at
+any other level is, of course, completely wrong.)
+
+Here's the fix.  The "diff -c" comes from our compiler, so I don't
+guarantee that the fix applies exactly as is to other flavors of PCC
+(or PCC2, QCC, RCC, etc.), but it shouldn't be too far off.  Note
+that there are zillions of other similar things wrong with the PCC
+front end (many of which are still wrong in PCC's successors);
+properly checking for errors and properly reporting errors didn't
+seem to be considered important, which I guess isn't too surprising
+since PCC was an experiment with code-generation technology, not
+parsing technology.
+
+*** /tmp/geta5443	Sun Jun 14 13:31:34 1987
+--- /tmp/getb5443	Sun Jun 14 13:31:39 1987
+***************
+*** 717,747 ****
+  			}
+  		}
+  	else {
+! 		d1 = p->in.left->fn.cdim;
+! 		d2 = p->in.right->fn.cdim;
+! 		for( ;; ){
+! 			if( t1 == t2 ) {;
+! 				if( p->in.left->fn.csiz != p->in.right->fn.csiz ) {
+! 					werror( "illegal structure pointer combination" );
+! 					}
+! 				return;
+  				}
+! 			if( ISARY(t1) || ISPTR(t1) ){
+! 				if( !ISARY(t2) && !ISPTR(t2) ) break;
+! 				if( ISARY(t1) && ISARY(t2) && dimtab[d1] != dimtab[d2] ){
+! 					werror( "illegal array size combination" );
+! 					return;
+  					}
+! 				if( ISARY(t1) ) ++d1;
+! 				if( ISARY(t2) ) ++d2;
+  				}
+- 			else break;
+- 			t1 = DECREF(t1);
+- 			t2 = DECREF(t2);
+  			}
+! 		werror( "illegal pointer combination" );
+  		}
+- 
+  	}
+  #ifdef VAX
+--- 711,748 ----
+  			}
+  		}
+  	else {
+! 		/*
+! 		 * type is "ptr to (...)" or "array of (...)"; walk through
+! 		 * the type constructors in the TWORD and check dimensions
+! 		 * of any array parts.  They have to be the same in order
+! 		 * for the types to be equivalent.
+! 		 *
+! 		 * NOTE: this code assumes that a reference to an item of
+! 		 * array type has already mapped into a value of pointer
+! 		 * type.  Also, note that within a composite type constructor,
+! 		 * PTR and ARY are NOT equivalent.
+! 		 */
+! 		if( t1 == t2 ) {
+! 			if( p->in.left->fn.csiz != p->in.right->fn.csiz ) {
+! 				werror( "illegal structure pointer combination" );
+  				}
+! 			d1 = p->in.left->fn.cdim;
+! 			d2 = p->in.right->fn.cdim;
+! 			for( ;; ){
+! 				if( ISARY(t1) ){
+! 					if( dimtab[d1] != dimtab[d2] ){
+! 						werror( "illegal array size combination" );
+! 						return;
+! 						}
+! 					++d1;
+! 					++d2;
+  					}
+! 				else if( !ISPTR(t1) ) break;
+! 				t1 = DECREF(t1);
+  				}
+  			}
+! 		else werror( "illegal pointer combination" );
+  		}
+  	}
+  #ifdef VAX
+
+-- 
+	Guy Harris
+	{ihnp4, decvax, seismo, decwrl, ...}!sun!guy
+	guy@sun.com (or guy@sun.arpa)
+

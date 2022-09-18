@@ -1,0 +1,66 @@
+Return-Path: <@seismo.ARPA:mcvax!jim@seismo.ARPA>
+Return-Path: <mcvax!jim@seismo.ARPA>
+From: mcvax!jim@seismo.ARPA (Jim McKie)
+Date: 10 Jan 1985 0141-MET (Thursday)
+Organisation: Centrum voor Wiskunde en Informatica
+	      Kruislaan 413, 1098SJ Amsterdam, The Netherlands
+Phone: +31 20 5924127, +31 20 970369
+Telex: 12571 (mactrnl)
+Subject: /usr/bin/prof assumes the system ticks at 60 HZ.
+Index: usr.bin/prof/prof.c 4.2BSD
+
+Description:
+	The value '60' for the rate at which the system clock collects
+	profiling info is wired in. This leads to wrong results as the
+	default HZ of 4.2 is 100 (ours is 50).
+Repeat-By:
+	Fix it and compare.
+Fix:
+	Following is a 'diff' of the added code to determine the value
+	of 'hz' from /dev/kmem. Prof should be able to access /dev/kmem.
+
+160a161
+> 	register int hz;
+161a163,164
+> 	if((hz = hertz()) == -1)
+> 		exit(1);
+171c174
+< 		printf("%6.1f%9.2f", 100*time, actime/60);
+---
+> 		printf("%6.1f%9.2f", 100*time, actime/hz);
+174c177
+< 			    np->ncall, np->time/(np->ncall*.06));
+---
+> 			    np->ncall, ((double)np->time*1000)/(np->ncall*hz));
+178a182,212
+> }
+> 
+> hertz()
+> {
+> 	register int fd, n;
+> 	static struct nlist name[2];
+> 	int hz;
+> 	char *namelist = "/vmunix";
+> 	char *kmem = "/dev/kmem";
+> 	extern int errno;
+> 
+> 	name[0].n_un.n_name = "_hz";
+> 	nlist(namelist, name);
+> 	if(name[0].n_type == 0){
+> 		fprintf(stderr, "no %s in %s\n", name[0].n_un.n_name, namelist);
+> 		return(-1);
+> 	}
+> 	if((fd = open(kmem, 0)) == -1){
+> 		fprintf(stderr, "can't open %s (%d)\n", kmem, errno);
+> 		return(-1);
+> 	}
+> 	if(lseek(fd, (long)name[0].n_value, 0) == -1){	/* XXX */
+> 		fprintf(stderr, "can't lseek %s (%d)\n", kmem, errno);
+> 		return(-1);
+> 	}
+> 	if((n = read(fd, (char *)&hz, sizeof(hz))) == -1 || n != sizeof(hz)){
+> 		fprintf(stderr, "can't read %s (%d)\n", kmem, errno);
+> 		return(-1);
+> 	}
+> 	(void) close(fd);
+> 	return(hz);

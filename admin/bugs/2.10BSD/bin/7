@@ -1,0 +1,97 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Aug  2 05:22:02 1989
+Date: Tue, 1 Aug 89 22:37:01 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Subject: ld symboltable length is wrong
+Index: bin/ld.c 2.10BSD
+
+Description:
+	ld produces incorrect length for the size of the symbol
+	table, the symbols ARE in the file, just the length is
+	wrong.  this causes (in the case of the kernel) approximately
+	19 symbols to be inaccessible by 'adb'.  'nm' WILL show
+	the symbols however.  Somewhere in 'ld' the cumulative size
+	is being calculated incorrectly, but the amount of information
+	written is right.
+
+Repeat-By:
+	I noticed the problem when 'adb' refused to admit that there
+	was a symbol in the kernel called "netdata":
+
+	nm -g /unix|egrep netdata
+
+	note 1) that the symbol is found, 2) the value of it.
+
+	adb -k /unix /dev/mem
+	netdata/o
+	symbol not found
+
+Fix:
+	Apply the following patch to ld.c.  The comments (yes, comments!;-))
+	should make clear what is going on - essentially the size of the
+	symbol table is calculated just before being written out.
+
+
+*** ld.c.old	Wed Apr 19 14:29:09 1989
+--- ld.c	Sun Jul 30 01:13:20 1989
+***************
+*** 1091,1097 ****
+  {
+  	register u_int n, *p;
+  	register SYMBOL *sp, *symp;
+! 
+  	if (numov) {
+  		/* int aovno = adrof("__ovno");		XXX KB */
+  		int aovhndlr[NOVL+1];
+--- 1091,1098 ----
+  {
+  	register u_int n, *p;
+  	register SYMBOL *sp, *symp;
+! 	long before, after;
+!  
+  	if (numov) {
+  		/* int aovno = adrof("__ovno");		XXX KB */
+  		int aovhndlr[NOVL+1];
+***************
+*** 1127,1132 ****
+--- 1128,1136 ----
+  		copy(&troutb);
+  		copy(&droutb);
+  	}
++ 
++ 	flush(&toutb);
++ 	before = lseek(toutb.fildes , 0L, 1);
+  	if (sflag==0) {
+  		if (xflag==0)
+  			copy(&soutb);
+***************
+*** 1146,1152 ****
+--- 1150,1176 ----
+  			p++;
+  		}
+  	}
++ /*
++  * the following is a workaround ("kludge") to insure that the
++  * correct size of the symbol table is written to the header.  this
++  * was occasioned by noticing that the value of a_syms for /unix showed
++  * 0115200 (39552) instead of 0115544 (39780).  somewhere 19 symbols were
++  * not being counted - (oh where oh where have the symbols gone...?;-))
++  * but they were being written out!  Granted, it is not proper to
++  * treat the symptom instead of the problem, but this works, and if you
++  * fix it for real i'd like a copy of ld.c - Steven M. Schultz
++  *
++  * I really think this should be calculated anyhow, makes as much sense
++  * as trying to maintain counts everywhere else.
++ */
++ 
+  	flush(&toutb);
++ 	after = lseek(toutb.fildes, 0L, 1);
++ 	lseek(toutb.fildes, 0L, 0);
++ 	read(toutb.fildes, &filhdr, sizeof (filhdr));
++ 	filhdr.a_syms = after - before;
++ 	lseek(toutb.fildes, 0L, 0);
++ 	write(toutb.fildes, &filhdr, sizeof (filhdr));
+  	close(toutb.fildes);
+  	if (!ofilfnd) {
+  		unlink("a.out");
+
+=================================================================

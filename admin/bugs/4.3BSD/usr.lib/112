@@ -1,0 +1,74 @@
+From bugs@math.ucla.edu  Thu May 26 12:00:54 1988
+Return-Path: <bugs@math.ucla.edu>
+To: bugs@ucbvax.Berkeley.EDU
+Cc: bugs@pic.ucla.edu, wales@cs.ucla.edu, paul@math.ucla.edu
+Subject: Sendmail v5.59 oddity
+Date: Thu, 26 May 88 11:59:38 PDT
+From: bugs@math.ucla.edu
+Index: usr.lib/sendmail 4.3BSD
+
+This message may pertain to sendmail and/or to libresolv.a (resolver
+library).  There are also comments about "bind" (namedaemon).
+We are using sendmail v5.59 and "bind" v4.8 on a 4.3BSD system
+(VAX 11/750).  Sendmail claims to have hostname lookup failures when sending
+some messages to sites for which failure is not credible, like sites for
+which localhost gives primary name service.  A particular message will fail
+on zero or more queue runs but will eventually make it.
+
+/usr/lib/sendmail -q -v reveals two odd behaviors:
+
+1.  Sometimes sendmail declares "timed out during user open with %s" OR
+"hostname lookup failure" an imperceptibly short time after printing the
+"connecting to %s" message.  This happened on 3 out of 12 tries.  One of 
+the sites affected was tucker.berkeley.edu, which I believe was down at
+the time.  The site is probably irrelevant.
+
+2.  Sometimes sendmail declares "hostname lookup failure" after a credible
+wait, on a host for which 2 minutes earlier nslookup had delivered an 
+address.  One affected site was Guinness.ias.edu; another was
+cunyvm.cuny.edu.  This happened about 4 or 5 times in 12 tries.  On each
+affected site, nslookup delivered a Non-Authoritative Answer (i.e. locally
+cached), and when I manually queried the first authoritative nameserver for
+the address the query timed out.  But in one case, a query to the second
+authoritative server was successful.  That time.
+
+3.  Sometimes normal delivery occurs, and sometimes there are believable
+timeouts on user open.
+
+4.  There are anecdotal reports from users that Telnet declares "host
+unknown" occasionally on known hosts.  Telnet is definitely using the
+distributed 4.3BSD libresolv.a, whereas sendmail was built with the one that
+came with "bind" (he says confidently).
+
+5.  Probably unrelated, but very annoying: we get a lot of "MAXQUERIES
+exceeded" log messages from "bind" (namedaemon).  We have two forwarders
+(the ucla.edu primary and secondary nameservers).  Detailed analysis of the
+namedaemon debug log shows that on a difficult query, datagrams are
+spun off to the forwarders one by one (each of which starts madly querying,
+and may or may not eventually reply).  Then the local daemon fires off
+queries to ALL TEN root nameservers (different addresses for the same site
+count as separate nameservers), and gets referred to organizational
+nameservers, and queries them (several per response), and sure enough, 
+MAXQUERIES really is exceeded before somebody finally coughs up the required
+address -- which often they eventually do. 
+
+"Bind" could help cut net traffic if it realized that if a query yields
+"no address available", querying the same name with a different address
+will not improve matters.
+
+Perhaps a progressive timeout is the answer, i.e. on the first
+query you time out in 2 seconds, then 4 on the next, and by the time you 
+resort to ARPAnet access you've learned to wait patiently for a response.
+
+Also on forwarders, local namedaemon can't wait a long time for the
+forwarder to answer, but it's a waste for the forwarder to collect the
+information if local is going to collect it also.  Maybe the local daemon
+should tell the forwarder to report cached data only (recursion flag off?),
+and if it successfully researches an address it should send its forwarder(s)
+a "look what I found" message, presently not supported in "bind".
+
+James F. Carter        (213) 825-2897
+UCLA-Mathnet; 6608B MSA; 405 Hilgard Ave.; Los Angeles, CA 90024-1555
+UUCP:...!{ihnp4,ucbvax,sdcrdcf,{hao!cepu}}!ucla-cs!math.ucla.edu!jimc
+ARPA: jimc@math.ucla.edu          BITNET: jimc%math.ucla.edu@INTERBIT
+

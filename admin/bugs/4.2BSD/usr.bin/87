@@ -1,0 +1,132 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn ()
+Date: Wed, 23 Nov 83 15:13:11 pst
+Subject: Bug in f77 loop optimizer generates incorrect code (serious!)
+Index: usr.bin/f77/src/f77pass1/exec.c 4.2BSD
+
+Description:
+	This problem occurs in the f77 compiler supplied on a tape
+	made on 8/23/83.
+
+	In f77 DO loops, a variable loop limit is squirreled away in a
+	local variable so that it cannot be altered during the course
+	of the loop.  (This is because the standard says that DO loop
+	initializations, limits and increments are only evaluated once,
+	when the loop is first entered.) Unfortunately the loop limit
+	is saved in a temporary variable which may be reallocated when
+	subroutine arguments are evaluated in the loop.  (Since f77
+	requires that arguments be passed to subroutines by reference
+	rather than by value, these temporaries are used to give an
+	address to the output of an expression.) This leads to loops
+	which are executed an unpredictable number of times, clearly a
+	major error.  The problem is mitigated slightly by the fact
+	that unless the loop is complicated, the loop limit quantity
+	will migrate into register from its place on the stack, and
+	after this it is safe from being clobbered.
+
+Repeat-By:
+	Copy the following f77 program into the file bug1.f:
+
+	--------------------------------------------------------------
+	program bug1
+	integer i, j, k, l, m, n, o
+
+	j = 2
+	k = 3
+	l = 4
+	m = 5
+	n = 6
+	o = 7
+
+	do 20 i=1,k
+
+		j = j + l
+		l = i + j
+		j = l * j
+		l = j - l
+		m = l * i
+		n = l * m
+		o = m - l
+		m = o + 3
+		n = o / m
+		o = j + n
+		call dummy( i+1, j+2, l+3 )
+
+		write(unit=6,fmt=10) i
+10		format('Loop pass ', i3)
+
+20	continue
+
+	stop
+	end
+
+	subroutine dummy( a, b, c )
+	integer a, b, c
+
+	return
+	end
+	--------------------------------------------------------------
+
+	Notice that the expected output is:
+
+		Loop pass   1
+		Loop pass   2
+		Loop pass   3
+
+	In fact this program goes into an infinite loop, counting up to
+	infinity.  To see why, compile again using the command:
+
+		f77 -d14 -S -O bug1.f
+
+	F77pass1 will print the debugging comment that offset -4 is being
+	reused.  If you look at the assembler output file bug1.s, you
+	should see that the loop limit is stored at -4(fp), and that the
+	call to dummy() clobbers -4(fp) with the value of i+1...  hence
+	the infinite loop.
+
+Fix:
+	The best fix I can find is to cause the loop limit to be put in a
+	TADDR-type temporary rather than a TTEMP temporary.  TTEMP stack
+	temporaries can be re-used quickly, while TADDR temporaries are
+	not recycled until the end of a routine.  The loop increment is
+	also a TTEMP temporary, so for safety I have also made that a
+	TADDR temporary.  The changes to src/f77pass1/exec.c are:
+
+	***************
+	*** 444,450
+	    if( CONSTLIMIT )
+	      ctlstack->domax = DOLIMIT;
+	    else
+	!     ctlstack->domax = (expptr) mktemp(dotype, PNULL);
+
+	    if( CONSTINCR )
+	      {
+
+	--- 461,467 -----
+	    if( CONSTLIMIT )
+	      ctlstack->domax = DOLIMIT;
+	    else
+	!     ctlstack->domax = (expptr) mkaltemp(dotype, PNULL);
+
+	    if( CONSTINCR )
+	      {
+	***************
+	*** 455,461
+	      }
+	    else
+	      {
+	!       ctlstack->dostep = (expptr) mktemp(dotype, PNULL);
+		ctlstack->dostepsign = VARSTEP;
+	      }
+
+
+	--- 472,478 -----
+	      }
+	    else
+	      {
+	!       ctlstack->dostep = (expptr) mkaltemp(dotype, PNULL);
+		ctlstack->dostepsign = VARSTEP;
+	      }
+
+Donn Seeley    UCSD Chemistry Dept. RRCF    ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016    sdcsvax!sdchema!donn@noscvax

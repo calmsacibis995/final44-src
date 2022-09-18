@@ -1,0 +1,87 @@
+From ucbcad!ames!oliveb!jerry@ucbvax.Berkeley.EDU  Tue Jul  7 13:34:08 1987
+Date: Tue, 7 Jul 87 12:59:20 PDT
+From: ucbcad!ames!oliveb.ATC.OLIVETTI.COM!jerry@ucbvax.Berkeley.EDU (Jerry F Aguirre)
+Subject: Large files cause fsck to dump core
+Index: include/sys/{types.h,param.h} 4.3BSD
+
+Description:
+	The macros defined for "howmany" and "roundup" use the classic
+	formula (size+(blksize-1))/blksize.  Unfortunately doing the
+	addition first can overflow a long into a negative number.  The
+	resulting number of data blocks is negative and this confuses
+	programs.
+
+	In our case fsck(8) began getting a segmentation violation while
+	checking one of our file systems.  When a dump and restore
+	failed to eliminate the problem the fsck core dump was examined. 
+
+	Debugging showed that howmany was returning a negative value
+	later used as an index.  This happened when checking an inode
+	containing a user file of logical size 2147475800 (actually a
+	"sparse" file using 32K).
+
+Repeat-By:
+	Compile and run the following code to create a file with a large
+	logical size.  (Don't worry, it only uses 24K of real file
+	space):
+		main()
+		{
+		    int fd;
+		    fd = creat("bigfile", 0777);
+		    lseek(fd, 0X7ffffe00L, 0);
+		    write(fd, "\n", 1);
+		}
+
+	Then run fsck on the file system.  It will get a segmentation
+	violation when it uses the negative value returned from
+	"howmany" as an index.
+
+Fix:
+	The following patches will correct the overflow problem.
+	Install them and then recompile fsck.  It will now check a file
+	system containing the previously created large file without core
+	dumping.
+
+	*** /usr/include/sys/types.h.orig	Wed Jun  4 23:30:46 1986
+	--- /usr/include/sys/types.h	Mon Jul  6 19:28:58 1987
+	***************
+	*** 59,65 ****
+	  typedef long	fd_mask;
+	  #define NFDBITS	(sizeof(fd_mask) * NBBY)	/* bits per mask */
+	  #ifndef howmany
+	! #define	howmany(x, y)	(((x)+((y)-1))/(y))
+	  #endif
+	  
+	  typedef	struct fd_set {
+	--- 59,65 ----
+	  typedef long	fd_mask;
+	  #define NFDBITS	(sizeof(fd_mask) * NBBY)	/* bits per mask */
+	  #ifndef howmany
+	! #define	howmany(x, y)	(((x)/(y))+(((x)%(y))?1:0))
+	  #endif
+	  
+	  typedef	struct fd_set {
+
+	*** /usr/include/sys/param.h.orig	Wed Jun  4 23:26:08 1986
+	--- /usr/include/sys/param.h	Mon Jul  6 17:51:09 1987
+	***************
+	*** 175,183 ****
+	   * Macros for counting and rounding.
+	   */
+	  #ifndef howmany
+	! #define	howmany(x, y)	(((x)+((y)-1))/(y))
+	  #endif
+	! #define	roundup(x, y)	((((x)+((y)-1))/(y))*(y))
+	  
+	  /*
+	   * Maximum size of hostname recognized and stored in the kernel.
+	--- 175,183 ----
+	   * Macros for counting and rounding.
+	   */
+	  #ifndef howmany
+	! #define	howmany(x, y)	(((x)/(y))+(((x)%(y))?1:0))
+	  #endif
+	! #define	roundup(x, y)	((((x)/(y))+(((x)%(y))?1:0))*(y))
+	  
+	  /*
+	   * Maximum size of hostname recognized and stored in the kernel.

@@ -1,0 +1,103 @@
+From chris@mimsy.umd.edu  Sat Nov 14 18:19:33 1987
+Date: Sat, 14 Nov 87 21:15:24 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+Subject: sh `if', `while' test background status too
+Index: bin/sh/service.c 4.3BSD Fix
+
+Description:
+	`if' and `while' tests in /bin/sh sometimes fail because a
+	background process has exited before the program the test is
+	running has a chance to do its own exit, and the background
+	process is false (nonzero) while the tested program's status
+	is true (zero).
+
+Repeat-By:
+	Run the following script:
+
+	% cat tt.sh
+	#! /bin/sh
+	while :
+	do
+		(exit 1) &
+		if [ -f tt.sh ]; then echo ok; else echo oops; exit 1; fi
+	done
+	% sh tt.sh
+	oops
+	%
+
+	It should loop forever printing `ok', but instead soon
+	stops with `oops'.
+
+Fix:
+	The routine `await' waits for the completion of a particular
+	process, and also gathers any others that exit at the same
+	time, so that (e.g.) failure anywhere in a pipeline makes
+	the whole pipe fail.  Unfortunately, sh also gathers its
+	background jobs at the same time.  Fortunately, this is
+	easy to fix: sh uses the routine `post' to list those
+	processes in which it is interested; if the process it
+	collects is not one of these, sh should just ignore its
+	status.
+
+	While I was at it, I increased MAXP to 40 from 20, since
+	MAXUPRC is bigger in 4.3BSD.  This is only a band-aid, as
+	would be using MAXUPRC itself, but I doubt there are many
+	pipelines that big.
+
+RCS file: RCS/service.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 service.c
+*** /tmp/,RCSt1004092	Sat Nov 14 21:01:25 1987
+--- service.c	Sat Nov 14 20:59:37 1987
+***************
+*** 198,202 ****
+  
+  /* for processes to be waited for */
+! #define MAXP 20
+  LOCAL INT	pwlist[MAXP];
+  LOCAL INT	pwc;
+--- 198,202 ----
+  
+  /* for processes to be waited for */
+! #define MAXP 40
+  LOCAL INT	pwlist[MAXP];
+  LOCAL INT	pwc;
+***************
+*** 238,241 ****
+--- 238,242 ----
+  		REG INT		sig;
+  		INT		w_hi;
++ 		BOOL		found;
+  
+  		BEGIN
+***************
+*** 246,252 ****
+   		   FI
+   		   trapjmp[INTR] = 0;
+  		   WHILE pw <= &pwlist[ipwc]
+  		   DO IF *pw==p
+! 		      THEN *pw=0; pwc--;
+  		      ELSE pw++;
+  		      FI
+--- 247,254 ----
+   		   FI
+   		   trapjmp[INTR] = 0;
++ 		   found=FALSE;
+  		   WHILE pw <= &pwlist[ipwc]
+  		   DO IF *pw==p
+! 		      THEN *pw=0; pwc--; found=TRUE;
+  		      ELSE pw++;
+  		      FI
+***************
+*** 273,277 ****
+  		FI
+  
+! 		IF rc==0
+  		THEN	rc = (sig ? sig|SIGFLG : w_hi);
+  		FI
+--- 275,279 ----
+  		FI
+  
+! 		IF rc==0 ANDF found
+  		THEN	rc = (sig ? sig|SIGFLG : w_hi);
+  		FI

@@ -1,0 +1,112 @@
+From chris@mimsy.umd.edu  Tue Aug 25 20:20:45 1987
+Date: Tue, 25 Aug 87 22:17:59 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+Subject: cron silently ignores errors (unless printing debug info)
+Index: etc/cron.c 4.3BSD Fix
+
+Description:
+	4.3BSD has a fancy new syslog.  Cron does not use it.
+
+Repeat-By:
+	Misspell a user name in crontab, e.g.
+
+Fix:
+
+RCS file: RCS/cron.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c2 -r1.1 -r1.2
+*** /tmp/,RCSt1005709	Tue Aug 25 22:31:04 1987
+--- /tmp/,RCSt2005709	Tue Aug 25 22:31:07 1987
+***************
+*** 14,17 ****
+--- 14,18 ----
+  #include <pwd.h>
+  #include <fcntl.h>
++ #include <syslog.h>
+  
+  #define	LISTS	(2*BUFSIZ)
+***************
+*** 59,64 ****
+  	extern char *optarg;
+  
+! 	if (fork())
+  		exit(0);
+  	c = getopt(argc, argv, "d:");
+  	if (c == 'd') {
+--- 60,78 ----
+  	extern char *optarg;
+  
+! 	openlog("cron", LOG_PID | LOG_CONS | LOG_NOWAIT, LOG_DAEMON);
+! 	switch (fork()) {
+! 
+! 	case -1:
+! 		syslog(LOG_ERR, "fork: %m");
+! 		exit(1);
+! 		/* NOTREACHED */
+! 
+! 	case 0:
+! 		break;
+! 
+! 	default:
+  		exit(0);
++ 		/* NOTREACHED */
++ 	}
+  	c = getopt(argc, argv, "d:");
+  	if (c == 'd') {
+***************
+*** 188,193 ****
+  	int pid;
+  
+! 	if (fork()) {
+  		return;
+  	}
+  
+--- 202,217 ----
+  	int pid;
+  
+! 	switch (fork()) {
+! 
+! 	case -1:
+! 		syslog(LOG_ERR, "cannot fork: %m (running %.40s%s)",
+! 			s, strlen(s) > 30 ? "..." : "");
+  		return;
++ 
++ 	case 0:
++ 		break;
++ 
++ 	default:
++ 		return;
+  	}
+  
+***************
+*** 198,201 ****
+--- 222,226 ----
+  	s++;
+  	if ((pwd = getpwnam(user)) == NULL) {
++ 		syslog(LOG_ERR, "invalid user name \"%s\"", user);
+  		dprintf(debug, "%d: cannot find %s\n", pid, user),
+  			fflush(debug);
+***************
+*** 205,213 ****
+  	initgroups(pwd->pw_name, pwd->pw_gid);
+  	(void) setuid(pwd->pw_uid);
+! 	freopen("/", "r", stdin);
+  	dprintf(debug, "%d: executing %s", pid, s), fflush (debug);
+  	execl("/bin/sh", "sh", "-c", s, 0);
+  	dprintf(debug, "%d: cannot execute sh\n", pid), fflush (debug);
+! 	exit(0);
+  }
+  
+--- 230,240 ----
+  	initgroups(pwd->pw_name, pwd->pw_gid);
+  	(void) setuid(pwd->pw_uid);
+! 	(void) freopen("/", "r", stdin);
+! 	closelog();
+  	dprintf(debug, "%d: executing %s", pid, s), fflush (debug);
+  	execl("/bin/sh", "sh", "-c", s, 0);
++ 	syslog(LOG_ERR, "cannot exec /bin/sh: %m");
+  	dprintf(debug, "%d: cannot execute sh\n", pid), fflush (debug);
+! 	exit(1);
+  }
+  

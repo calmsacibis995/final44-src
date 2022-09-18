@@ -1,0 +1,120 @@
+From xylogics!loverso@Xylogics.COM  Wed Aug  9 23:05:33 1989
+Date: Wed, 9 Aug 89 23:44:58 edt
+From: John Robert LoVerso <loverso@Xylogics.COM>
+Subject: tee is VERY slow
+Index: bin 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@Berkeley.EDU
+
+Description:
+	"tee" wastes cpu time by needlessly copying data a byte at a time
+	from an input buffer to an output buffer.
+	It further incurs heavy user-time and system-time penalties by
+	restricting all writes to 16-bytes whenever any output device is
+	a char special file or a pipe.  This is meaningless, and is on
+	top of the fact that tee doesn't check the return value of write
+	(what if all the data wasn't written?).
+
+Repeat-By:
+	Place "tee" in a pipeline as such:
+		... | uncompress | tee tarfile | tar tfvB -
+	and watch it soak up CPU and slow down the dataflow to "tar".
+
+Fix:
+	This is a modified version of the 4.3BSD-Tahoe /usr/src/bin/tee.c
+	that includes changes to the read and write loops to greatly improve
+	timings.  For a 3MB file traveling through the above pipe, the
+	usage changed as follows:
+		tee.old        26.0u 41.7s 1:13 91% 0+0k 292+1io 0pf+0w
+		tee.fast        0.0u  2.6s 0:05 48% 0+0k 151+2io 0pf+0w
+
+	While I was at it, I changed it to use getopt and to also use
+	perror() (plus folding the call to creat() into a single call
+	to open()).
+
+#ifndef lint
+static char *sccsid = "@(#)tee.c	5.4 (Berkeley) 12/14/85";
+#endif
+/*
+ * tee-- pipe fitting
+ */
+
+#include <stdio.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/file.h>
+#include <errno.h>
+
+#ifdef BUFSIZ
+#undef BUFSIZ
+#define	BUFSIZ	8192
+#endif
+
+int openf[20] = { 1 };
+int n = 1;
+int aflag;
+
+char buf[BUFSIZ];
+
+extern errno;
+long	lseek();
+
+main(argc,argv)
+int argc;
+char **argv;
+{
+	int register r;
+	extern int optind;
+
+	while((r = getopt(argc, argv, "-ai")) != EOF)
+		switch((char)r) {
+		case 'a':
+			aflag++;
+			break;
+		case 'i':
+			(void)signal(SIGINT, SIG_IGN);
+			break;
+		default:
+			fputs("usage: tee [ -ai ] [ file ] ...\n", stderr);
+			exit(1);
+		}
+	argc -= optind;
+	argv += optind;
+	for(;argc-->0 && n<20;argv++,n++) {
+		openf[n] = open(*argv,
+				O_WRONLY|O_CREAT|(aflag?O_APPEND:O_TRUNC),
+				0666);
+		if(openf[n] < 0) {
+			perror(*argv);
+			n--;
+		}
+	}
+	for(;;) {
+		r = read(0, buf, BUFSIZ);
+		if (r > 0)
+			stash(r);
+		else
+			break;
+	}
+	if (r < 0)
+		perror("tee read");
+}
+
+stash(p)
+int p;
+{
+	int k;
+	int w;
+	int d;
+
+	for(k=0;k<n;k++) {
+		d = p;
+		w = 0;
+		while (d > 0 && w >= 0) {
+			w = write(openf[k], buf+(p-d), d);
+			if (w > 0)
+				d -= w;
+			else
+				perror("tee write");
+		}
+	}
+}

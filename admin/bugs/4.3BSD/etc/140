@@ -1,0 +1,115 @@
+From abe@j.cc.purdue.edu  Fri Jul  1 04:05:48 1988
+Date: Thu, 30 Jun 88 10:56:28 EST
+From: abe@j.cc.purdue.edu (Vic Abell)
+Subject: bind() race condition in ftpd
+Index: etc/ftpd/ftpd.c 4.3BSD
+
+Description:
+	There is a race conditon in the function getdatasock() in ftpd.c.  It
+	occurs when two or more ftpd processes bind their same local address
+	to a socket at the same time.  In spite of their use of the
+	SO_RESUSEADDR option, function in_pcblookup() of in_pcb.c in the kernel
+	will refuse to bind two sockets to the same local address if neither
+	has a foreign address.
+
+Repeat-By:
+	Generate many incoming ftp connections to the same host and get
+	files via them simultaneously.  Some will fail with the message
+
+		425 Can't create data socket d.d.d.d.p: Address in use
+
+Fix:
+	Ftpd should be modified to repeat the bind function for a limited
+	time, when the bind error reply is EADDRINUSE.  The following context
+	diff represents a fix that is currently in use at this site.
+
+*** /usr/src/etc/ftpd/ftpd.c	Wed Jun 15 19:07:41 1988
+--- ftpd.c	Thu Jun 30 09:42:02 1988
+***************
+*** 83,94 ****
+  char	remotehost[32];
+  
+  /*
+!  * Timeout intervals for retrying connections
+!  * to hosts that don't accept PORT cmds.  This
+!  * is a kludge, but given the problems with TCP...
+   */
+! #define	SWAITMAX	90	/* wait at most 90 seconds */
+! #define	SWAITINT	5	/* interval between retries */
+  
+  int	swaitmax = SWAITMAX;
+  int	swaitint = SWAITINT;
+--- 83,95 ----
+  char	remotehost[32];
+  
+  /*
+!  * Timeout intervals for retrying connections to hosts
+!  * that don't accept PORT cmds, bind problems, etc.
+   */
+! #define BWAITINT	2	/* interval between bind() retries */
+! #define BWAITMAX	60	/* wait at most 60 seconds for bind() */
+! #define SWAITMAX	90	/* wait at most 90 seconds */
+! #define SWAITINT	5	/* interval between retries */
+  
+  int	swaitmax = SWAITMAX;
+  int	swaitint = SWAITINT;
+***************
+*** 379,385 ****
+  getdatasock(mode)
+  	char *mode;
+  {
+! 	int s, on = 1;
+  
+  	if (data >= 0)
+  		return (fdopen(data, mode));
+--- 380,386 ----
+  getdatasock(mode)
+  	char *mode;
+  {
+! 	int retry, s, on = 1;
+  
+  	if (data >= 0)
+  		return (fdopen(data, mode));
+***************
+*** 387,403 ****
+  	if (s < 0)
+  		return (NULL);
+  	seteuid(0);
+! 	if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof (on)) < 0)
+! 		goto bad;
+! 	/* anchor socket to avoid multi-homing problems */
+! 	data_source.sin_family = AF_INET;
+! 	data_source.sin_addr = ctrl_addr.sin_addr;
+! 	if (bind(s, &data_source, sizeof (data_source)) < 0)
+! 		goto bad;
+  	seteuid(pw->pw_uid);
+- 	return (fdopen(s, mode));
+- bad:
+- 	seteuid(pw->pw_uid);
+  	(void) close(s);
+  	return (NULL);
+  }
+--- 388,409 ----
+  	if (s < 0)
+  		return (NULL);
+  	seteuid(0);
+! 	if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
+! 	    (char *) &on, sizeof (on)) == 0) {
+! 		/* anchor socket to avoid multi-homing problems */
+! 		data_source.sin_family = AF_INET;
+! 		data_source.sin_addr = ctrl_addr.sin_addr;
+! 		for (retry = 0; retry < BWAITMAX; retry += BWAITINT) {
+! 			if (bind(s, &data_source, sizeof (data_source)) == 0) {
+! 				seteuid(pw->pw_uid);
+! 				return (fdopen(s, mode));
+! 			}
+! 			if (errno != EADDRINUSE)
+! 				break;
+! 			sleep(BWAITINT);
+! 		}
+! 	}
+  	seteuid(pw->pw_uid);
+  	(void) close(s);
+  	return (NULL);
+  }
+

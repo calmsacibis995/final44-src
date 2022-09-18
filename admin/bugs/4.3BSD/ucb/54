@@ -1,0 +1,306 @@
+From kcd@ef.ecn.purdue.edu  Wed Dec 31 09:53:30 1986
+From: kcd@ef.ecn.purdue.edu (Kent C De La Croix)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: rsh bug
+Date: Wed, 31 Dec 86 12:52:35 EST
+
+Subject: rsh will hang if executed with many files open
+Index:	ucb/rsh.c 4.3BSD
+
+Description:
+	If the first 16 file descriptors are in use when "rsh" is
+	executed it hangs in "select".  The problem is that rsh.c
+	is opening file descriptors with values greater than 16 but
+	then calls select telling it to look at only the first 16 file
+	descriptors. 
+
+	Perhaps select should return an error indication if none of the
+	first "nfds" bits is set in any of the bitmasks it was passed.
+	If this had been the case then rsh would have printed an error
+	message instead of just hanging.
+
+Repeat-By:
+	Compile and execute the following program. (you will probably want
+	to change the machine name used in the "system" call.)  Notice
+	that the program hangs after printing "Hello World".
+
+	#include <sys/file.h>
+	main()
+	{
+		int fd1, fd2, fd3, fd4, fd5, fd6, fd7;
+		int fd8, fd9, fd10, fd11, fd12, fd13;
+		fd1 = open("/dev/null", O_RDONLY, 0666);
+		fd2 = open("/dev/null", O_RDONLY, 0666);
+		fd3 = open("/dev/null", O_RDONLY, 0666);
+		fd4 = open("/dev/null", O_RDONLY, 0666);
+		fd5 = open("/dev/null", O_RDONLY, 0666);
+		fd6 = open("/dev/null", O_RDONLY, 0666);
+		fd7 = open("/dev/null", O_RDONLY, 0666);
+		fd8 = open("/dev/null", O_RDONLY, 0666);
+		fd9 = open("/dev/null", O_RDONLY, 0666);
+		fd10 = open("/dev/null", O_RDONLY, 0666);
+		fd11 = open("/dev/null", O_RDONLY, 0666);
+		fd12 = open("/dev/null", O_RDONLY, 0666);
+		fd13 = open("/dev/null", O_RDONLY, 0666);
+		system("rsh ee.ecn.purdue.edu 'echo Hello world' </dev/null");
+		write(1, "DONE\n", 5);
+	}
+
+Fix:
+	The problem has been fixed here by changing the code to
+	determine the first argument to "select" by adding one to the
+	highest numbered file descriptor that select is being called
+	on.  In addition the code has been modified to us fd_set's
+	instead of int's for the bit masks passed to select.
+
+	RCS file: /usr/src/ucb/RCS/rsh.c,v
+	retrieving revision 1.1
+	retrieving revision 1.2
+	diff -c -r1.1 -r1.2
+	*** /tmp/,RCSt1007660	Wed Dec 31 12:29:34 1986
+	--- /tmp/,RCSt2007660	Wed Dec 31 12:29:34 1986
+	***************
+	*** 18,23
+	  #include <sys/socket.h>
+	  #include <sys/ioctl.h>
+	  #include <sys/file.h>
+	  
+	  #include <netinet/in.h>
+	  
+
+	--- 18,24 -----
+	  #include <sys/socket.h>
+	  #include <sys/ioctl.h>
+	  #include <sys/file.h>
+	+ #include <sys/time.h>
+	  
+	  #include <netinet/in.h>
+	  
+	***************
+	*** 52,58
+		register int cc;
+		int asrsh = 0;
+		struct passwd *pwd;
+	! 	int readfrom, ready;
+		int one = 1;
+		struct servent *sp;
+		int omask;
+
+	--- 53,60 -----
+		register int cc;
+		int asrsh = 0;
+		struct passwd *pwd;
+	! 	fd_set readfrom, ready;
+	! 	int nfds;
+		int one = 1;
+		struct servent *sp;
+		int omask;
+	***************
+	*** 167,173
+		ioctl(rfd2, FIONBIO, &one);
+		ioctl(rem, FIONBIO, &one);
+		  if (pid == 0) {
+	! 		char *bp; int rembits, wc;
+			(void) close(rfd2);
+		reread:
+			errno = 0;
+
+	--- 169,175 -----
+		ioctl(rfd2, FIONBIO, &one);
+		ioctl(rem, FIONBIO, &one);
+		  if (pid == 0) {
+	! 		char *bp; fd_set rembits; int wc;
+			(void) close(rfd2);
+			nfds = rem + 1;	/* Number of fd's to select on */
+		reread:
+	***************
+	*** 169,174
+		  if (pid == 0) {
+			char *bp; int rembits, wc;
+			(void) close(rfd2);
+		reread:
+			errno = 0;
+			cc = read(0, buf, sizeof buf);
+
+	--- 171,177 -----
+		  if (pid == 0) {
+			char *bp; fd_set rembits; int wc;
+			(void) close(rfd2);
+	+ 		nfds = rem + 1;	/* Number of fd's to select on */
+		reread:
+			errno = 0;
+			cc = read(0, buf, sizeof buf);
+	***************
+	*** 176,183
+				goto done;
+			bp = buf;
+		rewrite:
+	! 		rembits = 1<<rem;
+	! 		if (select(16, 0, &rembits, 0, 0) < 0) {
+				if (errno != EINTR) {
+					perror("select");
+					exit(1);
+
+	--- 179,187 -----
+				goto done;
+			bp = buf;
+		rewrite:
+	! 		FD_ZERO(&rembits);
+	! 		FD_SET(rem, &rembits);
+	! 		if (select(nfds, (fd_set *)0, &rembits, (fd_set *)0, (struct timeval *)0) < 0) {
+				if (errno != EINTR) {
+					perror("select");
+					exit(1);
+	***************
+	*** 184,190
+				}
+				goto rewrite;
+			}
+	! 		if ((rembits & (1<<rem)) == 0)
+				goto rewrite;
+			wc = write(rem, bp, cc);
+			if (wc < 0) {
+
+	--- 188,194 -----
+				}
+				goto rewrite;
+			}
+	! 		if (! FD_ISSET(rem, &rembits))
+				goto rewrite;
+			wc = write(rem, bp, cc);
+			if (wc < 0) {
+	***************
+	*** 201,207
+			exit(0);
+		}
+		sigsetmask(omask);
+	! 	readfrom = (1<<rfd2) | (1<<rem);
+		do {
+			ready = readfrom;
+			if (select(16, &ready, 0, 0, 0) < 0) {
+
+	--- 205,214 -----
+			exit(0);
+		}
+		sigsetmask(omask);
+	! 	FD_ZERO(&readfrom);
+	! 	FD_SET(rfd2, &readfrom);
+	! 	FD_SET(rem, &readfrom);
+	! 	nfds = rfd2 > rem ? rfd2 + 1 : rem + 1;	/*Number of fd's to select on*/
+		do {
+			ready = readfrom;
+			if (select(nfds, &ready, (fd_set *)0, (fd_set *)0, (struct timeval *)0) < 0) {
+	***************
+	*** 204,210
+		readfrom = (1<<rfd2) | (1<<rem);
+		do {
+			ready = readfrom;
+	! 		if (select(16, &ready, 0, 0, 0) < 0) {
+				if (errno != EINTR) {
+					perror("select");
+					exit(1);
+
+	--- 211,217 -----
+		nfds = rfd2 > rem ? rfd2 + 1 : rem + 1;	/*Number of fd's to select on*/
+		do {
+			ready = readfrom;
+	! 		if (select(nfds, &ready, (fd_set *)0, (fd_set *)0, (struct timeval *)0) < 0) {
+				if (errno != EINTR) {
+					perror("select");
+					exit(1);
+	***************
+	*** 211,217
+				}
+				continue;
+			}
+	! 		if (ready & (1<<rfd2)) {
+				errno = 0;
+				cc = read(rfd2, buf, sizeof buf);
+				if (cc <= 0) {
+
+	--- 218,224 -----
+				}
+				continue;
+			}
+	! 		if (FD_ISSET(rfd2, &ready)) {
+				errno = 0;
+				cc = read(rfd2, buf, sizeof buf);
+				if (cc <= 0) {
+	***************
+	*** 216,222
+				cc = read(rfd2, buf, sizeof buf);
+				if (cc <= 0) {
+					if (errno != EWOULDBLOCK)
+	! 					readfrom &= ~(1<<rfd2);
+				} else
+					(void) write(2, buf, cc);
+			}
+
+	--- 223,229 -----
+				cc = read(rfd2, buf, sizeof buf);
+				if (cc <= 0) {
+					if (errno != EWOULDBLOCK)
+	! 					FD_CLR(rfd2, &readfrom);
+				} else
+					(void) write(2, buf, cc);
+			}
+	***************
+	*** 220,226
+				} else
+					(void) write(2, buf, cc);
+			}
+	! 		if (ready & (1<<rem)) {
+				errno = 0;
+				cc = read(rem, buf, sizeof buf);
+				if (cc <= 0) {
+
+	--- 227,233 -----
+				} else
+					(void) write(2, buf, cc);
+			}
+	! 		if (FD_ISSET(rem, &ready)) {
+				errno = 0;
+				cc = read(rem, buf, sizeof buf);
+				if (cc <= 0) {
+	***************
+	*** 225,231
+				cc = read(rem, buf, sizeof buf);
+				if (cc <= 0) {
+					if (errno != EWOULDBLOCK)
+	! 					readfrom &= ~(1<<rem);
+				} else
+					(void) write(1, buf, cc);
+			}
+
+	--- 232,238 -----
+				cc = read(rem, buf, sizeof buf);
+				if (cc <= 0) {
+					if (errno != EWOULDBLOCK)
+	! 					FD_CLR(rem, &readfrom);
+				} else
+					(void) write(1, buf, cc);
+			}
+	***************
+	*** 229,235
+				} else
+					(void) write(1, buf, cc);
+			}
+	!         } while (readfrom);
+		  (void) kill(pid, SIGKILL);
+		exit(0);
+	  usage:
+
+	--- 236,242 -----
+				} else
+					(void) write(1, buf, cc);
+			}
+	!         } while (FD_ISSET(rfd2, &readfrom) || FD_ISSET(rem, &readfrom));
+		  (void) kill(pid, SIGKILL);
+		exit(0);
+	  usage:
+
+----------
+Kent C. De La Croix				ECN Graphics Software Support
+Purdue University				ARPA:  kcd@ef.ecn.purdue.EDU
+Electrical Engineering Bldg. Room 348E		UUCP:  ...!inhp4!pur-ee!kcd
+West Lafayette, IN 47905			PHONE: (317) 494-3546

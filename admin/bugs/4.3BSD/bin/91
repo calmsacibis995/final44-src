@@ -1,0 +1,124 @@
+Path: seismo!uunet!mnetor!utzoo!henry
+From: henry@utzoo.UUCP (Henry Spencer)
+Newsgroups: comp.bugs.4bsd,comp.bugs.sys5
+Subject: egrep botch
+Index: bin/grep 4.3BSD
+
+The following bug appears to be present in egrep (the Bell/AT&T one, not
+the comp.sources.unix one) on all extant versions of Unix.  Certainly it
+is present in V7, 4.2BSD, Sunnix 3.2, and 386 System V Release 3.
+
+	% echo 0 >foo
+	% egrep '0.' foo
+	% egrep '^0.' foo
+	0
+	%
+
+Adding the "^" seems to convince egrep that "." can legitimately match
+newline.  Changing "." to "[^x]" does not change the behavior.  Some quick
+tests suggest that "$" does not produce a similar anomaly.  I can find no
+statement in any manual that gives even a shred of legitimacy to this.
+
+Unfortunately, I lack the time to root around in the somewhat obscure
+innards of egrep to discover the exact cause and fix.  Anybody out there
+feeling ambitious? :-)
+-- 
+"Mir" means "peace", as in           |  Henry Spencer @ U of Toronto Zoology
+"the war is over; we've won".        | {allegra,ihnp4,decvax,utai}!utzoo!henry
+
+=========================================================================
+Path: seismo!uunet!husc6!hao!oddjob!mimsy!cvl!elsie!ado
+From: ado@elsie.UUCP (Arthur David Olson)
+Newsgroups: comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: egrep botch
+Summary: Ambition should be made of Sterno stuff
+
+> The following bug appears to be present in egrep (the Bell/AT&T one, not
+> the comp.sources.unix one) on all extant versions of Unix.  Certainly it
+> is present in V7, 4.2BSD, Sunnix 3.2, and 386 System V Release 3.
+> 	% echo 0 >foo
+> 	% egrep '0.' foo
+> 	% egrep '^0.' foo
+> 	0
+> 	%
+> Adding the "^" seems to convince egrep that "." can legitimately match
+> newline.  Changing "." to "[^x]" does not change the behavior.  Some quick
+> tests suggest that "$" does not produce a similar anomaly.
+
+The change below cures the problem, and even "looks right."
+Your line numbers will vary.
+
+*** 3.2/egrep.y	Fri Oct 23 16:34:20 1987
+--- 3.3/egrep.y	Fri Oct 23 16:34:24 1987
+***************
+*** 303,309 ****
+  					if ((k = name[curpos]) >= 0)
+  						if (
+  							(k == c)
+! 							| (k == DOT)
+  							| (k == CCL && member(c, right[curpos], 1))
+  							| (k == NCCL && member(c, right[curpos], 0))
+  						) {
+--- 303,309 ----
+  					if ((k = name[curpos]) >= 0)
+  						if (
+  							(k == c)
+! 							| (k == DOT && c != '\n')
+  							| (k == CCL && member(c, right[curpos], 1))
+  							| (k == NCCL && member(c, right[curpos], 0))
+  						) {
+--
+Bugs is a trademark of Warner Brothers and Volkswagen.
+-- 
+ado@vax2.nlm.nih.gov	ADO, VAX, and NIH are trademarks of Ampex and DEC.
+=========================================================================
+Path: seismo!uunet!seismo!sundc!pitstop!sun!decwrl!labrea!rutgers!clyde!watmath!utgpu!utzoo!henry
+From: henry@utzoo.UUCP (Henry Spencer)
+Newsgroups: comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: egrep botch
+> The change below cures the problem, and even "looks right."
+
+Unfortunately, it doesn't cure the whole problem, since changing "." to
+"[^x]" still provokes the bug.
+-- 
+PS/2: Yesterday's hardware today.    |  Henry Spencer @ U of Toronto Zoology
+OS/2: Yesterday's software tomorrow. | {allegra,ihnp4,decvax,utai}!utzoo!henry
+
+=========================================================================
+Path: seismo!uunet!husc6!cmcl2!brl-adm!umd5!cvl!elsie!ado
+From: ado@elsie.UUCP (Arthur David Olson)
+Newsgroups: comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: egrep botch
+Summary: Completing the fix
+
+In article <8872@utzoo.UUCP>, henry@utzoo.UUCP (Henry Spencer) writes:
+> > The change. . .cures the problem, and even "looks right."
+> Unfortunately, it doesn't cure the whole problem, since changing "." to
+> "[^x]" still provokes the bug.
+
+True enough.  Newline shouldn't match "."; it also shouldn't match
+"[anything]" or "[^anything]".  This can be reflected by moving the test against
+newline (converting "|" operators into "||" in the process as an efficiency
+boost).
+
+Here's the diff against the "original" egrep.y.  As always, the trade secret
+status of the code involved precludes a clearer posting.
+
+304,308c304,311
+< 						if (
+< 							(k == c)
+< 							| (k == DOT)
+< 							| (k == CCL && member(c, right[curpos], 1))
+< 							| (k == NCCL && member(c, right[curpos], 0))
+---
+> 					    if (
+> 						k == c ||
+> 						(c != '\n' &&
+> 						(k == DOT ||
+> 					        (k == CCL &&
+> 						member(c, right[curpos], 1)) ||
+> 						(k == NCCL &&
+> 						member(c, right[curpos], 0))))
+-- 
+ado@vax2.nlm.nih.gov	ADO, VAX, and NIH are trademarks of Ampex and DEC.
+

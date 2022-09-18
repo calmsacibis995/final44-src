@@ -1,0 +1,72 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Jun 28 22:40:35 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA05569; Wed, 28 Jun 89 22:40:35 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA20344; Wed, 28 Jun 89 22:39:01 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA02305; Wed, 28 Jun 89 22:39:15 -0700
+Date: Wed, 28 Jun 89 22:39:15 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz(Y))
+Message-Id: <8906290539.AA02305@WLV.IMSD.CONTEL.COM>
+Subject: TIME_WAIT sockets clog system (part 1)
+Index: 	sys/netinet/tcp_subr.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Sockets in a TIME_WAIT state can constipate the networking
+	buffer memory when generated in rapid succession by, for
+	example, an "mget" in an ftp session.  If more than a dozen
+	or so small files are transferred in rapid succession over
+	an ethernet, all the mbufs in the system will be taken up
+	by sockets in a TIME_WAIT state.
+
+Repeat-By:
+	ftp in to a 2.10.1BSD system, do an "mget *" in a largish
+	directory.  note that the transfer will hang/develope problems
+	after about a dozen to twenty files.
+
+Fix:
+	Apply this patch to netinet/tcp_subr.c, this fix implements
+	a tcp_drain() function that actually does something (the 
+	original 4.3BSD tcp_drain() was a null function).  The other
+	half of this fix will follow shortly and consists of a small
+	modification to uipc_mbuf to invoke the drain routine at the
+	appropriate time.
+
+	The comment in the function pretty much sums the situation up.
+
+*** tcp_subr.c.old	Thu Apr 28 16:22:56 1988
+--- tcp_subr.c	Fri Jun  9 13:57:29 1989
+***************
+*** 251,257 ****
+--- 251,279 ----
+  
+  tcp_drain()
+  {
++ 	register struct inpcb *ip, *ipnxt;
++ 	register struct tcpcb *tp;
++ 	int s = splimp();
+  
++ 	/*
++ 	 * Search through tcb's and look for TIME_WAIT states to liberate,
++ 	 * these are due to go away soon anyhow and we're short of space or
++  	 * we wouldn't be here...
++ 	 */
++ 	ip = tcb.inp_next;
++ 	if (ip == 0) {
++ 		splx(s);
++ 		return;
++ 	}
++ 	for (; ip != &tcb; ip = ipnxt) {
++ 		ipnxt = ip->inp_next;
++ 		tp = intotcpcb(ip);
++ 		if (tp == 0)
++ 			continue;
++ 		if (tp->t_state == TCPS_TIME_WAIT)
++ 			tcp_close(tp);
++ 	}
++ 	splx(s);
+  }
+  
+  /*
+

@@ -1,0 +1,36 @@
+Return-Path: <abe@purdue-asc.ARPA>
+Date: Fri, 10 May 85 16:13:20 est
+From: Vic Abell <abe@purdue-asc.ARPA>
+Subject: RCS rev 4.2 dmf driver lacks selwakeup() call
+Index: sys/vaxuba/dmf.c 4.2BSD
+
+Description:
+	The driver for the dmf terminal multiplexor does not wake up
+	processes waiting on a select for a device attached to it.
+	The problem showed up when using telnet, which makes heavy
+	used of select().
+Repeat-By:
+	Telnet to some other host.  Sometimes the output from logging
+	on to that host (e. g., the motd) will not be fully displayed
+	until you enter some data from the keyboard.
+Fix:
+	The following diff's (< old versus fix >) show the code that
+	was installed in dmf.c, ala dh.c.
+
+527,529c527,536
+< 	if ((tp->t_state&TS_ASLEEP) && tp->t_outq.c_cc<=TTLOWAT(tp)) {
+< 		tp->t_state &= ~TS_ASLEEP;
+< 		wakeup((caddr_t)&tp->t_outq);
+---
+> 	if (tp->t_outq.c_cc<=TTLOWAT(tp)) {
+> 		if (tp->t_state&TS_ASLEEP) {
+> 			tp->t_state &= ~TS_ASLEEP;
+> 			wakeup((caddr_t)&tp->t_outq);
+> 		}
+> 		if (tp->t_wsel) {
+> 			selwakeup(tp->t_wsel, tp->t_state & TS_WCOLL);
+> 			tp->t_wsel = 0;
+> 			tp->t_state &= ~TS_WCOLL;
+> 		}
+
+Vic Abell, ...pur-ee!pucc-j!abe

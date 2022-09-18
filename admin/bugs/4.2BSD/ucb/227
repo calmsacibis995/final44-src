@@ -1,0 +1,127 @@
+Return-Path: <decvax!utcs!ian>
+Date: Fri, 23 Aug 85 12:13:42 edt
+From: decvax!utcs!ian (Ian F. Darwin)
+Subject: lastcomm(1) output has varying number of fields
+Index: ucb/lastcomm.c 4.2BSD
+
+Description:
+	There is a minor annoyance with several reporting
+	commands in many versions of UNIX: they put out various
+	`flag' bits, but don't put anything if there none of
+	the flags is on. Arguably a feature (silence is golden),
+	but since you're putting out many columns for each
+	record anyway, you might as well be consistent about
+	the number of *fields* you put out. The reason this matters
+	is that a number of standard UNIX tools (awk, sort, etc)
+	are field-oriented, and get nicely confused if there's
+	a different number of fields.
+Repeat-By:
+	Try to see who's been doing what lately
+	(or summarize a day's records for a one-shot report
+	on usage of some program) as follows:
+
+	lastcomm|awk '{print $1,$3}'
+
+	Some of the output records will have the userid, others
+	will have the tty name, as the second field printed.
+Fix:
+	Change src/ucb/lastcomm.c as follows (line numbers
+	are for reference; yours may or may not differ).
+
+	RCS file: RCS/lastcomm.c,v
+	retrieving revision 1.1
+	retrieving revision 1.2
+	diff -c -r1.1 -r1.2
+	*** /tmp/,RCSt1023648	Fri Aug 23 12:05:52 1985
+	--- /tmp/,RCSt2023648	Fri Aug 23 12:05:55 1985
+	***************
+	*** 20,25
+	  
+	  time_t	expand();
+	  char	*flagbits();
+	  char	*getname();
+	  char	*getdev();
+	  
+	
+	--- 20,26 -----
+	  
+	  time_t	expand();
+	  char	*flagbits();
+	+ #define	NFLAGBITS	5	/* number printed by flagbits() for printf */
+	  char	*getname();
+	  char	*getdev();
+	  
+	***************
+	*** 58,64
+	  					*cp = '?';
+	  			if (!ok(argc, argv, acp) && argc != 1)
+	  				continue;
+	! 			printf("%-*s %s %-*s %-*s %4d sec%s %.16s\n",
+	  				fldsiz(acct, ac_comm), acp->ac_comm,
+	  				flagbits(acp->ac_flag),
+	  				fldsiz(utmp, ut_name), getname(acp->ac_uid),
+	
+	--- 59,65 -----
+	  					*cp = '?';
+	  			if (!ok(argc, argv, acp) && argc != 1)
+	  				continue;
+	! 			printf("%-*s %-*s %-*s %-*s %4d sec%s %.16s\n",
+	  				fldsiz(acct, ac_comm), acp->ac_comm,
+	  				NFLAGBITS, flagbits(acp->ac_flag),
+	  				fldsiz(utmp, ut_name), getname(acp->ac_uid),
+	***************
+	*** 60,66
+	  				continue;
+	  			printf("%-*s %s %-*s %-*s %4d sec%s %.16s\n",
+	  				fldsiz(acct, ac_comm), acp->ac_comm,
+	! 				flagbits(acp->ac_flag),
+	  				fldsiz(utmp, ut_name), getname(acp->ac_uid),
+	  				fldsiz(utmp, ut_line), getdev(acp->ac_tty),
+	  				x, x > 1 || x == 0 ? "s" : " ",
+	
+	--- 61,67 -----
+	  				continue;
+	  			printf("%-*s %-*s %-*s %-*s %4d sec%s %.16s\n",
+	  				fldsiz(acct, ac_comm), acp->ac_comm,
+	! 				NFLAGBITS, flagbits(acp->ac_flag),
+	  				fldsiz(utmp, ut_name), getname(acp->ac_uid),
+	  				fldsiz(utmp, ut_line), getdev(acp->ac_tty),
+	  				x, x > 1 || x == 0 ? "s" : " ",
+	***************
+	*** 91,97
+	  	register int i = 0;
+	  	static char flags[20];
+	  
+	! #define BIT(flag, ch)	flags[i++] = (f & flag) ? ch : ' '
+	  	BIT(ASU, 'S');
+	  	BIT(AFORK, 'F');
+	  	BIT(ACOMPAT, 'C');
+	
+	--- 92,101 -----
+	  	register int i = 0;
+	  	static char flags[20];
+	  
+	! #define BIT(flag, ch)	\
+	! 	if (f & flag) \
+	! 		flags[i++] = (ch);
+	! /* note - if you change the next few lines, check out NFLAGBITS */
+	  	BIT(ASU, 'S');
+	  	BIT(AFORK, 'F');
+	  	BIT(ACOMPAT, 'C');
+	***************
+	*** 98,103
+	  	BIT(ACORE, 'D');
+	  	BIT(AXSIG, 'X');
+	  	flags[i] = '\0';
+	  	return (flags);
+	  }
+	  
+	
+	--- 102,109 -----
+	  	BIT(ACORE, 'D');
+	  	BIT(AXSIG, 'X');
+	  	flags[i] = '\0';
+	+ 	if (strlen(flags) == 0)
+	+ 		strcat(flags, "-");
+	  	return (flags);
+	  }

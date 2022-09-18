@@ -1,0 +1,53 @@
+From Bradley.White@q.cs.cmu.edu  Tue Jan  5 11:55:20 1988
+Date: Tue,  5 Jan 88 14:20:25 EST
+From: Bradley White <bww@K.GP.CS.CMU.EDU>
+Reply-To: bww@CS.CMU.EDU
+Subject: closing/selecting AF_UNIX DGRAM sockets
+Index: sys/uipc_usrreq.c 4.3BSD
+
+Description:
+	Closing one end of a connected pair of AF_UNIX domain DGRAM
+	sockets does not cause a select() on the other end to wakeup,
+	but it will make the select() return the other end as "ready"
+	if the select() should be woken up for any other reason.  This
+	is clearly inconsistent - if select() is going to return a
+	descriptor as "ready" it should do so as soon as possible
+	rather than waiting for another event to occur.
+Repeat-By:
+	Create a connected pair of Unix domain DGRAM sockets [that is,
+	essentially make a pipe but with type DGRAM rather than
+	STREAM].  Have the "writer" side sleep for a while and then
+	close its descriptor.  Have the "reader" side select() on its
+	descriptor along with some other descriptor [like the standard
+	input] and/or with a timeout.  Notice that the select() does
+	not return until either the other descriptor is ready or the
+	timeout occurs [or other circumstances cause a wakeup(&selwait)],
+	and that the socket descriptor is returned as "ready".  A
+	recv() on the socket will then correctly return ECONNRESET.
+Fix:
+	Two ways to correct the inconsistency are by causing the
+	select() to wake up when the other end of the connection is
+	closed, or by never indicating that the socket is "ready" [as
+	is the case in the AF_INET domain].  I have chosen the former
+	because it seems more useful.
+
+RCS file: RCS/uipc_usrreq.c,v
+retrieving revision 7.1
+diff -c -r7.1 uipc_usrreq.c
+*** /tmp/,RCSt1018645	Mon Jan  4 13:22:45 1988
+--- uipc_usrreq.c	Mon Jan  4 13:20:26 1988
+***************
+*** 506,511 ****
+--- 506,516 ----
+  
+  	so->so_error = errno;
+  	unp_disconnect(unp);
++ 	if (so->so_type == SOCK_DGRAM) {
++ 		wakeup((caddr_t)&so->so_timeo);
++ 		sowwakeup(so);
++ 		sorwakeup(so);
++ 	}
+  	if (so->so_head) {
+  		so->so_pcb = (caddr_t) 0;
+  		m_freem(unp->unp_addr);
+

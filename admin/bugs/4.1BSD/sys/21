@@ -1,0 +1,75 @@
+Return-Path: <allegra!astrovax!wls>
+Date: Mon, 25 Jul 83 14:16:31 PDT
+From: allegra!astrovax!wls
+To: allegra!ucbvax!4bsd-bugs
+
+Date:	Mon Jun 25 1983
+From:	allegra!astrovax!wls
+Subject: Erroneous raw dma write from user area causes hang
+Index:	sys/sys/vmmem.c 4.1BSD Fix
+
+Description:
+  I have discovered a bug in the BSD 4.1 memory paging routines concerning the
+  locking of memory for raw dma devices. This bug will cause a process to
+  hang at priority -24 (PSWP+1) with a WCHAN an address in the cmap array.
+
+  This bug occurs when a raw dma write erroneously exceeds the end of its buffer
+  and extends into the "user area" below the bottom of the stack.
+Repeat-By:
+  Take a small buffer (say 100 bytes). Open a raw dma device (raw tape
+  will do).  Then do a large write from that buffer (say 30000 bytes).
+  The process will hang at priority -24.
+Fix:
+ A fix is to have vslock and vsunlock aware of the user area.
+ Revised vslock and vsunlock in sys/sys/vmmem.c: 
+
+>vslock(base, count)
+>	caddr_t base;
+>{
+>	register unsigned v;
+>	register int npf;
+>	register struct pte *pte;
+>
+>	u.u_procp->p_flag |= SDLYU;
+>	v = btop(base);
+>	pte = vtopte(u.u_procp, v);
+>	npf = btoc(count + ((int)base & CLOFSET));
+>	while (npf > 0 && v<btop(USRSTACK)) { /* Bug Fix WLS */
+>		if (pte->pg_v)
+>			mlock(pte->pg_pfnum);
+>		else
+>			if (fubyte((caddr_t)ctob(v)) < 0)
+>				panic("vslock");
+>		pte += CLSIZE;
+>		v += CLSIZE;
+>		npf -= CLSIZE;
+>	}
+>	u.u_procp->p_flag &= ~SDLYU;
+>}
+ 
+>/* 
+> * Unlock a virtual segment.
+> */
+>vsunlock(base, count, rw)
+>	caddr_t base;
+>{
+>	register struct pte *pte;
+>	register int npf;
+>	register unsigned v;			/* Bug Fix WLS */
+>
+>	pte = vtopte(u.u_procp, btop(base));
+>	npf = btoc(count + ((int)base & CLOFSET));
+>	v = btop(base);				/* Bug Fix WLS */
+>	while (npf > 0 && v<btop(USRSTACK)) {	/* Bug Fix WLS */
+>		munlock(pte->pg_pfnum);
+>		if (rw == B_READ)	/* Reading from device writes memory */
+>			pte->pg_m = 1;
+>		pte += CLSIZE;
+>		npf -= CLSIZE;
+>		v += CLSIZE;			/* Bug Fix WLS */
+>	}
+>}
+  There are possibly more elegant fixes which don't assume the standard
+  memory layout,  but this works.  A more rigorous fix might require having
+  two different memory locking bits in the cmap entry, one for dma locking,
+  another for "permanent" locking.

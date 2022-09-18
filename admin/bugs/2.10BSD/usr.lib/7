@@ -1,0 +1,443 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Nov 24 14:25:27 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA07000; Fri, 24 Nov 89 14:25:27 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.39)
+	id AA18995; Fri, 24 Nov 89 14:25:23 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA25768; Fri, 24 Nov 89 14:25:48 -0800
+Date: Fri, 24 Nov 89 14:25:48 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8911242225.AA25768@WLV.IMSD.CONTEL.COM>
+Subject: sendmail and long recipient lists
+Index: 	usr.lib/sendmail/src/Makefile.m4 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Even with string extraction being used (using the sendmail
+	preprocessor 'mkstrcc') 'sendmail' runs out of memory when 
+	processing very long lists of recipients.
+
+Repeat-By:
+	Attempt to send a mail item which has 120+ people in the To:
+	line.
+
+Fix:
+	No changes to the 'sendmail' source are required, instead
+	two new source files are added and the Makefile.m4 file
+	is patched.  If you do not have the latest Makefile.m4 and
+	'mkstrcc' shell script send a mail item to "sms@wlv.imsd.contel.com"
+	and i will mail them to you.
+
+	Aside from 'sendmail's voracious appetite for memory, compounded
+	by malloc()'s apparently not always being matched by free()'s, 
+	one of the largest single contributors to the D space of 'sendmail'
+	is the ctime(3) (and associated routines localtime(3), etc)
+	function.  The tables utilized for the Daylight Savings Time automatic
+	timezone adjustment are substantial.  The solution implemented
+	by the modules below move the ctime(3) logic to a separate
+	process (/usr/lib/ctimed) and use a local ctime.o in 'sendmail' to 
+	communicate via a bidirectional pipe to the external process.
+
+	This SAVES 2.5KB of D space!  The cost is low, one process table
+	table entry occupied permanently, and a small ('sendmail' does not 
+	call the ctime(3) routines more than twice or thrice per invocation 
+	based on the debugging of 'ctimed') amount of overhead for each mail 
+	item.
+
+	Due to the peculiar forking sequence 'sendmail' performs upon
+	startup, the 'ctimed' pid for the "sendmail -bd" process will
+	be one lower than that of the daemon 'sendmail'.
+
+
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	patch
+#	ctime.c
+#	ctimed.c
+# This archive created: Fri Nov 24 16:53:28 1989
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f 'patch'
+then
+	echo shar: "will not over-write existing file 'patch'"
+else
+sed 's/^X//' << \SHAR_EOF > 'patch'
+X*** Makefile.m4.ol	Mon Feb  6 12:02:24 1989
+X--- Makefile.m4	Wed Nov  1 16:12:05 1989
+X***************
+X*** 26,38 ****
+X  	savemail.o err.o readcf.o stab.o headers.o recipient.o \
+X  	stats.o daemon.o usersmtp.o srvrsmtp.o queue.o \
+X  	macro.o util.o clock.o trace.o envelope.o
+X! OBJS2=	sysexits.o arpadate.o convtime.o
+X  OBJS=	$(OBJS1) $(OBJS2) $(EXTRACT)
+X  
+X  SBASE=	conf.o collect.o parseaddr.o alias.o deliver.o stab.o headers.o \
+X  	recipient.o stats.o srvrsmtp.o queue.o macro.o util.o clock.o \
+X  	trace.o envelope.o sysexits.o arpadate.o convtime.o Version.o \
+X! 	$(EXTRACT)
+X  SOV1=	main.o readcf.o
+X  SOV2=	daemon.o savemail.o usersmtp.o err.o
+X  
+X--- 26,38 ----
+X  	savemail.o err.o readcf.o stab.o headers.o recipient.o \
+X  	stats.o daemon.o usersmtp.o srvrsmtp.o queue.o \
+X  	macro.o util.o clock.o trace.o envelope.o
+X! OBJS2=	sysexits.o arpadate.o convtime.o ctime.o
+X  OBJS=	$(OBJS1) $(OBJS2) $(EXTRACT)
+X  
+X  SBASE=	conf.o collect.o parseaddr.o alias.o deliver.o stab.o headers.o \
+X  	recipient.o stats.o srvrsmtp.o queue.o macro.o util.o clock.o \
+X  	trace.o envelope.o sysexits.o arpadate.o convtime.o Version.o \
+X! 	ctime.o $(EXTRACT)
+X  SOV1=	main.o readcf.o
+X  SOV2=	daemon.o savemail.o usersmtp.o err.o
+X  
+X***************
+X*** 41,49 ****
+X  	sysexits.c util.c arpadate.c version.c collect.c \
+X  	macro.c headers.c readcf.c stab.c recipient.c stats.c daemon.c \
+X  	usersmtp.c srvrsmtp.c queue.c clock.c trace.c envelope.c
+X! SRCS2=	TODO convtime.c
+X  SRCS=	Version.c $(SRCS1) $(SRCS2)
+X! ALL=	sendmail
+X  
+X  CHOWN=	-echo chown
+X  CHMOD=	chmod
+X--- 41,49 ----
+X  	sysexits.c util.c arpadate.c version.c collect.c \
+X  	macro.c headers.c readcf.c stab.c recipient.c stats.c daemon.c \
+X  	usersmtp.c srvrsmtp.c queue.c clock.c trace.c envelope.c
+X! SRCS2=	TODO convtime.c ctime.c
+X  SRCS=	Version.c $(SRCS1) $(SRCS2)
+X! ALL=	sendmail ctimed
+X  
+X  CHOWN=	-echo chown
+X  CHMOD=	chmod
+X***************
+X*** 85,90 ****
+X--- 85,93 ----
+X  	$(CHMOD) $(OBJMODE) sendmail
+X  	size sendmail; ls -l sendmail; ifdef(`m4SCCS', `$(WHAT) < Version.o')
+X  
+X+ ctimed:
+X+ 	cc $(SEPFLAG) $(CFLAGS) ctimed.c -o ctimed
+X+ 
+X  install: all
+X  	$(INSTALL) -m 4755 sendmail $(DESTDIR)/usr/lib
+X  	chgrp kmem $(DESTDIR)/usr/lib/sendmail
+X***************
+X*** 93,98 ****
+X--- 96,102 ----
+X  		install -c -o bin -m 644 sendmail.sr \
+X  			$(DESTDIR)/usr/lib/sendmail.sr; \
+X  	fi
+X+ 	install -c -s -o bin -m 0755 ctimed /usr/lib/ctimed
+X  
+X  version: newversion $(OBJS) Version.c
+X  
+X***************
+X*** 137,143 ****
+X  
+X  clean:
+X  	rm -f core sendmail rmail usersmtp uucp a.out XREF sendmail.cf
+X! 	rm -f sendmail.sr *.o
+X  
+X  sources: $(SRCS)
+X  
+X--- 141,147 ----
+X  
+X  clean:
+X  	rm -f core sendmail rmail usersmtp uucp a.out XREF sendmail.cf
+X! 	rm -f sendmail.sr *.o ctimed
+X  
+X  sources: $(SRCS)
+SHAR_EOF
+fi
+if test -f 'ctime.c'
+then
+	echo shar: "will not over-write existing file 'ctime.c'"
+else
+sed 's/^X//' << \SHAR_EOF > 'ctime.c'
+X#include	<stdio.h>
+X#include	<sysexits.h>
+X#include	<sys/types.h>
+X#include	<sys/time.h>
+X
+X#define	SEND_FD	W[1]
+X#define	RECV_FD	R[0]
+X
+X#define	CTIME	1
+X#define	ASCTIME	2
+X#define	TZSET	3
+X#define	LOCALTIME 4
+X#define	GMTIME	5
+X#define	OFFTIME	6
+X
+X	static	int	R[2], W[2], inited;
+X	static	char	result[26];
+X	static	struct	tm	tmtmp;
+X
+Xchar	*
+Xctime(t)
+X	time_t	*t;
+X	{
+X	u_char	fnc = CTIME;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	write(SEND_FD, t, sizeof (*t));
+X	getb(RECV_FD, result, 26);
+X	return(result);
+X	}
+X
+Xchar	*
+Xasctime(tp)
+X	struct	tm	*tp;
+X	{
+X	u_char	fnc = ASCTIME;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	write(SEND_FD, tp, sizeof (*tp));
+X	getb(RECV_FD, result, 26);
+X	return(result);
+X	}
+X
+Xvoid
+Xtzset()
+X	{
+X	u_char	fnc = TZSET;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	}
+X
+Xstruct	tm *
+Xlocaltime(tp)
+X	time_t	*tp;
+X	{
+X	u_char	fnc = LOCALTIME;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	write(SEND_FD, tp, sizeof (*tp));
+X	getb(RECV_FD, &tmtmp, sizeof tmtmp);
+X	getb(RECV_FD, result, 24);
+X	tmtmp.tm_zone = result;
+X	return(&tmtmp);
+X	}
+X
+Xstruct	tm *
+Xgmtime(tp)
+X	time_t	*tp;
+X	{
+X	u_char	fnc = GMTIME;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	write(SEND_FD, tp, sizeof (*tp));
+X	getb(RECV_FD, &tmtmp, sizeof tmtmp);
+X	getb(RECV_FD, result, 24);
+X	tmtmp.tm_zone = result;
+X	return(&tmtmp);
+X	}
+X
+Xstruct	tm *
+Xofftime(clock, offset)
+X	time_t	*clock;
+X	long	offset;
+X	{
+X	u_char	fnc = OFFTIME;
+X
+X	sewer();
+X	write(SEND_FD, &fnc, sizeof fnc);
+X	write(SEND_FD, clock, sizeof (*clock));
+X	write(SEND_FD, &offset, sizeof offset);
+X	getb(RECV_FD, &tmtmp, sizeof tmtmp);
+X	tmtmp.tm_zone = "";
+X	return(&tmtmp);
+X	}
+X
+Xgetb(f, p, n)
+X	register int f, n;
+X	register char *p;
+X	{
+X	int	i;
+X
+X	while	(n)
+X		{
+X		i = read(f, p, n);
+X		if	(i <= 0)
+X			return;
+X		p += i;
+X		n -= i;
+X		}
+X	}
+X
+Xsewer()
+X	{
+X	register int	pid, ourpid = getpid();
+X
+X	if	(inited == ourpid)
+X		return;
+X	if	(inited)
+X		{
+X		close(SEND_FD);
+X		close(RECV_FD);
+X		}
+X	pipe(W);
+X	pipe(R);
+X	pid = vfork();
+X	if	(pid == 0)
+X		{			/* child */
+X		dup2(W[0], 0);		/* parent write side to our stdin */
+X		dup2(R[1], 1);		/* parent read side to our stdout */
+X		close(SEND_FD);		/* copies made, close the... */
+X		close(RECV_FD);		/* originals now */
+X		execl("/usr/lib/ctimed", "ctimed", 0);
+X		_exit(EX_OSFILE);
+X		}
+X	if	(pid == -1)
+X		abort();		/* nothing else really to do */
+X	close(W[0]);			/* close read side of SEND channel */
+X	close(R[1]);			/* close write side of RECV channel */
+X	inited = ourpid;		/* don't do this again in this proc */
+X	}
+SHAR_EOF
+fi
+if test -f 'ctimed.c'
+then
+	echo shar: "will not over-write existing file 'ctimed.c'"
+else
+sed 's/^X//' << \SHAR_EOF > 'ctimed.c'
+X#include	<signal.h>
+X#include	<stdio.h>
+X#include	<setjmp.h>
+X#include	<sys/ioctl.h>
+X#include	<sys/types.h>
+X#include	<sys/time.h>
+X
+X#define	CTIME	1
+X#define	ASCTIME	2
+X#define	TZSET	3
+X#define	LOCALTIME 4
+X#define	GMTIME	5
+X#define	OFFTIME	6
+X
+Xextern	struct	tm	*offtime();
+X
+X	jmp_buf	env;
+X	char	*cp, junk[52];
+X	long	l, off;
+X	int	timeout();
+X	struct	tm	tmtmp, *tp;
+X
+Xmain()
+X	{
+X	register int i;
+X	struct	itimerval it;
+X	u_char	c;
+X
+X	signal(SIGPIPE, SIG_DFL);
+X	for	(i = getdtablesize(); i > 2; i--)
+X		close(i);
+X/*
+X * Need a timer running while we disassociate from the control terminal
+X * in case of a modem line which has lost carrier.
+X*/
+X	timerclear(&it.it_interval);
+X	it.it_value.tv_sec = 5;
+X	it.it_value.tv_usec = 0;
+X	signal(SIGALRM, timeout);
+X	setitimer(ITIMER_REAL, &it, (struct itimerval *) NULL);
+X	if	(setjmp(env) == 0)
+X		{
+X		i = open("/dev/tty", 0);
+X		if	(i >= 0)
+X			{
+X			ioctl(i, TIOCNOTTY, NULL);
+X			close(i);
+X			}
+X		}
+X	signal(SIGALRM, SIG_IGN);
+X	timerclear(&it.it_interval);
+X	timerclear(&it.it_value);
+X	setitimer(ITIMER_REAL, &it, (struct itimerval *) NULL);
+X
+X	while	(read(fileno(stdin), &c, 1) == 1)
+X		{
+X		switch	(c)
+X			{
+X			case	CTIME:
+X				l = 0L;
+X				getb(fileno(stdin), &l, sizeof l);
+X				cp = ctime(&l);
+X				write(fileno(stdout), cp, 26);
+X				break;
+X			case	ASCTIME:
+X				getb(fileno(stdin), &tmtmp, sizeof tmtmp);
+X				cp = asctime(&tmtmp);
+X				write(fileno(stdout), cp, 26);
+X				break;
+X			case	TZSET:
+X				(void) tzset();
+X				break;
+X			case	LOCALTIME:
+X				l = 0L;
+X				getb(fileno(stdin), &l, sizeof l);
+X				tp = localtime(&l);
+X				write(fileno(stdout), tp, sizeof (*tp));
+X				strcpy(junk, tp->tm_zone);
+X				junk[24] = '\0';
+X				write(fileno(stdout), junk, 24);
+X				break;
+X			case	GMTIME:
+X				l = 0L;
+X				getb(fileno(stdin), &l, sizeof l);
+X				tp = gmtime(&l);
+X				write(fileno(stdout), tp, sizeof (*tp));
+X				strcpy(junk, tp->tm_zone);
+X				junk[24] = '\0';
+X				write(fileno(stdout), junk, 24);
+X				break;
+X			case	OFFTIME:
+X				getb(fileno(stdin), &l, sizeof l);
+X				getb(fileno(stdin), &off, sizeof off);
+X				tp = offtime(&l, off);
+X				write(fileno(stdout), tp, sizeof (*tp));
+X				break;
+X			default:
+X				abort("switch");
+X			}
+X		}
+X	}
+X
+Xgetb(f, p, n)
+X	int	f;
+X	register char	*p;
+X	register int	n;
+X	{
+X	register int	i;
+X
+X	while	(n)
+X		{
+X		i = read(f, p, n);
+X		if	(i <= 0)
+X			return;
+X		p += i;
+X		n -= i;
+X		}
+X	}
+X
+Xtimeout()
+X	{
+X
+X	longjmp(env, 1);
+X	}
+SHAR_EOF
+fi
+exit 0
+#	End of shell archive

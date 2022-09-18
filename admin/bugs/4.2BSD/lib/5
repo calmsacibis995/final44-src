@@ -1,0 +1,42 @@
+Return-Path: <lepreau@utah-cs>
+Date: 29 Nov 83 18:53 MST
+From: Jay Lepreau <lepreau@utah-cs>
+Subject: scandir() calls realloc too much and is not pessimistic enuf
+
+Index:	lib/libc/gen/scandir.c 4.2BSD Fix
+
+Description:
+	1.  If the arraysz estimate proved low, scandir does a realloc
+	assuming the worst, but it never recomputes the new arraysz,
+	so it keeps calling realloc all the rest of the way thru the dir.
+	(This isn't as bad as it sounds, for realloc is smart enuf not
+	to do anything if the same size is requested.)
+	2. scandir is overly optimistic about the worst case: the directory
+	could grow on it (unless there's some synchrony out there I don't
+	know about), leading to an infinite loop.  It should restat the
+	directory.
+Repeat-By:
+	Well, *I* noticed it from that nifty gprof output showing
+	hundreds of realloc calls.  Obvious from inspection too.
+Fix:
+***************
+*** 60,61
+  		if (++nitems >= arraysz) {
+  			names = (struct direct **)realloc((char *)names,
+
+--- 62,66 -----
+  		if (++nitems >= arraysz) {
++ 			if (fstat(dirp->dd_fd, &stb) < 0)
++ 				return(-1);	/* just might have grown */
++ 			arraysz = stb.st_size/12;
+  			names = (struct direct **)realloc((char *)names,
+***************
+*** 61,63
+  			names = (struct direct **)realloc((char *)names,
+! 				(stb.st_size/12) * sizeof(struct direct *));
+  			if (names == NULL)
+
+--- 66,68 -----
+  			names = (struct direct **)realloc((char *)names,
+! 				arraysz * sizeof(struct direct *));
+  			if (names == NULL)

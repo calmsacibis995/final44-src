@@ -1,0 +1,80 @@
+From mcvax!unido!sbsvax!greim@uunet.uu.net Fri Dec 30 00:01:27 1988
+Path: seismo!uunet!mcvax!unido!sbsvax!greim
+From: greim@sbsvax.UUCP (Michael Greim)
+Newsgroups: comp.bugs.4bsd,comp.unix.questions
+Subject: Re: csh core dumping. A fix for.
+In <2292@bucsb.UUCP> Joe Wells made us aware of a bug in csh.
+Index: ucb/csh 4.3BSD
+
+Symptoms:
+	Try the following in csh
+		alias foo '`cat`'
+		`foo`
+	The csh will dump core, with a message of "illegal instructions"
+	or something like this.
+
+Diagnosis:
+	When a command is built, the variable pargv (and Co.) is used to
+	hold the words of the new command. When the input is command
+	substituted (triggered by presence of '`') csh forks, the child
+	evaluates the command inside '`', the ancestor reads the output
+	and uses it to build its own command. If the child does a command
+	substitution itself (substituting foo by `cat`) it tests whether
+	pargv is already in use. If so, it assumes something has gone
+	terribly wrong and calls abort, which runs on an illegal instruction
+	to produce a core dump.
+
+	Why does this happen?
+
+	The child inherits the value of pargv (and Co.) although it should
+	start with pargv == 0, i.e. a command of its own.
+	This is no problem in 'normal' commands, because then pargv
+	is explicitly set. 
+
+Therapy:
+	Change csh to do it right: after forking reset pargv (and Co.).
+	If you are lucky and have source, apply the following patch and wreak
+	yavoc (yet another version of ye old csh :-)
+	(This is a patch to 4.2 BSD csh, line numbers and context may differ)
+
+*** sh.glob.c.old	Thu Dec 29 11:03:28 1988
+--- sh.glob.c	Thu Dec 29 11:03:35 1988
+***************
+*** 692,697
+  		dmove(pvec[1], 1);
+  		dmove(SHDIAG, 2);
+  		initdesc();
+  		arginp = cp;
+  		while (*cp)
+  			*cp++ &= TRIM;
+
+--- 692,699 -----
+  		dmove(pvec[1], 1);
+  		dmove(SHDIAG, 2);
+  		initdesc();
++ 		if (pargv)		/* mg, 21.dec.88 */
++ 			blkfree(pargv), pargv = 0;		/* mg, 21.dec.88 */
+  		arginp = cp;
+  		while (*cp)
+  			*cp++ &= TRIM;
+
+Examination:
+	(don't type the double quotes)
+	- create a directory, let's say tmp, and cd to it.
+	- create a file named "f" in it.
+	- write the string "ls" onto this file.
+	- call the new csh
+	- do "alias foo '`cat f`'"
+	- sit back and try to figure what the output of "`foo`" might be.
+	- do "`foo`".
+	If you do this with old csh, it dumps core.
+
+Absorb, apply and enjoy,
+
+	-mg
+-- 
+email : greim@sbsvax.informatik.uni-saarland.dbp.de
+  (some mailers might not like this. Then use greim@sbsvax.uucp)
+  or  : ...!uunet!unido!sbsvax!greim
+# include <disclaimers/std.h>
+

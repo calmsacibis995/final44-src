@@ -1,0 +1,83 @@
+Return-Path: <KIRTON@USC-ISIF>
+Date:  5 Dec 1983 1558-PST
+Subject: TCP routes not updated
+From: Paul Kirton <KIRTON@USC-ISIF>
+
+Index:  sys/netinet/ip_output.c 4.2BSD
+
+Description:
+
+New routes installed by the routing daemon or manually are not used
+by existing TCP connections, which continue to use the old route.
+
+To save time when looking up routing table entries, TCP connections save the
+location of the current routing table entry and pass it to ip_output() with
+each packet to be sent.
+
+When a routing table entry is deleted manually or by the routing daemon, the
+rtrequest() routine checks the rt_refcnt to see if any connections presently
+reference it, if so it unlinks the entry from the route table but does not
+free the memory. Instead the route is marked as down by clearing the RTF_UP
+flag.
+
+When a connection with an existing reference to the deleted route sends a
+packet it passes the route entry pointer to ip_input() as usual, but
+ip_input() does not check the RTF_UP flag to see if the route is still usable.
+It just uses the old route. Thus TCP connections will continue to try to use
+the old route until the connection terminates.
+
+Repeat-By:
+
+The problem can be demonstrated as follows:
+1. set up a Telnet connection and then suspend it,
+2. netstat -r to check refcnts on routes,
+3. delete the route used by the Telnet connection,
+4. send data over Telnet to verify that the connection is still up, then
+suspend again,
+5. check netstat -r again, which will show that no refcnts have been
+incremented indicating that no new routes have been established, thus the old
+route is still being used. The Telnet connection should have switched to a new
+route that is up, typically the default gateway.
+
+Fix:
+
+1. In ip_output(), whenever a route is supplied with the call check that it is
+up and if not free the route and allocate a new route. The following code
+change should fix the problem (new code is indicated by the margin bar):
+
+	ip_output(...,ro,...)
+	    .
+	    .
+	    .
+	    if (ro->ro_rt == 0) {
+		.
+		.
+		.
+		rtalloc(ro);
+	    }
+
+|	    else if(ro->ro_rt->rt_flags & RTF_UP == 0) {
+|			rtfree(ro->ro_rt);
+|			rtalloc(ro);
+|		 }
+
+	    if (ro->ro_rtr == 0 || (ifp = ...
+
+
+2. The route allocation routine currently just returns if the route given in
+the call contains a pointer to the route entry. Thus this test should also
+check that the route is up.
+
+Change sys/net/route.c, routine rtalloc(), first executable statement to:
+(New code is underlined.)
+
+
+rtalloc(ro)
+    .
+    .
+    .
+    if(ro->ro_rt && ro_>ro_rt->rt_ifp && ro->ro_rt->rt_flags&RTF_UP)
+				      -----------------------------
+	return;
+
+-------

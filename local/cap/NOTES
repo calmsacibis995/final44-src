@@ -1,0 +1,224 @@
+CAP Installation notes
+
+The Columbia University Appletalk Package is actually a rather broad
+collection of libraries and programs.  Following are some guidelines
+in building the various programs and libraries.
+
+Following are notes about the various components of CAP that require
+special attention during installation or porting.  Hopefully, we've
+caught most of the major points, but there may be things missing.
+
+Index:
+	CONFIGURATION
+	INSTALLATION
+	MACHINE SPECIFIC
+	LIBRARIES
+	SAMPLE PROGRAMS
+	CONTRIB
+	APPLICATIONS
+	
+
+*************
+CONFIGURATION
+*************
+
+Configuration is somewhat automated.  The configuration parameters are
+divided into the major and minor parameters.  The major parameters
+must be set to compile properly.  The minor parameters are for
+configuration of programs, etc.
+
+To start off, you can run the "Configure" shell script to configure
+the main parameters.  This creates a file called m4.setup.  You should
+then modify the secondary (minor) parameters in this file.
+
+Makefiles are generated from templates.  m4.setup defines variables
+used in the template.  gen.makes builds the Makefiles.
+
+Makefiles are included in all directories (Makefile) configured for a
+standard BSD system.  (Major configuration: bsd, no fastether,
+needgetopt, no quotas).  gen.makes creates "makefile" which should
+override "Makefile".
+
+Make sure you read "MACHINE SPECIFIC"!  It points out os/machine
+dependencies that are not handled by Configure.
+
+
+************
+DESTINATIONS
+************
+
+Or where do the files go?  Generally, the defaults are:
+	/usr/local/cap - general programs
+	/usr/local/lib/cap - programs not for general use
+	/usr/local/lib - libraries
+	/etc - atis and some configuration files
+
+Certainly machines do not search /usr/local/lib by default.  In these
+cases, the libraries are place in /usr/lib.
+
+You should be modifying these in m4.setup.
+
+************
+INSTALLATION
+************
+
+A detailed procedure with testing mechanisms is defined in
+doc/installation.ms (a formatted copy is doc/installation.doc).
+However, you should peruse this document first.
+
+
+****************
+MACHINE SPECIFIC
+****************
+
+The current CAP distribution should work on:
+	BSD 4.2
+	BSD 4.3
+	Ultrix 1.0, 1.1, 1.2, 2.0 and hopefully 2.2
+	Sun OS 3.2 or higher
+	Pyramid's Unix under the BSD universe 
+	ACIS 4.2 or 4.3 for the IBM RT PC
+	A/UX
+	HP-UX for the series 9000 (release 6.0)
+	Encore (Multimax) (version unknown)
+and the majority should work under:
+	Convex Unix V6.1
+and most should work with some manual work under:
+	HP-UX - release before 6.0
+
+However, it should be noted that the baseline development system is
+Ultrix 2.0 and things are tuned for that environment.
+
+If your machine isn't listed, take a close look at the document
+"PORTING" for things to watch out for.
+
+On the pyramid, everything is compiled with the "-q" option to be
+safe.  "-q" tells it to pack the structures, possibly at the expense
+of speed.  SEE LOCKF below.
+
+On the Encore Multimax, there are reports that the optimizer may be
+overzealous.  It may be wise to compile without optimization (or try
+recompiling without optimization if there are problems).
+
+On HP-UX, if you have an old release, you will have to define
+"NEEDMSGHDR" in caposdefs in m4.setup as output by Configure.  (You
+can do it lib/cap/makefile, but that is not recommended).
+
+On MORE/BSD, getgroups may return an array of gid_t instead of type
+int.  If this happens to be the case, you should edit aufsosdefs in
+m4.setup and add:
+	-DGGTYPE="gid_t"
+ALSO SEE LOCKF BELOW.
+
+LOCKF - You should be careful here.  Lockf is known to work properly
+under Ultrix and A/UX.  It should work okay under SunOS.  There have
+been reports of problems with lockf under Pyramid OSx and MORE/BSD.
+If it is truly broken then you should comment out the "lockf in
+system" in m4.setup.  In other words, find the line:
+	define([X_LOCKF],1)
+and put a "#" in front of it.  If you do this and have already
+compiled, then you should regenerate your makefiles with gen.makes,
+regenerate libafp (lib/afp) making sure you recompile afposlock and
+relink any programs that use libafp (currently samples/ash and
+applications/aufs).  Note that some systems may require a special
+daemon for lockf to function (e.g. locking down outside the kernel).
+Another problem may simply be the number of allowable locks in the
+system.
+
+Paul Campbell reports that AUX 1.0 goes to the disk for every call to
+gettimeofday to validate the TZ information.  In absched, a larger
+number of gettimeofday calls are done that do not require TZ
+information (even if they did require this information there are
+better ways of doing things than going to disk on every call).  To get
+around this, the cap library LOCALTIME_GTOD says to call the function
+_gettimeofday to grab the time only.  This is noted here because
+future versions of aux will probably require slightly different
+handling.
+
+*********
+LIBRARIES
+*********
+
+There are three sets of libraries.  The first is the core Appletalk
+libraries.  The second is the generic AFP libraries.  The third is the
+AFP client libraries.  In the following we discuss some of the points
+you should be aware of when building these.
+
+CAP LIBRARIES
+-------------
+
+The core of CAP is the Appletalk libraries.  
+
+The major configuration parameter is for atalkdbm.c and tells it where
+to find the atalk.local file.  By default, it assumes
+/etc/atalk.local, but can be reconfigured in m4.setup.
+
+Note: to minimize the clutter in /etc, we have these files in
+/usr/local/lib/cap.
+
+cap_conf.h contains a set of configuration parameters that defined
+standard timeouts, etc, for protocols.  At present, it only contains
+parameters for PAP.  You shouldn't need to touch this file.
+
+AFP Libraries
+-------------
+
+ o DES
+
+You may use "scrambled" password exchange.  However, we do not supply
+the des encryption routines.  Compatible routines were posted in the
+USENET newsgroup comp.sources.unix in Volume 10, issue 31 as "DES
+encryption routines and a login front-end" and was submitted by Bdale
+Garbee.  Should you have access to these routines and want them to be
+used, then simply make desloc in m4.setup point the correct directory.
+the entire contents of this posting should be placed in
+
+(Actually, you only need the subroutines and the Makefile).  See the
+contents of the distributed des directory for more information.
+
+WARNING: as distributed, these des routines have a function called
+setkey that may cause conflicts with the standard "setkey" function.
+For this reason, you must edit des.c and rename the function to be
+"dessetkey".
+
+o locking
+
+The two defines for locking are "NOLOCKF" and "NOFLOCK" that should be
+set appropriately for your machine.  Most BSD systems should have
+flock available.  The only program that uses these calls is Aufs.  For
+the implications of what happens when you do or don't have these, see
+the documentation on the various client and server (Aufs) programs.
+In particular, see applications/aufs/INSTALLATION.
+
+
+AFP Client Libraries
+--------------------
+You should be able to build afpc without any configuration changes.
+
+
+***************
+SAMPLE PROGRAMS
+***************
+
+You should be able to get away without modifying the default
+compilation parameters.  See samples/README for futher information.
+
+***********
+CONTRIBUTED
+***********
+
+See contrib/README for further information.
+
+************
+APPLICATIONS
+************
+
+See the README files in the various directories for further
+information about configuration of these programs.
+
+It is highly recommended that you look at the default configuration
+for Aufs.  This holds in particular if you are not running a virgin
+BSD4.3 or BSD 4.2 system (have NFS added, etc): there is a good chance
+you can configure parameters in that will result in better performance
+and/or more functionality.
+

@@ -1,0 +1,82 @@
+From chitgo@hpindlm.cup.hp.com Wed Feb 17 15:42:58 1993
+To: owner-bugs@ucbvax.Berkeley.EDU
+Subject: 4.4 BSD Alpha ...
+Date: Wed, 17 Feb 93 15:43:16 PST
+From: Sunil Chitgopekar <chitgo@hpindlm.cup.hp.com>
+Index: sys/netinet/in.c 4.4BSD-alpha
+
+Explanation:  You have a potential panic and/or corruption of 
+              ia->ia_multiaddrs linked list if:
+
+              - (ifp->if_ioctl == NULL) is TRUE
+              - if ((error = (*ifp->if_ioctl)(..)) != 0) is TRUE  
+
+
+
+File name :  @(#)in.c        7.25 (Berkeley) 7/6/92
+
+function name : in_addmulti(ap, ifp)
+
+Original code starting from Line # 670
+
+
+		inm->inm_ia = ia;
+		inm->inm_next = ia->ia_multiaddrs;
+==>             ia->ia_multiaddrs = inm;
+		/*
+		 * Ask the network driver to update its multicast reception
+		 * filter appropriately for the new address.
+		 */
+		((struct sockaddr_in *)&ifr.ifr_addr)->sin_family = AF_INET;
+		((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr = *ap;
+		if (ifp->if_ioctl == NULL) {
+==>                     free(inm, M_IPMADDR);
+			splx(s);
+			return (NULL);
+		}
+                error = (*ifp->if_ioctl)(ifp, SIOCADDMULTI,(caddr_t)&ifr);
+                if (error != 0) {
+==>                     free(inm, M_IPMADDR);
+                        splx(s);
+                        return (NULL);
+                }
+
+
+
+
+Should be, for correctness:
+
+		inm->inm_ia = ia;
+		inm->inm_next = ia->ia_multiaddrs;
+		/*
+		 * Ask the network driver to update its multicast reception
+		 * filter appropriately for the new address.
+		 */
+		((struct sockaddr_in *)&ifr.ifr_addr)->sin_family = AF_INET;
+		((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr = *ap;
+		if (ifp->if_ioctl == NULL) {
+			free(inm, M_IPMADDR);
+			splx(s);
+			return (NULL);
+		}
+                error = (*ifp->if_ioctl)(ifp, SIOCADDMULTI,(caddr_t)&ifr);
+                if (error != 0) {
+                        free(inm, M_IPMADDR);
+                        splx(s);
+                        return (NULL);
+                }
+		ia->ia_multiaddrs = inm;
+
+
+
+
+Regards:
+Sunil Chitgopekar
+=======================================================================
+Sunil CHITGOPEKAR                  |    Email: chitgo@cup.hp.com
+HEWLETT-PACKARD Company            |    Phone: (408) 447-2505
+Information Networks Division      |    Telnet:      447-2505
+19420 Homestead Road, MS 43 LN     |    Fax:   (408) 447-3660
+Cupertino, CA 95014                |
+=======================================================================
+

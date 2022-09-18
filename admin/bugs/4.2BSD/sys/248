@@ -1,0 +1,136 @@
+Return-Path: <kilianm@csnet-relay.csnet>
+Date: Tue, 19 Jun 84 18:51:03 pdt
+From: kilianm%rpi.csnet@csnet-relay.arpa
+Subject: System Crashes due to Sockets 
+Index: ipc layer/4.2BSD
+Index: sys 4.2BSD
+
+Description:
+	I run a program which forks itself into two separate processes.
+	I then try to initiate a protocol with a socket by which
+	one process will run, then the other, etc. in strict alternation.
+	With some combinations of sockets and socket operations, the
+	program will run, deadlock, and when the break key is hit (control-C)
+	the whole system freezes. The only solution is a complete reboot.
+	The interesting point is that if the process is killed from another
+	terminal, it termnates normally. I have encountered the problem 
+	also in programs which do not deadlock though this is a much rarer
+	occurrence.
+
+Repeat-By:
+	I am including the file which causes this problem. I suggest you
+	compile it (i.e., cc killer.c) and run it. It will most likely run
+	a bit and then deadlock. Hit control-c to break it. Our system
+	reliably halts. (Our system, by the way, is a VAX 11/780 running
+	4.2 Berkeley Unix with 4 Megabytes main core.)
+
+File which reliably halts our system:
+
+/***********************************************************************/
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <errno.h>
+
+extern int errno;
+
+/* Test 10, trying to make sockets work...assume 2 processes. */
+
+
+resource()
+{
+int	i;
+int	s,f;		/* socket identifiers. */
+char	proc[30];	/* accepted socket's name. */
+int	proclen;	/* length of accepted socket's name. */
+
+char	buffer[100];	/* message space. */
+int	cc;		/* return code. */
+
+
+s = socket(AF_UNIX,SOCK_STREAM,PF_UNSPEC);	/* define resource socket. */
+
+cc = bind(s,"  RESOURCE",10);		/* bind name to socket.	   */
+
+listen(s,1);		/* only listen for 1 connection at a time. */
+
+for (;;)
+{
+	f = accept(s,proc,&proclen);	/* and accept the connection.	*/
+
+	printf("\nAccepted %s",proc);
+	fflush(stdout);
+
+/* NOTE TO THE DEBUGGERS!
+
+	I believe the following two lines are primarily responsible for the
+	problem. I have used a variety of combinations of sockets and they
+	have inevitably failed when I try to close one off and possibly
+	reopen a connection later.
+*/
+	shutdown(f,2);
+	close(f);
+
+	do
+	{
+		cc = connect(s,proc,proclen);
+	} while (cc < 0);
+
+	shutdown(s,2);
+}
+}
+
+process1()
+{
+int	reslen;			/* respective lengths.		*/
+
+int	s,f;				/* our socket number.		*/
+int	cc;
+char	res[30];
+char	buffer[100];
+
+
+s = socket(AF_UNIX, SOCK_STREAM, PF_UNSPEC);	/* define our socket.	*/
+
+bind(s,"  PROCESS1",10);
+
+listen(s,1);
+
+for (;;)
+{
+	do
+	{
+		cc = connect(s,"  RESOURCE",10);
+	} while (cc < 0);
+	shutdown(s,2);
+
+	f = accept(s,res,&reslen);
+
+	printf("\nProcess 1 speaking..."); 
+	fflush(stdout);
+
+	shutdown(f,2);
+	close(f);
+}
+}
+
+main()
+{
+
+if (fork() == 0)
+	process1();
+else
+	resource();
+
+printf("\nWE SHOULD NEVER GET HERE.");
+
+}
+
+/***********************************************************************/
+
+If there is updated documentation on sockets or if I am making a
+fundamental flaw here, please send me any information you can.
+
+Michael Kilian
+(kilianm@rpi)

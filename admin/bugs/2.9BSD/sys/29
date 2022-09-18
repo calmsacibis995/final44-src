@@ -1,0 +1,252 @@
+From satz@sri-tsc  Sat Jul 14 00:36:01 1984
+Date: 14 Jul 1984 0001-PDT (Saturday)
+From: Greg Satz <Satz@SRI-TSC>
+Subject: UCB_SCRIPT didn't handle flags
+
+Subject: the UCB_SCRIPT support code didn't permit flags options
+Index:	sys/sys/sys1.c 2.9BSD
+
+Description:
+	The kernel didn't handle flags/options that followed the shells
+	if UCB_SCRIPT was defined.
+Repeat-By:
+	As the first line in a shell script, insert the line:
+		#! /bin/csh -f
+	and try running it. The shell script will return an error
+	saying it couldn't find the command/script.
+Fix:
+	The code that handles the flags was never copied over from
+	4.1. Here are the diffs:
+
+*** /tmp/,RCSt1004762	Fri Jul 13 23:54:53 1984
+--- sys1.c	Thu Jul 12 13:15:39 1984
+***************
+*** 45,50
+  #define	SCRMAG	'#!'
+  	extern int schar();
+  	int uid, gid, indir;
+  #endif
+  
+  #ifndef UCB_SYMLINKS
+
+--- 45,51 -----
+  #define	SCRMAG	'#!'
+  	extern int schar();
+  	int uid, gid, indir;
++ 	char *sharg, cfarg[32], cfname[DIRSIZ];
+  #endif
+  
+  #ifndef UCB_SYMLINKS
+***************
+*** 87,93
+  	   && u.u_exdata.ux_mag == SCRMAG
+  	   && u.u_count < sizeof u.u_exdata - sizeof u.u_exdata.ux_mag)
+  	{
+- 	    indir++;
+  	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
+  	    while (*cp == ' ' && cp < (char *)&u.u_exdata + sizeof u.u_exdata-1)
+  		cp++;
+
+--- 88,93 -----
+  	   && u.u_exdata.ux_mag == SCRMAG
+  	   && u.u_count < sizeof u.u_exdata - sizeof u.u_exdata.ux_mag)
+  	{
+  	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
+  	    while (cp < (char *)&u.u_exdata + sizeof u.u_exdata) {
+  		if (*cp == '\t')
+***************
+*** 89,95
+  	{
+  	    indir++;
+  	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
+! 	    while (*cp == ' ' && cp < (char *)&u.u_exdata + sizeof u.u_exdata-1)
+  		cp++;
+  	    u.u_dirp = cp;
+  	    while (cp < (char *) &u.u_exdata + sizeof u.u_exdata - 1
+
+--- 89,101 -----
+  	   && u.u_count < sizeof u.u_exdata - sizeof u.u_exdata.ux_mag)
+  	{
+  	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
+! 	    while (cp < (char *)&u.u_exdata + sizeof u.u_exdata) {
+! 		if (*cp == '\t')
+! 		    *cp = ' ';
+! 		else if (*cp == '\n') {
+! 		    *cp = '\0';
+! 		    break;
+! 		}
+  		cp++;
+  	    }
+  	    if (*cp != '\0') {
+***************
+*** 91,96
+  	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
+  	    while (*cp == ' ' && cp < (char *)&u.u_exdata + sizeof u.u_exdata-1)
+  		cp++;
+  	    u.u_dirp = cp;
+  	    while (cp < (char *) &u.u_exdata + sizeof u.u_exdata - 1
+  	          && *cp != '\n')
+
+--- 97,110 -----
+  		    break;
+  		}
+  		cp++;
++ 	    }
++ 	    if (*cp != '\0') {
++ 		u.u_error = ENOEXEC;
++ 		goto bad;
++ 	    }
++ 	    cp = (char *) &u.u_exdata + sizeof u.u_exdata.ux_mag;
++ 	    while (*cp == ' ')
++ 		cp++;
+  	    u.u_dirp = cp;
+  	    while (*cp && *cp != ' ')
+  		cp++;
+***************
+*** 92,99
+  	    while (*cp == ' ' && cp < (char *)&u.u_exdata + sizeof u.u_exdata-1)
+  		cp++;
+  	    u.u_dirp = cp;
+! 	    while (cp < (char *) &u.u_exdata + sizeof u.u_exdata - 1
+! 	          && *cp != '\n')
+  		cp++;
+  	    *cp = '\0';
+  	    iput(ip);
+
+--- 106,112 -----
+  	    while (*cp == ' ')
+  		cp++;
+  	    u.u_dirp = cp;
+! 	    while (*cp && *cp != ' ')
+  		cp++;
+  	    sharg = NULL;
+  	    if (*cp) {
+***************
+*** 95,101
+  	    while (cp < (char *) &u.u_exdata + sizeof u.u_exdata - 1
+  	          && *cp != '\n')
+  		cp++;
+! 	    *cp = '\0';
+  	    iput(ip);
+  #ifndef UCB_SYMLINKS
+  	    if ((ip = namei(schar, LOOKUP)) == NULL)
+
+--- 108,125 -----
+  	    u.u_dirp = cp;
+  	    while (*cp && *cp != ' ')
+  		cp++;
+! 	    sharg = NULL;
+! 	    if (*cp) {
+! 		*cp++ = '\0';
+! 		while (*cp == ' ')
+! 		    cp++;
+! 		if (*cp) {
+! 		    bcopy((caddr_t)cp, (caddr_t)cfarg, 32);
+! 		    sharg = cfarg;
+! 		}
+! 	    }
+! 	    bcopy((caddr_t)u.u_dbuf, (caddr_t)cfname, DIRSIZ);
+! 	    indir++;
+  	    iput(ip);
+  #ifndef UCB_SYMLINKS
+  	    if ((ip = namei(schar, LOOKUP)) == NULL)
+***************
+*** 126,133
+  		ap = NULL;
+  #ifdef	UCB_SCRIPT
+  		/* insert script path name as first arg */
+! 		if (indir && na == 1)
+! 		    ap = uap->fname;
+  		else
+  #endif
+  		if (uap->argp) {
+
+--- 150,157 -----
+  		ap = NULL;
+  #ifdef	UCB_SCRIPT
+  		/* insert script path name as first arg */
+! 		if (indir && (na == 1 || na == 2 && sharg))
+! 		    ap = (int)uap->fname;
+  		else
+  #endif
+  		if (uap->argp) {
+***************
+*** 149,154
+  		do {
+  			if (nc >= NCARGS - 1)
+  				u.u_error = E2BIG;
+  			if ((c = fubyte((caddr_t) ap++)) < 0)
+  				u.u_error = EFAULT;
+  			if (u.u_error)
+
+--- 173,183 -----
+  		do {
+  			if (nc >= NCARGS - 1)
+  				u.u_error = E2BIG;
++ #ifdef	UCB_SCRIPT
++ 			if (indir && na == 2 && sharg != NULL)
++ 				c = *sharg++ & 0377;
++ 			else
++ #endif
+  			if ((c = fubyte((caddr_t) ap++)) < 0)
+  				u.u_error = EFAULT;
+  			if (u.u_error)
+***************
+*** 176,181
+  	}
+  	bp = 0;
+  	nc = (nc + NBPW - 1) & ~(NBPW - 1);
+  #ifndef	UCB_SCRIPT
+  	if (getxfile(ip, (na * NBPW) + nc) || u.u_error)
+  		goto bad;
+
+--- 205,214 -----
+  	}
+  	bp = 0;
+  	nc = (nc + NBPW - 1) & ~(NBPW - 1);
++ #ifdef	UCB_SCRIPT
++ 	if (indir)
++ 		bcopy((caddr_t)cfname, (caddr_t)u.u_dbuf, DIRSIZ);
++ #endif
+  #ifndef	UCB_SCRIPT
+  	if (getxfile(ip, (na * NBPW) + nc) || u.u_error)
+  		goto bad;
+***************
+*** 180,186
+  	if (getxfile(ip, (na * NBPW) + nc) || u.u_error)
+  		goto bad;
+  #else
+! 	if (getxfile(ip, (na * NBPW) + nc, uid, gid) || u.u_error)
+  		goto bad;
+  #endif
+  
+
+--- 213,219 -----
+  	if (getxfile(ip, (na * NBPW) + nc) || u.u_error)
+  		goto bad;
+  #else
+! 	if (getxfile(ip, (na+4) * NBPW + nc, uid, gid) || u.u_error)
+  		goto bad;
+  #endif
+  
+***************
+*** 217,227
+  #endif
+  				bp->b_flags &= ~B_DELWRI;
+  				cp = mapin(bp);
+- #ifdef	UCB_SCRIPT
+- 				/* stick in interpreter name for accounting */
+- 				if (indir && nc == 0)
+- 					bcopy(cp, (caddr_t)u.u_dbuf, DIRSIZ);
+- #endif
+  			}
+  			subyte((caddr_t)ucp++, (c = *cp++));
+  			nc++;
+
+--- 250,255 -----
+  #endif
+  				bp->b_flags &= ~B_DELWRI;
+  				cp = mapin(bp);
+  			}
+  			subyte((caddr_t)ucp++, (c = *cp++));
+  			nc++;

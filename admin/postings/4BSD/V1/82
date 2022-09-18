@@ -1,0 +1,996 @@
+Subject: Rcp/rdist security patch
+Index: bin/rcp.c 4.3BSD
+Index: ucb/rdist/server.c 4.3BSD
+
+Description:
+	There's a security problem associated with rcp and rdist
+	in the 4.3BSD, 4.3BSD-tahoe, and first BSD networking
+	distributions.
+Fix:
+	Replace your current bin/rcp.c with the attached rcp.c.
+	Patch the server.c module in your current rdist with the
+	attached patched.  Recompile and re-install.
+
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	rcp.c
+#	rdist.server.c.diff
+#
+echo x - rcp.c
+sed 's/^X//' >rcp.c << 'END-of-rcp.c'
+X/*
+X * Copyright (c) 1983 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983 The Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)rcp.c	5.20 (Berkeley) 5/23/89";
+X#endif /* not lint */
+X
+X/*
+X * rcp
+X */
+X#include <sys/param.h>
+X#include <sys/file.h>
+X#include <sys/stat.h>
+X#include <sys/time.h>
+X#include <sys/ioctl.h>
+X#include <sys/dir.h>
+X#include <sys/signal.h>
+X#include <netinet/in.h>
+X#include <pwd.h>
+X#include <netdb.h>
+X#include <errno.h>
+X#include <string.h>
+X#include <stdio.h>
+X#include <ctype.h>
+X#include "pathnames.h"
+X
+X#ifdef KERBEROS
+X#include <kerberos/krb.h>
+X
+Xchar krb_realm[REALM_SZ];
+Xint use_kerberos = 1, encrypt = 0;
+XCREDENTIALS cred;
+XKey_schedule schedule;
+X#endif
+X
+Xextern int errno;
+Xextern char *sys_errlist[];
+Xstruct passwd *pwd;
+Xint errs, pflag, port, rem, userid;
+Xint iamremote, iamrecursive, targetshouldbedirectory;
+X
+X#define	CMDNEEDS	20
+Xchar cmd[CMDNEEDS];		/* must hold "rcp -r -p -d\0" */
+X
+Xtypedef struct _buf {
+X	int	cnt;
+X	char	*buf;
+X} BUF;
+X
+Xmain(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	extern int optind;
+X	struct servent *sp;
+X	int ch, fflag, tflag;
+X	char *targ, *colon();
+X	struct passwd *getpwuid();
+X	int lostconn();
+X
+X#ifdef KERBEROS
+X	sp = getservbyname("kshell", "tcp");
+X	if (sp == NULL) {
+X		use_kerberos = 0;
+X		old_warning("kshell service unknown");
+X		sp = getservbyname("kshell", "tcp");
+X	}
+X#else
+X	sp = getservbyname("shell", "tcp");
+X#endif
+X	if (!sp) {
+X		(void)fprintf(stderr, "rcp: shell/tcp: unknown service\n");
+X		exit(1);
+X	}
+X	port = sp->s_port;
+X
+X	if (!(pwd = getpwuid(userid = getuid()))) {
+X		(void)fprintf(stderr, "rcp: unknown user %d.\n", userid);
+X		exit(1);
+X	}
+X
+X	fflag = tflag = 0;
+X	while ((ch = getopt(argc, argv, "dfkprtx")) != EOF)
+X		switch(ch) {
+X		case 'd':
+X			targetshouldbedirectory = 1;
+X			break;
+X		case 'f':			/* "from" */
+X			fflag = 1;
+X			break;
+X#ifdef KERBEROS
+X		case 'k':
+X			strncpy(krb_realm, ++argv, REALM_SZ);
+X			break;
+X#endif
+X		case 'p':			/* preserve access/mod times */
+X			++pflag;
+X			break;
+X		case 'r':
+X			++iamrecursive;
+X			break;
+X		case 't':			/* "to" */
+X			tflag = 1;
+X			break;
+X#ifdef KERBEROS
+X		case 'x':
+X			encrypt = 1;
+X			des_set_key(cred.session, schedule);
+X			break;
+X#endif
+X		case '?':
+X		default:
+X			usage();
+X		}
+X	argc -= optind;
+X	argv += optind;
+X
+X	if (fflag) {
+X		iamremote = 1;
+X		(void)response();
+X		(void)setuid(userid);
+X		source(argc, argv);
+X		exit(errs);
+X	}
+X
+X	if (tflag) {
+X		iamremote = 1;
+X		(void)setuid(userid);
+X		sink(argc, argv);
+X		exit(errs);
+X	}
+X
+X	if (argc < 2)
+X		usage();
+X	if (argc > 2)
+X		targetshouldbedirectory = 1;
+X
+X	rem = -1;
+X	(void)sprintf(cmd, "rcp%s%s%s", iamrecursive ? " -r" : "",
+X	    pflag ? " -p" : "", targetshouldbedirectory ? " -d" : "");
+X
+X	(void)signal(SIGPIPE, lostconn);
+X
+X	if (targ = colon(argv[argc - 1]))
+X		toremote(targ, argc, argv);
+X	else {
+X		tolocal(argc, argv);
+X		if (targetshouldbedirectory)
+X			verifydir(argv[argc - 1]);
+X	}
+X	exit(errs);
+X}
+X
+Xtoremote(targ, argc, argv)
+X	char *targ;
+X	int argc;
+X	char **argv;
+X{
+X	int i;
+X	char *bp, *host, *src, *suser, *thost, *tuser;
+X	char *colon(), *malloc();
+X
+X	*targ++ = 0;
+X	if (*targ == 0)
+X		targ = ".";
+X
+X	if (thost = index(argv[argc - 1], '@')) {
+X		*thost++ = 0;
+X		tuser = argv[argc - 1];
+X		if (*tuser == '\0')
+X			tuser = NULL;
+X		else if (!okname(tuser))
+X			exit(1);
+X	} else {
+X		thost = argv[argc - 1];
+X		tuser = NULL;
+X	}
+X
+X	for (i = 0; i < argc - 1; i++) {
+X		src = colon(argv[i]);
+X		if (src) {			/* remote to remote */
+X			*src++ = 0;
+X			if (*src == 0)
+X				src = ".";
+X			host = index(argv[i], '@');
+X			if (!(bp = malloc((u_int)(strlen(_PATH_RSH) +
+X				    strlen(argv[i]) + strlen(src) +
+X				    strlen(tuser) + strlen(thost) +
+X				    strlen(targ)) + CMDNEEDS + 20)))
+X					nospace();
+X			if (host) {
+X				*host++ = 0;
+X				suser = argv[i];
+X				if (*suser == '\0')
+X					suser = pwd->pw_name;
+X				else if (!okname(suser))
+X					continue;
+X				(void)sprintf(bp,
+X				    "%s %s -l %s -n %s %s '%s%s%s:%s'",
+X				    _PATH_RSH, host, suser, cmd, src,
+X				    tuser ? tuser : "", tuser ? "@" : "",
+X				    thost, targ);
+X			} else
+X				(void)sprintf(bp, "%s %s -n %s %s '%s%s%s:%s'",
+X				    _PATH_RSH, argv[i], cmd, src,
+X				    tuser ? tuser : "", tuser ? "@" : "",
+X				    thost, targ);
+X			(void)susystem(bp);
+X			(void)free(bp);
+X		} else {			/* local to remote */
+X			if (rem == -1) {
+X				if (!(bp = malloc((u_int)strlen(targ) +
+X				    CMDNEEDS + 20)))
+X					nospace();
+X				(void)sprintf(bp, "%s -t %s", cmd, targ);
+X				host = thost;
+X#ifdef KERBEROS
+X				if (use_kerberos)
+X					kerberos(bp,
+X					    tuser ? tuser : pwd->pw_name);
+X				else
+X#endif
+X					rem = rcmd(&host, port, pwd->pw_name,
+X					    tuser ? tuser : pwd->pw_name,
+X					    bp, 0);
+X				if (rem < 0)
+X					exit(1);
+X				if (response() < 0)
+X					exit(1);
+X				(void)free(bp);
+X				(void)setuid(userid);
+X			}
+X			source(1, argv+i);
+X		}
+X	}
+X}
+X
+Xtolocal(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	int i;
+X	char *bp, *host, *src, *suser;
+X	char *colon(), *malloc();
+X
+X	for (i = 0; i < argc - 1; i++) {
+X		if (!(src = colon(argv[i]))) {	/* local to local */
+X			if (!(bp = malloc((u_int)(strlen(_PATH_CP) +
+X			    strlen(argv[i]) + strlen(argv[argc - 1])) + 20)))
+X				nospace();
+X			(void)sprintf(bp, "%s%s%s %s %s", _PATH_CP,
+X			    iamrecursive ? " -r" : "", pflag ? " -p" : "",
+X			    argv[i], argv[argc - 1]);
+X			(void)susystem(bp);
+X			(void)free(bp);
+X			continue;
+X		}
+X		*src++ = 0;
+X		if (*src == 0)
+X			src = ".";
+X		host = index(argv[i], '@');
+X		if (host) {
+X			*host++ = 0;
+X			suser = argv[i];
+X			if (*suser == '\0')
+X				suser = pwd->pw_name;
+X			else if (!okname(suser))
+X				continue;
+X		} else {
+X			host = argv[i];
+X			suser = pwd->pw_name;
+X		}
+X		if (!(bp = malloc((u_int)(strlen(src)) + CMDNEEDS + 20)))
+X			nospace();
+X		(void)sprintf(bp, "%s -f %s", cmd, src);
+X#ifdef KERBEROS
+X		if (use_kerberos)
+X			kerberos(bp, suser);
+X		else
+X#endif
+X			rem = rcmd(&host, port, pwd->pw_name, suser, bp, 0);
+X		(void)free(bp);
+X		if (rem < 0)
+X			continue;
+X		(void)setreuid(0, userid);
+X		sink(1, argv + argc - 1);
+X		(void)setreuid(userid, 0);
+X		(void)close(rem);
+X		rem = -1;
+X	}
+X}
+X
+X#ifdef KERBEROS
+Xkerberos(bp, user)
+X	char *bp, *user;
+X{
+X	struct servent *sp;
+X	char *host;
+X
+Xagain:	rem = KSUCCESS;
+X	if (krb_realm[0] == '\0')
+X		rem = krb_get_lrealm(krb_realm, 1);
+X	if (rem == KSUCCESS) {
+X		if (encrypt)
+X			rem = krcmd_mutual(&host, port, user, bp, 0,
+X			    krb_realm, &cred, schedule);
+X		else
+X			rem = krcmd(&host, port, user, bp, 0, krb_realm);
+X	} else {
+X		(void)fprintf(stderr,
+X		    "rcp: error getting local realm %s\n", krb_err_txt[rem]);
+X		exit(1);
+X	}
+X	if (rem < 0 && errno == ECONNREFUSED) {
+X		use_kerberos = 0;
+X		old_warning("remote host doesn't support Kerberos");
+X		sp = getservbyname("shell", "tcp");
+X		if (sp == NULL) {
+X			(void)fprintf(stderr,
+X			    "rcp: unknown service shell/tcp\n");
+X			exit(1);
+X		}
+X		port = sp->s_port;
+X		goto again;
+X	}
+X}
+X#endif /* KERBEROS */
+X
+Xverifydir(cp)
+X	char *cp;
+X{
+X	struct stat stb;
+X
+X	if (stat(cp, &stb) >= 0) {
+X		if ((stb.st_mode & S_IFMT) == S_IFDIR)
+X			return;
+X		errno = ENOTDIR;
+X	}
+X	error("rcp: %s: %s.\n", cp, sys_errlist[errno]);
+X	exit(1);
+X}
+X
+Xchar *
+Xcolon(cp)
+X	register char *cp;
+X{
+X	for (; *cp; ++cp) {
+X		if (*cp == ':')
+X			return(cp);
+X		if (*cp == '/')
+X			return(0);
+X	}
+X	return(0);
+X}
+X
+Xokname(cp0)
+X	char *cp0;
+X{
+X	register char *cp = cp0;
+X	register int c;
+X
+X	do {
+X		c = *cp;
+X		if (c & 0200)
+X			goto bad;
+X		if (!isalpha(c) && !isdigit(c) && c != '_' && c != '-')
+X			goto bad;
+X	} while (*++cp);
+X	return(1);
+Xbad:
+X	(void)fprintf(stderr, "rcp: invalid user name %s\n", cp0);
+X	return(0);
+X}
+X
+Xsusystem(s)
+X	char *s;
+X{
+X	int status, pid, w;
+X	register int (*istat)(), (*qstat)();
+X
+X	if ((pid = vfork()) == 0) {
+X		(void)setuid(userid);
+X		execl(_PATH_BSHELL, "sh", "-c", s, (char *)0);
+X		_exit(127);
+X	}
+X	istat = signal(SIGINT, SIG_IGN);
+X	qstat = signal(SIGQUIT, SIG_IGN);
+X	while ((w = wait(&status)) != pid && w != -1)
+X		;
+X	if (w == -1)
+X		status = -1;
+X	(void)signal(SIGINT, istat);
+X	(void)signal(SIGQUIT, qstat);
+X	return(status);
+X}
+X
+Xsource(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	struct stat stb;
+X	static BUF buffer;
+X	BUF *bp;
+X	off_t i;
+X	int x, readerr, f, amt;
+X	char *last, *name, buf[BUFSIZ];
+X	BUF *allocbuf();
+X
+X	for (x = 0; x < argc; x++) {
+X		name = argv[x];
+X		if ((f = open(name, O_RDONLY, 0)) < 0) {
+X			error("rcp: %s: %s\n", name, sys_errlist[errno]);
+X			continue;
+X		}
+X		if (fstat(f, &stb) < 0)
+X			goto notreg;
+X		switch (stb.st_mode&S_IFMT) {
+X
+X		case S_IFREG:
+X			break;
+X
+X		case S_IFDIR:
+X			if (iamrecursive) {
+X				(void)close(f);
+X				rsource(name, &stb);
+X				continue;
+X			}
+X			/* FALLTHROUGH */
+X		default:
+Xnotreg:			(void)close(f);
+X			error("rcp: %s: not a plain file\n", name);
+X			continue;
+X		}
+X		last = rindex(name, '/');
+X		if (last == 0)
+X			last = name;
+X		else
+X			last++;
+X		if (pflag) {
+X			/*
+X			 * Make it compatible with possible future
+X			 * versions expecting microseconds.
+X			 */
+X			(void)sprintf(buf, "T%ld 0 %ld 0\n", stb.st_mtime,
+X			    stb.st_atime);
+X			(void)write(rem, buf, strlen(buf));
+X			if (response() < 0) {
+X				(void)close(f);
+X				continue;
+X			}
+X		}
+X		(void)sprintf(buf, "C%04o %ld %s\n", stb.st_mode&07777,
+X		    stb.st_size, last);
+X		(void)write(rem, buf, strlen(buf));
+X		if (response() < 0) {
+X			(void)close(f);
+X			continue;
+X		}
+X		if ((bp = allocbuf(&buffer, f, BUFSIZ)) == 0) {
+X			(void)close(f);
+X			continue;
+X		}
+X		readerr = 0;
+X		for (i = 0; i < stb.st_size; i += bp->cnt) {
+X			amt = bp->cnt;
+X			if (i + amt > stb.st_size)
+X				amt = stb.st_size - i;
+X			if (readerr == 0 && read(f, bp->buf, amt) != amt)
+X				readerr = errno;
+X			(void)write(rem, bp->buf, amt);
+X		}
+X		(void)close(f);
+X		if (readerr == 0)
+X			(void)write(rem, "", 1);
+X		else
+X			error("rcp: %s: %s\n", name, sys_errlist[readerr]);
+X		(void)response();
+X	}
+X}
+X
+Xrsource(name, statp)
+X	char *name;
+X	struct stat *statp;
+X{
+X	DIR *d;
+X	struct direct *dp;
+X	char *last, *vect[1], path[MAXPATHLEN];
+X
+X	if (!(d = opendir(name))) {
+X		error("rcp: %s: %s\n", name, sys_errlist[errno]);
+X		return;
+X	}
+X	last = rindex(name, '/');
+X	if (last == 0)
+X		last = name;
+X	else
+X		last++;
+X	if (pflag) {
+X		(void)sprintf(path, "T%ld 0 %ld 0\n", statp->st_mtime,
+X		    statp->st_atime);
+X		(void)write(rem, path, strlen(path));
+X		if (response() < 0) {
+X			closedir(d);
+X			return;
+X		}
+X	}
+X	(void)sprintf(path, "D%04o %d %s\n", statp->st_mode&07777, 0, last);
+X	(void)write(rem, path, strlen(path));
+X	if (response() < 0) {
+X		closedir(d);
+X		return;
+X	}
+X	while (dp = readdir(d)) {
+X		if (dp->d_ino == 0)
+X			continue;
+X		if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, ".."))
+X			continue;
+X		if (strlen(name) + 1 + strlen(dp->d_name) >= MAXPATHLEN - 1) {
+X			error("%s/%s: name too long.\n", name, dp->d_name);
+X			continue;
+X		}
+X		(void)sprintf(path, "%s/%s", name, dp->d_name);
+X		vect[0] = path;
+X		source(1, vect);
+X	}
+X	closedir(d);
+X	(void)write(rem, "E\n", 2);
+X	(void)response();
+X}
+X
+Xresponse()
+X{
+X	register char *cp;
+X	char ch, resp, rbuf[BUFSIZ];
+X
+X	if (read(rem, &resp, sizeof(resp)) != sizeof(resp))
+X		lostconn();
+X
+X	cp = rbuf;
+X	switch(resp) {
+X	case 0:				/* ok */
+X		return(0);
+X	default:
+X		*cp++ = resp;
+X		/* FALLTHROUGH */
+X	case 1:				/* error, followed by err msg */
+X	case 2:				/* fatal error, "" */
+X		do {
+X			if (read(rem, &ch, sizeof(ch)) != sizeof(ch))
+X				lostconn();
+X			*cp++ = ch;
+X		} while (cp < &rbuf[BUFSIZ] && ch != '\n');
+X
+X		if (!iamremote)
+X			(void)write(2, rbuf, cp - rbuf);
+X		++errs;
+X		if (resp == 1)
+X			return(-1);
+X		exit(1);
+X	}
+X	/*NOTREACHED*/
+X}
+X
+Xlostconn()
+X{
+X	if (!iamremote)
+X		(void)fprintf(stderr, "rcp: lost connection\n");
+X	exit(1);
+X}
+X
+Xsink(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	register char *cp;
+X	static BUF buffer;
+X	struct stat stb;
+X	struct timeval tv[2];
+X	BUF *bp, *allocbuf();
+X	off_t i, j;
+X	char ch, *targ, *why;
+X	int amt, count, exists, first, mask, mode;
+X	int ofd, setimes, size, targisdir, wrerr;
+X	char *np, *vect[1], buf[BUFSIZ], *malloc();
+X
+X#define	atime	tv[0]
+X#define	mtime	tv[1]
+X#define	SCREWUP(str)	{ why = str; goto screwup; }
+X
+X	setimes = targisdir = 0;
+X	mask = umask(0);
+X	if (!pflag)
+X		(void)umask(mask);
+X	if (argc != 1) {
+X		error("rcp: ambiguous target\n");
+X		exit(1);
+X	}
+X	targ = *argv;
+X	if (targetshouldbedirectory)
+X		verifydir(targ);
+X	(void)write(rem, "", 1);
+X	if (stat(targ, &stb) == 0 && (stb.st_mode & S_IFMT) == S_IFDIR)
+X		targisdir = 1;
+X	for (first = 1;; first = 0) {
+X		cp = buf;
+X		if (read(rem, cp, 1) <= 0)
+X			return;
+X		if (*cp++ == '\n')
+X			SCREWUP("unexpected <newline>");
+X		do {
+X			if (read(rem, &ch, sizeof(ch)) != sizeof(ch))
+X				SCREWUP("lost connection");
+X			*cp++ = ch;
+X		} while (cp < &buf[BUFSIZ - 1] && ch != '\n');
+X		*cp = 0;
+X
+X		if (buf[0] == '\01' || buf[0] == '\02') {
+X			if (iamremote == 0)
+X				(void)write(2, buf + 1, strlen(buf + 1));
+X			if (buf[0] == '\02')
+X				exit(1);
+X			errs++;
+X			continue;
+X		}
+X		if (buf[0] == 'E') {
+X			(void)write(rem, "", 1);
+X			return;
+X		}
+X
+X		if (ch == '\n')
+X			*--cp = 0;
+X
+X#define getnum(t) (t) = 0; while (isdigit(*cp)) (t) = (t) * 10 + (*cp++ - '0');
+X		cp = buf;
+X		if (*cp == 'T') {
+X			setimes++;
+X			cp++;
+X			getnum(mtime.tv_sec);
+X			if (*cp++ != ' ')
+X				SCREWUP("mtime.sec not delimited");
+X			getnum(mtime.tv_usec);
+X			if (*cp++ != ' ')
+X				SCREWUP("mtime.usec not delimited");
+X			getnum(atime.tv_sec);
+X			if (*cp++ != ' ')
+X				SCREWUP("atime.sec not delimited");
+X			getnum(atime.tv_usec);
+X			if (*cp++ != '\0')
+X				SCREWUP("atime.usec not delimited");
+X			(void)write(rem, "", 1);
+X			continue;
+X		}
+X		if (*cp != 'C' && *cp != 'D') {
+X			/*
+X			 * Check for the case "rcp remote:foo\* local:bar".
+X			 * In this case, the line "No match." can be returned
+X			 * by the shell before the rcp command on the remote is
+X			 * executed so the ^Aerror_message convention isn't
+X			 * followed.
+X			 */
+X			if (first) {
+X				error("%s\n", cp);
+X				exit(1);
+X			}
+X			SCREWUP("expected control record");
+X		}
+X		mode = 0;
+X		for (++cp; cp < buf + 5; cp++) {
+X			if (*cp < '0' || *cp > '7')
+X				SCREWUP("bad mode");
+X			mode = (mode << 3) | (*cp - '0');
+X		}
+X		if (*cp++ != ' ')
+X			SCREWUP("mode not delimited");
+X		size = 0;
+X		while (isdigit(*cp))
+X			size = size * 10 + (*cp++ - '0');
+X		if (*cp++ != ' ')
+X			SCREWUP("size not delimited");
+X		if (targisdir) {
+X			static char *namebuf;
+X			static int cursize;
+X			int need;
+X
+X			need = strlen(targ) + strlen(cp) + 250;
+X			if (need > cursize) {
+X				if (!(namebuf = malloc((u_int)need)))
+X					error("out of memory\n");
+X			}
+X			(void)sprintf(namebuf, "%s%s%s", targ,
+X			    *targ ? "/" : "", cp);
+X			np = namebuf;
+X		}
+X		else
+X			np = targ;
+X		exists = stat(np, &stb) == 0;
+X		if (buf[0] == 'D') {
+X			if (exists) {
+X				if ((stb.st_mode&S_IFMT) != S_IFDIR) {
+X					errno = ENOTDIR;
+X					goto bad;
+X				}
+X				if (pflag)
+X					(void)chmod(np, mode);
+X			} else if (mkdir(np, mode) < 0)
+X				goto bad;
+X			vect[0] = np;
+X			sink(1, vect);
+X			if (setimes) {
+X				setimes = 0;
+X				if (utimes(np, tv) < 0)
+X				    error("rcp: can't set times on %s: %s\n",
+X					np, sys_errlist[errno]);
+X			}
+X			continue;
+X		}
+X		if ((ofd = open(np, O_WRONLY|O_CREAT, mode)) < 0) {
+Xbad:			error("rcp: %s: %s\n", np, sys_errlist[errno]);
+X			continue;
+X		}
+X		if (exists && pflag)
+X			(void)fchmod(ofd, mode);
+X		(void)write(rem, "", 1);
+X		if ((bp = allocbuf(&buffer, ofd, BUFSIZ)) == 0) {
+X			(void)close(ofd);
+X			continue;
+X		}
+X		cp = bp->buf;
+X		count = 0;
+X		wrerr = 0;
+X		for (i = 0; i < size; i += BUFSIZ) {
+X			amt = BUFSIZ;
+X			if (i + amt > size)
+X				amt = size - i;
+X			count += amt;
+X			do {
+X				j = read(rem, cp, amt);
+X				if (j <= 0) {
+X					error("rcp: %s\n",
+X					    j ? sys_errlist[errno] :
+X					    "dropped connection");
+X					exit(1);
+X				}
+X				amt -= j;
+X				cp += j;
+X			} while (amt > 0);
+X			if (count == bp->cnt) {
+X				if (wrerr == 0 &&
+X				    write(ofd, bp->buf, count) != count)
+X					wrerr++;
+X				count = 0;
+X				cp = bp->buf;
+X			}
+X		}
+X		if (count != 0 && wrerr == 0 &&
+X		    write(ofd, bp->buf, count) != count)
+X			wrerr++;
+X		if (ftruncate(ofd, size))
+X			error("rcp: can't truncate %s: %s\n", np,
+X			    sys_errlist[errno]);
+X		(void)close(ofd);
+X		(void)response();
+X		if (setimes) {
+X			setimes = 0;
+X			if (utimes(np, tv) < 0)
+X				error("rcp: can't set times on %s: %s\n",
+X				    np, sys_errlist[errno]);
+X		}				   
+X		if (wrerr)
+X			error("rcp: %s: %s\n", np, sys_errlist[errno]);
+X		else
+X			(void)write(rem, "", 1);
+X	}
+Xscrewup:
+X	error("rcp: protocol screwup: %s\n", why);
+X	exit(1);
+X}
+X
+XBUF *
+Xallocbuf(bp, fd, blksize)
+X	BUF *bp;
+X	int fd, blksize;
+X{
+X	struct stat stb;
+X	int size;
+X	char *malloc();
+X
+X	if (fstat(fd, &stb) < 0) {
+X		error("rcp: fstat: %s\n", sys_errlist[errno]);
+X		return(0);
+X	}
+X	size = roundup(stb.st_blksize, blksize);
+X	if (size == 0)
+X		size = blksize;
+X	if (bp->cnt < size) {
+X		if (bp->buf != 0)
+X			free(bp->buf);
+X		bp->buf = (char *)malloc((u_int)size);
+X		if (!bp->buf) {
+X			error("rcp: malloc: out of memory\n");
+X			return(0);
+X		}
+X	}
+X	bp->cnt = size;
+X	return(bp);
+X}
+X
+X/* VARARGS1 */
+Xerror(fmt, a1, a2, a3)
+X	char *fmt;
+X	int a1, a2, a3;
+X{
+X	static FILE *fp;
+X
+X	++errs;
+X	if (!fp && !(fp = fdopen(rem, "w")))
+X		return;
+X	(void)fprintf(fp, "%c", 0x01);
+X	(void)fprintf(fp, fmt, a1, a2, a3);
+X	(void)fflush(fp);
+X	if (!iamremote)
+X		(void)fprintf(stderr, fmt, a1, a2, a3);
+X}
+X
+Xnospace()
+X{
+X	(void)fprintf(stderr, "rcp: out of memory.\n");
+X	exit(1);
+X}
+X
+X#ifdef KERBEROS
+Xold_warning(str)
+X	char *str;
+X{
+X	(void)fprintf(stderr, "rcp: warning: %s, using standard rcp\n", str);
+X}
+X#endif
+X
+Xusage()
+X{
+X#ifdef KERBEROS
+X	(void)fprintf(stderr, "%s\n\t%s\n",
+X	    "usage: rcp [-k realm] [-px] f1 f2",
+X	    "or: rcp [-k realm] [-rpx] f1 ... fn directory");
+X#else
+X	(void)fprintf(stderr,
+X	    "usage: rcp [-p] f1 f2; or: rcp [-rp] f1 ... fn directory\n");
+X#endif
+X	exit(1);
+X}
+END-of-rcp.c
+echo x - rdist.server.c.diff
+sed 's/^X//' >rdist.server.c.diff << 'END-of-rdist.server.c.diff'
+X*** old_server.c	Wed Jun 29 20:19:34 1988
+X--- server.c	Wed May 24 20:17:51 1989
+X***************
+X*** 1369,1384 ****
+X  	char *fmt;
+X  	int a1, a2, a3;
+X  {
+X! 	nerrs++;
+X! 	strcpy(buf, "\1rdist: ");
+X! 	(void) sprintf(buf+8, fmt, a1, a2, a3);
+X! 	if (!iamremote) {
+X  		fflush(stdout);
+X! 		(void) write(2, buf+1, strlen(buf+1));
+X! 	} else
+X! 		(void) write(rem, buf, strlen(buf));
+X! 	if (lfp != NULL)
+X! 		(void) fwrite(buf+1, 1, strlen(buf+1), lfp);
+X  }
+X  
+X  /*VARARGS1*/
+X--- 1369,1395 ----
+X  	char *fmt;
+X  	int a1, a2, a3;
+X  {
+X! 	static FILE *fp;
+X! 
+X! 	++nerrs;
+X! 	if (!fp && !(fp = fdopen(rem, "w")))
+X! 		return;
+X! 	if (iamremote) {
+X! 		(void)fprintf(fp, "%crdist: ", 0x01);
+X! 		(void)fprintf(fp, fmt, a1, a2, a3);
+X! 		fflush(fp);
+X! 	}
+X! 	else {
+X  		fflush(stdout);
+X! 		(void)fprintf(stderr, "rdist: ");
+X! 		(void)fprintf(stderr, fmt, a1, a2, a3);
+X! 		fflush(stderr);
+X! 	}
+X! 	if (lfp != NULL) {
+X! 		(void)fprintf(lfp, "rdist: ");
+X! 		(void)fprintf(lfp, fmt, a1, a2, a3);
+X! 		fflush(lfp);
+X! 	}
+X  }
+X  
+X  /*VARARGS1*/
+X***************
+X*** 1386,1401 ****
+X  	char *fmt;
+X  	int a1, a2, a3;
+X  {
+X! 	nerrs++;
+X! 	strcpy(buf, "\2rdist: ");
+X! 	(void) sprintf(buf+8, fmt, a1, a2, a3);
+X! 	if (!iamremote) {
+X  		fflush(stdout);
+X! 		(void) write(2, buf+1, strlen(buf+1));
+X! 	} else
+X! 		(void) write(rem, buf, strlen(buf));
+X! 	if (lfp != NULL)
+X! 		(void) fwrite(buf+1, 1, strlen(buf+1), lfp);
+X  	cleanup();
+X  }
+X  
+X--- 1397,1423 ----
+X  	char *fmt;
+X  	int a1, a2, a3;
+X  {
+X! 	static FILE *fp;
+X! 
+X! 	++nerrs;
+X! 	if (!fp && !(fp = fdopen(rem, "w")))
+X! 		return;
+X! 	if (iamremote) {
+X! 		(void)fprintf(fp, "%crdist: ", 0x02);
+X! 		(void)fprintf(fp, fmt, a1, a2, a3);
+X! 		fflush(fp);
+X! 	}
+X! 	else {
+X  		fflush(stdout);
+X! 		(void)fprintf(stderr, "rdist: ");
+X! 		(void)fprintf(stderr, fmt, a1, a2, a3);
+X! 		fflush(stderr);
+X! 	}
+X! 	if (lfp != NULL) {
+X! 		(void)fprintf(lfp, "rdist: ");
+X! 		(void)fprintf(lfp, fmt, a1, a2, a3);
+X! 		fflush(lfp);
+X! 	}
+X  	cleanup();
+X  }
+X  
+END-of-rdist.server.c.diff
+exit
+

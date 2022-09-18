@@ -1,0 +1,153 @@
+Return-Path: <sdcsvax!celerity!barto>
+To: 4bsd-bugs@ucbvax.BERKELEY
+Subject: fsck failing on double indirect blocks
+Date: 27 Feb 85 13:46:12 PST (Wed)
+From: David Barto {ucbvax|decvax|ihnp4}!sdcsvax!celerity!barto <sdcsvax!celerity!barto>
+
+Index: etc/fsck/fsck.c 4.2BSD FIX
+
+Description:
+	If the file system becomes hung and you must reboot,
+	if you have a file with double indirect blocks, and
+	the inodes are not updated to reflect the fact that
+	there is data written beyond the old end of file, if
+	that file is accessed, you will crash.
+
+Fix:
+------- Forwarded Message
+
+Return-Path: <decvax!pur-ee!sequent!phil>
+Message-Id: <8502242112.AA00855@purdue-ecn-ee.ARPA>
+Date: Sun, 24 Feb 85 12:35:06 pst
+From: sdcsvax!decvax!pur-ee!sequent!phil (Phil Hochstetler (GSP))
+To: pur-ee!decvax!sdcsvax!celerity!barto
+Subject: Re: fsck fails to check double indirect blocks
+In-Reply-To: your article <266@celerity.UUCP>
+
+We found and fixed this one long ago.  Bug is caused by an indirect
+block that is written before the size in the inode reflects the
+change (and the system crashes).  What happens is blocks pointed
+to by this indirect block is not part of the file (according to the
+size of the file in the inode) and fsck only bothers to check blocks
+up to the size indicated in the inode.  These blocks then get put
+in the free list and when you remove this file those blocks are
+freed to so all nasty things can happen (usually freeing free block).
+Fix is to have fsck bitch and take these blocks out of the free
+list (marking bitmap).  You could just zero the rest of indirect block
+and return the blocks to the free list (clearing bitmap).
+
+- --Phil Hochstetler, Sequent Computer Systems, Inc.
+
+Here is a set of diffs for fsck:
+*** fsck.c	Thu Jan 31 17:14:17 1985
+- --- sequent:/virgin/usr/src/etc/fsck/fsck.c	Sun Sep 25 18:05:17 1983 (4.2 BSD Distribution)
+***************
+*** 104,110
+  	long id_filesize;	/* for DATA nodes, the size of the directory */
+  	int id_loc;		/* for DATA nodes, current location in dir */
+  	int id_entryno;		/* for DATA nodes, current entry number */
+- - 	int id_afteof;		/* for DATA nodes, # blocks after EOF */
+  	DIRECT *id_dirp;	/* for data nodes, ptr to current entry */
+  	enum {DONTKNOW, NOFIX, FIX} id_fix; /* policy on fixing errors */
+  };
+
+- --- 92,97 -----
+  	long id_filesize;	/* for DATA nodes, the size of the directory */
+  	int id_loc;		/* for DATA nodes, current location in dir */
+  	int id_entryno;		/* for DATA nodes, current entry number */
+  	DIRECT *id_dirp;	/* for data nodes, ptr to current entry */
+  	enum {DONTKNOW, NOFIX, FIX} id_fix; /* policy on fixing errors */
+  };
+***************
+*** 670,678
+  				idesc.id_filesize = 0;
+  				(void)ckinode(dp, &idesc);
+  				idesc.id_filesize *= btodb(sblock.fs_fsize);
+- - 				if (idesc.id_afteof)
+- - 					pwarn("I=%u HAS %ld FRAGS AFTER EOF\n",
+- - 						inumber, idesc.id_afteof);
+  				if (dp->di_blocks != idesc.id_filesize) {
+  					pwarn("INCORRECT BLOCK COUNT I=%u (%ld should be %ld)",
+  					    inumber, dp->di_blocks,
+
+- --- 659,664 -----
+  				idesc.id_filesize = 0;
+  				(void)ckinode(dp, &idesc);
+  				idesc.id_filesize *= btodb(sblock.fs_fsize);
+  				if (dp->di_blocks != idesc.id_filesize) {
+  					pwarn("INCORRECT BLOCK COUNT I=%u (%ld should be %ld)",
+  					    inumber, dp->di_blocks,
+***************
+*** 1304,1310
+  	dino = *dp;
+  	idesc->id_fix = DONTKNOW;
+  	idesc->id_entryno = 0;
+- - 	idesc->id_afteof = 0;			/* # frags beyond EOF */
+  	ndb = howmany(dino.di_size, sblock.fs_bsize);
+  	for (ap = &dino.di_db[0]; ap < &dino.di_db[NDADDR]; ap++) {
+  		if (--ndb == 0 && (offset = blkoff(&sblock, dino.di_size)) != 0)
+
+- --- 1290,1295 -----
+  	dino = *dp;
+  	idesc->id_fix = DONTKNOW;
+  	idesc->id_entryno = 0;
+  	ndb = howmany(dino.di_size, sblock.fs_bsize);
+  	for (ap = &dino.di_db[0]; ap < &dino.di_db[NDADDR]; ap++) {
+  		if (--ndb == 0 && (offset = blkoff(&sblock, dino.di_size)) != 0)
+***************
+*** 1314,1321
+  			idesc->id_numfrags = sblock.fs_frag;
+  		if (*ap == 0)
+  			continue;
+- - 		if (ndb < 0)
+- - 			idesc->id_afteof += idesc->id_numfrags;
+  		idesc->id_blkno = *ap;
+  		if (idesc->id_type == ADDR)
+  			ret = (*idesc->id_func)(idesc);
+
+- --- 1299,1304 -----
+  			idesc->id_numfrags = sblock.fs_frag;
+  		if (*ap == 0)
+  			continue;
+  		idesc->id_blkno = *ap;
+  		if (idesc->id_type == ADDR)
+  			ret = (*idesc->id_func)(idesc);
+***************
+*** 1367,1373
+  	if (nif > NINDIR(&sblock))
+  		nif = NINDIR(&sblock);
+  	aplim = &ib.b_un.b_indir[nif];
+! 	for (ap = ib.b_un.b_indir, i = 1; i <= NINDIR(&sblock); ap++, i++)
+  		if (*ap) {
+  			if (ap >= aplim)
+  				idesc->id_afteof += sblock.fs_frag;
+
+- --- 1350,1356 -----
+  	if (nif > NINDIR(&sblock))
+  		nif = NINDIR(&sblock);
+  	aplim = &ib.b_un.b_indir[nif];
+! 	for (ap = ib.b_un.b_indir, i = 1; ap < aplim; ap++, i++)
+  		if (*ap) {
+  			idesc->id_blkno = *ap;
+  			if (ilevel > 0)
+***************
+*** 1369,1376
+  	aplim = &ib.b_un.b_indir[nif];
+  	for (ap = ib.b_un.b_indir, i = 1; i <= NINDIR(&sblock); ap++, i++)
+  		if (*ap) {
+- - 			if (ap >= aplim)
+- - 				idesc->id_afteof += sblock.fs_frag;
+  			idesc->id_blkno = *ap;
+  			if (ilevel > 0)
+  				n = iblock(idesc, ilevel,
+
+- --- 1352,1357 -----
+  	aplim = &ib.b_un.b_indir[nif];
+  	for (ap = ib.b_un.b_indir, i = 1; ap < aplim; ap++, i++)
+  		if (*ap) {
+  			idesc->id_blkno = *ap;
+  			if (ilevel > 0)
+  				n = iblock(idesc, ilevel,
+**** end of enclosure ****
+
+------- End of Forwarded Message

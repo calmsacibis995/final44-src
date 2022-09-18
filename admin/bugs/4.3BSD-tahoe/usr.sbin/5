@@ -1,0 +1,147 @@
+From cpw%sneezy@LANL.GOV  Fri Oct 27 16:31:05 1989
+Date: Fri, 27 Oct 89 17:31:12 MDT
+From: cpw%sneezy@LANL.GOV (C. Philip Wood)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: /etc/implog core dumps with corrupted /usr/adm/implog
+Index: usr.sbin/implog/implog.c 4.3BSD-tahoe
+#Index: implog/implog.c 5.10 (Berkeley) 6/18/88 4.3BSD
+
+Description:
+	Unknown events caused the corruption of the /etc/implogd log
+	file.  /etc/implog attempts a read from this file with a byte
+	count obtained from the trashed part of the file into a fixed
+	length buffer.  If the field contained a value greater than
+	1024 bytes nasty things would happen.  Actually, nasty things
+	would happen just with small bad counts.
+	
+Repeat-By:
+	Corrupt a database and run /etc/implog.
+Fix:
+	The fix I used was to check the count before flying off half
+	cocked.  If the count is greater than 1024 the code will go
+	into a loop reading until in finds a field that is between the
+	first date in the log and the current date.  It then attempts
+	to skip to what could be the next good record.  This probably
+	won't work on every possible corruption known to man or implogd
+	but it worked on the file I wanted to look at!	
+Example:
+%implog implog1027 > implog1027.txt
+Corrupted count = 0x02000900.
+Searching for reasonable time between 0x25279bc2 and 0x2548e47b.
+049b4100 03049b41 0003049b 00000304 00000003 1a000000 021a0000 00021a00
+4100021a c8410002 b9c84100 46b9c841 2546b9c8 
+Found time = 0x2546b9c8, skipped 16 bytes.
+%
+------- implog.c -------
+*** /tmp/d28637	Fri Oct 27 17:29:13 1989
+--- implog.c	Fri Oct 27 17:27:21 1989
+***************
+*** 79,83 ****
+--- 79,91 ----
+  	off_t size;
+  	char *cp;
++ 	char *pp;
++ 	int s;
+  	int hostfrom, impfrom;
++ 	int lost;
++ 	u_long	pattern = 0;
++ 	u_long	firstdate;
++ 	u_long  lastdate;
++ 	int i;
++ 	char *bp, *bp3, *bp1, *bpt;
+  
+  	argc--, argv++;
+***************
+*** 148,151 ****
+--- 156,160 ----
+  			continue;
+  		}
++ 
+  		printf("usage: implog [ -D ] [ -c ] [ -f ] [ -F ] [ -r ] [-h #] [-i #] [ -t # ] [-l [#]] [logfile]\n");
+  		exit(2);
+***************
+*** 160,163 ****
+--- 169,173 ----
+  	fstat(log, &b);
+  	size = b.st_size;
++ 	lastdate = time(0);
+  	if (skip)
+  		(void) lseek(log, size, L_SET);
+***************
+*** 166,171 ****
+--- 176,220 ----
+  		if (from.sin_family == 0) {
+  			printf("restarted: %.24s\n", ctime(&from.sin_time));
++ 			if (!firstdate) firstdate = from.sin_time;
+  			continue;
+  		}
++ 		if (from.sin_cc > 1024) {
++ 		    fprintf(stderr, "Corrupted count = 0x%08lx.\nSearching for reasonable time between 0x%08lx and 0x%08lx.\n", from.sin_cc, firstdate, lastdate);
++ 		    lost = 1;
++ 		    bp = (char *)&pattern;
++ 		    bp3 = bp + 3;
++ 		    bp1 = bp + 1;
++ 		    while (lost) {
++ 			if (read(log, bp, 1) == 1) {
++ 			    if (lost > 3) {
++ 				fprintf(stderr,"%08lx", pattern);
++ 				if (!((lost+5)%8))
++ 				   fprintf(stderr, "\n");
++ 				else
++ 				   fprintf(stderr," ");
++ 			        if (  pattern < lastdate && pattern > firstdate
++ 				   && (read(log, &from.sin_cc, 4) == 4)
++ 				   && from.sin_cc <= 1024) {
++ 		  		    fprintf(stderr,"\nFound time = 0x%08lx, skipped %d bytes.\n",
++ 					pattern, lost);
++ 				    lseek(log, from.sin_cc, 1);
++ 				    lost = 0;
++ 				    continue;
++ 				}
++ 				bp = (char *)&pattern;
++ 				bpt = bp1;
++ 				for (i=0;i<3;i++) *bp++ = *bpt++;
++ 				bp = bp3;
++
++ 				bp++;
++ 			    }
++ 			    lost++;
++ 			} else {
++ 				fprintf(stderr,"\nSearch failed, skipped %d bytes.\n",
++ 					lost);
++ 				exit(2);
++ 			}
++ 		    }
++ 		} else {
+  		if (host >= 0) {
+  			long addr = ntohs(from.sin_addr.s_addr);
+***************
+*** 191,194 ****
+--- 240,244 ----
+  		}
+  		process(log, &from);
++ 		}
+  	}
+  	while (follow) {
+
+	
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From cpw%sneezy@LANL.GOV  Tue Oct 31 11:54:41 1989
+Date: Tue, 31 Oct 89 12:54:53 MST
+From: cpw%sneezy@LANL.GOV (C. Philip Wood)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: RE: implog.c
+Index: implog.c 4.3BSD
+
+The patch I sent for implog.c had bug which caused the program to fail
+while 'tailing' the log.  The feature which searches for a reasonable
+time field if corruption is found should only be invoked on an idle
+file.  Consequently, the following line:
+
+	+ 		if (from.sin_cc > 1024) {
+should be changed to:
+	+ 		if ( !skip && (from.sin_cc > 1024)) {
+
+Phil Wood
+
+

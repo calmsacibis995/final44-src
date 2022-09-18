@@ -1,0 +1,125 @@
+Return-Path: <mjb%Brown@UDel-Relay>
+Date:     27 Sep 83 (Tuesday) 22:53 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  cp dies with "too many open files"
+
+Index:	bin/cp 4.1BSD Fix
+Description:
+	cp does not close files on errors. If you get more than 17
+	errors it craps out with "too many open files".
+Repeat-By:
+	Go to a directory with more than 17 files. Type "cp * ."
+	You get 17 "cannot copy file to itself" messages, then
+	cp dies.
+Fix:
+	Close files when done.
+	*** /usr/src/bin/cp.c	Wed Dec 22 01:05:46 1982
+	--- /usr/src/local/bin/cp.c	Mon Aug  8 02:45:04 1983
+	***************
+	*** 71,76
+		}
+		if (fstat(fold, &stfrom) < 0) {
+			fprintf(stderr, "cp: "); perror(from);
+			return (1);
+		}
+		if (stat(to, &stto) >= 0 &&
+
+	--- 71,77 -----
+		}
+		if (fstat(fold, &stfrom) < 0) {
+			fprintf(stderr, "cp: "); perror(from);
+	+ 		(void) close(fold);
+			return (1);
+		}
+		if (stat(to, &stto) >= 0 &&
+	***************
+	*** 79,84
+			if (last) last++; else last = from;
+			if (strlen(to) + strlen(last) >= BSIZE - 1) {
+				fprintf(stderr, "cp: %s/%s: Name too long", to, last);
+				return(1);
+			}
+			(void) sprintf(destname, "%s/%s", to, last);
+
+	--- 80,86 -----
+			if (last) last++; else last = from;
+			if (strlen(to) + strlen(last) >= BSIZE - 1) {
+				fprintf(stderr, "cp: %s/%s: Name too long", to, last);
+	+ 			(void) close(fold);
+				return(1);
+			}
+			(void) sprintf(destname, "%s/%s", to, last);
+	***************
+	*** 89,94
+			if (stat(to, &stto) < 0) {
+				if (mkdir(to, (int)stfrom.st_mode) < 0) {
+					fprintf(stderr, "cp: "); perror(to);
+					return (1);
+				}
+			} else if ((stto.st_mode&S_IFMT) != S_IFDIR) {
+
+	--- 91,97 -----
+			if (stat(to, &stto) < 0) {
+				if (mkdir(to, (int)stfrom.st_mode) < 0) {
+					fprintf(stderr, "cp: "); perror(to);
+	+ 				(void) close(fold);
+					return (1);
+				}
+			} else if ((stto.st_mode&S_IFMT) != S_IFDIR) {
+	***************
+Via:  Brown; 28 Sep 83 0:08-EDT
+	*** 93,98
+				}
+			} else if ((stto.st_mode&S_IFMT) != S_IFDIR) {
+				fprintf(stderr, "cp: %s: Not a directory.\n", to);
+				return (1);
+			}
+			return (rcopy(from, to));
+
+	--- 96,102 -----
+				}
+			} else if ((stto.st_mode&S_IFMT) != S_IFDIR) {
+				fprintf(stderr, "cp: %s: Not a directory.\n", to);
+	+ 			(void) close(fold);
+				return (1);
+			}
+			return (rcopy(from, to));
+	***************
+	*** 101,106
+			if (stfrom.st_dev == stto.st_dev &&
+			   stfrom.st_ino == stto.st_ino) {
+				fprintf(stderr, "cp: Cannot copy file to itself.\n");
+				return (1);
+			}
+			if (iflag) {
+
+	--- 105,111 -----
+			if (stfrom.st_dev == stto.st_dev &&
+			   stfrom.st_ino == stto.st_ino) {
+				fprintf(stderr, "cp: Cannot copy file to itself.\n");
+	+ 			(void) close(fold);
+				return (1);
+			}
+			if (iflag) {
+	***************
+	*** 110,116
+				i = c = getchar();
+				while (c != '\n' && c != EOF)
+					c = getchar();
+	! 			if (i != 'y')
+					return(1);
+			}
+		}
+
+	--- 115,123 -----
+				i = c = getchar();
+				while (c != '\n' && c != EOF)
+					c = getchar();
+	! 			if (i != 'y') {
+	! 				(void) close(fold);
+					return(1);
+	+ 			}
+			}
+		}
+	====END OF FIX====

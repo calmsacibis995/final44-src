@@ -1,0 +1,188 @@
+Return-Path: <keith@seismo.css.gov>
+Date: Mon, 14 Jul 86 17:36:28 EDT
+From: Keith Bostic <keith@seismo.css.gov>
+Subject: split has a bug, is too slow
+Index: usr.bin/split.c 4.3BSD
+
+Description:
+	1: If you "split" a file into over 676 files, the file names
+		split creates can contain non-alphabetic characters.
+	2: split is needlessly slow.
+Repeat-By:
+	1: Do a "split -1" on a file with more than 676 lines, followed
+		by an ls.
+	2: Here are some performance stats of the original split and a
+		"fixed" split.  All measurements were on a VAX 11/780
+		running something between 4.2 and 4.3 BSD.
+
+Script started on Mon Jul 14 17:05:44 1986
+$ ls -l spfile
+-rw-r-----  1 keith      285040 Jul 14 17:05 spfile
+$ rm -f x*
+$ /bin/time split spfile
+      127.7 real         6.8 user         2.3 sys  
+$ rm -f x*
+$ /bin/time ../newsplit spfile
+       39.2 real         1.4 user         1.6 sys  
+$ ^D
+script done on Mon Jul 14 17:12:30 1986
+
+Fix:
+	Attached is a shar of a new split.c.  Unfortunately, there is no
+	rational way to fix the file creation problem and still be backward
+	compatible.  There's a define in this split.c, "LARGE", that, if
+	turned off, has split work print an error message and quit as soon
+	as the file "xzz" is finished.  If LARGE is turned on, split creates
+	files of the form x1 ... xN where N is a 32 bit number.  The only
+	other visible changes are much tighter argument checking and a usage
+	statement on failure.
+
+echo x - split.c
+sed 's/^X//' >split.c << 'END-of-split.c'
+X#ifndef lint
+Xstatic char *sccsid = "@(#)split.c	4.2 (Berkeley) 4/29/83";
+X#endif !lint
+X
+X#include <sys/param.h>
+X#include <sys/file.h>
+X#include <stdio.h>
+X#include <ctype.h>
+X
+X#define LARGE				/* handle more than 676 files */
+X
+X#define DEFSIZE		1000		/* default num lines per file */
+X#define ERR		-1		/* error */
+X#define YES		1		/* yes/true */
+X#define NO		0		/* no/false */
+X
+Xstatic char	fname[MAXPATHLEN];	/* file name */
+Xstatic int	ofd;			/* output file descriptor */
+X
+Xmain(argc,argv)
+Xint	argc;
+Xchar	**argv;
+X{
+X	register char	*Cs,		/* start and end of buffer */
+X			*Ce;
+X	register long	lcnt;		/* line counter */
+X	register int	len;		/* read length */
+X	long	numlines = ERR,		/* lines in each file */
+X		atol();
+X	int	cnt,			/* general counter */
+X		ifd = ERR;		/* input file descriptor */
+X	short	file_open = NO;		/* if have an output file open */
+X	char	buf[MAXBSIZE],		/* I/O buffer */
+X		*strcpy();
+X
+X	for (cnt = 1;cnt < argc;++cnt) {
+X		if (argv[cnt][0] == '-') {
+X			if (!argv[cnt][1]) {	/* stdin by request */
+X				if (ifd < 0) {
+X					ifd = 0;
+X					continue;
+X				}
+X			}
+X			else if (isdigit(argv[cnt][1]) && numlines < 0 && (numlines = atol(argv[cnt] + 1)) > 0)
+X				continue;
+X		}
+X		else if (ifd < 0) {	/* input file */
+X			if ((ifd = open(argv[cnt],O_RDONLY,0)) < 0) {
+X				perror(argv[cnt]);
+X				exit(1);
+X			}
+X			continue;
+X		}
+X		else if (!*fname) {	/* output file prefix */
+X			strcpy(fname,argv[cnt]);
+X			continue;
+X		}
+X		fputs("usage: split [-n] [file [name]]\n",stderr);
+X		exit(1);
+X	}
+X
+X	if (ifd == ERR)			/* stdin by default */
+X		ifd = 0;
+X
+X	if (numlines == ERR)		/* 1000 by default */
+X		numlines = 1000;
+X
+X	for (lcnt = 0;;)
+X		switch(len = read(ifd,buf,MAXBSIZE)) {
+X			case 0:
+X				exit(0);
+X			case ERR:
+X				perror("read");
+X				break;
+X			default:
+X				if (!file_open) {
+X					newfile();
+X					file_open = YES;
+X				}
+X				for (Cs = Ce = buf;len--;Ce++)
+X					if (*Ce == '\n' && ++lcnt == numlines) {
+X						write(ofd,Cs,(int)(Ce - Cs) + 1);
+X						lcnt = 0;
+X						Cs = Ce + 1;
+X						if (len)
+X							newfile();
+X						else
+X							file_open = NO;
+X					}
+X				if (Cs < Ce)
+X					write(ofd,Cs,(int)(Ce - Cs));
+X		}
+X}
+X
+Xstatic
+Xnewfile()
+X{
+X	static long	fnum;		/* file name counter */
+X	static char	*fpnt;		/* output file name pointer */
+X#ifdef LARGE
+X	static char	str[11];	/* hold 2^32 as ascii */
+X	register long	tnum;		/* temporary number */
+X	register char	*C;		/* traveling pointer */
+X#endif LARGE
+X
+X	if (!ofd)
+X		if (fname[0])
+X			fpnt = fname + strlen(fname);
+X		else {
+X			fname[0] = 'x';
+X			fpnt = fname + 1;
+X		}
+X	else
+X		close(ofd);
+X#ifdef LARGE
+X	tnum = ++fnum;
+X	C = str + 9;
+X	do {
+X		*C-- = tnum % 10 + '0';
+X	} while (tnum /= 10);
+X	strcpy(fpnt,++C);
+X#else !LARGE
+X#define MAXFILES	676		/* maximum files; 26 * 26 == 676 */
+X	if (fnum > MAXFILES - 1) {
+X		fputs("split: too many files.\n",stderr);
+X		exit(1);
+X	}
+X	fpnt[0] = fnum / 26 + 'a';
+X	fpnt[1] = fnum % 26 + 'a';
+X	++fnum;
+X#endif LARGE
+X	if ((ofd = open(fname,O_WRONLY | O_CREAT | O_TRUNC,0666)) < 0) {
+X		perror(fname);
+X		exit(1);
+X	}
+X}
+END-of-split.c
+exit
+
+>>>>> Comment <<<<<
+
+Rather than use an incompatible file naming scheme, split now
+uses xaa, xab, ..., xzz, yaa, yab, ..., yzz, zaa, zab, ... zzz
+which gives you 2028 files.
+
+Also added a byte split flag, -b, that allows you to split files
+on byte boundaries.

@@ -1,0 +1,144 @@
+From allegra!jpl@ucbvax.Berkeley.EDU  Tue Jul 14 23:21:30 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA03401; Tue, 14 Jul 87 23:21:30 PDT
+Received: by ucbvax.Berkeley.EDU (5.58/1.27)
+	id AA19076; Tue, 14 Jul 87 23:21:21 PDT
+From: allegra!jpl@ucbvax.berkeley.edu
+Message-Id: <8707150621.AA19076@ucbvax.Berkeley.EDU>
+Date: Tue, 14 Jul 87 14:35:26 edt
+To: ucbvax!4bsd-bugs, ulysses!utah-cs!donn
+Subject: ccom can get schain botch compiler errors (maybe worse)
+Cc: dds@ucbvax.Berkeley.EDU, help-archive@ucbvax.Berkeley.EDU,
+        jpl@ucbvax.Berkeley.EDU, mp@ucbvax.Berkeley.EDU,
+        sgb@ucbvax.Berkeley.EDU
+
+Index:	lib/mip/pftn.c 4.3BSD
+
+Description:
+	My Mama didn't raise any compiler hackers, so you'd better go
+	over this report with a jaundiced eye.  The symptom of the
+	problem is a compiler error: schain botch diagnostic.  I think
+	the underlying problem is dangling references in schain lists.
+	See the fix below.
+Repeat-By:
+	Forget it.  If I'm right, the problem only occurs when variable
+	names hash into special relationships in stab.  Changing
+	variable names, rearranging the order of subroutines in the C
+	source, using different compiler options, or modifying ccom in
+	any way can make the problem appear to go away.  That makes it
+	very difficult (for me, anyway) to be sure I've really fixed
+	the problem.  Just adding diagnostic statements to ptfn.c, for
+	example, made the problem go away on the program I had been
+	using as a test case.
+Fix:
+	Although the schain botch occurs in step 1 of clearst in mip/pftn.c,
+	I think the problem is in step 2, which originally looked like this.
+
+	/* step 2: fix any mishashed entries */
+	p = clist;
+	while( p ){
+		register struct symtab *r, *next;
+
+		q = p;
+		next = p->snext;
+		for(;;){
+			if( ++q >= &stab[SYMTSZ] )q = stab;
+			if( q == p || q->stype == TNULL )break;
+			if( (r = relook(q)) != q ) {
+				*r = *q;
+				q->stype = TNULL;
+				}
+			}
+		p = next;
+		}
+
+	In the (relatively rare, and hash-dependent) case where q hashes to
+	a new location, it is copied to this preferred location (*r = *q).
+	This ensures that lookup() will find the entry formerly at q, but
+	there may be a pointer to q in the schain list at a lower level.
+	This is not being updated, so the schain list can get trashed.
+	To demonstrate (and maybe even fix) the problem, I changed the
+	code to look like
+
+	/* step 2: fix any mishashed entries */
+	p = clist;
+	while( p ){
+		register struct symtab *r, *next;
+
+		q = p;
+		next = p->snext;
+		for(;;){
+			if( ++q >= &stab[SYMTSZ] )q = stab;
+			if( q == p || q->stype == TNULL )break;
+			if( (r = relook(q)) != q ) {
++ # ifndef BUG1
++				if( ddebug ) ckdangle(r, q, lev);
++ # endif
+				*r = *q;
+				q->stype = TNULL;
+				}
+			}
+		p = next;
+		}
+
+	and I added the following routine to the end of pftn.c
+
+#ifndef BUG1
+static void
+ckdangle(to, from, lev)
+	register int lev;
+	register struct symtab *to, *from;
+{
+	register struct symtab *q;
+	register struct symtab **r;
+
+	while (lev >= 0) {
+		for (r = &schain[lev]; q = *r; r = &(q->snext)) {
+			if (from == q) {
+				printf("Reference to stab[%d] on level %d\n",
+					from-stab, lev);
+				*r = to;
+			}
+		}
+		--lev;
+	}
+}
+#endif
+
+	There is therefore no visible effect unless ccom has debugging
+	armed.  The ckdangle routine runs through the schain lists at
+	lower levels, looking for a reference to the symtab entry about
+	to be moved.  If one is found a diagnostic is printed, and (if
+	you leave the *r = to in place) the schain list is patched to
+	reference the entry in its new home.  (It hasn't been moved
+	there yet, but it will be after ckdangle returns.)
+
+	Running this modified ccom on an assortment of programs and
+	grepping for "Reference" revealed that dangling references CAN
+	show up, although they are by no means common.  Most of these
+	infrequent references occur at level 0, where they don't seem
+	to cause any problems.  The program that elicited the schain
+	botch had such a reference at level 2.  The program had lots of
+	blocks with internal declarations, so more symbols were defined
+	at non-zero levels.  My guess is that references at level 0
+	somehow don't cause problems, and that most programs don't nest
+	blocks very deep, so the problem is not often seen.  When I
+	first ran the code WITHOUT the schain patch (*r = to), though,
+	ckdangle got into an infinite loop on a program that only had
+	dangling references on level 0.  It therefore seems that there
+	are possibilities for even nastier things than an schain botch
+	error.
+
+	I'm too chicken to make the ckdangle code a permanent part of
+	ccom without checking with some people who truly understand what
+	is going on.  Nevertheless, I can't see how the dangling schain
+	references can be anything other than a bug, and I think the
+	ckdangle code will correct it.
+
+	(As I just gave the code a last looking over, it appears that
+	ckdangle could do a while (--lev >= 0) instead of decrementing
+	lev at the end of the loop, since the current level's schain
+	has been cleared in step 1.  But I want to show you the code
+	I ran, not the code I think I should have run).
+
+John P. Linderman  allegra!jpl  (201) 582-6427

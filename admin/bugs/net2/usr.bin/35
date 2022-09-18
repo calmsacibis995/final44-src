@@ -1,0 +1,54 @@
+From karzes@deshaw.com Fri Apr 23 23:10:03 1993
+From: Tom-Karzes@deshaw.com
+To: bostic@vangogh.CS.Berkeley.EDU
+Cc: christos@deshaw.com, moraes@deshaw.com
+Subject: fgrep bug
+Index: usr.bin/grep net2
+
+While experimenting with string searching algorithms, I constructed some
+examples which depend on earlier fail links to construct later fail links.
+Although these examples were intended for use with my own code, I tried
+them on grep, egrep, and fgrep, expecting them to work.  Much To my surprise,
+I discovered that fgrep failed on my examples.  Here's one of them:
+
+% echo abaababaababc | fgrep abaababc
+%
+
+Looking at the source, I was also able to construct an example which fails
+due to the interaction of two search strings (supplied through a file with
+the -f option):
+
+% (echo ababac; echo babc) > /tmp/patt; echo abababac | fgrep -f /tmp/patt
+%
+
+These bugs are both due to fgrep not chasing down earlier fail links when
+setting later ones.
+
+Here's a minimal patch to function cfail in fgrep.c which fixes this bug:
+
+% diff -c fgrep.c.orig fgrep.c
+*** fgrep.c.orig	Fri Apr 23 18:20:37 1993
+--- fgrep.c	Sat Apr 24 01:15:11 1993
+***************
+*** 369,375 ****
+  				if ((state->nst)->out == 1) q->out = 1;
+  				if ((q = q->link) != 0) goto qloop;
+  			}
+! 			else if ((state = state->link) != 0)
+  				goto floop;
+  			else if(bstart == 0){
+  				state = 0;
+--- 369,379 ----
+  				if ((state->nst)->out == 1) q->out = 1;
+  				if ((q = q->link) != 0) goto qloop;
+  			}
+! 			else if (state->link != 0) {
+! 				state = state->link;
+! 				goto floop;
+! 			}
+! 			else if ((state = state->fail) != 0)
+  				goto floop;
+  			else if(bstart == 0){
+  				state = 0;
+
+

@@ -1,0 +1,98 @@
+Path: ucbvax!agate!apple!brutus.cs.uiuc.edu!ginosko!uunet!mcsun!unido!sbsvax!greim
+From: greim@sbsvax.UUCP (Michael Greim)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: csh, echo `cd /tmp; echo *` dumps core
+Summary: Maybe it's the same bug as the one for which here is the fix.
+Index: usr.bin/csh 4.3BSD-tahoe
+
+In article <FLEE.89Sep11050930@shire.cs.psu.edu>, flee@shire.cs.psu.edu (Felix Lee) writes:
++ % echo `cd /tmp; echo *`
++ coredumps in every BSD variant I've tried (Vax 4.3, SunOS 4.x, IBM/4.3).
++ --
++ Felix Lee	flee@shire.cs.psu.edu	*!psuvax1!flee
+
+On 29 Dec 88 I presented a fix for a similar bug.
+I have tested your alias and command on both a "normal" csh and a
+csh with this fix. The "normal" csh dumps core, the fixed one doesn't.
+Here is the fix:
+
++In <2292@bucsb.UUCP> Joe Wells made us aware of a bug in csh.
++
++Symptoms:
++	Try the following in csh
++		alias foo '`cat`'
++		`foo`
++	The csh will dump core, with a message of "illegal instructions"
++	or something like this.
++
++Diagnosis:
++	When a command is built, the variable pargv (and Co.) is used to
++	hold the words of the new command. When the input is command
++	substituted (triggered by presence of '`') csh forks, the child
++	evaluates the command inside '`', the ancestor reads the output
++	and uses it to build its own command. If the child does a command
++	substitution itself (substituting foo by `cat`) it tests whether
++	pargv is already in use. If so, it assumes something has gone
++	terribly wrong and calls abort, which runs on an illegal instruction
++	to produce a core dump.
++
++	Why does this happen?
++
++	The child inherits the value of pargv (and Co.) although it should
++	start with pargv == 0, i.e. a command of its own.
++	This is no problem in 'normal' commands, because then pargv
++	is explicitly set. 
++
++Therapy:
++	Change csh to do it right: after forking reset pargv (and Co.).
++	If you are lucky and have source, apply the following patch and wreak
++	yavoc (yet another version of ye old csh :-)
++	(This is a patch to 4.2 BSD csh, line numbers and context may differ)
++
++*** sh.glob.c.old	Thu Dec 29 11:03:28 1988
++--- sh.glob.c	Thu Dec 29 11:03:35 1988
++***************
++*** 692,697
++  		dmove(pvec[1], 1);
++  		dmove(SHDIAG, 2);
++  		initdesc();
++  		arginp = cp;
++  		while (*cp)
++  			*cp++ &= TRIM;
++
++--- 692,699 -----
++  		dmove(pvec[1], 1);
++  		dmove(SHDIAG, 2);
++  		initdesc();
+++ 		if (pargv)		/* mg, 21.dec.88 */
+++ 			blkfree(pargv), pargv = 0;		/* mg, 21.dec.88 */
++  		arginp = cp;
++  		while (*cp)
++  			*cp++ &= TRIM;
++
++
++Examination:
++	(don't type the double quotes)
++	- create a directory, let's say tmp, and cd to it.
++	- create a file named "f" in it.
++	- write the string "ls" onto this file.
++	- call the new csh
++	- do "alias foo '`cat f`'"
++	- sit back and try to figure what the output of "`foo`" might be.
++	- do "`foo`".
++	If you do this with old csh, it dumps core.
+
+Although the way to provoke the error differ, the core seems to be
+the same: you invoke a command in backquotes, which is an alias to
+another command containing backquotes.
+
+Hope this helps,
+
+	Absorb, apply and enjoy,
+
+		-mg
+-- 
+Michael Greim    Email : greim@sbsvax.informatik.uni-saarland.dbp.de
+                 or    : ...!uunet!unido!sbsvax!greim
+[.signature removed by the board of censors for electronic mail's main
+executive computer because it contained a four letter word ("word")]

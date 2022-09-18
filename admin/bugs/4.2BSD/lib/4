@@ -1,0 +1,101 @@
+Return-Path: <mogul@coyote>
+Date: Mon, 2 Apr 84 16:42:26 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: 4.2 (and 4.1) Vax pcc generates bad code for real comparisons
+Index: lib/pcc/table.c 4.2BSD fix
+
+Description:
+	When pcc (the C compiler) generates code to compare a float
+	and a double, it first converts the float to a double but
+	doesn't realize that this takes two registers, not one.
+	
+	If more than one temporary register is in use while evaluating
+	such a comparision, one of the register may be trashed.
+	
+	This bug applies to 4.1BSD and probably all earlier Vax pcc
+	versions.
+Repeat-By:
+	compile this C program:
+	
+	double	dd[] =	{ 0.0, 2.0 };
+	float	ff[] =	{ 0.0, 1.0 };
+	int i = 1;
+
+	main(){
+		if( ff[i] >= dd[i] ) printf( "wrong\n" );
+	}
+
+	If you run it, it will print "wrong" because the 
+	code that is generated (cf. cc -S) for the comparison
+	is:
+
+	movl	_i,r0
+	movl	_i,r1
+	cvtfd	_ff[r0],r0	# trashes r1
+	cmpd	r0,_dd[r1]	# index is random
+	jlss	L19
+
+Fix:
+	The fix given here may be suboptimal, but it seems to give
+	correct code.  (I can't remember where I got the fix from;
+	it's not mine.)  It tells pcc to use 2 stack longwords as
+	a temporary instead of one register.
+	
+	On 4.1BSD, the file is /usr/src/cmd/pcc/table.c; it's identical
+	to the 4.2 file.
+	
+	*** table.c.bad	Wed Dec 15 13:25:17 1982
+	--- table.c	Mon Apr  2 16:05:08 1984
+	***************
+	*** 1,4
+	  static char *sccsid ="@(#)table.c	1.1 (Berkeley) 12/15/82";
+	  # include "mfile2"
+
+	  # define WPTR TPTRTO|TINT|TLONG|TFLOAT|TDOUBLE|TPOINT|TUNSIGNED|TULONG
+
+	--- 1,9 -----
+	  static char *sccsid ="@(#)table.c	1.1 (Berkeley) 12/15/82";
+	+ /*
+	+  * 2 April 1984	Jeff Mogul	Stanford
+	+  *	Re-installed fix to prevent compare of indexed float and
+	+  *	indexed double from clobbering the index register.
+	+  */
+	  # include "mfile2"
+
+	  # define WPTR TPTRTO|TINT|TLONG|TFLOAT|TDOUBLE|TPOINT|TUNSIGNED|TULONG
+	***************
+	*** 228,234
+	  OPLOG,	FORCC,
+		SAREG|AWD,	TDOUBLE,
+		SAREG|AWD,	TFLOAT,
+	! 		NAREG|NASR,	RESCC,
+			"	cvtfd	AR,A1\n	cmpd	AL,A1\nZP",
+
+	  OPLOG,	FORCC,
+
+	--- 233,239 -----
+	  OPLOG,	FORCC,
+		SAREG|AWD,	TDOUBLE,
+		SAREG|AWD,	TFLOAT,
+	! 		2*NTEMP,	RESCC,
+			"	cvtfd	AR,A1\n	cmpd	AL,A1\nZP",
+
+	  OPLOG,	FORCC,
+	***************
+	*** 234,240
+	  OPLOG,	FORCC,
+		SAREG|AWD,	TFLOAT,
+		SAREG|AWD,	TDOUBLE,
+	! 		NAREG|NASL,	RESCC,
+			"	cvtfd	AL,A1\n	cmpd	A1,AR\nZP",
+
+	  OPLOG,	FORCC,
+
+	--- 239,245 -----
+	  OPLOG,	FORCC,
+		SAREG|AWD,	TFLOAT,
+		SAREG|AWD,	TDOUBLE,
+	! 		2*NTEMP,	RESCC,
+			"	cvtfd	AL,A1\n	cmpd	A1,AR\nZP",
+
+	  OPLOG,	FORCC,

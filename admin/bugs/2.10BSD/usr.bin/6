@@ -1,0 +1,124 @@
+From sms@WLV.IMSD.CONTEL.COM  Mon Oct 23 15:37:36 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA09456; Mon, 23 Oct 89 15:37:36 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.38)
+	id AA05309; Mon, 23 Oct 89 15:37:42 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA06427; Mon, 23 Oct 89 15:37:39 -0700
+Date: Mon, 23 Oct 89 15:37:39 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8910232237.AA06427@WLV.IMSD.CONTEL.COM>
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Subject: copying archive produces outofdate error
+Index:	usr.bin/ranlib.c 2.10BSD
+
+Description:
+	Copying an archive causes ld(1) to complain about 
+	the archive being out of date.
+
+Repeat-By:
+	touch /lib/libc.a
+	then compile any program which uses the C library.
+
+Fix:
+	Apply this patch to usr.bin/ranlib.c, it implements the
+	4.3BSD "-t" option of ranlib.
+
+	Also included is a patch to /usr/src/man/man1/ranlib.1, after
+	applying it:
+		/usr/man/manroff ranlib.1 >/usr/man/cat1/ranlib.0
+		chmod a+r /usr/man/cat1/ranlib.0
+
+*** ranlib.c.old	Wed Mar 11 22:41:22 1987
+--- ranlib.c	Mon Oct 23 18:07:10 1989
+***************
+*** 24,30 ****
+--- 24,38 ----
+  char **argv;
+  {
+  	char buf[256];
++ 	register int just_touch = 0;
+  
++ 	/* check for the "-t" flag */
++ 	if (argc > 1 && strcmp(argv[1], "-t") == 0) {
++ 		just_touch++;
++ 		argc--;
++ 		argv++;
++ 	}
++ 
+  	--argc;
+  	while(argc--) {
+  		fi = fopen(*++argv,"r");
+***************
+*** 36,41 ****
+--- 44,68 ----
+  		fread((char *)&exp, 1, sizeof(MAGIC), fi);	/* get magic no. */
+  		if (MAGIC != ARMAG)
+  		{	fprintf(stderr, "not archive: %s\n", *argv);
++ 			continue;
++ 		}
++ 		if (just_touch) {
++ 			register int len;
++ 
++ 			fseek(fi, (long) sizeof (exp.a_magic), 0);
++ 			if (fread(buf, sizeof arp.ar_name, 1, fi) != 1) {
++ 				fprintf(stderr, "malformed archive: %s\n",
++ 					*argv);
++ 				continue;
++ 			}
++ 			len = strlen(tempnm);
++ 			if (bcmp(buf, tempnm, len) != 0 ||
++ 				buf[len] != '\0') {
++ 				fprintf(stderr, "no symbol table: %s\n", *argv);
++ 				continue;
++ 			}
++ 			fclose(fi);
++ 			fixdate(*argv);
+  			continue;
+  		}
+  		fseek(fi, 0L, 0);
+*** ranlib.1.old	Thu Feb 19 03:39:47 1987
+--- ranlib.1	Mon Oct 23 18:24:29 1989
+***************
+*** 4,10 ****
+  ranlib \- convert archives to random libraries
+  .SH SYNOPSIS
+  .B ranlib
+! archive ...
+  .SH DESCRIPTION
+  .I Ranlib
+  converts each
+--- 4,12 ----
+  ranlib \- convert archives to random libraries
+  .SH SYNOPSIS
+  .B ranlib
+! [
+! .B \-t
+! ] archive ...
+  .SH DESCRIPTION
+  .I Ranlib
+  converts each
+***************
+*** 20,25 ****
+--- 22,41 ----
+  so that sufficient temporary file space must
+  be available in the file system containing the
+  current directory.
++ .PP
++ If given the
++ .B \-t
++ option,
++ ranlib only "touches" the archives and does not modify them.
++ This is useful after copying an archive
++ or using the
++ .B \-t
++ option of
++ .IR make (1)
++ in order to avoid having
++ .IR ld (1)
++ complain about
++ an \*(lqout of date\*(rq symbol table.
+  .SH SEE ALSO
+  ar(1), ld(1)
+  .SH BUGS

@@ -1,0 +1,62 @@
+Return-Path: <bukys@Rochester.ARPA>
+Date: 5 Jul 83 20:57:17 EDT (Tue)
+From: bukys@Rochester.ARPA
+Subject: 4.1c restor bug
+To: 4bsd-bugs@BERKELEY
+Index: 	etc/restor 4.1BSD  Fix
+
+Description:
+	It is possible for a dump(8) tape to have an inconsistent idea
+	of the length of a file.  (It happened to me!)  Then restor(8)
+	may find a data block when it is expecting a header block.  As
+	the header parsing routine does a consistency check, this
+	should not be much of a problem.  However, in one case the code
+	does not check the value returned by the header parsing
+	routine, and treats the data block as a very strange header
+	block.  If this happens while reading directory files from the
+	tape, it will think it has reached the end of the directory
+	dump, but will not have built up the entire directory
+	structure.  (This is what happened to me.)  The subsequent
+	restoration will skip the files without corresponding directory
+	information.
+
+Repeat-By:
+	I suppose I could send you the tape.  The problem was that the
+	inode said that the file was 1056 bytes (2 blocks) long, but
+	the c_addr array said there were 3 data blocks (there were).
+	Furthermore, this file (a directory!) had a hole.  The most
+	obvious warning was 150 "missing directory entry" messages.
+	The second most obvious warning was that very few files were
+	getting restored.
+
+Fix:
+	(version is "@(#)restor.c 2.17 1/8/83") (line 769) (fix in #ifdef UR)
+
+		if ((size -= TP_BSIZE) <= 0) {
+	#ifdef UR
+			while (gethead(&spcl) == 0)
+				fprintf(stderr, "warning: discrepancy between c_addr array and inode's di_size: data block ignored\n");
+	#else
+			gethead(&spcl);
+	#endif
+			goto out;
+		}
+
+Comments:
+	A more general fix might trust the c_addr array more than the
+	size stated in the inode.  That's more complicated than this
+	one-line fix, though.  And this is, after all, a problem that
+	"should never happen", as they say.
+
+	While you're there, it should check all results from calloc()
+	and malloc() for NULL, especially since getleaves() can build
+	up quite a structure.
+
+	And, whenever you get around to re-implementing the 'r' flag,
+	it should *say something* if it skips a file on the tape (this
+	should never happen on a full restore).
+
+---------------
+Liudvikas Bukys
+rochester!bukys
+bukys@rochester

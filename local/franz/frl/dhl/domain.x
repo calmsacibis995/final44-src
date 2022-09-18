@@ -1,0 +1,6 @@
+(File |dhl/domain.l|)
+(dreplace macro cdr append cons quote list)
+(dremove macro cdr append cons quote list)
+(dget macro cdr append cons quote list)
+(dput macro cdr append cons quote list)
+(gather macro cons quote list caddr cadr)

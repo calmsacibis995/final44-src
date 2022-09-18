@@ -1,0 +1,86 @@
+Path: agate!ames!olivea!uunet!cs.utexas.edu!uwm.edu!ogicse!das-news.harvard.edu!cantaloupe.srv.cs.cmu.edu!tgl
+From: tgl+@cs.cmu.edu (Tom Lane)
+Newsgroups: comp.sources.bugs,alt.sources.d,comp.compression,comp.graphics,alt.graphics.pixutils
+Subject: Widespread bug in "compress" and GIF compressors
+Summary: Standard LZW compression code has a typo
+Keywords: LZW, compress, GIF
+Message-ID: <BzEzAM.3Gv.2@cs.cmu.edu>
+Date: 17 Dec 92 17:30:20 GMT
+Sender: news@cs.cmu.edu (Usenet News System)
+Followup-To: comp.sources.bugs
+Organization: School of Computer Science, Carnegie Mellon
+Lines: 70
+Nntp-Posting-Host: g.gp.cs.cmu.edu
+Xref: agate comp.sources.bugs:3473 alt.sources.d:3825 comp.compression:5561 comp.graphics:34347 alt.graphics.pixutils:4722
+Index: usr.bin/compress net2
+
+I've discovered a small bug in the standard Unix compress(1) utility.
+The bug is also present in many derived implementations of LZW compression,
+notably common GIF graphics file writers such as ppmtogif and xv.
+
+The bug does NOT pose any risk of loss of data.  What it does do is to cause
+inefficient compression of some files containing many runs of zero
+characters (nulls).  The problem is particularly severe for GIF compressors
+due to their relatively small LZW symbol tables and the much greater
+probability of zero runs in GIF data.  20% or more expansion of a GIF file
+is not at all uncommon, whereas I have seen only small expansions of .Z
+files.
+
+Here is the correction as it applies to compress 4.1 (posted to
+comp.sources.misc volume 20, June 1991).
+
+--------- cut here ---------
+*** compress.c.BAK	Thu Dec 17 11:51:18 1992
+--- compress.c	Thu Dec 17 11:51:37 1992
+***************
+*** 911,917 ****
+  	    ent = codetabof (i);
+  	    continue;
+  	}
+! 	if ( (long)htabof (i) > 0 ) 
+  	    goto probe;
+  nomatch:
+  	output ( (code_int) ent );
+--- 911,917 ----
+  	    ent = codetabof (i);
+  	    continue;
+  	}
+! 	if ( (long)htabof (i) >= 0 ) 
+  	    goto probe;
+  nomatch:
+  	output ( (code_int) ent );
+--------- cut here ---------
+
+The code may appear slightly different in other versions; in most of the GIF
+code I've checked, the hash table macro is HashTabOf() instead of htabof().
+But if you search for the label "nomatch:" you'll probably find the spot.
+
+The implication of this typo is that a valid hashtable entry for the data
+series 0,0 may be overwritten by an entry for a different symbol that
+happens to hash to the same location.  Then the compressor forgets that it
+has created symbols for any sequences beginning with 0,0, so that such
+sequences must be re-encoded from scratch.
+
+The bug does *not* exist in ncompress (also known as compress 4.2), so you
+may want to just upgrade to that instead of fixing your old compress.
+ncompress was posted in comp.sources.reviewed volume 2.  (Is that posting
+still the current version?)  For that matter, you could probably just ignore
+the bug, since it is of little consequence for typical compress inputs.
+
+Authors of GIF-related programs, though, will definitely want to check for
+this bug and fix their code if it is present.
+
+For the record, here is a way of testing for the bug in standard 16-bit
+compress.  Substituting nulls for Z's in the input shouldn't change the
+length of the compressed output, but it does:
+
+% perl -e 'print "\2"x100000, "Z"x100, "\x85"x100000, "\xc4\x86", "Z"x100;' | compress | wc
+       4       9    1136
+% perl -e 'print "\2"x100000, "\0"x100, "\x85"x100000, "\xc4\x86", "\0"x100;' | compress | wc
+       4       9    1146
+
+Note that this test sequence probably won't trigger the bug in LZW
+implementations with hashtable size other than 69001 (the default for 16-bit
+compress).
+
+			regards, tom lane

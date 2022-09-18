@@ -1,0 +1,128 @@
+From elsie!ado.UUCP@seismo.arpa  Tue Nov 10 08:11:00 1987
+Date: Tue, 10 Nov 87 10:59:52 EST
+From: elsie!ado.UUCP@seismo.arpa (Arthur David Olson)
+Reply-To: ado@vax2.nlm.nih.gov
+To: 4bsd-ideas@ucbvax.Berkeley.EDU, mtxinu!more-ideas.UUCP@seismo.arpa
+Subject: adopt
+Index: ideas 4.3BSD
+
+Here's a manual page and source code for a command I call "adopt";
+you can use it to wait for the completion of *any* process (as opposed
+to "wait", which can only wait for a shell's own child processes).
+
+				--ado
+
+: To unbundle, sh this file
+echo 'adopt.1' 1>&2
+cat >'adopt.1' <<'End of adopt.1'
+.LC @(#)adopt.1	1.1
+.TH ADOPT 1E \*(eH
+.SH NAME
+adopt \- wait for process
+.SH SYNOPSIS
+.B adopt
+[
+.B \-v
+] [ processid ... ]
+.= adopt
+.SH DESCRIPTION
+.I Adopt
+waits for completion of the process(es) identified by the ID number(s)
+given on the command line.
+It differs from
+.IR wait (1),
+which can only be used to wait for completion of a shell's own child processes.
+.PP
+This option is available:
+.TP
+.B \-v
+Warn about processes that are not running when
+.I adopt
+begins execution.
+End of adopt.1
+echo 'adopt.c' 1>&2
+cat >'adopt.c' <<'End of adopt.c'
+#
+
+#include "stdio.h"
+
+#if !defined lint && !defined NOID
+static char	sccsid[] = "@(#)adopt.c	1.2";
+#endif /* !defined lint && !defined NOID */
+
+#include "errno.h"
+#include "ctype.h"
+
+#ifndef SLEEPTIME
+#define SLEEPTIME	5
+#endif /* !SLEEPTIME */
+
+extern int	errno;
+extern int	optind;
+
+static
+exists(s)
+char *	s;
+{
+	char *	cp;
+	int	pid;
+
+	if (s == NULL || *s == '\0')
+		return -1;
+	for (cp = s; *cp != '\0'; ++cp)
+		if (!isascii(*cp) || !isdigit(*cp))
+			return -1;
+	if (sscanf(s, "%d", &pid) != 1 || pid < 0)
+		return -1;
+	return kill(pid, 0) == 0 || errno != ESRCH;
+}
+
+main(argc, argv)
+int	argc;
+char *	argv[];
+{
+	int	vflag;
+	int	i;
+	int	c;
+	int	result;
+	int	ok;
+
+	vflag = 0;
+	while ((c = getopt(argc, argv, "v")) == 'v')
+		vflag = 1;
+	if (c != EOF ||
+		optind == (argc - 1) && strcmp(argv[optind], "=") == 0) {
+			(void) fprintf(stderr,
+				"%s: usage is %s [-v] processid ...\n",
+				argv[0], argv[0]);
+			return 1;
+	}
+	/*
+	** Initial checks.
+	*/
+	ok = 1;
+	for (i = optind; c != EOF || i < argc; ++i) {
+		result = exists(argv[i]);
+		if (result < 0) {
+			(void) fprintf(stderr, "%s: wild argument '%s'\n",
+				argv[0], argv[i]);
+			return 1;
+		}
+		if (vflag && result != 1) {
+			(void) fprintf(stderr,
+				"%s: process %s does not exist\n",
+				argv[0], argv[i]);
+			ok = 0;
+		}
+	}
+	/*
+	** Wait loop.
+	*/
+	for (i = optind; i < argc; ++i)
+		while (exists(argv[i]) == 1)
+			(void) sleep(SLEEPTIME);
+	return ok ? 0 : 1;
+}
+End of adopt.c
+exit
+

@@ -1,0 +1,142 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Tue, 27 Mar 84 01:07:24 pst
+Subject: /etc/dump makes bad tape use estimates when files have holes
+
+Subject: /etc/dump makes bad tape use estimates when files have holes
+Index:	etc/dump/dumpitime.c 4.2BSD
+
+Description:
+	When you run dump, it typically prints out an estimate of the
+	number of tapes it needs and the expected number of 1K blocks
+	of data on those tapes.  If a file on the filesystem being
+	dumped has holes in it, the estimate can be way off.  (A hole
+	is a place in a file where no blocks have been allocated,
+	typically found in database files.  See lseek(2) if you're
+	mystified.)
+
+Repeat-By:
+	Make a file with holes in it and try to dump the file system.
+	In our case dump came back with:
+
+		DUMP: estimated 1794142 tape blocks on 50.53 tape(s).
+
+	It should have said:
+
+		DUMP: estimated 132608 tape blocks on 3.74 tape(s).
+
+	This is unnerving to say the least.
+
+Fix:
+	The problem is in the routine est() in dumpitime.c.  According
+	to the comment at the top:  'It assumes that there are no
+	unallocated blocks; hence the estimate may be high[.]'  It's
+	actually reasonably simple to get a good estimate of the number
+	of blocks needed even when the file has holes; there is a field
+	in the inode structure, di_blocks, which contains the number of
+	sectors used by the file, not counting indirect blocks.  Here
+	are the changes I made:
+
+ ----------------------------------------------------------------
+ RCS file: RCS/dumpitime.c,v
+ retrieving revision 1.1
+ diff -c -r1.1 dumpitime.c
+ *** /tmp/,RCSt1002440	Tue Mar 27 00:52:19 1984
+ --- dumpitime.c	Tue Mar 27 00:33:03 1984
+ ***************
+ *** 204,211
+
+   /*
+    * This is an estimation of the number of TP_BSIZE blocks in the file.
+ !  * It assumes that there are no unallocated blocks; hence
+ !  * the estimate may be high
+    */
+   est(ip)
+ 	struct dinode *ip;
+
+ --- 204,211 -----
+
+   /*
+    * This is an estimation of the number of TP_BSIZE blocks in the file.
+ !  * WARNING: It uses the di_blocks field of the inode, which is not
+ !  * maintained in 4.1c BSD.
+    */
+   est(ip)
+ 	struct dinode *ip;
+ ***************
+ *** 210,216
+   est(ip)
+ 	struct dinode *ip;
+   {
+ ! 	long s;
+
+ 	esize++;
+ 	/* calc number of TP_BSIZE blocks */
+
+ --- 210,216 -----
+   est(ip)
+ 	struct dinode *ip;
+   {
+ ! 	long s, t;
+
+ 	esize++;
+
+ ***************
+ *** 213,220
+ 	long s;
+
+ 	esize++;
+ ! 	/* calc number of TP_BSIZE blocks */
+ ! 	s = howmany(ip->di_size, TP_BSIZE);
+ 	if (ip->di_size > sblock->fs_bsize * NDADDR) {
+ 		/* calc number of indirect blocks on the dump tape */
+ 		s += howmany(s - NDADDR * sblock->fs_bsize / TP_BSIZE,
+
+ --- 213,235 -----
+ 	long s, t;
+
+ 	esize++;
+ !
+ ! 	/*
+ ! 	 * ip->di_size is the size of the file in bytes.
+ ! 	 * ip->di_blocks stores the number of sectors actually in the file.
+ ! 	 * If there are more sectors than the size would indicate, this just
+ ! 	 *	means that there are unused sectors in the last file block;
+ ! 	 *	we can safely ignore these (s = t below).
+ ! 	 * If the file is bigger than the number of sectors would indicate,
+ ! 	 *	then the file has holes in it.  In this case we must use the
+ ! 	 *	block count for keeping track of actual blocks used, but we
+ ! 	 *	use the actual size for estimating the number of indirect
+ ! 	 *	blocks (t vs. s in the indirect block calculation).
+ ! 	 */
+ ! 	s = howmany(dbtob(ip->di_blocks), TP_BSIZE);
+ ! 	t = howmany(ip->di_size, TP_BSIZE);
+ ! 	if ( s > t )
+ ! 		s = t;
+ 	if (ip->di_size > sblock->fs_bsize * NDADDR) {
+ 		/* calculate the number of indirect blocks on the dump tape */
+ 		s += howmany(t - NDADDR * sblock->fs_bsize / TP_BSIZE,
+ ***************
+ *** 216,223
+ 	/* calc number of TP_BSIZE blocks */
+ 	s = howmany(ip->di_size, TP_BSIZE);
+ 	if (ip->di_size > sblock->fs_bsize * NDADDR) {
+ ! 		/* calc number of indirect blocks on the dump tape */
+ ! 		s += howmany(s - NDADDR * sblock->fs_bsize / TP_BSIZE,
+ 			TP_NINDIR);
+ 	}
+ 	esize += s;
+
+ --- 231,238 -----
+ 	if ( s > t )
+ 		s = t;
+ 	if (ip->di_size > sblock->fs_bsize * NDADDR) {
+ ! 		/* calculate the number of indirect blocks on the dump tape */
+ ! 		s += howmany(t - NDADDR * sblock->fs_bsize / TP_BSIZE,
+ 			TP_NINDIR);
+ 	}
+ 	esize += s;
+ ----------------------------------------------------------------
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016  sdcsvax!sdchema!donn@nosc.ARPA

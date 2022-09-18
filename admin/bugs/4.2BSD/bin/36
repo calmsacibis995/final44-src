@@ -1,0 +1,165 @@
+Return-Path: <fluke!jeff@uw-beaver.arpa>
+Date: Tue, 27 Nov 84 14:38:00 pst
+From: jeff@fluke (Jeff Stearns)
+Subject: awk doesn't wait for subordinate processes to complete
+Index: usr.bin/awk 4.2BSD
+
+Description:
+	If one redirects awk output through a filter, awk does not wait
+	for the filter to terminate before awk itself terminates.  The
+	output therefore appears asynchronously while subsequent commands
+	are being processed.  In a shell script, this can be fatal if the
+	filter is, for example, sort(1).
+
+Repeat-By:
+	% awk 'END { print "echo hi" | "sh" }' </dev/null
+	
+	Note that the result is (usually):
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    % hi
+
+	rather than:
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    hi
+	    %
+
+	Try this, and note the changing size of the sorted-output file:	
+	    % awk '{ print $0 | "sort -o sorted-output" }' <big-file
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+Fix:
+	(Suggestion only)
+	Before exiting, awk should call pclose(3) on each stream pointer
+	which was created via a popen(3) in run.c.  The pclose(3) will
+	wait(3) on the subordinate child before returning.
+
+========================================================================
+Return-Path: <fluke!jeff@uw-beaver.arpa>
+Date: Mon, 14 Jan 85 16:04:42 pst
+From: fluke!jeff@uw-beaver.arpa (Jeff Stearns)
+Subject: awk doesn't wait for subordinate processes to complete
+Index: usr.bin/awk/main.c 4.2BSD
+
+Description:
+	If one redirects awk output through a filter, awk does not wait
+	for the filter to terminate before awk itself terminates.  The
+	output therefore appears asynchronously while subsequent commands
+	are being processed.  In a shell script, this can be fatal if the
+	filter is, for example, sort(1).
+
+Repeat-By:
+	% awk 'END { print "echo hi" | "sh" }' </dev/null
+	
+	Note that the result is (usually):
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    % hi
+
+	rather than:
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    hi
+	    %
+
+	Try this, and note the changing size of the sorted-output file:	
+	    % awk '{ print $0 | "sort -o sorted-output" }' <big-file
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+Fix:
+	The following context diff shows the additions made to the file
+	/usr/src/usr.bin/awk/main.c:
+
+*** /usr/src/usr.bin/awk/main.old	Mon Jan 14 15:51:47 1985
+--- /usr/src/usr.bin/awk/main.c	Mon Jan 14 15:08:44 1985
+***************
+*** 91,93
+  	run();
+  	exit(errorflag);
+  }
+  
+--- 91,102 -----
+  	run();
++ 	/*
++ 	 *  Awk may have spawned some children (printf "....." | sort).
++ 	 *  The children may still be alive (sort can be quite slow).
++ 	 *  It is a bad idea to exit before our children have completed,
++ 	 *  as the next command to be executed may depend on ALL of our
++ 	 *  processing being complete.  Thus we wait for our kids.
++ 	 */
++ 	while (wait (0) != -1)
++ 		;
+  	exit(errorflag);
+  }
+===========================================================================
+
+Return-Path: <fluke!jeff@uw-beaver.arpa>
+Date: Mon, 14 Jan 85 17:36:32 pst
+From: fluke!jeff@uw-beaver.arpa (Jeff Stearns)
+Subject: awk doesn't wait for subordinate processes to complete
+Index: bin/awk/main.c 4.2BSD
+
+Description:
+	If one redirects awk output through a filter, awk does not wait
+	for the filter to terminate before awk itself terminates.  The
+	output therefore appears asynchronously while subsequent commands
+	are being processed.  In a shell script, this can be fatal if the
+	filter is, for example, sort(1).
+
+Repeat-By:
+	% awk 'END { print "echo hi" | "sh" }' </dev/null
+	
+	Note that the result is (usually):
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    % hi
+
+	rather than:
+	    % awk 'END { print "echo hi" | "sh" }' </dev/null
+	    hi
+	    %
+
+	Try this, and note the changing size of the sorted-output file:	
+	    % awk '{ print $0 | "sort -o sorted-output" }' <big-file
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+	    % wc sorted-output
+Fix:
+	The following context diff shows the additions made to the file
+	/usr/src/bin/awk/main.c:
+
+*** /usr/src/bin/awk/main.old	Mon Jan 14 15:51:47 1985
+--- /usr/src/bin/awk/main.c	Mon Jan 14 17:15:56 1985
+***************
+*** 8,9
+  #include "awk.h"
+  #define TOLOWER(c)	(isupper(c) ? tolower(c) : c) /* ugh!!! */
+
+--- 8,10 -----
+  #include "awk.h"
++ #include <sys/param.h>
+  #define TOLOWER(c)	(isupper(c) ? tolower(c) : c) /* ugh!!! */
+***************
+*** 89,91
+  	run();
+  	exit(errorflag);
+  }
+
+--- 92,107 -----
+  	run();
++ 	/*
++ 	 *  Awk may have spawned some children (printf "....." | sort).
++ 	 *  The children may still be alive (sort can be quite slow).
++ 	 *  It is a bad idea to exit before our children have completed,
++ 	 *  as the next command to be executed may depend on ALL of our
++ 	 *  processing being complete.  Thus we wait for our kids.
++ 	 */
++ 	{
++ 		int i; for (i = 0; i < NOFILE; i++)
++ 			(void) close (i);
++ 		while (wait (0) != -1)
++ 			;
++ 	}
+  	exit(errorflag);
+  }

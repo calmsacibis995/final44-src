@@ -1,0 +1,49 @@
+Return-Path: <decvax!philabs!sbcs!nyit!rick>
+From: decvax!philabs!sbcs!nyit!rick
+Date: Mon, 15 Apr 85 17:17:27 est
+Subject: Error handling loop in hp driver
+
+Index:  sys/vaxmba/hp.c 4.2BSD
+
+Description:
+	This seems to be an disabling (but rarely-seen) bug in the 4.2bsd
+	MASSBUS disk driver (hp.c).  The code that handles data-transfer
+	interrupts goes through a series of tests when the MBA or the
+	drive reports an error.  These tests determine if the error is
+	totally unrecoverable, if it's ECC-recoverable, etc.  If none
+	of these conditions is satisfied, the driver offsets the heads
+	and retries the entire I/O operation (MBD_RETRY).  There's a
+	a limit to the number of times the drive will perform this exercise,
+	imposed by the count in mi_tab.b_errcnt; when it exceeds 27 (how did
+	they come up with *that* number?) the I/O is deemed unrecoverable and
+	dismissed as a failure.
+
+	Now the bug involves a combination of the aforementioned non-hard
+	(retryable) errors and ECC errors, occurring over the course of a
+	large, multi-sector transfer.  Say the first sector of the transfer
+	has a soft ECC.  The driver corrects it and resumes the transfer.
+	Now, another error (retryable, not ECC) occurs in a subsequent
+	sector.  The driver bumps b_errcnt and duly notes it is less than
+	27, so recovery (offseting) begins.  The I/O is then restarted
+	from the beginning (i.e., MBD_RETRY - the full byte count is used).
+	This causes the ECC sector to be transfered and corrected again.
+	Now the bug:  at the end of hpecc(), b_errcnt is set back to 0.
+	The transfer resumes with the sector following the ECC, and the
+	retryable error is hit again.  You are now in an endless loop; the
+	escape hatch (b_errcnt > 27) is rendered ineffective when hpecc()
+	resets it to zero.
+
+Repeat-By:
+	You need a disk that is mangled in just the right way.  We have
+	seen several at our site, but this is still comparatively rare.
+	The disk must have an ECC-correctable error in one or more
+	sectors, followed closely by another sector that has another
+	variety of error (in our case, this was an RP06 IXE error).
+
+Fix:
+	Does anyone see anything wrong with simply removing the code in
+	hpecc() that clears b_errcnt?  Maybe the right thing is to change
+	hpecc() not to zero, but rather to decrement b_errcnt in the ECC,
+	SSE, and BSE cases?
+
+

@@ -1,0 +1,63 @@
+Return-Path: <pur-ee!malcolm>
+From: pur-ee!malcolm (Malcolm Slaney)
+Date: 18 Jan 1984 0340-EST (Wednesday)
+To: ucbvax!4bsd-bugs, ucbvax!franz-bugs
+Subject: (*process) routine in Opus 38.69 of lisp doesn't work with /bin/sh
+Index: ucb/franz/lisp/franz/lam7.c 4.2BSD
+
+Description:
+	The (*process) routine in Opus 38.69 of Franz Lisp does not properly 
+	close the pipe file descripters that the child has open.  This problem
+	only shows up when the user's shell is the Bourne shell.  It looks
+	like csh closes any excess file descripters before exec'ing a
+	sub-process while the Bourne shell doesn't.  
+
+	The result for Bourne shell users is that there is no way to pass
+	an EOF to the sub-process because the sub-process has both ends
+	of the pipe open.
+
+Repeat-By:
+	For users of the Bourne shell.....
+		SHELL=/bin/sh
+		export SHELL
+		lisp
+		(setq port (*process-send '/bin/cat))
+		(patom 'hello port)
+		(close port)
+		(*process 'ps)
+		   .....  You will see that the cat is still running, even
+			though the lisp end of the pipe is closed.
+
+Fix:
+	At line 204 of /usr/src/usr.ucb/lisp/franz/lam7.c the following
+	code sequence is used to duplicate the pipe file descripters.
+	It appears in Lprocess():
+		if(writep) {
+			close(0);
+			dup(childsi);
+		}
+		if (readp) {
+			close(1);
+			dup(childso);
+		}
+	It should be replaced with the following code which duplicates
+	the pipe ends and then closes all extra copies of the pipe's 
+	file descripters:
+		if(writep) {
+			close(0);
+			dup(childsi);
+						/* Have to close all extra fd's
+						 * so that Bourne shell doesn't
+						 * get confused.
+						 *      Malcolm Slaney
+						 *	ecn.malcolm@purdue
+						 */
+			close(fileno(bufs[0]));
+			close(fileno(bufs[1]));
+		}
+		if (readp) {
+			close(1);
+			dup(childso);
+			close(fileno(obufs[0]));
+			close(fileno(obufs[1]));
+		}

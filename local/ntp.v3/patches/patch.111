@@ -1,0 +1,294 @@
+
+Received: from snow-white.ee.udel.edu by huey.udel.edu id aa18836;
+          14 Oct 94 16:00 EDT
+Received: from strauss.udel.edu by snow-white.ee.udel.edu id aa13984;
+          14 Oct 94 16:00 EDT
+Received: from MARENGO.BBN.COM (MARENGO.BBN.COM [128.89.6.82]) by strauss.udel.edu (8.6.8/8.6.6) with SMTP id QAA08541 for <mills@udel.edu>; Fri, 14 Oct 1994 16:00:44 -0400
+From: gtroxel@bbn.com
+Message-Id: <199410142000.QAA08541@strauss.udel.edu>
+To: mills@udel.edu
+CC: gdt@bbn.com
+Subject: rsadj logging patches
+Date: Fri, 14 Oct 94 15:58:50 EDT
+Sender: gtroxel@bbn.com
+Source-Info:  From (or Sender) name not authenticated.
+
+Are you put off by the floating point stuff?  If so, it might be a
+good idea to put in the monitoring logging part, but not the openloop
+part, and hence not include FP.
+
+The following patch should add only monitoring to xntp3.4g.  I am
+testing it now, and will let you know on monday if it works ok.
+It is clear from inspection that nothing is changed unless
+GDT_SURVEYING is defined.
+	Greg
+
+
+diff -c3 -r STOCK-xntp3.4g/lib/systime.c GDT-xntp3.4g/lib/systime.c
+*** STOCK-xntp3.4g/lib/systime.c	Wed Aug 17 20:18:28 1994
+--- GDT-xntp3.4g/lib/systime.c	Fri Oct 14 15:20:31 1994
+***************
+*** 18,23 ****
+--- 18,27 ----
+  #include "ntp_unixtime.h"
+  #include "ntp_stdlib.h"
+  
++ #if defined(GDT_SURVEYING)
++ l_fp gdt_rsadj;		/* running sum of adjustments to time */
++ #endif
++ 
+  #if defined(STEP_SLEW)
+  #define SLEWALWAYS
+  #endif
+***************
+*** 133,138 ****
+--- 137,145 ----
+           * line.
+           */
+  	L_ADD(&sys_clock_offset, ts);
++ #if defined(GDT_SURVEYING)
++ 	L_ADD(&gdt_rsadj, ts);
++ #endif
+  	return 1;
+  #else /* SLEWALWAYS  */
+          return step_systime_real(ts);
+***************
+*** 158,163 ****
+--- 165,175 ----
+  	long adj = ts->l_f;
+  	int rval;
+  
++ #if defined(GDT_SURVEYING)
++ 	/* add to record of increments */
++ 	M_ADDF(gdt_rsadj.l_ui, gdt_rsadj.l_uf, adj);
++ #endif
++ 
+  	adjtv.tv_sec = adjtv.tv_usec = 0;
+  
+  	/*
+***************
+*** 259,264 ****
+--- 271,279 ----
+  		if (oadjtv.tv_sec != 0 || oadjtv.tv_usec != 0) {
+  			sTVTOTS(&oadjtv, &oadjts);
+  			L_ADD(&sys_clock_offset, &oadjts);
++ #if defined(GDT_SURVEYING)
++ 			L_ADD(&gdt_rsadj, &oadjts);
++ #endif
+  			if (max_no_complete > 0) {
+  				syslog(LOG_WARNING,
+  				    "Previous time adjustment didn't complete");
+***************
+*** 297,302 ****
+--- 312,320 ----
+  	 * the time is really screwed and everything is being reset.
+  	 */
+  	L_ADD(&sys_clock_offset, ts);
++ #if defined(GDT_SURVEYING)
++ 	L_ADD(&gdt_rsadj, ts);
++ #endif
+  
+  	if (L_ISNEG(&sys_clock_offset)) {
+  		isneg = 1;
+diff -c3 -r STOCK-xntp3.4g/xntpd/ntp_loopfilter.c GDT-xntp3.4g/xntpd/ntp_loopfilter.c
+*** STOCK-xntp3.4g/xntpd/ntp_loopfilter.c	Fri Sep 30 13:17:00 1994
+--- GDT-xntp3.4g/xntpd/ntp_loopfilter.c	Fri Oct 14 15:39:22 1994
+***************
+*** 145,150 ****
+--- 145,156 ----
+  static struct sigvec newsigsys;	/* new sigvec status */
+  #endif /* KERNEL_PLL */
+  
++ #if defined(GDT_SURVEYING)
++ extern LONG sys_clock;		/* imported from ntp_proto */
++ 
++ extern l_fp gdt_rsadj;		/* running sum of adjustments to time */
++ #endif /* GDT_SURVEYING */
++ 
+  /*
+   * init_loopfilter - initialize loop filter data
+   */
+***************
+*** 199,205 ****
+--- 205,215 ----
+  #if defined(KERNEL_PLL)
+  	struct timex ntv;
+  #endif /* KERNEL_PLL */
++ #if defined(GDT_SURVEYING)
++ 	l_fp drift_tmp_fp;
++ #endif /* GDT_SURVEYING */
+  
++ 
+  	/*
+  	 * Initialize estimated measurement error and Allan variance
+  	 * intercept point. The measurement error is assumed the sum of
+***************
+*** 515,521 ****
+--- 525,550 ----
+  	last_offset = *fp_offset;
+  	last_time = current_time;
+  
++ #if defined(GDT_SURVEYING)
++ 	  syslog(LOG_DEBUG,
++ 		 "local_clock: phase %s freq %s err %s allan %ld poll %d time %u rsadj %s peer %s %s\n",
++ 		 mfptoa((clock_adjust < 0 ? -1 : 0), clock_adjust, 6),
++ 		 fptoa(drift_comp, 3), fptoa(smax, 6), allan,
++ 		 sys_poll,
++ 		 sys_clock, lfptoa(&gdt_rsadj, 6),
++ 		 ntoa(&peer->srcadr),
++ 		 "SLEW");
+  #ifdef DEBUG
++ 	  if (debug > 1)
++ 	    printf(
++ 		   "local_clock: phase %s freq %s err %s allan %ld poll %d time %u rsadj %s\n",
++ 		   mfptoa((clock_adjust < 0 ? -1 : 0), clock_adjust,
++ 			  6), fptoa(drift_comp, 3), fptoa(smax, 6), allan,
++ 		   sys_poll,
++ 		   sys_clock, lfptoa(&gdt_rsadj, 6));
++ #endif /* DEBUG */
++ #else
++ #ifdef DEBUG
+  	if (debug > 1)
+  		printf(
+  	    "local_clock: phase %s freq %s err %s allan %ld poll %d\n",
+***************
+*** 523,528 ****
+--- 552,558 ----
+  		    6), fptoa(drift_comp, 3), fptoa(smax, 6), allan,
+  		    sys_poll);
+  #endif /* DEBUG */
++ #endif /* GDT_SURVEYING */
+  
+  	(void) record_loop_stats(fp_offset, drift_comp, sys_poll);
+  	
+diff -c3 -r STOCK-xntp3.4g/xntpd/ntp_proto.c GDT-xntp3.4g/xntpd/ntp_proto.c
+*** STOCK-xntp3.4g/xntpd/ntp_proto.c	Sat Sep 10 23:52:28 1994
+--- GDT-xntp3.4g/xntpd/ntp_proto.c	Fri Oct 14 15:20:32 1994
+***************
+*** 28,33 ****
+--- 28,37 ----
+  extern	long sys_clock;		/* second part of current time */
+  long	sys_lastselect;		/* sys_clock at last synch update */
+  
++ #if defined(GDT_SURVEYING)
++ extern l_fp gdt_rsadj;		/* from ntp_loopfilter.c */
++ #endif /* GDT_SURVEYING */
++ 
+  /*
+   * Nonspecified system state variables.
+   */
+***************
+*** 1050,1055 ****
+--- 1054,1102 ----
+  	 * is a broadcast/multicast client, switch to listen mode.
+  	 */
+  	clock_update(peer);
++ #if defined(GDT_SURVEYING)
++ 	/* log the packet if it was low-delay and sane */
++ 	randomize = peer->filter_order[0];
++ 	if (L_ISEQU(&peer->filter_offset[randomize], &ci)
++ 	    && peer->filter_delay[randomize] == di)
++ 	  {
++ 	    char logstr[1024];
++ 
++ 	    /* ok if passed intersection test.  we don't want to be
++ 	     * too judgemental about peers that aren't right - just
++ 	     * throw out falsetickers but not peers that have wander
++ 	     * relative to average, since average may be wrong */
++ 	    if ( peer->was_sane && peer->correct )
++ 	      {
++ 		sprintf(logstr, 
++ 			"observation: time %lu %s off %s delay %s error %s rsadj %s",
++ 			sys_clock,
++ 			ntoa(&peer->srcadr),
++ 			lfptoa(&ci, 6),
++ 			fptoa(di, 6),
++ 			ufptoa(ei, 6),
++ 			lfptoa(&gdt_rsadj, 6)
++ 			);
++ 		syslog(LOG_DEBUG, logstr);
++ 	      }
++ 	    else
++ 	      {
++ 		sprintf(logstr, 
++ 			"incorrect_obs: time %lu %s off %s delay %s error %s rsadj %s",
++ 			sys_clock,
++ 			ntoa(&peer->srcadr),
++ 			lfptoa(&ci, 6),
++ 			fptoa(di, 6),
++ 			ufptoa(ei, 6),
++ 			lfptoa(&gdt_rsadj, 6)
++ 			);
++ #ifdef LOG_INCORRECT
++ 		syslog(LOG_DEBUG, logstr);
++ #endif
++ 	      }
++ 	  }
++ #endif /* GDT_SURVEYING */
++ 
+  	if (sys_peer && peer->flags & FLAG_MCAST2)
+  		peer->hmode = MODE_BCLIENT;
+  	return(1);
+***************
+*** 1331,1336 ****
+--- 1378,1403 ----
+  		if (--j < 0)
+  			j += NTP_SHIFT;
+  	}
++ 
++ #if defined(GDT_SURVEYING)
++ 	/* only log here if directly-connected reference clock */
++ 	if ( peer->stratum == STRATUM_REFCLOCK )
++ 	  {
++ 	    char logstr[1024];
++ 
++ 	    sprintf(logstr, 
++ 		    "observation: time %lu %s off %s delay %s error %s rsadj %s",
++ 		    sys_clock,
++ 		    ntoa(&peer->srcadr),
++ 		    lfptoa(sample_offset, 6),
++ 		    fptoa(sample_delay, 6),
++ 		    ufptoa(sample_error, 6),
++ 		    lfptoa(&gdt_rsadj, 6)
++ 		    );
++ 	    
++ 	    syslog(LOG_DEBUG, logstr);
++ 	  }
++ #endif /* GDT_SURVEYING */
+  
+  	/*
+  	 * Insert the new sample at the beginning of the register.
+diff -c3 -r STOCK-xntp3.4g/xntpd/ntp_unixclock.c GDT-xntp3.4g/xntpd/ntp_unixclock.c
+*** STOCK-xntp3.4g/xntpd/ntp_unixclock.c	Fri Sep 30 01:33:30 1994
+--- GDT-xntp3.4g/xntpd/ntp_unixclock.c	Fri Oct 14 15:20:33 1994
+***************
+*** 72,77 ****
+--- 72,81 ----
+  
+  extern	l_fp sys_clock_offset;	/* correction for current system time */
+  
++ #if defined(GDT_SURVEYING)
++ extern l_fp gdt_rsadj;		/* running sum of adjustments to time */
++ #endif
++ 
+  /*
+   * Import sys_clock (it is updated in get_systime)
+   */
+***************
+*** 174,179 ****
+--- 178,190 ----
+  	 * Set the current offset to 0
+  	 */
+  	L_CLR(&sys_clock_offset);
++ #if defined(GDT_SURVEYING)
++ 	/*
++ 	 * Set the current increment
++ 	 */
++ 
++ 	L_CLR(&gdt_rsadj);
++ #endif /* GDT_SURVEYING */
+  }
+  
+  #ifdef HAVE_LIBKVM
+
+

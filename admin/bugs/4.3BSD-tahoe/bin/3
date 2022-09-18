@@ -1,0 +1,169 @@
+From chris@gyre.umd.edu  Sat Jul 30 16:20:46 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.60/1.28)
+	id AA02154; Sat, 30 Jul 88 16:20:46 PDT
+Received: from gyre.umd.edu by ucbvax.berkeley.edu (5.59/1.28)
+	id AA00993; Sat, 30 Jul 88 16:18:41 PDT
+Received: by gyre.umd.edu (5.58/4.7)
+	id AA07286; Sat, 30 Jul 88 19:20:11 EDT
+Date: Sat, 30 Jul 88 19:20:11 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+Message-Id: <8807302320.AA07286@gyre.umd.edu>
+To: 4bsd-bugs@ucbvax.berkeley.edu
+Subject: vax adb goofs reserved operand floats
+
+Index: bin/adb/adb.vax/format.c 4.3BSD-tahoe Fix
+
+Description:
+	According to the VAX Architecture Handbook, reserved operand
+	floats are those whose sign bit is set but whose exponent is
+	zero.  The sign bit is bit 15; the exponent is bits 14:7.
+	The code in format.c, however, inspects bits 15:8; if bit 7
+	is set, and the sign bit is set, adb will erroneously claim
+	that the value is improper.
+
+Repeat-by:
+	Inspection; or, run the following C code under adb:
+
+		double d = 3.141592653589793238462643383279502884;
+		main() {
+			*(int *)&d &= ~0xff80;
+			*(int *)&d |= 0x8080; 
+			printf("d=%.18g\n", d); 
+			abort(); 
+		}
+
+	% adb t
+	t: running
+	d=-4.616155521099502e-39
+	illegal instruction (reserved addressing fault)
+	stopped at      _kill+4:        blssu   _abort+3c
+	d/F
+	_d:
+	_d:             (reserved oprnd)
+
+Fix:
+	That whole section of code was disgusting, so I rewrote most
+	of it.  Here is the (untested [but clearly correct, he says
+	with confidence]) diff.
+
+Chris
+
+RCS file: RCS/format.c,v
+retrieving revision 1.2
+diff -c2 -r1.2 format.c
+*** /tmp/,RCSt1007193	Sat Jul 30 18:58:24 1988
+--- format.c	Sat Jul 30 18:57:12 1988
+***************
+*** 97,105 ****
+  	STRING		fp;
+  	CHAR		c, modifier, longpr;
+! 	L_REAL		fw;
+! 	struct bad_programming {
+! 		L_INT	sa;
+! 		INT	sb,sc;
+! 	};
+  
+  	WHILE fcount>0
+--- 97,110 ----
+  	STRING		fp;
+  	CHAR		c, modifier, longpr;
+! 	/* must use a union to build and access floating point,
+! 	 * so as to check for reserved operand values.  Values with
+! 	 * sign (bit 15) = 1 but exponent (bits 14:7) = 0 are reserved.
+! 	 */
+! 	union {
+! 		L_REAL	asdouble;
+! 		L_INT	aslong[2];
+! 		INT	asshort[4];
+! 	} fw;
+! #define IS_RESERVED	((fw.asshort[0] & 0xFF80) == 0x8000)
+  
+  	WHILE fcount>0
+***************
+*** 106,110 ****
+  	DO	fp = ifp; c = *fp;
+  		longpr=(c>='A')&(c<='Z')|(c=='f')|(c=='4')|(c=='p');
+! 		IF itype==NSP ORF *fp=='a'
+  		THEN wx=dot; w=dot;
+  		ELSE w=get(dot,itype);
+--- 111,115 ----
+  	DO	fp = ifp; c = *fp;
+  		longpr=(c>='A')&(c<='Z')|(c=='f')|(c=='4')|(c=='p');
+! 		IF itype==NSP ORF c=='a'
+  		THEN wx=dot; w=dot;
+  		ELSE w=get(dot,itype);
+***************
+*** 111,128 ****
+  		     IF longpr
+  		     THEN wx=itol(get(inkdot(2),itype),w);
+  		     ELSE wx=w;
+  		     FI
+  		FI
+- 		IF c=='F'
+- 		/*
+- 		 * This used to be the following, but real C compilers won't
+- 		 * let you use a double as a struct!
+- 		 *
+- 		 *	THEN fw.sb=get(inkdot(4),itype);
+- 		 *	fw.sc=get(inkdot(6),itype);
+- 		 */
+- 		THEN (*(struct bad_programming *)&fw).sb=get(inkdot(4),itype);
+- 		     (*(struct bad_programming *)&fw).sc=get(inkdot(6),itype);
+- 		FI
+  		IF errflg THEN return(fp); FI
+  		IF mkfault THEN error(0); FI
+--- 116,129 ----
+  		     IF longpr
+  		     THEN wx=itol(get(inkdot(2),itype),w);
++ 			  IF c=='f'
++ 			  THEN fw.aslong[0]=wx; fw.aslong[1]=0;
++ 			  ELIF c=='F'
++ 			  THEN fw.aslong[0]=wx;
++ 			       fw.asshort[2]=get(inkdot(4),itype);
++ 			       fw.asshort[3]=get(inkdot(6),itype);
++ 			  FI
+  		     ELSE wx=w;
+  		     FI
+  		FI
+  		IF errflg THEN return(fp); FI
+  		IF mkfault THEN error(0); FI
+***************
+*** 220,242 ****
+  
+  		    case 'f':
+! 			fw = 0;
+! 			/*
+! 			 * This used to be the following, but real compilers
+! 			 * won't let you use a double as a struct!
+! 			 *
+! 			 *	fw.sa = wx;
+! 			 */
+! 			(*(struct bad_programming *)&fw).sa = wx;
+! 			IF (wx & ~0xFFFF00FF) == 0x8000
+  			THEN printf("(reserved oprnd)");
+! 			ELSE printf("%-16.9f", fw);
+  			FI
+! 			dotinc=4; break;
+  
+  		    case 'F':
+! 			(*(struct bad_programming *)&fw).sa = wx;
+! 			IF (wx & ~0xFFFF00FF) == 0x8000
+  			THEN printf("%-32s", "(reserved oprnd)");
+! 			ELSE printf("%-32.18F", fw);
+  			FI
+  			dotinc=8; break;
+--- 221,234 ----
+  
+  		    case 'f':
+! 			IF IS_RESERVED
+  			THEN printf("(reserved oprnd)");
+! 			ELSE printf("%-16.9f", fw.asdouble);
+  			FI
+! 			break;
+  
+  		    case 'F':
+! 			IF IS_RESERVED
+  			THEN printf("%-32s", "(reserved oprnd)");
+! 			ELSE printf("%-32.18F", fw.asdouble);
+  			FI
+  			dotinc=8; break;

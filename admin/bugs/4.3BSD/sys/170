@@ -1,0 +1,89 @@
+From mouse@larry.mcrcim.mcgill.ca  Wed Nov 11 22:11:44 1987
+Date: Thu, 12 Nov 87 01:07:03 EST
+From: der Mouse  <mouse@larry.mcrcim.mcgill.ca>
+Subject: MUNLOCK() and MLOCK() macros have argument problems
+Index: 	sys/h/vmmac.h 4.3BSD
+
+Description:
+	The MUNLOCK() macro has the classic missing-parentheses
+	problem.  Also, both MLOCK() and MUNLOCK() evaluate their
+	arguments more than once, when there is no need at all for them
+	to do so, since each is already a compound statement and can
+	contain declarations.
+
+Repeat-By:
+	Try MUNLOCK(&cmap[...]);
+	Try MUNLOCK(*cmapptr++); or MLOCK(*cmapptr++);
+
+Fix:
+	Change the macros to:
+
+	#define MLOCK(arg) { register struct cmap *c;	\
+		c = (arg);				\
+		while (c->c_lock) {			\
+			c->c_want = 1;			\
+			sleep((caddr_t)c,PSWP+1);	\
+		}					\
+		c->c_lock = 1;				\
+	}
+
+	and
+
+	#define MUNLOCK(arg) { register struct cmap *c;	\
+		c = (arg);				\
+		if (c->c_want) {			\
+			wakeup((caddr_t)c);		\
+			c->c_want = 0;			\
+		}					\
+		c->c_lock = 0;				\
+	}
+
+					der Mouse
+
+					mcgill-vision!mouse
+					mouse@[42.2.4.3]
+			someday, maybe, mouse@larry.mcrcim.mcgill.edu.ca
+------------------------------------------------------------------
+
+Date: Thu, 12 Nov 87 05:29:52 EST
+From: der Mouse  <mouse@larry.mcrcim.mcgill.ca>
+Message-Id: <8711121029.AA18207@larry.mcrcim.mcgill.ca>
+To: 4bsd-bugs@UCBVAX.Berkeley.EDU
+Subject: my bugfix to sys/h/vmmac.h....
+
+....submitted just a few hours ago.  *blush* I slipped up.  And I
+slipped up again when I sent in a bug report with an untested fix.
+
+The internal variable created in the macros must have a distinctive
+name, different from any argument the macro is ever called with.  As in
+(and *this* one *is* tested)
+
+	/*
+	 * Lock a page frame.
+	 */
+	#define MLOCK(arg) { register struct cmap *_c_MLOCK;		\
+		_c_MLOCK = (arg);					\
+		while (_c_MLOCK->c_lock) {				\
+			_c_MLOCK->c_want = 1;				\
+			sleep((caddr_t)_c_MLOCK,PSWP+1);		\
+		}							\
+		_c_MLOCK->c_lock = 1;					\
+	}
+	/*
+	 * Unlock a page frame.
+	 */
+	#define MUNLOCK(arg) { register struct cmap *_c_MUNLOCK;	\
+		_c_MUNLOCK = (arg);					\
+		if (_c_MUNLOCK->c_want) {				\
+			wakeup((caddr_t)_c_MUNLOCK);			\
+			_c_MUNLOCK->c_want = 0;				\
+		}							\
+		_c_MUNLOCK->c_lock = 0;					\
+	}
+
+					der Mouse
+
+					mcgill-vision!mouse
+					mouse@[42.2.4.3]
+			someday, maybe, mouse@larry.mcrcim.mcgill.edu.ca
+

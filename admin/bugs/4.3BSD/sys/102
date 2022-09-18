@@ -1,0 +1,57 @@
+From chris@mimsy.umd.edu  Tue Mar 31 01:49:49 1987
+Date: Tue, 31 Mar 87 04:46:46 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+To: 4bsd-ideas@ucbvax.Berkeley.EDU
+Subject: str{cat,cpy,len} are slow on uVax
+Index: sys 4.3BSD
+
+Since locc is an emulated instruction, the str* routines are inordinately
+slow on a MicroVAX-II (see recent comp.arch discussion).  If there were a
+getcputype() system call, programs could decide which way to work.  The
+implementation for getcputype() is obvious.  A sample replacement strlen
+(untested) is appended.
+
+Chris
+
+/* CPU type numbers---pick a file, any file */
+#include <sys/cputype.h>
+
+/* lenroutine is the address of the proper routine, once known */
+	.lcomm	lenroutine,4
+
+	ENTRY(strlen)
+	.word	0		# save no registers
+
+	movl	lenroutine,r0	# know which routine to use?
+	beql	1f		# no, go figure (and pipeline flush)
+	jmp	(r0)		# go do it
+/*
+ * Someone should find out whether a branch to the jmp (r0) below
+ * would be slower (two pipeline flushes vs. one?).  Need to test
+ * all architectures!
+ */
+
+/* figure out which routine to use */
+1:	calls	$0,_getcputype
+	cmpl	$UVAX2,r0	# is it a MicroVAX-II?
+	beql	2f
+	movl	$bigvax,r0	# use big vax code
+	brb	3f
+2:	movl	$chipvax,r0	# use chip vax code
+3:	movl	r0,lenroutine	# remember which to use
+	jmp	(r0)		# and go do it
+
+	/* locc version */
+bigvax:
+	...			# insert 4.3BSD code here
+	ret
+
+	/* byte-at-a-time version */
+chipvax:
+	movl	4(ap),r0	# get string
+	movl	r0,r1		# and avoid two mem refs
+1:	tstb	(r0)+		# find the \0
+	bneq	1b		# loop until just past the \0
+	decl	r0		# point back at \0
+	subl2	r1,r0		# return r0 - r1
+	ret

@@ -1,0 +1,95 @@
+Return-Path: <@lbl-csam.ARPA:oddjob!matt@lbl-csam>
+Return-Path: <oddjob!matt@lbl-csam>
+Date: Thu, 24 Jan 85 04:36:10 cst
+From: oddjob!matt@lbl-csam (Matt Crawford)
+Subject: ifunit() gratuitously clobbers one byte of user memory
+Index: sys/net/if.c 4.2BSD
+
+Description:
+	ifunit() sets the trailing digit of the string supplied in
+	ifp->if_name, which is typically a user-space argument to
+	an ioctl().  This is extra nasty because this argument has
+	not been copyin'd or probew'd.  It is unnecessary because
+	bcmp() is used for comparison, not strcmp().
+Repeat-By:
+	The simplest way to reproduce the problem is to do an ioctl
+	like SIOCGIFDSTADDR twice without resetting the argument.
+	Like this:
+================ show-bug.c ==================
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <net/if.h>
+
+struct	ifreq ifr;
+
+main(argc,argv)
+char *argv[];
+{
+	register int fd;
+	struct sockaddr_in *sin;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		perror("socket");
+		exit(1);
+	}
+	strcpy(ifr.ifr_name,argv[1]);
+	if (ioctl(fd, SIOCGIFADDR, (caddr_t)&ifr) < 0) {
+		perror("ioctl (SIOCGIFADDR) first try");
+		exit(1);
+	}
+	if (ioctl(fd, SIOCGIFADDR, (caddr_t)&ifr) < 0) {
+		perror("ioctl (SIOCGIFADDR) second try");
+		exit(1);
+	}
+	exit(0);
+}
+=======================  Compile the above and run it as "a.out lo0"
+Fix:
+	Diff follows.  Thoroughly tested.  Honest.
+
+*** /tmp/,RCSt1000468	Thu Jan 24 04:12:59 1985
+--- if.c	Tue Jan 22 15:32:08 1985
+***************
+*** 1,4
+  /*	if.c	6.2	83/09/27	*/
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+
+--- 1,12 -----
+  /*	if.c	6.2	83/09/27	*/
++ /* $Header: if.c,v 1.2 85/01/22 15:31:00 matt Exp $
++  * $Log:	if.c,v $
++  * Revision 1.2  85/01/22  15:31:00  matt
++  * ifunit() was gratuitously stomping on the trailing digit
++  * in the supplied name string.  One assignment removed.
++  * 
++  * 1.1 == 4.2 distribution
++  */
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+***************
+*** 191,197
+  			break;
+  	if (*cp == '\0' || cp == name + IFNAMSIZ)
+  		return ((struct ifnet *)0);
+! 	unit = *cp - '0', *cp = 0;
+  	for (ifp = ifnet; ifp; ifp = ifp->if_next) {
+  		if (bcmp(ifp->if_name, name, (unsigned)(cp - name)))
+  			continue;
+
+--- 199,205 -----
+  			break;
+  	if (*cp == '\0' || cp == name + IFNAMSIZ)
+  		return ((struct ifnet *)0);
+! 	unit = *cp - '0';
+  	for (ifp = ifnet; ifp; ifp = ifp->if_next) {
+  		if (bcmp(ifp->if_name, name, (unsigned)(cp - name)))
+  			continue;
+_____________________________________________________
+Matt		University	crawford@anl-mcs.arpa
+Crawford	of Chicago	ihnp4!oddjob!matt

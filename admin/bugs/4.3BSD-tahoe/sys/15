@@ -1,0 +1,135 @@
+From james@csd4.milw.wisc.edu  Thu May 21 20:13:57 1987
+Date: Thu, 21 May 87 22:14:12 CST
+From: Jim Lowe <james@csd4.milw.wisc.edu>
+Subject: The 6250 Tape drive incorrectly positions it self after eof
+Index: sys tahoe
+
+Description:
+	The 6250 tape drive incorrectly positions the tape after a double
+	eof is written.
+Repeat-By:
+	dd if=/etc/hosts of=/dev/rmt12
+	dd if=/etc/hosts of=/dev/rmt12
+	mt rew
+	dd if=/dev/rmt12
+	
+	2 copyies of the host file are concatenated together without an
+	eof between them.
+Fix:
+	Grotty, but this seems to work.
+
+*** cy.orig.c	Sun May 17 22:25:27 1987
+--- cy.c	Thu May 21 21:36:17 1987
+***************
+*** 69,75 ****
+  /* bits in minor device */
+  #define	YCUNIT(dev)	(minor(dev)&03)
+  #define	CYUNIT(dev)	(yctocy[YCUNIT(dev)])
+! #define	T_NOREWIND	0x04
+  #define	T_1600BPI	0x00		/* pseudo */
+  #define	T_3200BPI	0x08		/* unused */
+  
+--- 69,75 ----
+  /* bits in minor device */
+  #define	YCUNIT(dev)	(minor(dev)&03)
+  #define	CYUNIT(dev)	(yctocy[YCUNIT(dev)])
+! #define	T_NOREWIND	0x80
+  #define	T_1600BPI	0x00		/* pseudo */
+  #define	T_3200BPI	0x08		/* unused */
+  
+***************
+*** 339,345 ****
+  
+  	if (flag == FWRITE || (flag&FWRITE) && yc->yc_lastiow) {
+  		cycommand(dev, CY_WEOF, 2);
+! 		cycommand(dev, CY_SREV, 1);
+  	}
+  	if ((minor(dev)&T_NOREWIND) == 0)
+  		/*
+--- 339,346 ----
+  
+  	if (flag == FWRITE || (flag&FWRITE) && yc->yc_lastiow) {
+  		cycommand(dev, CY_WEOF, 2);
+! 		cycommand(dev, CY_SREV, 3);	/* GROT - fix for 6250 - jsl */
+! 		cycommand(dev, CY_FSF, 1);	/* GROT */
+  	}
+  	if ((minor(dev)&T_NOREWIND) == 0)
+  		/*
+----------------------------------------------------------------------------
+From james@csd4.milw.wisc.edu  Sun May 24 20:05:27 1987
+Date: Sun, 24 May 87 22:04:49 CDT
+From: Jim Lowe <james@csd4.milw.wisc.edu>
+Subject: The 6250 Tape drive incorrectly positions it self after eof
+Index: sys tahoe
+
+Description:
+	The 6250 tape drive incorrectly positions the tape after a double
+	eof is written.
+Repeat-By:
+	dd if=/etc/hosts of=/dev/rmt12
+	dd if=/etc/hosts of=/dev/rmt12
+	mt rew
+	dd if=/dev/rmt12
+	
+	2 copies of the host file are concatenated together without an
+	eof between them.
+Fix:
+	My previous patch was in error.  The problem seems to be with the
+	tapemasher controller.  Some commands don't work with a repition
+	factor, one of which is the write eof function.  The previous patch
+	correctly positions the drive, but there is only one eof written
+	at the end of the tape.
+	
+	This might only be a problem with 6250 drives (Cipher M990), but I am
+	not sure as I don't have a 1600 bpi drive to test with.
+
+	The following patch works with the 6250 tape drive and correctly
+	writes 2 eofs up close.
+
+*** cy.orig.c	Sun May 17 23:25:27 1987
+--- cy.c	Sun May 24 21:37:40 1987
+***************
+*** 69,75 ****
+  /* bits in minor device */
+  #define	YCUNIT(dev)	(minor(dev)&03)
+  #define	CYUNIT(dev)	(yctocy[YCUNIT(dev)])
+! #define	T_NOREWIND	0x04
+  #define	T_1600BPI	0x00		/* pseudo */
+  #define	T_3200BPI	0x08		/* unused */
+  
+--- 69,75 ----
+  /* bits in minor device */
+  #define	YCUNIT(dev)	(minor(dev)&03)
+  #define	CYUNIT(dev)	(yctocy[YCUNIT(dev)])
+! #define	T_NOREWIND	0x80
+  #define	T_1600BPI	0x00		/* pseudo */
+  #define	T_3200BPI	0x08		/* unused */
+  
+***************
+*** 338,344 ****
+  	struct yc_softc *yc = &yc_softc[YCUNIT(dev)];
+  
+  	if (flag == FWRITE || (flag&FWRITE) && yc->yc_lastiow) {
+! 		cycommand(dev, CY_WEOF, 2);
+  		cycommand(dev, CY_SREV, 1);
+  	}
+  	if ((minor(dev)&T_NOREWIND) == 0)
+--- 338,354 ----
+  	struct yc_softc *yc = &yc_softc[YCUNIT(dev)];
+  
+  	if (flag == FWRITE || (flag&FWRITE) && yc->yc_lastiow) {
+! 		/*
+! 		 * This is rather grotty, it should be:
+! 		 *	cycommand(dev, CY_WEOF, 2);
+! 		 *
+! 		 * But that doesn't work on our 6250 drive.  It seems
+! 		 * that only one eof is actually on the tape.  
+! 		 * Blasted tapemasher...
+! 		 * 
+! 		 */
+! 		cycommand(dev, CY_WEOF, 1);	/* GROT */
+! 		cycommand(dev, CY_WEOF, 1);	/* GROT */
+  		cycommand(dev, CY_SREV, 1);
+  	}
+  	if ((minor(dev)&T_NOREWIND) == 0)
+

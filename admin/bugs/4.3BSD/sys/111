@@ -1,0 +1,114 @@
+From GROSSMAN@score.stanford.edu Tue Apr 21 16:23:52 1987
+Date: Tue 21 Apr 87 16:18:28-PDT
+From: Stu Grossman <GROSSMAN@score.stanford.edu>
+Subject: 4.3 kernal bug
+Index: sys 4.3BSD
+
+I hope this isn't a repeat for you guys.  If so, I offer my apologies.
+
+Problem:
+
+The following program causes 4.3 on our Vaxen to hang in a loop:
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+
+main()
+{
+  int Socket, addrlen;
+  struct sockaddr_in Address;
+  struct hostent *h;
+  extern int errno;
+
+  Socket = socket(AF_INET,
+		  SOCK_STREAM,
+		  (struct protoent *)getprotobyname("ip")->p_proto);
+
+  if (Socket == -1) {
+    printf("netuid: [Host] socket failed\n");
+    exit(1);
+  };
+
+  Address.sin_family = AF_INET;
+  Address.sin_port = htons(1234);
+  Address.sin_addr.s_addr = 0;
+  addrlen = sizeof(Address);
+
+  if (bind(Socket, &Address, addrlen)) {
+    printf("netuid: [Host] bind failed: %d\n", errno);
+    exit(1);
+  };
+
+  h = gethostbyname("localhost");
+  bcopy (h->h_addr, &Address.sin_addr.s_addr, h->h_length);
+
+  if(connect(Socket, &Address, addrlen)) {
+    printf("netuid: [Host] connect failed\n");
+    exit(1);
+  };
+};
+
+Diagnosis:
+
+The program is establishing a tcp connection where the local and foreign IP
+addresses are the same (the local host in this case), and where the local and
+foreign ports are also the same.  An example would be:
+	128.32.137.3.1234 => 128.32.137.3.1234
+When the connect() call is made, tcp emits a packet with a SYN and an initial
+sequence number in the SEQ field.  It also sets up snd_una and snd_nxt with
+the iss.  The ACK field is not valid at this time.  The connection is also
+put into the SYN SENT state.
+
+This packet is subsequently received by tcp_input().  The tp for this link is
+found and indicates that it is in the SYN SENT state (see above).  Since this
+packet contains a SYN, the code near the label "case TCPS_SYN_SENT:" assumes
+that it is both a SYN and an acknowlegement to the original SYN it sent out.
+Note that this packet does NOT have a valid ACK field (see above).
+
+However, not noticing the lack of the ACK flag, the code goes ahead and sets
+up the tp->snd_una, snd_nxt and whatever fields, and then enters the SYN
+RECEIVED state.  Now snd_una and snd_nxt contain junk.  The packet now gets
+acknowledged.
+
+The acknowledgement packet comes back around and gets hooked up to the tp
+(which is now in the SYN RECEIVED state).  Eventually, the segment is
+checked to see which part of it lies in the window.  The ack packet has a
+strange sequence number (from the messed up snd_una from before), and
+causes the code to send a "correction ack" by jumping to dropafterack.
+
+All subsequent acks meet the same fate, and cause tcp_input to loop forever at
+interrupt level processing them.
+
+Cure:
+When you receive a SYN, only setup the send variables if the ACK flag is
+on.
+
+Near the label case TCPS_SYN_SENT:
+
+434,438c434,436
+< 		if (tiflags & TH_ACK) {
+< 			tp->snd_una = ti->ti_ack;
+< 			if (SEQ_LT(tp->snd_nxt, tp->snd_una))
+< 				tp->snd_nxt = tp->snd_una;
+< 		}
+---
+> 		tp->snd_una = ti->ti_ack;
+> 		if (SEQ_LT(tp->snd_nxt, tp->snd_una))
+> 			tp->snd_nxt = tp->snd_una;
+443c441
+< 		if (tiflags & TH_ACK && SEQ_GT(tp->snd_una, tp->iss)) {
+---
+> 		if (SEQ_GT(tp->snd_una, tp->iss)) {
+
+I think this will fix the double active connection case too.
+
+Also, is there a 4.3 bug list somewhere that I could look at?
+
+		Thanks in advance,
+		Stu Grossman
+		SEL-EECF
+		723-1004
+

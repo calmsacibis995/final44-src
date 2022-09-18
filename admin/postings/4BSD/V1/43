@@ -1,0 +1,69 @@
+Subject: Fix for 4.3 BSD C compiler schain botch bug
+Index: lib/mip/pftn.c 4.3BSD
+
+Description:
+	Very infrequently, the distributed 4.3 BSD C compiler will
+	die unexpectedly, printing an error message like this:
+
+		"foo.c", line 65: compiler error: schain botch
+
+Repeat-By:
+	It's very difficult to repeat this error.  All the examples
+	that are known to induce the bug involve huge functions with
+	many gotos; the very first example seen was a direct
+	translation from a Fortran utility.  The nature of the error
+	makes it likely that the problem was due to a goto from an
+	inner block to a subsequent label in an outer block, but the
+	bug is hash dependent and won't appear consistently even under
+	these conditions.  If the spelling of local variable names in
+	the function is changed, or new local variables added, the
+	problem often disappears.
+
+Fix:
+	The following fix was worked out between John P. Linderman
+	and me, and we think it fixes the bug properly.  Make the
+	following changes to the clearst() routine in lib/mip/pftn.c
+	(your line numbers may vary):
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1002168	Mon Nov 23 17:55:18 1987
+	--- pftn.c	Mon Sep 21 02:23:55 1987
+	***************
+	*** 1921,1927 ****
+		/* step 2: fix any mishashed entries */
+		p = clist;
+		while( p ){
+	! 		register struct symtab *r, *next;
+	  
+			q = p;
+			next = p->snext;
+	--- 1925,1931 ----
+		/* step 2: fix any mishashed entries */
+		p = clist;
+		while( p ){
+	! 		register struct symtab *next, **t, *r;
+	  
+			q = p;
+			next = p->snext;
+	***************
+	*** 1929,1934 ****
+	--- 1933,1946 ----
+				if( ++q >= &stab[SYMTSZ] )q = stab;
+				if( q == p || q->stype == TNULL )break;
+				if( (r = relook(q)) != q ) {
+	+ 				/* move q in schain list */
+	+ 				t = &schain[q->slevel];
+	+ 				while( *t && *t != q )
+	+ 					t = &(*t)->snext;
+	+ 				if( *t )
+	+ 					*t = r;
+	+ 				else
+	+ 					cerror("schain botch 2");
+					*r = *q;
+					q->stype = TNULL;
+					}
+	----------------------------------------------------------------
+
+	Donn Seeley    University of Utah CS Dept    donn@cs.utah.edu
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    utah-cs!donn
+

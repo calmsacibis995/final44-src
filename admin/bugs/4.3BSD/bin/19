@@ -1,0 +1,81 @@
+Return-Path: <sun!gorodish!guy@ucbvax.Berkeley.EDU>
+Date: Wed, 30 Jul 86 14:05:32 PDT
+From: sun!gorodish!guy@ucbvax.Berkeley.EDU (Guy Harris)
+Subject: "tar" gets confused when a directory appears twice on a tape
+Index: 	bin/tar.c 4.3BSD
+
+Description:
+	The "directory stack" code in "tar" for setting modification
+	times on directories has a loop that compares two strings, looking
+	for the first place at which they differ.  However, it assumes
+	that they will differ somewhere; it does not check for a terminating
+	'\0'.  As such, if they do *not* differ, it runs off the end of
+	the strings and keeps going until it finds two bytes that *do*
+	differ.
+
+	If the same directory appears on the tape twice, it can encounter
+	two such strings that do not differ.  This means that when it
+	modifies one string at the point at which it "differed" from
+	the other string, it will stomp some random location in memory.
+	we found it tended to happen in the middle of the variables
+	containing the values of various options, so the "-m" flag magically
+	turned on when extracting from a tape.
+Repeat-By:
+	Tell "tar" to put a directory and a subdirectory of it, both
+	containing files, on a tape.  Then try extracting the contents
+	of that tape.  Some of the files may not get the modification
+	time set from the value on the tape.
+Fix:
+	Also incldues a small fix to an error message printout ('perror("")'
+	does NOT print a colon before its message, so you DO need to stick
+	it in the "fprintf") and a minor cleanup ("readdir" already
+	eliminates empty directory slots, so there's no reason to check
+	for a zero inumber).
+
+*** /arch/4.3/usr/src/bin/tar.c	Sat Apr 26 04:35:13 1986
+--- ./tar.c	Wed Jul 30 14:02:03 1986
+***************
+*** 512,519 ****
+  			return;
+  		}
+  		while ((dp = readdir(dirp)) != NULL && !term) {
+- 			if (dp->d_ino == 0)
+- 				continue;
+  			if (!strcmp(".", dp->d_name) ||
+  			    !strcmp("..", dp->d_name))
+  				continue;
+--- 512,517 ----
+***************
+*** 750,756 ****
+  			nread = readtbuf(&bufp, nwant);
+  			if (write(ofile, bufp, (int)min(nread, bytes)) < 0) {
+  				fprintf(stderr,
+! 				    "tar: %s: HELP - extract write error",
+  				    dblock.dbuf.name);
+  				perror("");
+  				done(2);
+--- 748,754 ----
+  			nread = readtbuf(&bufp, nwant);
+  			if (write(ofile, bufp, (int)min(nread, bytes)) < 0) {
+  				fprintf(stderr,
+! 				    "tar: %s: HELP - extract write error: ",
+  				    dblock.dbuf.name);
+  				perror("");
+  				done(2);
+***************
+*** 1358,1364 ****
+  	int savndir;
+  
+  	/* Find common prefix */
+! 	while (*p == *q) {
+  		if (*p++ == '/')
+  			++ndir;
+  		q++;
+--- 1356,1362 ----
+  	int savndir;
+  
+  	/* Find common prefix */
+! 	while (*p == *q && *p) {
+  		if (*p++ == '/')
+  			++ndir;
+  		q++;

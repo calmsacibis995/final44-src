@@ -1,0 +1,685 @@
+head     4.2;
+branch   ;
+access   ;
+symbols  PATCH8:4.0 PATCH7:4.0 KPATCH6:4.0 ASRSNAP1001:4.0 PATCH5:4.0 KPATCH4:4.0 KPATCH3:4.0 KPATCH2:4.0 KREL1:4.0 BETA5/24/88:1.4;
+locks    ; strict;
+comment  @ * @;
+
+
+4.2
+date     93.05.20.21.40.07;  author bostic;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     91.02.25.15.36.30;  author bostic;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     89.01.24.21.50.45;  author jtkohl;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     89.01.24.17.44.52;  author jon;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     89.01.13.10.57.39;  author steiner;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     88.12.09.16.18.03;  author steiner;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     88.10.07.04.31.14;  author shanzer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     88.03.24.18.07.49;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     88.02.23.17.33.49;  author steiner;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     88.01.13.19.00.21;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.11.30.06.10.26;  author panda;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial checkin.
+@
+
+
+4.2
+log
+@type mismatch with sys_errlist decl in stdio.h
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/kdb_init/RCS/kdb_init.c,v $
+ * $Author: bostic $ 
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ *
+ * program to initialize the database,  reports error if database file
+ * already exists. 
+ */
+
+#ifndef	lint
+static char rcsid_kdb_init_c[] =
+"$Header: /usr/src/kerberosIV/kdb_init/RCS/kdb_init.c,v 4.1 91/02/25 15:36:30 bostic Exp Locker: bostic $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/file.h>
+#include <sys/time.h>
+#include <des.h>
+#include <krb.h>
+#include <krb_db.h>
+#include <string.h>
+
+#define	TRUE	1
+
+enum ap_op {
+    NULL_KEY,			/* setup null keys */
+    MASTER_KEY,                 /* use master key as new key */
+    RANDOM_KEY,			/* choose a random key */
+};
+
+int     debug = 0;
+char   *progname, *rindex();
+C_Block master_key;
+Key_schedule master_key_schedule;
+
+main(argc, argv)
+    char   *argv[];
+{
+    char    realm[REALM_SZ];
+    char   *cp;
+    int code;
+    char *database;
+    
+    progname = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+
+    if (argc > 3) {
+	fprintf(stderr, "Usage: %s [realm-name] [database-name]\n", argv[0]);
+	exit(1);
+    }
+    if (argc == 3) {
+	database = argv[2];
+	--argc;
+    } else
+	database = DBM_FILE;
+
+    /* Do this first, it'll fail if the database exists */
+    if ((code = kerb_db_create(database)) != 0) {
+	fprintf(stderr, "Couldn't create database: %s\n",
+		sys_errlist[code]);
+	exit(1);
+    }
+    kerb_db_set_name(database);
+
+    if (argc == 2)
+	strncpy(realm, argv[1], REALM_SZ);
+    else {
+	fprintf(stderr, "Realm name [default  %s ]: ", KRB_REALM);
+	if (fgets(realm, sizeof(realm), stdin) == NULL) {
+	    fprintf(stderr, "\nEOF reading realm\n");
+	    exit(1);
+	}
+	if (cp = index(realm, '\n'))
+	    *cp = '\0';
+	if (!*realm)			/* no realm given */
+	    strcpy(realm, KRB_REALM);
+    }
+    if (!k_isrealm(realm)) {
+	fprintf(stderr, "%s: Bad kerberos realm name \"%s\"\n",
+		progname, realm);
+	exit(1);
+    }
+    printf("You will be prompted for the database Master Password.\n");
+    printf("It is important that you NOT FORGET this password.\n");
+    fflush(stdout);
+
+    if (kdb_get_master_key (TRUE, master_key, master_key_schedule) != 0) {
+      fprintf (stderr, "Couldn't read master key.\n");
+      exit (-1);
+    }
+
+    if (
+	add_principal(KERB_M_NAME, KERB_M_INST, MASTER_KEY) ||
+	add_principal(KERB_DEFAULT_NAME, KERB_DEFAULT_INST, NULL_KEY) ||
+	add_principal("krbtgt", realm, RANDOM_KEY) ||
+	add_principal("changepw", KRB_MASTER, RANDOM_KEY) 
+	) {
+	fprintf(stderr, "\n%s: couldn't initialize database.\n",
+		progname);
+	exit(1);
+    }
+
+    /* play it safe */
+    bzero (master_key, sizeof (C_Block));
+    bzero (master_key_schedule, sizeof (Key_schedule));
+    exit(0);
+}
+
+/* use a return code to indicate success or failure.  check the return */
+/* values of the routines called by this routine. */
+
+add_principal(name, instance, aap_op)
+    char   *name, *instance;
+    enum ap_op aap_op;
+{
+    Principal principal;
+    char    datestring[50];
+    char    pw_str[255];
+    void    read_pw_string();
+    void    string_to_key();
+    void    random_key();
+    struct tm *tm, *localtime();
+    C_Block new_key;
+
+    bzero(&principal, sizeof(principal));
+    strncpy(principal.name, name, ANAME_SZ);
+    strncpy(principal.instance, instance, INST_SZ);
+    switch (aap_op) {
+    case NULL_KEY:
+	principal.key_low = 0;
+	principal.key_high = 0;
+	break;
+    case RANDOM_KEY:
+#ifdef NOENCRYPTION
+	bzero(new_key, sizeof(C_Block));
+	new_key[0] = 127;
+#else
+	random_key(new_key);
+#endif
+	kdb_encrypt_key (new_key, new_key, master_key, master_key_schedule,
+			 ENCRYPT);
+	bcopy(new_key, &principal.key_low, 4);
+	bcopy(((long *) new_key) + 1, &principal.key_high, 4);
+	break;
+    case MASTER_KEY:
+	bcopy (master_key, new_key, sizeof (C_Block));
+	kdb_encrypt_key (new_key, new_key, master_key, master_key_schedule,
+			 ENCRYPT);
+	bcopy(new_key, &principal.key_low, 4);
+	bcopy(((long *) new_key) + 1, &principal.key_high, 4);
+	break;
+    }
+    principal.exp_date = 946702799;	/* Happy new century */
+    strncpy(principal.exp_date_txt, "12/31/99", DATE_SZ);
+    principal.mod_date = time(0);
+
+    tm = localtime((time_t *)&principal.mod_date);
+    principal.attributes = 0;
+    principal.max_life = 255;
+
+    principal.kdc_key_ver = 1;
+    principal.key_version = 1;
+
+    strncpy(principal.mod_name, "db_creation", ANAME_SZ);
+    strncpy(principal.mod_instance, "", INST_SZ);
+    principal.old = 0;
+
+    kerb_db_put_principal(&principal, 1);
+    
+    /* let's play it safe */
+    bzero (new_key, sizeof (C_Block));
+    bzero (&principal.key_low, 4);
+    bzero (&principal.key_high, 4);
+    return 0;
+}
+@
+
+
+4.1
+log
+@localtime needed a (time_t *) cast
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $ 
+d16 1
+a16 1
+"$Header: /usr/src/kerberosIV/kdb_init/RCS/kdb_init.c,v 4.0 89/01/24 21:50:45 jtkohl Exp Locker: bostic $";
+a47 1
+    extern char *sys_errlist[];
+@
+
+
+4.0
+log
+@no change, up rev # to 4.0
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_init.c,v $
+ * $Author: jon $ 
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.8 89/01/24 17:44:52 jon Exp $";
+d163 1
+a163 1
+    tm = localtime(&principal.mod_date);
+@
+
+
+1.8
+log
+@Programmer: wesommer
+Auditor: jon
+use new database routines
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/wesommer/kslave/build/admin/RCS/kdb_init.c,v $
+ * $Author: steiner $ 
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.7 89/01/13 10:57:39 wesommer Locked $";
+@
+
+
+1.7
+log
+@Added #ifdef's and code for dbm vs. ndbm,
+allows default realm name KRB_REALM,
+a couple of lint fixes.
+programmer: jtkohl
+auditor: steiner
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_init.c,v $
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.6 88/12/09 16:18:03 jtkohl Locked $";
+a27 5
+#ifdef NDBM
+#include <ndbm.h>
+#else /*NDBM*/
+#include <dbm.h>
+#endif /*NDBM*/
+a45 6
+#ifdef NDBM
+    DBM    *db;
+#else
+    int db_fd;
+    char db_filename[BUFSIZ];
+#endif /*NDBM*/
+d47 4
+a50 1
+
+d53 2
+a54 6
+    /* Do this first, it'll fail if the database exists */
+
+#ifdef NDBM
+    if ((db = dbm_open(DBM_FILE, O_RDWR | O_CREAT | O_EXCL, 0600))
+	== NULL) {
+	perror(DBM_FILE);
+d57 10
+a66 4
+#else
+    sprintf(db_filename, "%s.dir", DBM_FILE);
+    if ( (db_fd = open(db_filename, O_RDWR | O_CREAT | O_EXCL, 0600)) == 0) {
+	perror(db_filename);
+d69 1
+a69 15
+    else {
+	close(db_fd);
+	sprintf(db_filename, "%s.pag", DBM_FILE);
+	if ( (db_fd = open(db_filename, O_RDWR | O_CREAT | O_EXCL, 0600))
+	    == 0) {
+		perror(db_filename);
+		exit(1);
+	}
+	close(db_fd);
+    }
+    if (dbminit(DBM_FILE) < 0) {
+	fprintf(stderr, "Unable to open database %s\n", DBM_FILE);
+	exit(1);
+    }
+#endif /*NDBM*/
+a70 5
+    if (argc > 2) {
+	fprintf(stderr, "Usage: %s [realm-name]\n", argv[0]);
+	dbm_close (db);
+	exit(1);
+    }
+a86 1
+	dbm_close (db);
+a91 1
+    dbm_close(db);
+@
+
+
+1.6
+log
+@NOENCRYPTION changes.
+programmer: jtkohl
+auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: shanzer $ 
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.5 88/10/07 04:31:14 jtkohl Locked $";
+a24 1
+#include <ndbm.h>
+d27 6
+d51 1
+d53 4
+d62 2
+d69 21
+d92 1
+a92 1
+	fprintf(stderr, "Usage: %s realm-name\n", argv[0]);
+d99 9
+a107 2
+	fprintf(stderr, "Realm name: ");
+	gets(realm);
+d152 1
+d155 1
+a155 1
+    struct tm *tm;
+@
+
+
+1.5
+log
+@Lets just include sys/file.h once ok?? 
+Programmer: shanzer
+Auditor: shanzer
+(Do I really need any one else to audit this?? )
+@
+text
+@d2 1
+a2 1
+ * $Source: /wombat/u2/kerberos/src/admin/RCS/kdb_init.c,v $
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.1 88/09/22 16:23:27 shanzer Locked $";
+a111 1
+    void    read_pw_string();
+d126 4
+d131 1
+@
+
+
+1.4
+log
+@Encrypt in master key rather than key schedule for
+byte-order independence.
+Programmer: jon.
+Auditor: jtkohl.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_init.c,v $
+ * $Author: steiner $ 
+d16 1
+a16 1
+"$Header: kdb_init.c,v 1.2 88/01/13 19:00:21 steiner Exp $";
+a25 1
+#include <sys/file.h>
+@
+
+
+1.3
+log
+@Copyright notice, etc.
+@
+text
+@d16 1
+a16 1
+"$Header: kdb_init.c,v 1.2 88/01/13 19:00:21 steiner Locked $";
+d34 2
+a35 2
+    PROMPT_KEY,			/* prompt for password */
+    RANDOM_KEY,			/* Choose a random key */
+d40 2
+d51 8
+d61 1
+d73 1
+a75 5
+    if ((db = dbm_open(DBM_FILE, O_RDWR | O_CREAT | O_EXCL, 0600))
+	== NULL) {
+	perror(DBM_FILE);
+	exit(1);
+    }
+d80 6
+d87 4
+a90 3
+	add_principal(KERB_M_NAME, KERB_M_INST, PROMPT_KEY) ||
+      add_principal(KERB_DEFAULT_NAME, KERB_DEFAULT_INST, NULL_KEY) ||
+	add_principal("krbtgt", realm, RANDOM_KEY)
+d96 4
+a117 1
+    Key_schedule new_key_schedule;
+d129 2
+a130 2
+	pcbc_encrypt(new_key, new_key, (long) sizeof(new_key),
+		     new_key_schedule, new_key_schedule, 1);
+d134 4
+a137 8
+    case PROMPT_KEY:
+	read_pw_string(pw_str, sizeof(pw_str), "Enter Password: ",
+		       TRUE);
+	printf("\n");
+	string_to_key(pw_str, new_key);
+	key_sched(new_key, new_key_schedule);
+	pcbc_encrypt(new_key, new_key, (long) sizeof(new_key),
+		     new_key_schedule, new_key_schedule, 1);
+a139 1
+
+d158 5
+@
+
+
+1.2
+log
+@Formatted.
+@
+text
+@d2 2
+a3 1
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_init.c,v $ $Author: panda $ 
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology. 
+d15 2
+a16 2
+static char rcsid_module_c[] =
+"$Header: kdb_init.c,v 1.1 87/11/30 06:10:26 panda Exp $";
+d19 10
+a28 10
+#include	<mit-copyright.h>
+#include	<stdio.h>
+#include	<sys/types.h>
+#include	<sys/file.h>
+#include	<sys/time.h>
+#include	<des.h>
+#include	<ndbm.h>
+#include	<sys/file.h>
+#include	<krb.h>
+#include	<krb_db.h>
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 2
+a2 3
+ /*
+ * $Source: /u3/kerberos.new/dbm/util/RCS/init_db.c,v $
+ * $Author: barba $
+d4 1
+a4 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d6 2
+a7 2
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+d9 2
+a10 2
+ * program to initialize the database,  
+ * reports error if database file already exists.
+d15 1
+a15 1
+"$Header: init_db.c,v 4.4 87/10/28 14:28:33 barba Exp $";
+d32 3
+a34 3
+	NULL_KEY,			/* setup null keys */
+	PROMPT_KEY,			/* prompt for password */
+	RANDOM_KEY,			/* Choose a random key */
+d37 2
+a38 2
+int debug = 0;
+char *progname, *rindex();
+d40 2
+a41 2
+main (argc, argv)
+char *argv[];
+d43 3
+a45 3
+	char realm[REALM_SZ];
+	DBM *db;
+	char *cp;
+d47 26
+a72 25
+	progname = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+	if (argc > 2) {
+		fprintf(stderr, "Usage: %s realm-name\n", argv[0]);
+		exit (1);
+	}
+	if (argc == 2)
+		strncpy(realm, argv[1], REALM_SZ);
+	else {
+		fprintf(stderr, "Realm name: ");
+		gets(realm);
+	}
+	if (!k_isrealm(realm)) {
+		fprintf(stderr, "%s: Bad kerberos realm name \"%s\"\n",
+			progname, realm);
+		exit(1);
+	}
+	if ((db = dbm_open(DBM_FILE, O_RDWR|O_CREAT|O_EXCL, 0600)) == NULL) {
+	        perror(DBM_FILE);
+	        exit(1);
+	}
+	printf("You will be prompted for the database Master Password.\n");
+	printf("It is important that you NOT FORGET this password.\n");
+	fflush(stdout);
+	dbm_close(db);
+	if (
+d74 1
+a74 1
+	add_principal(KERB_DEFAULT_NAME, KERB_DEFAULT_INST, NULL_KEY) ||
+d77 5
+a81 5
+		fprintf(stderr, "\n%s: couldn't initialize database.\n",
+			progname);
+		exit(1);
+	}
+	exit(0);
+d87 3
+a89 3
+add_principal(name,instance, aap_op)
+char *name,*instance;
+enum ap_op aap_op;
+d91 9
+a99 9
+	Principal principal;
+	char datestring[50];
+	char pw_str[255];
+	void read_pw_string();
+	void string_to_key();
+	void random_key();
+	struct tm *tm;
+	C_Block new_key;
+	Key_schedule new_key_schedule;
+d101 25
+a125 35
+	bzero(&principal, sizeof(principal));
+	strncpy (principal.name, name, ANAME_SZ);
+	strncpy (principal.instance, instance, INST_SZ);
+	switch (aap_op) {
+	case NULL_KEY:
+		principal.key_low = 0;
+		principal.key_high = 0;
+		break;
+	case RANDOM_KEY:
+		random_key (new_key);
+		pcbc_encrypt(new_key, new_key, (long) sizeof(new_key),
+			new_key_schedule, new_key_schedule, 1);
+		bcopy(new_key, &principal.key_low, 4);
+		bcopy(((long *) new_key) + 1, &principal.key_high, 4);
+		break;
+	case PROMPT_KEY:
+		read_pw_string(pw_str, sizeof (pw_str), "Enter Password: ",
+			TRUE);
+		printf("\n");
+		string_to_key(pw_str, new_key);
+		key_sched(new_key, new_key_schedule);
+		pcbc_encrypt(new_key, new_key, (long) sizeof(new_key),
+			new_key_schedule, new_key_schedule, 1);
+		bcopy(new_key, &principal.key_low, 4);
+		bcopy(((long *) new_key) + 1, &principal.key_high, 4);
+		
+		break;
+	}
+	principal.exp_date = 946702799;		/* Happy new century */
+	strncpy (principal.exp_date_txt, "12/31/99", DATE_SZ);
+	principal.mod_date = time(0);
+	
+	tm = localtime(&principal.mod_date);
+	principal.attributes = 0;
+	principal.max_life = 255;
+d127 5
+a131 2
+	principal.kdc_key_ver = 1;
+	principal.key_version = 1;
+d133 3
+a135 3
+	strncpy(principal.mod_name, "db_creation", ANAME_SZ);
+	strncpy(principal.mod_instance, "", INST_SZ);
+	principal.old = 0;
+d137 9
+a145 2
+	kerb_db_put_principal(&principal, 1);
+	return 0;
+@

@@ -1,0 +1,343 @@
+From satz@sri-tsc  Wed Aug  8 08:10:16 1984
+Date:  6 Aug 1984 1326-PDT (Monday)
+From: Greg Satz <Satz@SRI-TSC>
+Subject: 2.9 missing file locking primitive
+Subject: 2.9 is missing a file locking primitive
+Index:	sys/fio.c 2.9BSD
+
+Description:
+	2.9 needs an advisory locking primitive like the 4.2bsd version.
+Repeat-By:
+	Write a program that writes to a file while others do the same.
+	Watch as the file is destroyed.
+Fix:
+	Copy and install the 4.2bsd flock(2) code into 2.9:
+
+----------flock.s----------
+/ error = flock(fildes, operation)
+
+.globl	_flock
+.globl	cerror
+flock	= 45.
+
+_flock:
+	mov	r5,-(sp)
+	mov	sp,r5
+	mov	4(r5),r0
+	mov	6(r5),r1
+	sys	flock
+	bec	1f
+	jmp	cerror
+1:
+	clr	r0
+	mov	(sp)+,r5
+	rts	pc
+----------diffs----------
+
+*** file.hO	Fri Nov 25 16:52:35 1983
+--- file.h	Fri Aug  3 10:54:22 1984
+***************
+*** 42,47
+  #define FXOPEN 0100     /* exclusive open */
+  #define FXOPENM 04      /* exclusive open bit in mode argument of open */
+  #endif
+  
+  /* flags supplied to access call */
+  #define	FACCESS_EXISTS	0x0	/* does file exist? */
+
+--- 42,49 -----
+  #define FXOPEN 0100     /* exclusive open */
+  #define FXOPENM 04      /* exclusive open bit in mode argument of open */
+  #endif
++ #define	FSHLOCK	0100	/* shared lock present */
++ #define	FEXLOCK	0200	/* exclusive lock present */
+  
+  /* flags supplied to access call */
+  #define	FACCESS_EXISTS	0x0	/* does file exist? */
+***************
+*** 58,60
+  #define	FATT_RDONLY	0x0	/* open for reading only */
+  #define	FATT_WRONLY	0x1	/* open for writing only */
+  #define	FATT_RDWR	0x2	/* open for reading and writing */
+
+--- 60,68 -----
+  #define	FATT_RDONLY	0x0	/* open for reading only */
+  #define	FATT_WRONLY	0x1	/* open for writing only */
+  #define	FATT_RDWR	0x2	/* open for reading and writing */
++ 
++ /* flock call */
++ #define	LOCK_SH		1	/* shared lock */
++ #define	LOCK_EX		2	/* exclusive lock */
++ #define	LOCK_NB		4	/* don't block when locking */
++ #define	LOCK_UN		8	/* unlock */
+
+*** inode.hO	Fri Nov 25 16:54:25 1983
+--- inode.h	Fri Aug  3 10:50:27 1984
+***************
+*** 44,49
+  	int	i_flag;
+  	int	i_count;	/* reference count */
+  	dev_t	i_dev;		/* device where inode resides */
+  	ino_t	i_number;	/* i number, 1-to-1 with device address */
+  	unsigned i_mode;
+  	short	i_nlink;	/* directory entries */
+
+--- 44,51 -----
+  	int	i_flag;
+  	int	i_count;	/* reference count */
+  	dev_t	i_dev;		/* device where inode resides */
++ 	int	i_shlockc;	/* count of shared locks on inode */
++ 	int	i_exlockc;	/* count of exclusive locks on inode */
+  	ino_t	i_number;	/* i number, 1-to-1 with device address */
+  	unsigned i_mode;
+  	short	i_nlink;	/* directory entries */
+***************
+*** 103,109
+  #define	ICHG	0100		/* inode has been changed */
+  #define IPIPE	0200		/* inode is a pipe */
+  #ifdef	UCB_QUOTAS
+! #define	IQUOT	0400		/* directory that has original quota pointer */
+  #endif
+  
+  /* modes */
+
+--- 105,111 -----
+  #define	ICHG	0100		/* inode has been changed */
+  #define IPIPE	0200		/* inode is a pipe */
+  #ifdef	UCB_QUOTAS
+! #define	IQUOT	0400		/*directory that has original quota pointer */
+  #endif
+  #define	ISHLOCK	01000		/* file has shared lock */
+  #define	IEXLOCK	02000		/* file has exclusive lock */
+***************
+*** 105,110
+  #ifdef	UCB_QUOTAS
+  #define	IQUOT	0400		/* directory that has original quota pointer */
+  #endif
+  
+  /* modes */
+  #define	IFMT	0170000		/* type of file */
+
+--- 107,115 -----
+  #ifdef	UCB_QUOTAS
+  #define	IQUOT	0400		/*directory that has original quota pointer */
+  #endif
++ #define	ISHLOCK	01000		/* file has shared lock */
++ #define	IEXLOCK	02000		/* file has exclusive lock */
++ #define	ILWAIT	04000		/* someone waiting on file lock */
+  
+  /* modes */
+  #define	IFMT	0170000		/* type of file */
+
+*** /tmp/,RCSt1000876	Mon Aug  6 13:17:02 1984
+--- sysent.c	Fri Aug  3 11:13:29 1984
+***************
+*** 29,34
+  int	dup();
+  int	exec();
+  int	exece();
+  int	fork();
+  int	fstat();
+  int	getgid();
+
+--- 29,35 -----
+  int	dup();
+  int	exec();
+  int	exece();
++ int	flock();
+  int	fork();
+  int	fstat();
+  int	getgid();
+***************
+*** 144,150
+  	0, 0, pipe,			/* 42 = pipe */
+  	1, 0, times,			/* 43 = times */
+  	4, 0, profil,			/* 44 = prof */
+! 	0, 0, nosys,			/* 45 = unused */
+  	1, 1, setgid,			/* 46 = setgid */
+  	0, 0, getgid,			/* 47 = getgid */
+  	2, 0, ssig,			/* 48 = sig */
+
+--- 145,151 -----
+  	0, 0, pipe,			/* 42 = pipe */
+  	1, 0, times,			/* 43 = times */
+  	4, 0, profil,			/* 44 = prof */
+! 	2, 2, flock,			/* 45 = flock */
+  	1, 1, setgid,			/* 46 = setgid */
+  	0, 0, getgid,			/* 47 = getgid */
+  	2, 0, ssig,			/* 48 = sig */
+
+*** /tmp/,RCSt1000892	Mon Aug  6 13:17:38 1984
+--- fio.c	Fri Aug  3 16:39:21 1984
+***************
+*** 64,69
+  
+  	if(fp == (struct file *) NULL)
+  		return;
+  	if (fp->f_count > 1) {
+  		fp->f_count--;
+  		return;
+
+--- 64,71 -----
+  
+  	if(fp == (struct file *) NULL)
+  		return;
++ 	if (fp->f_flag & (FSHLOCK|FEXLOCK))
++ 		ino_unlock(fp, FSHLOCK|FEXLOCK);
+  	if (fp->f_count > 1) {
+  		fp->f_count--;
+  		return;
+***************
+*** 351,354
+  	fp->f_un.f_offset = 0;
+  	lastf = fp + 1;
+  	return (fp);
+  }
+
+--- 353,498 -----
+  	fp->f_un.f_offset = 0;
+  	lastf = fp + 1;
+  	return (fp);
++ }
++ 
++ /*
++  * Apply an advisory lock on a file descriptor.
++  */
++ flock()
++ {
++ 	register struct a {
++ 		int	fd;
++ 		int	how;
++ 	} *uap;
++ 	register struct file *fp;
++ 
++ 	uap = (struct a *)u.u_ap;
++ 	fp = getf(uap->fd);
++ 	if (fp == NULL)
++ 		return;
++ #ifdef	UCB_NET
++ 	if (fp->f_flag & FSOCKET) {
++ 		u.u_error = EOPNOTSUPP;
++ 		return;
++ 	}
++ #endif	UCB_NET
++ 	if ((uap->how & (LOCK_UN|LOCK_EX|LOCK_SH)) == 0) {
++ 		u.u_error = EINVAL;
++ 		return;
++ 	}
++ 	if (uap->how & LOCK_UN) {
++ 		ino_unlock(fp, FSHLOCK|FEXLOCK);
++ 		return;
++ 	}
++ 	/* avoid work... */
++ 	if ((fp->f_flag & FEXLOCK) && (uap->how & LOCK_EX) ||
++ 	    (fp->f_flag & FSHLOCK) && (uap->how & LOCK_SH))
++ 		return;
++ 	u.u_error = ino_lock(fp, uap->how);
++ }
++ 
++ /*
++  * Place an advisory lock on an inode.
++  */
++ ino_lock(fp, cmd)
++ 	register struct file *fp;
++ 	int cmd;
++ {
++ 	register int priority = PLOCK;
++ 	register struct inode *ip;
++ 
++ 	ip = fp->f_inode;
++ 	if ((cmd & LOCK_EX) == 0)
++ 		priority++;
++ 	/*
++ 	 * If there's an exclusive lock currently applied
++ 	 * to the file, then we've gotta wait for the
++ 	 * lock with everyone else.
++ 	 */
++ again:
++ 	while (ip->i_flag & IEXLOCK) {
++ 		if (cmd & LOCK_NB)
++ 			return(EWOULDBLOCK);
++ 		/*
++ 		 * If we're holding an exclusive
++ 		 * lock, then release it.
++ 		 */
++ 		if (fp->f_flag & FEXLOCK) {
++ 			ino_unlock(fp, FEXLOCK);
++ 			goto again;
++ 		}
++ 		ip->i_flag |= ILWAIT;
++ 		sleep((caddr_t)&ip->i_exlockc, priority);
++ 	}
++ 	if (cmd & LOCK_EX) {
++ 		cmd &= ~LOCK_SH;
++ 		/*
++ 		 * Must wait for any shared locks to finish
++ 		 * before we try to apply an exclusive lock.
++ 		 */
++ 		while (ip->i_flag & ISHLOCK) {
++ 			if (cmd & LOCK_NB)
++ 				return(EWOULDBLOCK);
++ 			/*
++ 			 * If we're holding a shared lock
++ 			 * lock, then release it.
++ 		 	 */
++ 			if (fp->f_flag & FSHLOCK) {
++ 				ino_unlock(fp, FSHLOCK);
++ 				goto again;
++ 			}
++ 			ip->i_flag |= ILWAIT;
++ 			sleep((caddr_t)&ip->i_shlockc, PLOCK);
++ 		}
++ 	}
++ 	if (fp->f_flag & (FSHLOCK|FEXLOCK))
++ 		panic("ino_lock");
++ 	if (cmd & LOCK_SH) {
++ 		ip->i_shlockc++;
++ 		ip->i_flag |= ISHLOCK;
++ 		fp->f_flag |= FSHLOCK;
++ 	}
++ 	if (cmd & LOCK_EX) {
++ 		ip->i_exlockc++;
++ 		ip->i_flag |= IEXLOCK;
++ 		fp->f_flag |= FEXLOCK;
++ 	}
++ 	return(0);
++ }
++ 
++ /*
++  * Unlock a file.
++  */
++ ino_unlock(fp, kind)
++ 	register struct file *fp;
++ 	int kind;
++ {
++ 	register struct inode *ip;
++ 	int flags;
++ 
++ 	ip = fp->f_inode;
++ 	kind &= fp->f_flag;
++ 	if (ip == NULL || kind == 0)
++ 		return;
++ 	flags = ip->i_flag;
++ 	if (kind & FSHLOCK) {
++ 		if ((flags & ISHLOCK) == 0)
++ 			panic("ino_unlock: SHLOCK");
++ 		if (--ip->i_shlockc == 0) {
++ 			ip->i_flag &= ~ISHLOCK;
++ 			if (flags & ILWAIT)
++ 				wakeup((caddr_t)&ip->i_shlockc);
++ 		}
++ 		fp->f_flag &= ~FSHLOCK;
++ 	}
++ 	if (kind & FEXLOCK) {
++ 		if ((flags & IEXLOCK) == 0)
++ 			panic("ino_unlock: EXLOCK");
++ 		if (--ip->i_exlockc == 0) {
++ 			ip->i_flag &= ~(IEXLOCK|ILWAIT);
++ 			if (flags & ILWAIT)
++ 				wakeup((caddr_t)&ip->i_exlockc);
++ 		}
++ 		fp->f_flag &= ~FEXLOCK;
++ 	}
+  }

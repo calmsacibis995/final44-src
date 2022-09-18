@@ -1,0 +1,295 @@
+From decvax!pur-ee!purdue!pur-phy!crl Sat Mar 27 21:23:12 1982
+Subject: Bug fixes to w.c
+Newsgroups: net.bugs.2bsd
+Index: bin 2.9BSD
+
+I have found and fixed a bug in the 'w' program, along with cleaning
+up a couple of other items.  They are:
+
+	1) 'w' would add up the times of all processes started on
+	   the terminal.  Thus, if someone put a process in the back-
+	   ground, logged out, and someone else logged on, the job
+	   and process times would be incorrect.  This was fixed by
+	   comparing the uid of the person currently logged on
+	   and the real uid of the processes on that tty.
+
+	2) Since 2.8 bsd has a loadav call, I replaced the peek into
+	   memory to calculate it.
+
+	3) Also, since stdout is already buffered, I removed the call
+	   to setbuf.
+
+A diff of the changes follow.
+
+Charles LaBrec
+pur-ee!physics:crl
+
+*** w.c.brk	Sat Mar 27 21:00:56 1982  (old version)
+--- w.c		Sat Mar 27 21:07:36 1982  (new    "   )
+***************
+*** 15,20
+  #include <ctype.h>
+  #include <utmp.h>
+  #include <time.h>
+  #include <sys/param.h>
+  #include <sys/stat.h>
+  #include <sys/proc.h>
+
+--- 15,21 -----
+  #include <ctype.h>
+  #include <utmp.h>
+  #include <time.h>
++ #include <pwd.h>
+  #include <sys/param.h>
+  #include <sys/stat.h>
+  #include <sys/proc.h>
+***************
+*** 33,38
+  	dev_t	w_tty;			/* tty device of process */
+  	char	w_comm[15];		/* user.u_comm, null terminated */
+  	char	w_args[ARGWIDTH+1];	/* args if interesting process */
+  } pr[NPROC];
+  
+  struct	nlist nl[] = {
+
+--- 34,40 -----
+  	dev_t	w_tty;			/* tty device of process */
+  	char	w_comm[15];		/* user.u_comm, null terminated */
+  	char	w_args[ARGWIDTH+1];	/* args if interesting process */
++ 	int	w_ruid;			/* real user id */
+  } pr[NPROC];
+  
+  struct	nlist nl[] = {
+***************
+*** 58,63
+  int	nswap;
+  int	file;
+  dev_t	tty;
+  char	doing[520];		/* process attached to terminal */
+  time_t	proctime;		/* cpu time of process in doing */
+  short	avenrun[3];
+
+--- 60,66 -----
+  int	nswap;
+  int	file;
+  dev_t	tty;
++ int	uid;
+  char	doing[520];		/* process attached to terminal */
+  time_t	proctime;		/* cpu time of process in doing */
+  double	load[3];
+***************
+*** 60,66
+  dev_t	tty;
+  char	doing[520];		/* process attached to terminal */
+  time_t	proctime;		/* cpu time of process in doing */
+- short	avenrun[3];
+  double	load[3];
+  
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+
+--- 63,68 -----
+  int	uid;
+  char	doing[520];		/* process attached to terminal */
+  time_t	proctime;		/* cpu time of process in doing */
+  double	load[3];
+  
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+***************
+*** 64,70
+  double	load[3];
+  
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+! #define	TTYEQ		(tty == pr[i].w_tty)
+  #define IGINT		(1+3*1)		/* ignoring both SIGINT & SIGQUIT */
+  
+  long	round();
+
+--- 66,72 -----
+  double	load[3];
+  
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+! #define	TTYEQ		(tty == pr[i].w_tty && uid == pr[i].w_ruid)
+  #define IGINT		(1+3*1)		/* ignoring both SIGINT & SIGQUIT */
+  
+  long	round();
+***************
+*** 75,80
+  char	*getptr();
+  FILE	*popen();
+  struct	tm *localtime();
+  
+  int	debug;			/* true if -d flag: debugging output */
+  int	header = 1;		/* true if -h flag: don't print heading */
+
+--- 77,83 -----
+  char	*getptr();
+  FILE	*popen();
+  struct	tm *localtime();
++ struct	passwd *getpwnam();
+  
+  int	debug;			/* true if -d flag: debugging output */
+  int	header = 1;		/* true if -h flag: don't print heading */
+***************
+*** 107,113
+  	register int i, j;
+  	char *cp;
+  	register int curpid, empty;
+! 	char obuf[BUFSIZ];
+  
+  	setbuf(stdout, obuf);
+  	login = (argv[0][0] == '-');
+
+--- 110,116 -----
+  	register int i, j;
+  	char *cp;
+  	register int curpid, empty;
+! 	struct passwd *pwptr;
+  
+  	login = (argv[0][0] == '-');
+  	cp = rindex(argv[0], '/');
+***************
+*** 109,115
+  	register int curpid, empty;
+  	char obuf[BUFSIZ];
+  
+- 	setbuf(stdout, obuf);
+  	login = (argv[0][0] == '-');
+  	cp = rindex(argv[0], '/');
+  	firstchar = login ? argv[0][1] : (cp==0) ? argv[0][0] : cp[1];
+
+--- 112,117 -----
+  	register int curpid, empty;
+  	struct passwd *pwptr;
+  
+  	login = (argv[0][0] == '-');
+  	cp = rindex(argv[0], '/');
+  	firstchar = login ? argv[0][1] : (cp==0) ? argv[0][0] : cp[1];
+***************
+*** 212,233
+  		rewind(ut);
+  		printf("  %d users", nusers);
+  
+! 		if (nl[X_AVENRUN].n_type > 0) {
+! 			/*
+! 			 * Print 1, 5, and 15 minute load averages.
+! 			 * (Found by looking in kernel for avenrun).
+! 			 */
+! 			printf(",  load average:");
+! 			lseek(mem, (long)nl[X_AVENRUN].n_value, 0);
+! 			read(mem, avenrun, sizeof(avenrun));
+! 			for (i = 0; i < (sizeof(avenrun)/sizeof(avenrun[0])); i++) {
+! 				load[i] = avenrun[i] / 256.0;
+! 				if (i > 0)
+! 					printf(",");
+! 				printf(" %.2f", load[i]);
+! 			}
+! 		}
+! 		printf("\n");
+  		if (firstchar == 'u')
+  			exit(0);
+  
+
+--- 214,221 -----
+  		rewind(ut);
+  		printf("  %d users", nusers);
+  
+! 		loadav(load);
+! 		printf(",  load average: %.2f %.2f %.2f\n", load[0], load[1], load[2]);
+  		if (firstchar == 'u')
+  			exit(0);
+  
+***************
+*** 247,252
+  		}
+  		if (utmp.ut_name[0] == '\0')
+  			continue;	/* that tty is free */
+  		if (sel_user && strncmp(utmp.ut_name, sel_user, 8) != 0)
+  			continue;	/* we wanted only somebody else */
+  
+
+--- 235,243 -----
+  		}
+  		if (utmp.ut_name[0] == '\0')
+  			continue;	/* that tty is free */
++ 		if ((pwptr = getpwnam(utmp.ut_name)) == NULL )
++ 			continue;	/* can't figure out who's on it */
++ 		uid = pwptr->pw_uid;
+  		if (sel_user && strncmp(utmp.ut_name, sel_user, 8) != 0)
+  			continue;	/* we wanted only somebody else */
+  
+***************
+*** 488,493
+  		pr[np].w_time = up.u_utime + up.u_stime;
+  		pr[np].w_ctime = up.u_cutime + up.u_cstime;
+  		pr[np].w_tty = up.u_ttyd;
+  		up.u_comm[14] = 0;	/* Bug: This bombs next field. */
+  		strcpy(pr[np].w_comm, up.u_comm);
+  		/*
+
+--- 479,485 -----
+  		pr[np].w_time = up.u_utime + up.u_stime;
+  		pr[np].w_ctime = up.u_cutime + up.u_cstime;
+  		pr[np].w_tty = up.u_ttyd;
++ 		pr[np].w_ruid = up.u_ruid;
+  		up.u_comm[14] = 0;	/* Bug: This bombs next field. */
+  		strcpy(pr[np].w_comm, up.u_comm);
+  		/*
+=====================================================================
+From decvax!pur-ee!purdue!pur-phy!crl Mon Mar 29 13:27:45 1982
+Subject: A fix to the w.c bug fix (sigh)
+Newsgroups: net.bugs.2bsd
+
+Well, I guess I spoke too soon with my previous bug fix.  There's a 
+problem that I didn't notice before. This occurs when someone is logged
+on has an 8-character user name.  Because most of the users around
+here have short id's, I missed this point in testing.  The entry in
+utmp is not guaranteed to be null-terminated, so the call to getpwnam()
+returns NULL when that happens.  The fix is indicated below.
+Also, if you haven't done so already, it is really advantageous to make
+w be setuid to root so that it can use the phys() system call (if you
+have it).  This reduces system time used by about 5 sec.
+
+Charles LaBrec
+pur-ee!physics:crl
+
+----------------------------------------
+*** w.c.old	Mon Mar 29 13:11:10 1982
+--- w.c		Mon Mar 29 13:14:11 1982
+***************
+*** 108,114
+  {
+  	int days, hrs, mins;
+  	register int i, j;
+! 	char *cp;
+  	register int curpid, empty;
+  	struct passwd *pwptr;
+  
+
+--- 108,114 -----
+  {
+  	int days, hrs, mins;
+  	register int i, j;
+! 	char *cp, tmp[9];
+  	register int curpid, empty;
+  	struct passwd *pwptr;
+  
+***************
+*** 235,241
+  		}
+  		if (utmp.ut_name[0] == '\0')
+  			continue;	/* that tty is free */
+! 		if ((pwptr = getpwnam(utmp.ut_name)) == NULL )
+  			continue;	/* can't figure out who's on it */
+  		uid = pwptr->pw_uid;
+  		if (sel_user && strncmp(utmp.ut_name, sel_user, 8) != 0)
+
+--- 235,243 -----
+  		}
+  		if (utmp.ut_name[0] == '\0')
+  			continue;	/* that tty is free */
+! 		strncpy(tmp, utmp.ut_name, 8);
+! 		tmp[8] = '\0';		/* make sure it's null-terminated */
+! 		if ((pwptr = getpwnam(tmp)) == NULL )
+  			continue;	/* can't figure out who's on it */
+  		uid = pwptr->pw_uid;
+  		if (sel_user && strncmp(utmp.ut_name, sel_user, 8) != 0)

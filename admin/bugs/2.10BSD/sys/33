@@ -1,0 +1,231 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Apr 11 20:26:20 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA09261; Wed, 11 Apr 90 20:26:20 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA21192; Wed, 11 Apr 90 20:26:17 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA00181; Wed, 11 Apr 90 20:26:03 -0700
+Date: Wed, 11 Apr 90 20:26:03 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9004120326.AA00181@WLV.IMSD.CONTEL.COM>
+Subject: if_acc (LH/DH-11) interface is broken (+FIX)
+Index: 	sys/pdpif/if_acc.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The ACC LH/DH interface driver (if_acc.c) won't even compile
+	much less run.
+
+Repeat-By:
+	Select NIMP and NACC options in the kernel generation.
+	Observe the errors when attempting to compile.
+
+Fix:
+	The if_acc.c driver was never ported to the supervisor mode 
+	networking available with 2.10.1BSD.  Neither were the if_imp
+	and if_imphost modules.
+
+	With the patches below the if_acc.c (with if_imp.c and if_imphost.c)
+	driver will work.   A small addition to the short_names.h file
+	is also included.
+
+	Also included are patches for:
+
+		if_dmc.c
+		if_sri.c
+		if_css.c
+
+	which will enable those drivers to compile.  the drivers have not
+	been tested though.
+
+	This is the "old" imp software, not the "new" version released for
+	4.3BSD a year or so ago.  The "old" imp modules in 'netstat' should
+	remain the ones compiled into 'netstat'.
+
+*** /usr/oldinclude/short_names.h	Wed Apr 11 15:20:01 1990
+--- /usr/include/short_names.h	Wed Apr 11 10:56:00 1990
+***************
+*** 53,58 ****
+--- 53,59 ----
+  #define	ifa_ifwithnet		ifa_wnet
+  #define	imphostdead		imphdead	/* etc/implog */
+  #define	imphostunreach		imphunreach	/* etc/implog */
++ #define	impintrq		impintq
+  #define	in_pcballoc		in_pcbg
+  #define	in_pcbdetach		in_pcbetach
+  #define	inet_netof		inet_nof
+diff -r -c /usr/src/oldsys/netimp/if_imp.c /usr/src/sys/netimp/if_imp.c
+*** /usr/src/oldsys/netimp/if_imp.c	Thu Apr 28 10:59:48 1988
+--- /usr/src/sys/netimp/if_imp.c	Wed Apr 11 11:01:12 1990
+***************
+*** 58,63 ****
+--- 58,64 ----
+  	char	imp_dropcnt;		/* used during initialization */
+  } imp_softc[NIMP];
+  
++ extern int hz;
+  struct	ifqueue impintrq;
+  int	impqmaxlen = IFQ_MAXLEN;
+  
+diff -r -c /usr/src/oldsys/netimp/if_imphost.c /usr/src/sys/netimp/if_imphost.c
+*** /usr/src/oldsys/netimp/if_imphost.c	Sat Mar  5 14:30:20 1988
+--- /usr/src/sys/netimp/if_imphost.c	Wed Apr 11 11:01:00 1990
+***************
+*** 19,25 ****
+  #include "param.h"
+  #include "mbuf.h"
+  #include "domain.h"
+! #include "proto.h"
+  #include <netinet/in.h>
+  #include <netinet/in_systm.h>
+  #include <netimp/if_imp.h>
+--- 19,25 ----
+  #include "param.h"
+  #include "mbuf.h"
+  #include "domain.h"
+! #include "protosw.h"
+  #include <netinet/in.h>
+  #include <netinet/in_systm.h>
+  #include <netimp/if_imp.h>
+diff -r -c /usr/src/oldsys/netimp/if_imphost.h /usr/src/sys/netimp/if_imphost.h
+*** /usr/src/oldsys/netimp/if_imphost.h	Mon Jul  4 12:27:28 1988
+--- /usr/src/sys/netimp/if_imphost.h	Wed Apr 11 16:10:28 1990
+***************
+*** 46,54 ****
+   * automatically at the time a structure is free'd.
+   */
+  #define	HPMBUF	((MLEN - sizeof(int)) / sizeof(struct host))
+- #if vax
+  #define	HOSTHASH(a)	((((a).s_addr>>8)+(a).s_net) % HPMBUF)
+- #endif
+  
+  /*
+   * In-line expansions for queuing operations on
+--- 46,52 ----
+diff -r /usr/src/oldsys/pdpif/if_acc.c /usr/src/sys/pdpif/if_acc.c
+22a23
+> #include "domain.h"
+116c117
+< 	if ((ifimp = (struct ifimpcb *)impattach(ui)) == 0)
+---
+> 	if ((ifimp = (struct ifimpcb *)impattach(ui, accreset)) == 0)
+287d287
+< 	MAPSAVE();
+308d307
+< 	MAPREST();
+322d320
+< 	MAPSAVE();
+389d386
+< 	MAPREST();
+diff -r /usr/src/oldsys/pdpif/if_css.c /usr/src/sys/pdpif/if_css.c
+42a43
+> #include "domain.h"
+138c139
+< 	if ((ifimp = (struct ifimpcb *)impattach(ui)) == 0)
+---
+> 	if ((ifimp = (struct ifimpcb *)impattach(ui, cssreset)) == 0)
+305d305
+< 	MAPSAVE();
+327d326
+< 	MAPREST();
+342d340
+< 	MAPSAVE();
+401d398
+< 	MAPREST();
+diff -r /usr/src/oldsys/pdpif/if_dmc.c /usr/src/sys/pdpif/if_dmc.c
+24a25
+> #include "ioctl.h"
+25a27
+> #include "domain.h"
+34a37
+> #include "netinet/in_var.h"
+36a40
+> #include "net/netisr.h"
+125,129d128
+< 	sc->sc_if.if_net = (ui->ui_flags & DMC_NET) >> 8;
+< 	sc->sc_if.if_host[0] = 17;	/* random number */
+< 	sin = (struct sockaddr_in *)&sc->sc_if.if_addr;
+< 	sin->sin_family = AF_INET;
+< 	sin->sin_addr = if_makeaddr(sc->sc_if.if_net, sc->sc_if.if_host[0]);
+132c131,132
+< 	sc->sc_if.if_ubareset = dmcreset;
+---
+> 	sc->sc_if.if_reset = dmcreset;
+> 	sc->sc_if.if_flags = IFF_POINTOPOINT;
+187,191d186
+< 	/* set up routing table entry */
+< 	if ((sc->sc_if.if_flags & IFF_ROUTE) == 0) {
+< 		rtinit(&sc->sc_if.if_addr, &sc->sc_if.if_addr, RTF_HOST|RTF_UP);
+< 		sc->sc_if.if_flags |= IFF_ROUTE;
+< 	}
+220c215
+< 	printd("mr 0x%x\n", sc->sc_ifuba.ifu_w.ifrw_mr[0]);
+---
+> 	printd("mr 0x%lx\n", sc->sc_ifuba.ifu_w.ifrw_info);
+314c309
+< 		switch (ui->ui_flags & DMC_AF) {
+---
+> 		switch (sc->sc_flag & DMC_AF) {
+324c319
+< 			    ui->ui_flags & DMC_AF);
+---
+> 			    sc->sc_flag & DMC_AF);
+392,393c387,388
+< 	if (dst->sa_family != (ui->ui_flags & DMC_AF)) {
+< 		printf("dmc%d: af%d not supported\n", ifp->if_unit, pf);
+---
+> 	if (dst->sa_family != AF_INET) {
+> 		printf("dmc%d: af%d not supported\n", ifp->if_unit, AF_INET);
+diff -r /usr/src/oldsys/pdpif/if_sri.c /usr/src/sys/pdpif/if_sri.c
+19a20
+> #include "domain.h"
+37,43c38,39
+< #if pdp11
+< #define IFRADDR MBX
+< #define IFWADDR MBX
+< #else
+< #define IFRADDR sc->sri_ifuba.ifu_r.ifrw_addr
+< #define IFWADDR sc->sri_ifuba.ifu_w.ifrw_addr
+< #endif
+---
+> #define IFRADDR sc->sri_ifuba.ifu_r.ifrw_info
+> #define IFWADDR sc->sri_ifuba.ifu_w.ifrw_info
+135c131
+< 	if ((ifimp = (struct ifimpcb *)impattach(ui)) == 0)
+---
+> 	if ((ifimp = (struct ifimpcb *)impattach(ui, srireset)) == 0)
+142c138
+< 	sc->sri_if->if_ubareset = srireset;
+---
+> 	sc->sri_if->if_reset = srireset;
+232c228
+< 	sc->sri_iba = IFRADDR;
+---
+> 	sc->sri_iba = (char *)IFRADDR;
+271,272d266
+< 	MAPSAVE();
+< 	mapseg5(sc->sri_oclick, MBMAPSIZE);
+274c268
+< 	sc->sri_oba = IFWADDR;
+---
+> 	sc->sri_oba = (char *)IFWADDR;
+281d274
+< 	MAPREST();
+294,295d286
+< 	MAPSAVE();
+< 	mapseg5(sc->sri_oclick, MBMAPSIZE);
+328c319
+< 	MAPREST();
+---
+> 	return;
+343,344d333
+< 	MAPSAVE();
+< 	mapseg5(sc->sri_iclick, MBMAPSIZE);
+428c417
+< 	sc->sri_iba = IFRADDR;
+---
+> 	sc->sri_iba = (char *)IFRADDR;
+433c422
+< 	MAPREST();
+---
+> 	return;

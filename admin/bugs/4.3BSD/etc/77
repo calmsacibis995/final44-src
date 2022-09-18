@@ -1,0 +1,124 @@
+From dls@j.cc.purdue.edu  Wed Aug  5 14:14:21 1987
+Date: Wed, 5 Aug 87 16:12:30 EST
+From: dls@j.cc.purdue.edu (David L Stevens)
+Subject: rwhod domain host name trimming
+Index: etc/rwhod.c 4.3BSD
+
+Description:
+	rwhod trims domain names unintelligently. This causes a problem for
+sites like ours which have gateways to other hosts in different subdomains.
+
+Repeat-By:
+	run rwhod on a machine with an interface to another subdomain. Eg,
+on host j.cc.purdue.edu there is an interface connected to ed.ecn.purdue.edu.
+ruptime(1) prints this host as "ed", but it is not reachable by that name.
+With the fix below, it strips the irrelevant ".purdue.edu" and prints it
+as "ed.ecn" on j.cc.purdue.edu, which is a legal alias for ed.ecn.purdue.edu
+with the latest release of the named.
+
+Fix:
+	Since the latest named allows aliases which leave out unnecessary
+portions of the domain spec, I changed the "*index(host,'.') = '\0'" code
+to strip the common portions of the domain between the local host and the
+host sending the rwho packets. I also changed what rwho sends to be the
+entire host name. This allows the recipient to edit the host according to
+his own context. Diffs follow:
+
+*** NEW rwhod.c	Wed Aug  5 14:15:41 1987
+--- OLD rwhod.c	Wed Aug  5 14:11:10 1987
+***************
+*** 77,82 ****
+--- 77,83 ----
+  
+  int	onalrm();
+  char	*strcpy(), *sprintf(), *malloc();
++ char	*whittle();
+  long	lseek();
+  int	getkmem();
+  struct	in_addr inet_makeaddr();
+***************
+*** 87,93 ****
+  	struct stat st;
+  	char path[64];
+  	int on = 1;
+- 	char *cp;
+  	extern char *index();
+  
+  	if (getuid()) {
+--- 88,93 ----
+***************
+*** 128,135 ****
+  		syslog(LOG_ERR, "gethostname: %m");
+  		exit(1);
+  	}
+- 	if ((cp = index(myname, '.')) != NULL)
+- 		*cp = '\0';
+  	strncpy(mywd.wd_hostname, myname, sizeof (myname) - 1);
+  	utmpf = open("/etc/utmp", O_RDONLY);
+  	if (utmpf < 0) {
+--- 128,133 ----
+***************
+*** 174,190 ****
+  				ntohs(from.sin_port));
+  			continue;
+  		}
+- #ifdef notdef
+- 		if (gethostbyname(wd.wd_hostname) == 0) {
+- 			syslog(LOG_WARNING, "%s: unknown host",
+- 				wd.wd_hostname);
+- 			continue;
+- 		}
+- #endif
+  		if (wd.wd_vers != WHODVERSION)
+  			continue;
+  		if (wd.wd_type != WHODTYPE_STATUS)
+  			continue;
+  		if (!verify(wd.wd_hostname)) {
+  			syslog(LOG_WARNING, "malformed host name from %x",
+  				from.sin_addr);
+--- 172,184 ----
+  				ntohs(from.sin_port));
+  			continue;
+  		}
+  		if (wd.wd_vers != WHODVERSION)
+  			continue;
+  		if (wd.wd_type != WHODTYPE_STATUS)
+  			continue;
++ 		/* do domain name editing */
++ 
++ 		(void) whittle(wd.wd_hostname, myname);
+  		if (!verify(wd.wd_hostname)) {
+  			syslog(LOG_WARNING, "malformed host name from %x",
+  				from.sin_addr);
+***************
+*** 453,458 ****
+--- 447,475 ----
+  		neighbors = np;
+  	}
+  	return (1);
++ }
++ 
++ /*
++  * remove from "host1" those domains common to "host1" and "host2"
++  */
++ 
++ char *
++ whittle(host1, host2)
++ char *host1, *host2;
++ {
++ 	char *p1, *p2;
++ 
++ 	p1 = index(host1, '.');
++ 	p2 = index(host2, '.');
++ 	while (p1 != NULL && p2 != NULL) {
++ 		if (strcmp(p1+1, p2+1) == 0) {
++ 			*p1 = '\0';
++ 			break;
++ 		}
++ 		p1 = index(p1+1, '.');
++ 		p2 = index(p2+1, '.');
++ 	}
++ 	return host1;
+  }
+  
+  #ifdef DEBUG

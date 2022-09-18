@@ -1,0 +1,53 @@
+From louie@trantor.umd.edu  Mon Jan 11 13:27:49 1988
+Date: Mon, 11 Jan 88 16:13:23 EST
+From: Louis A. Mamakos <louie@trantor.umd.edu>
+Subject: syslog(3) uses sendto() rather than send() - interaction with chroot()
+Index: lib/libc/gen/syslog.c 4.3BSD
+
+Description:
+	The syslog(3) library routine uses sendto() to deliver a message to
+the syslog daemon.  The daemon listens on the UNIX domain socket /dev/log.  If
+the user process that is logging does a chroot() call, the /dev/log socket is
+no longer visable, and logging no longer occurs.
+
+Repeat-By:
+	Add code to your FTP server that logs the names of files that are
+transferred.  Note that when the user logs into the server with "anonymous",
+logging no longer works because the server has done a chroot() to ~ftp.
+
+Fix:
+
+In openlog(), connect() to /dev/log.  Subsequently, use send() on the connected
+socket rather than sendto().  User can now do an openlog() before any chroot().
+
+*** /usr/src/lib/libc/gen/syslog.c	Wed May  7 18:18:50 1986
+--- syslog.c	Mon Jan 11 15:51:22 1988
+***************
+*** 120,126 ****
+  		c = MAXLINE;
+  
+  	/* output the message to the local logger */
+! 	if (sendto(LogFile, outline, c, 0, &SyslogAddr, sizeof SyslogAddr) >= 0)
+  		return;
+  	if (!(LogStat & LOG_CONS))
+  		return;
+--- 120,126 ----
+  		c = MAXLINE;
+  
+  	/* output the message to the local logger */
+! 	if (send(LogFile, outline, c, 0) >= 0)
+  		return;
+  	if (!(LogStat & LOG_CONS))
+  		return;
+***************
+*** 167,172 ****
+--- 167,176 ----
+  	strncpy(SyslogAddr.sa_data, logname, sizeof SyslogAddr.sa_data);
+  	if (LogStat & LOG_NDELAY) {
+  		LogFile = socket(AF_UNIX, SOCK_DGRAM, 0);
++ 		if (connect(LogFile, &SyslogAddr, sizeof SyslogAddr) < 0)
++ 			return;
+  		fcntl(LogFile, F_SETFD, 1);
+  	}
+  }
+

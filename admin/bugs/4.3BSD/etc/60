@@ -1,0 +1,92 @@
+From cpw@lanl.gov  Thu Apr 30 11:40:27 1987
+Date: Thu, 30 Apr 87 12:37:31 MDT
+From: cpw@lanl.gov (C. Philip Wood)
+Subject: /etc/arp -a vmunix.n vmcore.n fails
+Index: etc/arp.c 4.3BSD
+
+Description:
+	/etc/arp -a /usr/crash/vmunix.n /usr/crash/vmcore.n causes
+	the following diagnostic:
+
+		arp: /usr/crash/vmunix.n: namelist wrong
+
+Repeat-By:
+	Run the above arp command on some crash files in /usr/crash.
+
+Fix:
+	I borrowed the lseek code from netstat to make it work.
+
+*** arp.c.orig	Wed Apr 29 13:22:47 1987
+--- arp.c	Wed Apr 29 13:49:04 1987
+***************
+*** 2 ****
+! static	char *sccsid = "@(#)arp.c	5.2 (Berkeley) 2/21/86";
+--- 2 ----
+! static	char *sccsid = "@(#)arp.c	5.3 (LANL) 4/29/87";
+***************
+*** 11 ****
+--- 12,14 ----
++ #include <sys/param.h>
++ #include <sys/vmmac.h>
++ #include <machine/pte.h>
+***************
+*** 20 ****
+--- 24,25 ----
++ struct	pte	*Sysmap;
++ int	kflag = 0;
+***************
+*** 30 ****
+! 		if (argc >= 4)
+--- 35 ----
+! 		if (argc >= 4) {
+***************
+*** 31 ****
+--- 37,38 ----
++ 			kflag++;
++ 		}
+***************
+*** 239 ****
+--- 247,250 ----
++ #define N_SYSMAP        2
++         { "_Sysmap" },
++ #define N_SYSSIZE       3
++         { "_Syssize" },
+***************
+*** 265 ****
+! 	lseek(mf, (long)nl[X_ARPTAB_SIZE].n_value, 0);
+--- 276,289 ----
+! 	if (kflag) {
+!                 off_t off;
+!  
+!                 off = nl[N_SYSMAP].n_value & 0x7fffffff;
+!                 lseek(mf, off, 0);
+!                 nl[N_SYSSIZE].n_value *= 4;
+!                 Sysmap = (struct pte *)malloc(nl[N_SYSSIZE].n_value);
+!                 if (Sysmap == 0) {
+!                         perror("Sysmap");
+!                         exit(1);
+!                 }
+!                 read(mf, Sysmap, nl[N_SYSSIZE].n_value);
+!         }
+! 	a_lseek(mf, (long)nl[X_ARPTAB_SIZE].n_value, 0);
+***************
+*** 277 ****
+! 	lseek(mf, (long)nl[X_ARPTAB].n_value, 0);
+--- 301 ----
+! 	a_lseek(mf, (long)nl[X_ARPTAB].n_value, 0);
+***************
+*** 339 ****
+--- 364,376 ----
++ }
++ a_lseek(fd, base, off)
++         int fd, base, off;
++ {
++ 
++         if (kflag) {
++                 /* get kernel pte */
++ #ifdef vax
++                 base &= 0x7fffffff;
++ #endif
++                 base = ctob(Sysmap[btop(base)].pg_pfnum) + (base & PGOFSET);
++         }
++         lseek(fd, base, off);

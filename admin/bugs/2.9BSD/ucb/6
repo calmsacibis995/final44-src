@@ -1,0 +1,374 @@
+From USNA!tcs  Thu Oct 18 20:22:01 1984
+From: usna!tcs
+Date:     Thu, 18 Oct 84 21:53:31 EDT
+Original-From: Terry Slattery  <tcs@USNA>
+Subject:  lpd doesn't know about serial printers
+
+Subject: lpd doesn't know about talking to serial printers
+Index: ucb/lpr/src/lpd.c 2.9BSD
+
+Description:
+	Lpd doesn't read /etc/printcap to find serial printers.
+	It also doesn't contain code to handle most of the
+	parameters contained in printcap(5), especially those
+	parameters that deal mainly with serial printers.
+
+Repeat-By:
+	Describe a serial printer in /etc/printcap, connect
+	a device to the described port and try to print to it.
+	Nothing happens.
+
+Fix:
+	Add code taken from 4.2 lpd to read the missing parameters
+	from /etc/printcap and correctly setup the port for
+	printing.  I did not implement the page width feature (sorry).
+	Contextual diffs follow:
+
+*** /usr/src/ucb/lpr/src/lpd.c	Sat Dec 10 05:01:26 1983
+--- lpd.c	Thu Oct 18 21:37:53 1984
+***************
+*** 9,14
+  
+  #include <signal.h>
+  
+  #include <stdio.h>
+  #include <sys/types.h>
+  #include <sys/dir.h>
+
+--- 9,15 -----
+  
+  #include <signal.h>
+  
++ #include <sgtty.h>
+  #include <stdio.h>
+  #include <sys/types.h>
+  #include <sys/dir.h>
+***************
+*** 14,19
+  #include <sys/dir.h>
+  #include <sys/stat.h>
+  #include <whoami.h>
+  #include "lp.local.h"
+  
+  #define	SLEEPER
+
+--- 15,21 -----
+  #include <sys/dir.h>
+  #include <sys/stat.h>
+  #include <whoami.h>
++ #include <sys/ioctl.h>
+  #include "lp.local.h"
+  
+  #define SLEEPER
+***************
+*** 41,46
+  char	*LF;			/* log file for error messages */
+  char	*OF;			/* name of ouput filter */
+  char	*FF;			/* form feed string */
+  int	PL;			/* page length */
+  short	SF;			/* suppress FF on each print job */
+  short	SH;			/* suppress header page */
+
+--- 43,55 -----
+  char    *LF;                    /* log file for error messages */
+  char    *OF;                    /* name of ouput filter */
+  char    *FF;                    /* form feed string */
++ char	*TR;			/* trailer string to print */
++ short	BR;			/* baud rate for tty lines */
++ short	FC;			/* flags to clear on tty lines */
++ short	FS;			/* flags to set on tty lines */
++ short	FO;			/* form feed on device open */
++ short	XC;			/* local flags to clear on tty lines */
++ short	XS;			/* local flags to set on tty lines */
+  int     PL;                     /* page length */
+  short   SF;                     /* suppress FF on each print job */
+  short   SH;                     /* suppress header page */
+***************
+*** 126,131
+  		}
+  		sleep(30);
+  	}
+  
+  	/*
+  	 * search the directory for work (file with name df which is
+
+--- 135,143 -----
+                  }
+                  sleep(30);
+          }
++ 	/*
++ 	 * setup serial printers
++ 	 */
+  
+  	if(isatty(lp))
+  		setty();
+***************
+*** 127,132
+  		sleep(30);
+  	}
+  
+  	/*
+  	 * search the directory for work (file with name df which is
+  	 * short for daemon file)
+
+--- 139,147 -----
+  	 * setup serial printers
+  	 */
+  
++ 	if(isatty(lp))
++ 		setty();
++ 
+          /*
+           * search the directory for work (file with name df which is
+           * short for daemon file)
+***************
+*** 183,188
+  #endif	SLEEPER
+  	close(df);
+  
+  	/*
+  	 * Start up an output filter, if needed.
+  	 */
+
+--- 198,205 -----
+  #endif  SLEEPER
+          close(df);
+  
++ 	if(FO)
++ 		write(fo, FF, strlen(FF)); /* FF on device open */
+          /*
+           * Start up an output filter, if needed.
+           */
+***************
+*** 202,207
+  		if (write(lfd, (char *)&pid, sizeof(pid)) != sizeof(pid))
+  			log("can't write (%d) daemon file pid", errno);
+  		doit(p->d_name);
+  	}
+  	free((char *)pdir);
+  	close(fo);
+
+--- 219,226 -----
+                  if (write(lfd, (char *)&pid, sizeof(pid)) != sizeof(pid))
+                          log("can't write (%d) daemon file pid", errno);
+                  doit(p->d_name);
++ 		if(TR)
++ 			write(fo, TR, strlen(TR));	/* write trailer */
+          }
+          free((char *)pdir);
+          close(fo);
+***************
+*** 516,522
+  	return(p);
+  }
+  
+! #define TR(q)	(((q)-' ')&0177)
+  
+  scan_out(scfd, scsp, dlm)
+  char *scsp, dlm;
+
+--- 535,541 -----
+          return(p);
+  }
+  
+! #define TRC(q)   (((q)-' ')&0177)
+  
+  scan_out(scfd, scsp, dlm)
+  char *scsp, dlm;
+***************
+*** 532,538
+  		strp = &outbuf[0];
+  		sp = scsp;
+  		for(nchrs = 0;;) {
+! 			d = dropit(c = TR(cc = *sp++));
+  			if ((!d && scnhgt>HEIGHT ) || (scnhgt<=DROP && d))
+  				for(j=WIDTH; --j;)
+  					*strp++ = BACKGND;
+
+--- 551,557 -----
+                  strp = &outbuf[0];
+                  sp = scsp;
+                  for(nchrs = 0;;) {
+!                         d = dropit(c = TRC(cc = *sp++));
+                          if ((!d && scnhgt>HEIGHT ) || (scnhgt<=DROP && d))
+                                  for(j=WIDTH; --j;)
+                                          *strp++ = BACKGND;
+***************
+*** 556,569
+  {
+  	switch(c) {
+  
+! 	case TR('_'):
+! 	case TR(';'):
+! 	case TR(','):
+! 	case TR('g'):
+! 	case TR('j'):
+! 	case TR('p'):
+! 	case TR('q'):
+! 	case TR('y'):
+  		return(DROP);
+  
+  	default:
+
+--- 575,588 -----
+  {
+          switch(c) {
+  
+!         case TRC('_'):
+!         case TRC(';'):
+!         case TRC(','):
+!         case TRC('g'):
+!         case TRC('j'):
+!         case TRC('p'):
+!         case TRC('q'):
+!         case TRC('y'):
+                  return(DROP);
+  
+          default:
+***************
+*** 642,648
+  	if ((LF = pgetstr("lf", &bp)) == NULL)
+  		LF = DEFLOGF;
+  	AF = pgetstr("af", &bp);
+! 	if ((PL = pgetnum("pl", &bp)) == NULL)
+  		PL = DEFPAGESIZE;
+  	if ((SD = pgetstr("sd", &bp)) == NULL)
+  		SD = DEFSPOOL;
+
+--- 661,667 -----
+          if ((LF = pgetstr("lf", &bp)) == NULL)
+                  LF = DEFLOGF;
+  	AF = pgetstr("af", &bp);
+!         if ((PL = pgetnum("pl")) == NULL)
+                  PL = DEFPAGESIZE;
+          if ((SD = pgetstr("sd", &bp)) == NULL)
+                  SD = DEFSPOOL;
+***************
+*** 649,654
+  	if ((FF = pgetstr("ff", &bp)) == NULL)
+  		FF = DEFFF;
+  	OF = pgetstr("of", &bp);
+  	SF = pgetflag("sf");
+  	SH = pgetflag("sh");
+  	if ((DU = pgetnum("du")) < 0)
+
+--- 668,674 -----
+          if ((FF = pgetstr("ff", &bp)) == NULL)
+                  FF = DEFFF;
+          OF = pgetstr("of", &bp);
++         FO = pgetflag("fo");
+          SF = pgetflag("sf");
+          SH = pgetflag("sh");
+  	if((XC = pgetnum("xc")) < 0)
+***************
+*** 651,656
+  	OF = pgetstr("of", &bp);
+  	SF = pgetflag("sf");
+  	SH = pgetflag("sh");
+  	if ((DU = pgetnum("du")) < 0)
+  		DU = DEFUID;
+  	setuid(DU);
+
+--- 671,687 -----
+          FO = pgetflag("fo");
+          SF = pgetflag("sf");
+          SH = pgetflag("sh");
++ 	if((XC = pgetnum("xc")) < 0)
++ 		XC = 0;
++ 	if((XS = pgetnum("xs")) < 0)
++ 		XS = 0;
++ 	if((BR = pgetnum("br")) < 0)
++ 		BR = DEFSPEED;
++ 	if((FC = pgetnum("fc")) < 0)
++ 		FC = 0;
++ 	if((FS = pgetnum("fs")) < 0)
++ 		FS = 0;
++ 	TR = pgetstr("tr", &bp);
+          if ((DU = pgetnum("du")) < 0)
+                  DU = DEFUID;
+          setuid(DU);
+***************
+*** 654,657
+  	if ((DU = pgetnum("du")) < 0)
+  		DU = DEFUID;
+  	setuid(DU);
+  }
+
+--- 685,756 -----
+          if ((DU = pgetnum("du")) < 0)
+                  DU = DEFUID;
+          setuid(DU);
++ }
++ struct bauds {
++ 	int	baud;
++ 	int	speed;
++ } bauds[] = {
++ 	50,	B50,
++ 	75,	B75,
++ 	110,	B110,
++ 	134,	B134,
++ 	150,	B150,
++ 	200,	B200,
++ 	300,	B300,
++ 	600,	B600,
++ 	1200,	B1200,
++ 	1800,	B1800,
++ 	2400,	B2400,
++ 	4800,	B4800,
++ 	9600,	B9600,
++ 	19200,	EXTA,
++ 	38400,	EXTB,
++ 	0,	0
++ };
++ 
++ /*
++  * setup tty lines.
++  */
++ static
++ setty()
++ {
++ 	struct sgttyb ttybuf;
++ 	register struct bauds *bp;
++ 
++ 	if (ioctl(lp, TIOCEXCL, (char *)0) < 0) {
++ 		log("cannot set exclusive-use");
++ 		exit(1);
++ 	}
++ 	if (ioctl(lp, TIOCGETP, (char *)&ttybuf) < 0) {
++ 		log("cannot get tty parameters");
++ 		exit(1);
++ 	}
++ 	if (BR > 0) {
++ 		for (bp = bauds; bp->baud; bp++)
++ 			if (BR == bp->baud)
++ 				break;
++ 		if (!bp->baud) {
++ 			log("illegal baud rate %d", BR);
++ 			exit(1);
++ 		}
++ 		ttybuf.sg_ispeed = ttybuf.sg_ospeed = bp->speed;
++ 	}
++ 	ttybuf.sg_flags &= ~FC;
++ 	ttybuf.sg_flags |= FS;
++ 	if (ioctl(lp, TIOCSETP, (char *)&ttybuf) < 0) {
++ 		log("cannot set tty parameters");
++ 		exit(1);
++ 	}
++ 	if (XC) {
++ 		if (ioctl(lp, TIOCLBIC, &XC) < 0) {
++ 			log("cannot set local tty parameters");
++ 			exit(1);
++ 		}
++ 	}
++ 	if (XS) {
++ 		if (ioctl(lp, TIOCLBIS, &XS) < 0) {
++ 			log("cannot set local tty parameters");
++ 			exit(1);
++ 		}
++ 	}
+  }
+
+
+  	-tcs
+	Terry Slattery	  U.S. Naval Academy	301-267-4413
+	ARPA: tcs@brl-bmd     UUCP: decvax!brl-bmd!usna!tcs

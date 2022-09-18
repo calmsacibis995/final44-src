@@ -1,0 +1,105 @@
+Subject: ^C during 'file system full' messages can hang your system
+Index: sys/{tty.c,subr_prf.c} 4.3BSD
+
+Description:
+	While printing "file system full" messages, ttycheckoutq()
+	allows the system call to be interrupted, leaving inodes locked.
+
+Fix:
+
+echo x - subr_prf.c.diff
+sed 's/^X//' >subr_prf.c.diff << 'END-of-subr_prf.c.diff'
+X*** subr_prf.c	Thu Apr 30 13:17:12 1987
+X--- subr_prf.c.new	Thu Apr 30 12:29:15 1987
+X***************
+X*** 67,72 ****
+X--- 67,74 ----
+X  /*
+X   * Uprintf prints to the current user's terminal.
+X   * It may block if the tty queue is overfull.
+X+  * No message is printed if the queue does not clear
+X+  * in a reasonable time.
+X   * Should determine whether current terminal user is related
+X   * to this process.
+X   */
+X***************
+X*** 87,94 ****
+X  		if (p->p_uid != u.u_uid)	/* doesn't account for setuid */
+X  			return;
+X  #endif
+X! 	(void)ttycheckoutq(tp, 1);
+X! 	prf(fmt, &x1, TOTTY, tp);
+X  }
+X  
+X  /*
+X--- 89,96 ----
+X  		if (p->p_uid != u.u_uid)	/* doesn't account for setuid */
+X  			return;
+X  #endif
+X! 	if (ttycheckoutq(tp, 1))
+X! 		prf(fmt, &x1, TOTTY, tp);
+X  }
+X  
+X  /*
+END-of-subr_prf.c.diff
+echo x - tty.c.diff
+sed 's/^X//' >tty.c.diff << 'END-of-tty.c.diff'
+X*** tty.c	Thu Apr 30 13:17:12 1987
+X--- tty.c.new	Thu Apr 30 12:25:12 1987
+X***************
+X*** 1256,1279 ****
+X   * (from uprintf/tprintf).  Allow some space over the normal
+X   * hiwater mark so we don't lose messages due to normal flow
+X   * control, but don't let the tty run amok.
+X   */
+X  ttycheckoutq(tp, wait)
+X  	register struct tty *tp;
+X  	int wait;
+X  {
+X! 	int hiwat, s;
+X  
+X  	hiwat = TTHIWAT(tp);
+X  	s = spltty();
+X  	if (tp->t_outq.c_cc > hiwat + 200)
+X  	    while (tp->t_outq.c_cc > hiwat) {
+X  		ttstart(tp);
+X! 		if (wait == 0) {
+X  			splx(s);
+X  			return (0);
+X  		}
+X  		tp->t_state |= TS_ASLEEP;
+X! 		sleep((caddr_t)&tp->t_outq, TTOPRI);
+X  	}
+X  	splx(s);
+X  	return (1);
+X--- 1256,1283 ----
+X   * (from uprintf/tprintf).  Allow some space over the normal
+X   * hiwater mark so we don't lose messages due to normal flow
+X   * control, but don't let the tty run amok.
+X+  * Sleeps here are not interruptible, but we return permaturely
+X+  * if new signals come in.
+X   */
+X  ttycheckoutq(tp, wait)
+X  	register struct tty *tp;
+X  	int wait;
+X  {
+X! 	int hiwat, s, oldsig;
+X  
+X  	hiwat = TTHIWAT(tp);
+X  	s = spltty();
+X+ 	oldsig = u.u_procp->p_sig;
+X  	if (tp->t_outq.c_cc > hiwat + 200)
+X  	    while (tp->t_outq.c_cc > hiwat) {
+X  		ttstart(tp);
+X! 		if (wait == 0 || u.u_procp->p_sig != oldsig) {
+X  			splx(s);
+X  			return (0);
+X  		}
+X+ 		timeout(wakeup, (caddr_t)&tp->t_outq, hz);
+X  		tp->t_state |= TS_ASLEEP;
+X! 		sleep((caddr_t)&tp->t_outq, PZERO - 1);
+X  	}
+X  	splx(s);
+X  	return (1);
+END-of-tty.c.diff
+exit

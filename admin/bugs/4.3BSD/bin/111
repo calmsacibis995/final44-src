@@ -1,0 +1,108 @@
+From parmelee@wayback.cs.cornell.edu  Mon Dec 14 18:59:28 1987
+Date: Mon, 14 Dec 87 13:38:02 EST
+From: parmelee@wayback.cs.cornell.edu (Larry Parmelee)
+Subject: /bin/mail sometimes infinitely loops delivering mail (+Fix)
+Index: 	bin/mail.c 4.3BSD
+
+Description:
+	/bin/mail can sometimes get into an infinite loop while
+	placing letters in people's local mailboxes.
+
+Repeat-By:
+	Receive mail from someone who's return address is over 100
+	characters long.  Some arpanet(?) sites out in the hinterlands
+	like to give their return address in route-addr form, and when
+	you get several of these sites strung together, the result is
+	a very long return address.  When sendmail forks /bin/mail to
+	perform the local delivery, /bin/mail will infinitely loop. 
+	The mail is generally delivered correctly, the loop happens
+	as mail is trying to exit. 
+
+	You MAY be able to reproduce this by hand, by doing something
+	like this:  Put something that looks more or less like a 
+	standard letter into file foo, then do:
+
+	cat foo | /bin/mail -r "over 100 characters of stuff" -d myself &
+
+	The "-d myself" is who the letter is to be delivered to- "myself"
+	should be your own login name, or someone who normally receives
+	mail on the local machine.  After awhile, you can observe that
+	/bin/mail is still running, merrily eating cpu cycles.
+	
+Fix:
+	When doing local delivery, the "bulkmail" subroutine in /bin/mail
+	allocates a 100-character array on the stack to hold the "-r"
+	argument value.  No checks are done to see that the argument
+	is not actually longer than this.  Over-flowing this array
+	generally only trashes the return address, so everything is fine
+	until the subroutine tries to return.  Then the program gets a
+	signal, which it catches and tries to recover from, but fails,
+	getting another signal, etc.
+
+	Apply the patch below.  The fix does 2 things:  1) increase the
+	size of the array, and 2) insure that the "-r" argument doesn't
+	overflow the array, by truncating the argument if necessary.
+	"truncating" the return path is probably not the best way to
+	handle this, but it's easy to do, and prevents the infinite
+	loop.
+	
+	-Larry Parmelee
+	parmelee@wayback.cs.cornell.edu
+
+*** /tmp/,RCSt1011172	Mon Dec 14 13:53:02 1987
+--- mail.c	Mon Dec 14 13:51:54 1987
+***************
+*** 418,424 ****
+  bulkmail(argc, argv)
+  char **argv;
+  {
+! 	char truename[100];
+  	int first;
+  	register char *cp;
+  	int gaver = 0;
+--- 418,429 ----
+  bulkmail(argc, argv)
+  char **argv;
+  {
+! 	char truename[LSIZE-(7+1+26)];	/* The stuff in ()s is the value */
+! 		/* "sizeof(from)", an extra space, and the size of the
+! 	         * returned string from ctime.  This is so we don't
+! 		 * unintentionally create a line in the letter longer
+! 		 * than LSIZE.
+! 		 */
+  	int first;
+  	register char *cp;
+  	int gaver = 0;
+***************
+*** 464,470 ****
+  			if (argc <= 1)
+  				usage();
+  			gaver++;
+! 			strcpy(truename, argv[1]);
+  			fgets(line, LSIZE, stdin);
+  			if (strcmpn("From", line, 4) == 0)
+  				line[0] = '\0';
+--- 469,479 ----
+  			if (argc <= 1)
+  				usage();
+  			gaver++;
+! 			{ int i = strlen(argv[1]);
+! 			  strncpy(truename, argv[1],
+! 				(i >= sizeof(truename))? sizeof(truename): i+1);
+! 			  truename[sizeof(truename)-1] == '\0';
+! 			}
+  			fgets(line, LSIZE, stdin);
+  			if (strcmpn("From", line, 4) == 0)
+  				line[0] = '\0';
+***************
+*** 492,497 ****
+--- 501,509 ----
+  	if (gaver == 0)
+  		strcpy(truename, my_name);
+  	time(&iop);
++ 		/* If the size of the string printed below changes, you
++ 		 * may want to adjust the size of truename.
++ 		 */
+  	fprintf(tmpf, "%s%s %s", from, truename, ctime(&iop));
+  	iop = ftell(tmpf);
+  	flgf = first = 1;

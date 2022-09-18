@@ -1,0 +1,42 @@
+Return-Path: <rws@mit-bold>
+From: rws@mit-bold (Robert W. Scheifler)
+Date: 19 Nov 1984 1544-EST (Monday)
+Subject: spurious illegal instructions under 4.2
+
+Index:	sys/vax/machdep.c 4.2BSD
+
+Description:
+	The checks for growing P1 space in sendsig() are inadequate.
+	The code assumes that, if a signal stack is used, the signal stack
+	will always be in P0 space.  This is quite likely, but it is a bit
+	bogus to make that restriction.  The code also assumes that, if
+	a signal stack is used, the signal context will always go on the
+	signal stack.  Unfortunately, the signal context goes on the
+	current stack, not the new stack.  If the current stack is in P1
+	space, and the current SP is close to the current end of P1 space,
+	P1 space will not be grown and a subsequent check for write access
+	will fail, causing your program to get a special SIGILL which cannot
+	be caught (which made this bug a bit hard to track down).
+Repeat-By:
+	Generate a signal that will use a signal stack in previously
+	untouched P1 space.
+
+	Generate a signal that will use a signal stack in P0 space when the
+	current SP is within a sigcontext's length of the current end of P1
+	space.
+Fix:
+	In sendsig(), change
+		if (!oonstack && (int)fp <= USRSTACK - ctob(u.u_ssize))
+			grow((unsigned)fp);
+	to be
+		if ((int)fp <= USRSTACK - ctob(u.u_ssize))
+			grow((unsigned)fp);
+	and change
+		if (!u.u_onstack && (int)scp <= USRSTACK - ctob(u.u_ssize))
+			grow((unsigned)scp);
+	to be
+		if ((int)scp <= USRSTACK - ctob(u.u_ssize))
+			grow((unsigned)scp);
+	Note that when fp (scp) is P0 space, grow will be called gratuitously.
+	There should probably be additional checks to see if the address is
+	in P1 space before calling grow.

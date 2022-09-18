@@ -1,0 +1,62 @@
+Date: Thu, 9 Apr 87 09:37:08 PDT
+From: sun!rose!nowicki@ucbvax.Berkeley.EDU (Bill Nowicki)
+To: ucbvax!4bsd-bugs
+Subject: tcp_usrreq.c returns with wrong priority
+
+Index: sys/netinet/tcp_usrreq.c 4.3BSD
+
+In 4.3BSD (sccs id 7.1) the tcp_usrreq() function is protected by
+a call to splnet().  However, two of the paths to return statements
+never set the priority back to what it was.  Fix (line numbers may vary):
+
+*** tcp_usrreq.c	Wed Apr  8 13:47:28 1987
+--- tcp_usrreq.c.new	Wed Apr  8 13:46:21 1987
+***************
+*** 53,63 ****
+  	int s = splnet();
+  	int error = 0;
+  	int ostate;
+  
+! 	if (req == PRU_CONTROL)
+! 		return (in_control(so, (int)m, (caddr_t)nam,
+! 			(struct ifnet *)rights));
+  	if (rights && rights->m_len) {
+  		(void) splx(s);
+  		return (EINVAL);
+  	}
+--- 53,66 ----
+  	int s = splnet();
+  	int error = 0;
+  	int ostate;
+  
+! 	if (req == PRU_CONTROL) {
+! 		error = in_control(so, (int)m, (caddr_t)nam,
+! 			(struct ifnet *)rights);
+! 		(void) splx(s);
+! 		return(error);
+! 	}
+  	if (rights && rights->m_len) {
+  		(void) splx(s);
+  		return (EINVAL);
+  	}
+***************
+*** 241,248 ****
+--- 244,252 ----
+  		break;
+  
+  	case PRU_SENSE:
+  		((struct stat *) m)->st_blksize = so->so_snd.sb_hiwat;
++ 		(void) splx(s);
+  		return (0);
+  
+  	case PRU_RCVOOB:
+  		if ((so->so_oobmark == 0 &&
+====================================================================
+From karels Fri Apr 10 13:42:08 1987
+From: karels (Mike Karels)
+Subject: Re: 4.3BSD/sys/109 
+
+I fixed it differently; it didn't need to raise the IPL so soon,
+and it really wanted to protect more of the initialization code.
+
+		Mike

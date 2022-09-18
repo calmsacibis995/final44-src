@@ -1,0 +1,90 @@
+From donn@cs.utah.edu  Thu Dec  7 02:53:42 1989
+Date: Thu, 7 Dec 89 03:54:42 -0700
+From: donn@cs.utah.edu (Donn Seeley)
+To: 4bsd-bugs@okeeffe.Berkeley.EDU
+Subject: setsockopt() on shut-down socket can be fatal
+Index: sys/netinet/tcp_usrreq.c 4.3BSD-tahoe
+
+Description:
+	The system crashes with a kernel segmentation fault.  The crash
+	pc is in tcp_ctloutput(); examination of the stack shows that
+	this function has performed an indirection through a null pcb
+	pointer.  Unfortunately such null pointers appear to be legal;
+	see code at the start of tcp_usrreq() that makes the test.  The
+	current tcp code on okeeffe appears to be open to this problem
+	too...
+
+Repeat-By:
+	The user program was a 6+ MB lisp image, but I was able to find
+	a way to get the same effect from C.  Try the following little
+	monster:
+
+	#include <machine/endian.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <netinet/in.h>
+	#include <netinet/tcp.h>
+	#include <arpa/inet.h>
+	#include <netdb.h>
+	#include <stdio.h>
+	/* my favorite library/macro package */
+	/* #include <local/bomb.h> */
+
+	main(argc, argv)
+		int argc;
+		char **argv;
+	{
+		int one = 1;
+		int s;
+		struct protoent *pp;
+		struct sockaddr_in sin;
+		unsigned long ul;
+
+		/* program_name = argv[0]; */
+
+		if ((s = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+			bomb("can't make socket");
+
+		if ((pp = getprotobyname("tcp")) == 0)
+			sbomb("no such protocol as tcp???");
+
+		sin.sin_family = AF_INET;
+		ul = inet_addr("127.0.0.1");
+		bcopy((char *)&ul, (char *)&sin.sin_addr, 4);
+		sin.sin_port = htons(1234);
+
+		if (bind(s, (struct sockaddr *)&sin, sizeof sin) < 0)
+			bomb("couldn't bind to address");
+		if (listen(s, 1) < 0)
+			bomb("listen failed???");
+
+		if (shutdown(s, 2) == -1)
+			bomb("shutdown failed");
+
+		puts("bombs away");
+
+		if (setsockopt(s, pp->p_proto, TCP_NODELAY, (char *)&one, sizeof one) == -1)
+			bomb("setsockopt failed");
+		puts("setsockopt succeeded");
+
+		return 0;
+	}
+
+	bomb(s) char *s; { puts(s); exit(1); } /* substitute functions */
+	sbomb(s) char *s; { puts(s); exit(1); }
+
+Fix:
+	tcp_usrreq() contains code that looks like:
+
+		inp = sotoinpcb(so);
+		if (inp == 0 && ...) {
+			...
+			return (EINVAL);
+		}
+
+	It seems to me that tcp_ctloutput should do something similar.
+	I'm not familiar enough with the other protocol functions to
+	say if they face the same danger...
+
+	Donn Seeley    University of Utah CS Dept    donn@cs.utah.edu
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    utah-cs!donn

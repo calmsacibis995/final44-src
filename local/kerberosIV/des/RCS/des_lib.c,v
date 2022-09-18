@@ -1,0 +1,383 @@
+head     4.1;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.1 ADAMS_NSA:4.1 KPATCH4:4.1 KPATCH3:4.1 KPATCH2:4.1 KREL1:4.1 BETA5/24/88:4.1 v1:1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.1
+date     87.09.01.15.41.00;  author steiner;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     87.01.13.16.35.36;  author wesommer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     85.12.16.13.45.39;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.08.19.15.25.26;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.08.16.12.48.04;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@ok v1
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@/* des_lib.c
+ *
+ *	spm	8/85	MIT project athena
+ *				copyright MIT	1985
+ *
+ *
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_lib.c,v $
+ *	$Author: wesommer $
+ *	$Locker: steiner $
+ *	$Log:	des_lib.c,v $
+ * Revision 1.4  87/01/13  16:35:36  wesommer
+ * Added include of des_conf.h
+ * rieving revision 1.3
+ * 
+ * Revision 1.3  85/12/16  13:45:39  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.2  85/08/19  15:25:26  spm
+ * fix print, int
+ * 
+ * Revision 1.1  85/08/16  12:48:04  spm
+ * Initial revision
+ * 
+ *
+ *	These routines perform encryption and decryption using the DES
+ *  private key algorithm, or else a subset of it-- fewer inner loops.
+ *  ( AUTH_DES_ITER defaults to 16, may be less)
+ *
+ *	Under U.S. law, this software may not be exported outside the US
+ *  without license from the U.S. Commerce department.
+ *
+ *	The key schedule is passed as an arg, as well as the cleartext or
+ *  ciphertext.  The cleartext and ciphertext should be in host order.
+ *
+ *	These routines form the library interface to the des facilities.
+ */
+
+#include "./des_conf.h"
+# include	<stdio.h>
+# include	<strings.h>
+# include	"./des.h"
+
+#ifdef	VAX
+#include	<sys/time.h>
+#endif
+
+extern	int	debug;
+extern	int	debug_print();
+
+int	
+	cbc_encrypt(in,out,length,key,iv,encrypt)
+
+	C_Block				 		*in;		/* >= length bytes of inputtext	 */
+	C_Block					 	*out	;	/* >= length bytes of outputtext */
+	register 	int				length;		/* in bytes						*/
+	int							encrypt;	/* 0 ==> decrypt, else encrypt */
+	Key_schedule				key;		/* precomputed key schedule	   */
+	C_Block						*iv;		/* 8 bytes of ivec			   */
+
+/*	performs des cipher-block-chaining operation
+ *	either encrypts from cleartext to ciphertext, if encrypt != 0
+ *	or decrypts from ciphertext to cleartext, if encrypt == 0
+ *
+ *	NOTE--
+ *  the output is ALWAYS an multiple of 8 bytes long.  If not enough
+ *	space was provided, your program will get trashed.
+ *
+ *  for encryption, the cleartext string is null padded, at the end, 
+ *  to an integral multiple of eight bytes.
+ *
+ *	for decryption, the ciphertext will be used in integral multiples of
+ *  8 bytes, but only the first "length" bytes returned into the cleartext.
+ */
+{
+	register	unsigned long 	*input = (unsigned long *) in;
+	register	unsigned long 	*output = (unsigned long *) out;
+	register	unsigned long 	*ivec = (unsigned long *) iv;
+
+	unsigned long	i,j;
+	static	unsigned long	t_input[2];
+	static	unsigned long	t_output[8];
+	static	unsigned char	*t_in_p = (unsigned char *) t_input;
+	static	unsigned long	xor_0, xor_1;
+
+	if (encrypt)
+		{
+		t_output[0] = *ivec++;
+		t_output[1] = *ivec;
+
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input++;
+			t_input[1] = *input++;
+			/* zero pad													   */
+			if (length <8)
+				{
+				for (j = length; j<=7; j++)
+					{
+					*(t_in_p+j)= 0;
+					}
+				}
+					
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",length,t_input[0],t_input[1]);
+				}
+#endif			
+			/* do the xor for cbc into the temp						   */
+			t_input[0] ^= t_output[0] ;
+			t_input[1] ^= t_output[1] ;
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+			/* copy temp output	and save it for cbc						   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("xor'ed",i,t_input[0],t_input[1]);
+				debug_print("cipher",i,t_output[0],t_output[1]);
+				}	
+#endif
+			}
+		return 0;
+		}
+
+	else	/* decrypt */
+		{
+		xor_0 = *ivec++;
+		xor_1 = *ivec;
+
+		for ( i = 0; length > 0; i++, length -=8)
+			{
+			/* get input												   */
+			t_input[0] = *input++;
+			t_input[1] = *input++;
+			/* no padding for decrypt									   */
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("cipher",i,t_input[0],t_input[1]);
+				}
+#endif
+			/* encrypt												   */
+			ecb_encrypt(t_input,t_output,key,encrypt);
+#ifdef	DEBUG
+			if (debug )
+				{
+				debug_print("out pre xor",i,t_output[0],t_output[1]);
+				}
+#endif
+			/* do the xor for cbc into the output						   */
+			t_output[0] ^= xor_0 ;
+			t_output[1] ^= xor_1 ;
+			/* copy temp output											   */
+			*output++ = t_output[0];
+			*output++ = t_output[1];
+			/* save xor value for next round							   */
+			xor_0 = t_input[0];
+			xor_1 = t_input[1];
+#ifdef	DEBUG
+			if (debug)
+				{
+				debug_print("clear",i,t_output[0],t_output[1]);
+				}	
+#endif
+			}
+					
+		}
+}
+
+/* convert an arbitrary length string to a DES key						   */
+int
+	string_to_key(str,key)
+	register char		*str;
+	register C_Block	*key;
+
+{
+	register	temp,i,j,length;
+	register	char	*p_char;
+	static		char	*k_p;
+	static		long	*l_p;
+	static		int		forward;
+	static		int		odd;
+	static		char 	k_char[64];
+
+	forward = 1;
+	p_char = k_char;
+	length = strlen(str);
+
+	/* init key array for bits											   */
+#ifdef	notdef
+	l_p = (long *) k_char;
+	*l_p++ = 0; *l_p = 0;
+#endif
+	bzero(k_char,sizeof(k_char));
+
+#ifdef	DEBUG
+	if (debug)
+		{
+		fprintf(stdout,"\n\ninput string length = %d  string = %s",length,str);
+		}
+#endif
+
+	/* get next 8 bytes, strip parity, xor								   */
+	for (i = 1; i <= length; i++)
+		{
+		/* get next input key byte										   */
+		temp = (unsigned int) *str++;		
+#ifdef	DEBUG
+		if (debug)
+			{
+			fprintf(stdout,"%02x ",temp & 0xff);
+			}
+#endif
+		/* loop through bits within byte, ignore parity					   */
+		for (j = 0; j <= 6; j++)
+			{
+#ifndef	notdef
+			if (forward)
+				{
+				*p_char++ ^= (int) temp & 01;
+				}
+			else
+				{
+				*--p_char ^= (int) temp & 01;
+				}	
+			temp = temp >> 1;
+#endif
+			}	while (--j > 0);
+
+		/* check and flip direction										   */
+		if ((i%8) == 0)
+			{
+			forward = !forward;
+			}
+		}		
+
+	/* now stuff into the key C_Block, and force odd parity					   */
+	p_char = k_char;
+	k_p =  (char *) key;
+
+	for (i = 0; i <= 7; i++)
+		{
+		odd = 0;
+		temp = 0;
+		for (j = 0; j <= 6; j++)
+			{
+			temp |= *p_char << (1+j);
+			odd ^= *p_char++; 
+			}			
+		/* set odd parity												   */
+		if (!odd) temp |= 1;
+		*k_p++ = (char) temp;
+		}
+
+}
+@
+
+
+1.4
+log
+@Added include of des_conf.h
+rieving revision 1.3
+@
+text
+@d7 3
+a9 3
+ *	$Source: /altsource/kerberos/lib/des/vax/RCS/des_lib.c,v $
+ *	$Author: spm $
+ *	$Locker: wesommer $
+d11 4
+@
+
+
+1.3
+log
+@*** empty log message ***
+@
+text
+@d7 1
+a7 1
+ *	$Source: /usr/mit/spm/auth/deslib/RCS/des_lib.c,v $
+d9 1
+a9 1
+ *	$Locker: spm $
+d11 3
+d34 1
+@
+
+
+1.2
+log
+@fix print, int
+@
+text
+@d11 3
+d32 2
+a33 1
+# include	"des.h"
+d35 4
+d43 1
+a43 1
+	cbc_des(input,output,length,key,ivec,encrypt)
+d45 3
+a47 3
+	register	unsigned long 	*input;		/* >= length bytes of inputtext	 */
+	register	unsigned long 	*output;	/* >= length bytes of outputtext */
+	register	int				length;		/* in bytes						*/
+d50 1
+a50 1
+	unsigned long				*ivec;		/* 8 bytes of ivec			   */
+d67 4
+d164 88
+a251 1
+} 
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+a7 1
+ *	$Source: /usr/mit/spm/auth/test/RCS/des_lib.c,v $
+d10 4
+a13 1
+ *	$Log:	des_libc,v $
+d39 1
+a39 1
+	register	long			length;		/* in bytes						*/
+d144 1
+a144 1
+			if (debug  1)
+@

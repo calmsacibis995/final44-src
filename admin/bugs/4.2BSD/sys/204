@@ -1,0 +1,78 @@
+Return-Path: <ihnp4!hsi!brown>
+Date: Tue, 13 Aug 85 09:01:53 edt
+From: ihnp4!hsi!brown (Mike Brown)
+To: ihnp4!ucbvax!4bsd-bugs
+Subject: 4.2bsd fork/signal interaction problem
+
+Subject: signal(3c), kill(2), & fork(2) cause fork to return 0 to parent
+Index:	sys 4.2BSD
+
+Description:
+	When a program uses both fork(2) and the old signal interface
+	the return value from fork() is occasionally zero in the parent
+	process.  I have not tested this with the new sigvec interface.
+Repeat-By:
+	run loop in csh(eg.)
+
+	while (1)
+	? ./forksig
+	? echo -n .
+	? end
+	
+/*
+ * forksig.c
+ *
+ * This program uses two processes which are supposed to synchronize
+ * with each other using signals.  The child process sends the parent
+ * a signal which is caught and then the parent sends the child a signal
+ * which is caught.  The child then terminates, the parent terminates
+ * when the wait returns.  The parent will complain if the return value
+ * from the fork was zero.
+ */
+
+#include <stdio.h>
+#include <signal.h>
+
+int	myid, pid, cid;
+
+catcher()
+{
+	signal( SIGTRAP, SIG_IGN);
+	myid = getpid();
+
+	/*
+	 * use process id != parent id since fork
+	 * occasionally returns 0 to parent.
+	 */
+	if (myid != pid)
+		exit(0);
+
+	if (myid == pid  && cid <= 0) {
+		fprintf(stderr, "cid is 0 in parent\n");
+		fprintf(stderr, "cid %d myid %d pid %d\n", cid, myid, pid);
+		exit(-5);
+	}
+
+	signal( SIGTRAP, catcher);
+	kill( cid, SIGTRAP);
+}
+
+
+main()
+{
+	unsigned	sleep();
+
+	signal( SIGTRAP, catcher);
+	pid = getpid();
+
+	cid = fork();
+	myid = getpid();
+
+	if (myid != pid) {		/* this is the child */
+		kill( pid, SIGTRAP);
+		while (1)
+			sleep( (unsigned) 1000);
+	}
+	while (wait((int *)0) != -1)
+		;
+}

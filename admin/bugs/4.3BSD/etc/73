@@ -1,0 +1,126 @@
+Path: seismo!mcvax!ukc!stc!root44!miduet!steve
+From: steve@gec-mi-at.co.uk (Steve Lademann)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.3BSD telnet bug
+Sender: news@gec-mi-at.co.uk
+Index: etc/telnetd.c 4.3BSD
+
+Having spent the last couple of months upgrading two 11/750s to 4.3BSD, I
+have encountered a few minor bugs which I have fixes for. This one is in
+telnet.
+
+Problem:	We have a lot of System V.0 systems, and a few other
+		miscellaneous systems using vintage telnets which will
+		not interwork with the 4.3BSD telnet daemon. This is
+		due to the new features added to 4.3BSD which arbitrate
+		terminal types, etc. When used with a very old telnet, the
+		daemon hangs waiting for a response from the remote telnet.
+
+Fix:		This modification adds a timeout around the code which waits
+		for a response.
+
+*** telnetd.c.old	Tue May 13 06:21:51 1986
+--- telnetd.c	Wed Jul  8 12:50:36 1987
+***************
+*** 17,22 ****
+--- 17,28 ----
+  /*
+   * Telnet server.
+   */
++ 
++ /*
++  * Modified by steve@gec-mi-at.co.uk to enable Sytem V.0 telnets to work
++  * with BSD4.3
++  */
++ 
+  #include <sys/param.h>
+  #include <sys/socket.h>
+  #include <sys/wait.h>
+***************
+*** 64,69 ****
+--- 70,76 ----
+  char	*neturg = 0;		/* one past last bye of urgent data */
+  	/* the remote system seems to NOT be an old 4.2 */
+  int	not42 = 1;
++ int	sysV0 = 0;	/* Flag to identify a stone-age telnet client */
+  char BANNER1[] = "\r\n\r\n4.3 BSD UNIX (",
+***************
+*** 209,226 ****
+--- 216,247 ----
+   * Output is the variable terminaltype filled in.
+   */
++ #include <setjmp.h>
++ jmp_buf	tmo;
++ 
+  void
+  getterminaltype()
+  {
+      static char sbuf[] = { IAC, DO, TELOPT_TTYPE };
++     int	tmout();
+      settimer(getterminal);
+      bcopy(sbuf, nfrontp, sizeof sbuf);
+      nfrontp += sizeof sbuf;
+      hisopts[TELOPT_TTYPE] = OPT_YES_BUT_ALWAYS_LOOK;
++     if (setjmp(tmo))
++ 	{
++ 	hisopts[TELOPT_TTYPE] = OPT_NO;
++ 	sysV0 = 1;	/* Kludge ^ 2  It must be a stone-age client */
++ 	return;
++ 	}
++     signal(SIGALRM,tmout);
++     alarm(2);
+      while (sequenceIs(ttypeopt, getterminal)) {
+  	ttloop();
+      }
++     signal(SIGALRM,SIG_DFL);
++     alarm(0);
+      if (hisopts[TELOPT_TTYPE] == OPT_YES) {
+  	static char sbbuf[] = { IAC, SB, TELOPT_TTYPE, TELQUAL_SEND, IAC, SE };
+***************
+*** 232,237 ****
+--- 253,263 ----
+      }
+  }
++ int	tmout()
++ {
++ 	longjmp(tmo,1);
++ }
++ 
+  /*
+   * Get a pty, scan input lines.
+   */
+***************
+*** 408,417 ****
+  	 * WE, the server, sends it; it does NOT mean that the client will
+  	 * echo the terminal input).
+  	 */
+! 	sprintf(nfrontp, doopt, TELOPT_ECHO);
+! 	nfrontp += sizeof doopt-2;
+! 	hisopts[TELOPT_ECHO] = OPT_YES_BUT_ALWAYS_LOOK;
+  	/*
+  	 * Show banner that getty never gave.
+  	 *
+--- 434,452 ----
+  	 * WE, the server, sends it; it does NOT mean that the client will
+  	 * echo the terminal input).
+  	 */
+! 	/*
+! 	 * However, the following code does not help System V.0 systems,
+! 	 * which we identify by there reluctance to reply to the terminal
+! 	 * type sequence (KLUDGE UPON KLUDGE)! steve@gec-mi-at.co.uk
+! 	 */
++ 	if (!sysV0)
++ 	{
++ 		sprintf(nfrontp, doopt, TELOPT_ECHO);
++ 		nfrontp += sizeof doopt-2;
++ 		hisopts[TELOPT_ECHO] = OPT_YES_BUT_ALWAYS_LOOK;
++ 	}
++ 
+  	/*
+  	 * Show banner that getty never gave.
+  	 *
+
+|Steve Lademann		|Phone: 44 727 59292 x326		|
+|Marconi Instruments Ltd|UUCP : ...mcvax!ukc!hrc63!miduet!steve	|
+|St. Albans    AL4 0JN	|NRS  : steve@uk.co.gec-mi-at		|
+|Herts.   UK		|	"disclaimers.all"

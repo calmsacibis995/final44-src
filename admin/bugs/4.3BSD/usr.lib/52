@@ -1,0 +1,301 @@
+From @relay.cs.net:kathyv%tektronix.tek.com@tektronix.tek.com  Wed Jun  3 18:54:31 1987
+Date: Wed, 3 Jun 87 13:23:21 PDT
+From: kathyv <@relay.cs.net,@tektronix.tek.com:kathyv@tektronix.tek.com (Kathy Vineyard)>
+Subject: overwrite() in curses library does not completely overwrite.
+Index: usr.lib/libcurses/overwrite.c 4.3BSD
+
+Description:
+	When overwriting a window, the curses routine overwrite(), does
+	a bcopy() and a touchline() for each row.  However, when calling
+	touchline(), it passes a 'y' which refers to the 'y' coordinate
+	on the screen instead of a 'y' offset within the window.  The 
+	result is that if overwrite() is called with its second argument
+	a window that is not located at 0,0, then touchline() will begin
+	to write off the end of either win->_firstch[] or win->_lastch[].
+
+Repeat-By:
+	The following c program demonstrates the problem:
+---------------------------------cut-------------------------------------
+#include <stdio.h>
+#include <signal.h>
+#include <curses.h>
+
+WINDOW *one, *two;
+int die();
+char string[128];
+
+main()
+{
+	initscr();
+	cbreak();
+	signal(SIGINT,die);
+	two=newwin(10,40,5,5);
+	one=newwin(10,40,7,15);
+	box(one,'#','*');
+	wmove(one,5,10);
+	waddstr(one,"hello there: ");
+	wrefresh(one);
+	wgetstr(one,string);
+	wrefresh(one);
+	sleep(2);
+	overwrite(two,one);
+	box(two,'$','&');
+	wmove(two,2,5);
+	waddstr(two,"zoobeezoobeezoobeezoobeezoobee");
+	wmove(two,3,5);
+	waddstr(two,"wowee zowee! ");
+	wrefresh(two);
+	wgetstr(two,string);
+	wrefresh(two);
+	overwrite(one,two);
+	wrefresh(one);
+	die();
+}
+
+die()
+{
+	signal(SIGINT,SIG_IGN);
+	mvcur(0,COLS - 1, LINES - 1,0);
+	endwin();
+	exit(0);
+}
+---------------------------------cut-------------------------------------
+
+Fix:
+
+*** /usr/src/usr.lib/libcurses/overwrite.c	Fri Jun  7 10:39:28 1985
+--- overwrite.c.new	Wed Jun  3 13:08:36 1987
+***************
+*** 40,45 ****
+  	for (y = starty; y < endy; y++) {
+  		bcopy(&win1->_y[y - win1->_begy][startx - win1->_begx],
+  		      &win2->_y[y - win2->_begy][startx - win2->_begx], x);
+! 		touchline(win2, y, startx - win2->_begx, endx - win2->_begx);
+  	}
+  }
+--- 40,46 ----
+  	for (y = starty; y < endy; y++) {
+  		bcopy(&win1->_y[y - win1->_begy][startx - win1->_begx],
+  		      &win2->_y[y - win2->_begy][startx - win2->_begx], x);
+! 		touchline(win2, y - win2->_begy, 
+! 			startx - win2->_begx, endx - win2->_begx);
+  	}
+  }
+
+------------------------------------------------------------------------
+Credit for description and fix to Todd Brunhoff.
+
+Kathy Vineyard
+kathyv@kestrel.uss.tek.com
+Unix Systems Support,  Tektronix, Inc.
+------------------------------------------------------------------------
+From tektronix!kestrel.USS.TEK.COM!kathyv@ucbvax.Berkeley.EDU Tue Oct 20 21:38:35 1987
+To: Keith Bostic <bostic@ucbvax.Berkeley.EDU>
+Cc: kathyv@kestrel.uss.tek.com
+Subject: Re: overwrite bug in curses 
+In-Reply-To: Your message of Mon, 14 Sep 87 15:40:07 PDT.
+             <8709142240.AA06618@okeeffe.Berkeley.EDU> 
+Date: Tue, 20 Oct 87 14:37:18 PDT
+From: Kathy Vineyard <tektronix!kestrel.USS.TEK.COM!kathyv@ucbvax.Berkeley.EDU>
+
+Keith,
+
+I apologize for taking so long to answer your question about the curses
+library bug I submitted.  I had to go back and figure out what I was
+talking about myself!  When I reread the bug report and played with it
+for a bit, I wasn't convinced of the bug, either.  But after going
+through the code several times and testing out with the example, I
+still feel there is a problem.  This is a hard one to explain, so bear
+with me as I try!
+
+The bug shows up at the very last, just before the program exits.
+Window one (which is the lower of the windows) is supposed to overwrite
+window two.  But the overwrite actually starts to happen on the last
+row of window two, instead of the first row of window one.  At that
+point, the border of window one which overlaps window two is blank.
+When it does the overwrite, those blanks are not put forward as they
+should be.  The blank border, instead, starts on the last line of window
+two.
+
+I've added a little bit to the end of the test program which may help
+to see the problem a little better.  By running this test with both the
+original libcurses and with this modification the difference should be
+apparent on the last 'screenful' before the program exits.
+
+If this is still not clear after you test it out, let me know and
+perhaps I could try to come up with a better test case (although I've
+already tried!) or something.  I've also included your previous letter
+to be sure you know what this is all about!
+
+Thanks,
+Kathy Vineyard
+
+kathyv@kestrel.uss.tek.com
+
+*************************************************************************
+/* new test case */
+
+#include <stdio.h>
+#include <signal.h>
+#include <curses.h>
+
+WINDOW *one, *two;
+int die();
+char string[128];
+
+main()
+{
+	initscr();
+	cbreak();
+	signal(SIGINT,die);
+	two=newwin(10,40,5,5);
+	one=newwin(10,40,7,15);
+	box(one,'#','*');
+	wmove(one,5,10);
+	waddstr(one,"hello there: ");
+	wrefresh(one);
+	wgetstr(one,string);
+	wrefresh(one);
+	sleep(2);
+	overwrite(two,one);
+	box(two,'$','&');
+	wmove(two,2,5);
+	waddstr(two,"zoobeezoobeezoobeezoobeezoobee");
+	wmove(two,3,5);
+	waddstr(two,"wowee zowee! ");
+	wrefresh(two);
+	wgetstr(two,string);
+	wrefresh(two);
+	overwrite(one,two);
+	wrefresh(one);
+	wmove(one,6,7);
+	waddstr(one,"This window (one) should have");
+	wmove(one,7,7);
+	waddstr(one," overwritten the other.");
+	wrefresh(one);
+	sleep(3);
+	die();
+}
+
+die()
+{
+	signal(SIGINT,SIG_IGN);
+	mvcur(0,COLS - 1, LINES - 1,0);
+	endwin();
+	exit(0);
+}
+
+/* end of new test case */
+*************************************************************************
+>Date:    Mon, 14 Sep 87 15:40:07 PDT
+>To:      kathyv@kestrel.USS.TEK.COM
+>From:    Keith Bostic <bostic%okeeffe@ucbvax.berkeley.edu>
+>
+>Subject: overwrite bug in curses
+>========
+>
+>Kathy, regarding the bug report you submitted recently;
+>I'm afraid I don't understand the problem that you're
+>having.  Could you possible send me some more information
+>about what is happening that is incorrect?  As far as I
+>can tell, your test program behaves identically whether
+>or not the fix has been applied.
+>
+>Thanks.
+>
+>--keith
+>
+>... here's the original bug report if you've tossed it ...
+>
+>> From @relay.cs.net:kathyv%tektronix.tek.com@tektronix.tek.com  Wed Jun  3 18:54:31 1987
+>> Date: Wed, 3 Jun 87 13:23:21 PDT
+>> From: kathyv <@relay.cs.net,@tektronix.tek.com:kathyv@tektronix.tek.com (Kathy Vineyard)>
+>> Subject: overwrite() in curses library does not completely overwrite.
+>> Index: usr.lib/libcurses/overwrite.c 4.3BSD
+>> 
+>> Description:
+>> 	When overwriting a window, the curses routine overwrite(), does
+>> 	a bcopy() and a touchline() for each row.  However, when calling
+>> 	touchline(), it passes a 'y' which refers to the 'y' coordinate
+>> 	on the screen instead of a 'y' offset within the window.  The 
+>> 	result is that if overwrite() is called with its second argument
+>> 	a window that is not located at 0,0, then touchline() will begin
+>> 	to write off the end of either win->_firstch[] or win->_lastch[].
+>> 
+>> Repeat-By:
+>> 	The following c program demonstrates the problem:
+>> ---------------------------------cut-------------------------------------
+>> #include <stdio.h>
+>> #include <signal.h>
+>> #include <curses.h>
+>> 
+>> WINDOW *one, *two;
+>> int die();
+>> char string[128];
+>> 
+>> main()
+>> {
+>> 	initscr();
+>> 	cbreak();
+>> 	signal(SIGINT,die);
+>> 	two=newwin(10,40,5,5);
+>> 	one=newwin(10,40,7,15);
+>> 	box(one,'#','*');
+>> 	wmove(one,5,10);
+>> 	waddstr(one,"hello there: ");
+>> 	wrefresh(one);
+>> 	wgetstr(one,string);
+>> 	wrefresh(one);
+>> 	sleep(2);
+>> 	overwrite(two,one);
+>> 	box(two,'$','&');
+>> 	wmove(two,2,5);
+>> 	waddstr(two,"zoobeezoobeezoobeezoobeezoobee");
+>> 	wmove(two,3,5);
+>> 	waddstr(two,"wowee zowee! ");
+>> 	wrefresh(two);
+>> 	wgetstr(two,string);
+>> 	wrefresh(two);
+>> 	overwrite(one,two);
+>> 	wrefresh(one);
+>> 	die();
+>> }
+>> 
+>> die()
+>> {
+>> 	signal(SIGINT,SIG_IGN);
+>> 	mvcur(0,COLS - 1, LINES - 1,0);
+>> 	endwin();
+>> 	exit(0);
+>> }
+>> ---------------------------------cut-------------------------------------
+>> 
+>> Fix:
+>> 
+>> *** /usr/src/usr.lib/libcurses/overwrite.c	Fri Jun  7 10:39:28 1985
+>> --- overwrite.c.new	Wed Jun  3 13:08:36 1987
+>> ***************
+>> *** 40,45 ****
+>>   	for (y = starty; y < endy; y++) {
+>>   		bcopy(&win1->_y[y - win1->_begy][startx - win1->_begx],
+>>   		      &win2->_y[y - win2->_begy][startx - win2->_begx], x);
+>> ! 		touchline(win2, y, startx - win2->_begx, endx - win2->_begx);
+>>   	}
+>>   }
+>> --- 40,46 ----
+>>   	for (y = starty; y < endy; y++) {
+>>   		bcopy(&win1->_y[y - win1->_begy][startx - win1->_begx],
+>>   		      &win2->_y[y - win2->_begy][startx - win2->_begx], x);
+>> ! 		touchline(win2, y - win2->_begy, 
+>> ! 			startx - win2->_begx, endx - win2->_begx);
+>>   	}
+>>   }
+>> 
+>> 
+>> 
+>> ------------------------------------------------------------------------
+>> Credit for description and fix to Todd Brunhoff.
+>> 
+>> Kathy Vineyard
+>> kathyv@kestrel.uss.tek.com
+>> Unix Systems Support,  Tektronix, Inc.

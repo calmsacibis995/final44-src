@@ -1,0 +1,102 @@
+Path: seismo!uunet!husc6!cmcl2!yale!moran
+From: moran@yale-zoo-suned..arpa (William Moran)
+Newsgroups: comp.unix.wizards
+Subject: Is this a mistake in the 4.3 documentation?
+Sender: root@yale.UUCP
+Index: doc/ps1/07/ipctut/socketpair.c 4.3BSD
+
+A friend was looking to understand Interprocess Communications on a
+BSD system, so I directed her to the 4.3 docs where I recalled having
+seen an intro to IPC. So, I get a call saying: "The $#^%& examples in
+the: "An Introductory 4.3BSD IPC Tutorial" don't work! They are in
+PS1:7, and either I'm missing something, or they are very poorly
+written. The problem seems to be that the author fails to make the
+parent wait for its child i.e.
+
+create a socket pair
+fork
+in the parent, read from the socket and print this, then write to the
+	socket
+in the child, write to the socket and the read the socket and print the
+	result
+
+The problem is that the parent seems to write, and then terminate
+killing the child before it has a chance to print its result. Would
+someone please tell me whether I am hallucinating. Thanks.
+			Bill Moran
+
+			  William L. Moran Jr.
+moran@{yale.arpa, cs.yale.edu, yalecs.bitnet}  ...{ihnp4!hsi,decvax}!yale!moran
+
+Tiger! Tiger! burning bright
+In the forests of the night,
+What immortal hand or eye
+Could frame thy fearful symmetry?
+                William Blake
+----------------------------------------------------------------------
+Path: seismo!uunet!husc6!rutgers!sunybcs!boulder!hao!oddjob!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.unix.wizards
+Subject: Re: Is this a mistake in the 4.3 documentation?
+In article <18552@yale-celray.yale.UUCP> moran@yale-zoo-suned..arpa
+(William Moran) writes:					     ^^
+					(I thought this old sendmail
+					 bug had been thoroughly quashed.)
+
+>... So, I get a call saying: "The $#^%& examples in the: "An
+>Introductory 4.3BSD IPC Tutorial" don't work! They are in PS1:7,
+>and either I'm missing something, or they are very poorly written.
+>The problem seems to be that the author fails to make the parent
+>wait for its child ...  The problem is that the parent seems to
+>write, and then terminate killing the child before it has a chance
+>to print its result.
+
+I presume you mean the socketpair() example.  It is true that the
+parent does not wait for its child; it is *not* true that this will
+(necessarily) kill the child before it has a chance to print its
+result.  If you have `stty tostop' set, and the C shell manages to
+take back the terminal before the child gets a chance to being
+printing, the child will be sent a SIGTTOU signal, which the kernel
+converts to SIGKILL since the child's parent is gone.  Without
+`stty tostop', the child will always print.  Adding
+
+	(void) signal(SIGTTOU, SIG_IGN);
+
+to the child will also make it always print.  There is still
+insufficient synchronisation between the two, so the messages may
+come out reversed.
+
+Another bug in the example programs is that they assume that reading
+into a buffer that is on the stack provides something that is
+suitable to pass to printf().  This happens to work only because
+the system zero-fills stack pages (for security reasons) and the
+program has not yet overwritten that space with trash.  A more
+correct version of both the pipe and the socketpair examples would
+use something like this:
+
+	cc = read(descriptor, buffer, sizeof(buffer));
+	if (cc == -1) /* or cc < 0 */
+		error ...;
+	if (cc == 0)
+		eof ...;
+	printf("%.*s\n", cc, buffer);
+	/*
+	 * or
+	 *	buffer[cc] = 0;
+	 *	printf("%s\n", buffer);
+	 * but this assumes that buffer[cc] exists, i.e.,
+	 * cc < sizeof(buffer), which is not guaranteed above.
+	 */
+
+The examples in the advanced ipc tutorial (PS1:8) are correct,
+though there are a few glitches in the formatting (not my fault!
+it worked when we sent it to Phil ... though we were using troff,
+not ditroff).
+
+Most tutorial examples are suspect simply because there is not
+enough room to give error handling a decent treatment.  I suggest
+applying this thought to all tutorials (even the advanced ipc
+tutorial, in which I had a hand).
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7690)
+Domain:	chris@mimsy.umd.edu	Path:	uunet!mimsy!chris

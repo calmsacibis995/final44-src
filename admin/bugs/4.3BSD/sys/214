@@ -1,0 +1,108 @@
+From elsie!ado@ncifcrf.gov  Thu May 26 12:15:41 1988
+Date: Thu, 26 May 88 15:09:35 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Cc: bugs@okeeffe.berkeley.edu
+Subject: MORE/bsd 4.3 (10/5/87) kernel muffs %CPU for CONT'd procs (with fix)
+Index: 	sys/sys/kern_synch.c 4.3BSD
+
+Description:
+	The MORE/bsd 4.3 kernel misreports the "percentage cpu" value for
+	compute-only (or other non-blocking) processes that are STOPped and
+	CONTed.
+
+Repeat-By:
+	Script started on Wed May 25 20:53:15 1988
+	$ cat hog.c
+	main() { for ( ; ; ); }
+	$ cc hog.c -o hog
+	$ cat doit
+	time hog
+	$ /bin/sh doit &
+	[1]	22666
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22668 80.9  0.1    5    3 p0 R    20:53  0:03 hog
+	ado      22669 35.0  1.4  144   89 p0 R    20:53  0:00 ps -utp0
+	ado      22658  5.2  0.9  124   57 p0 S    20:53  0:01 sh -i
+	ado      22666  3.4  0.5   32   29 p0 S    20:53  0:00 /bin/sh doit
+	ado      22667  3.3  0.2   12    6 p0 S    20:53  0:00 time hog
+	$ kill -STOP 22668
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22668 64.5  0.1    5    3 p0 T    20:53  0:10 hog
+	ado      22670 63.0  1.4  144   89 p0 R    20:53  0:00 ps -utp0
+	ado      22658  3.2  0.9  124   57 p0 S    20:53  0:02 sh -i
+	ado      22666  0.7  0.5   32   29 p0 S    20:53  0:00 /bin/sh doit
+	ado      22667  0.6  0.2   12    6 p0 S    20:53  0:00 time hog
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22674 10.0  1.4  144   89 p0 R    20:54  0:00 ps -utp0
+	ado      22668  7.5  0.1    5    3 p0 T    20:53  0:10 hog
+	ado      22658  1.8  0.9  124   57 p0 S    20:53  0:02 sh -i
+	ado      22666  0.1  0.5   32   29 p0 I    20:53  0:00 /bin/sh doit
+	ado      22667  0.1  0.2   12    6 p0 I    20:53  0:00 time hog
+	$ kill -CONT 22668
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22675  9.0  1.4  144   89 p0 R    20:54  0:00 ps -utp0
+>>>>	ado      22668  4.4  0.1    5    3 p0 R    20:53  0:13 hog
+	ado      22658  1.8  0.9  124   57 p0 S    20:53  0:02 sh -i
+	ado      22666  0.1  0.5   32   29 p0 I    20:53  0:00 /bin/sh doit
+	ado      22667  0.0  0.2   12    6 p0 I    20:53  0:00 time hog
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22676 31.0  1.4  144   89 p0 R    20:54  0:00 ps -utp0
+>>>>	ado      22668  3.2  0.1    5    3 p0 R    20:53  0:17 hog
+	ado      22658  1.9  0.9  124   57 p0 S    20:53  0:02 sh -i
+	ado      22666  0.0  0.5   32   29 p0 I    20:53  0:00 /bin/sh doit
+	ado      22667  0.0  0.2   12    6 p0 I    20:53  0:00 time hog
+	$ ps -utp0
+	USER       PID %CPU %MEM   SZ  RSS TT STAT START  TIME COMMAND
+	ado      22677 47.0  1.4  144   89 p0 R    20:54  0:00 ps -utp0
+>>>>	ado      22668  2.3  0.1    5    3 p0 R    20:53  0:22 hog
+	ado      22658  1.8  0.9  124   57 p0 S    20:53  0:02 sh -i
+	ado      22666  0.0  0.5   32   29 p0 I    20:53  0:00 /bin/sh doit
+	ado      22667  0.0  0.2   12    6 p0 I    20:53  0:00 time hog
+	$ exit
+
+	script done on Wed May 25 20:55:04 1988
+
+	Note that the "%CPU" figure for "hog" keeps dropping in the ">>>>"
+	lines above even though its "TIME" is increasing.
+
+Fix:
+	*** 3.4/kern_synch.c	Thu May 26 15:08:28 1988
+	--- 3.5/kern_synch.c	Thu May 26 15:08:31 1988
+	***************
+	*** 1,4 ****
+	! /*	@(#)kern_synch.c	3.4	87/07/24	mt Xinu
+	   *
+	   * Copyright (c) 1982, 1986 Regents of the University of California.
+	   * All rights reserved.  The Berkeley software License Agreement
+	--- 1,4 ----
+	! /*	@(#)kern_synch.c	3.5	88/05/25	mt Xinu
+	   *
+	   * Copyright (c) 1982, 1986 Regents of the University of California.
+	   * All rights reserved.  The Berkeley software License Agreement
+	***************
+	*** 184,189 ****
+	--- 184,190 ----
+			if (ISSIG(rp)) {
+				if (rp->p_wchan)
+					unsleep(rp);
+	+ 			rp->p_slptime = 0;
+				rp->p_stat = SRUN;
+				(void) spl0();
+				goto psig;
+	***************
+	*** 392,397 ****
+	--- 393,399 ----
+		}
+		if (p->p_slptime > 1)
+			updatepri(p);
+	+ 	p->p_slptime = 0;
+		p->p_stat = SRUN;
+		if (p->p_flag & SLOAD)
+			setrq(p);
+-- 
+	ado@ncifcrf.gov			ADO is a trademark of Ampex.

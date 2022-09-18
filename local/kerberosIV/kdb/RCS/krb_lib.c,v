@@ -1,0 +1,698 @@
+head     4.8;
+branch   ;
+access   ;
+symbols  PATCH8:4.7 PATCH7:4.6 KPATCH6:4.6 ASRSNAP1001:4.6 PATCH5:4.6 KPATCH4:4.6 KPATCH3:4.6 KPATCH2:4.6 KREL1:4.6 BETA5/24/88:4.4;
+locks    ; strict;
+comment  @ * @;
+
+
+4.8
+date     91.02.25.15.18.22;  author bostic;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     89.12.14.16.05.00;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     89.01.24.18.11.08;  author jon;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     89.01.10.13.50.27;  author wesommer;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.02.24.15.06.19;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.02.24.14.31.17;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.09.36;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.13.51.32;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.07.18.17.39.04;  author jis;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial checkin
+@
+
+
+4.8
+log
+@localtime needed a cast to (time_t *)
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/kdb/RCS/krb_lib.c,v $
+ * $Author: jtkohl $ 
+ *
+ * Copyright 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ */
+
+#ifndef	lint
+static char rcsid_krb_lib_c[] =
+"$Id: krb_lib.c,v 4.7 89/12/14 16:05:00 jtkohl Exp Locker: bostic $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/uio.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <strings.h>
+#include <des.h>
+#include <krb.h>
+#include <krb_db.h>
+
+#ifdef DEBUG
+extern int debug;
+extern char *progname;
+long    kerb_debug;
+#endif
+
+extern char *strncpy();
+extern char *ctime();
+extern char *getenv();
+
+static  init = 0;
+
+/*
+ * initialization routine for data base 
+ */
+
+int
+kerb_init()
+{
+#ifdef DEBUG
+    if (!init) {
+	char *dbg = getenv("KERB_DBG");
+	if (dbg)
+	    sscanf(dbg, "%d", &kerb_debug);
+	init = 1;
+    }
+#endif
+    kerb_db_init();
+
+#ifdef CACHE
+    kerb_cache_init();
+#endif
+
+    /* successful init, return 0, else errcode */
+    return (0);
+}
+
+/*
+ * finalization routine for database -- NOTE: MUST be called by any
+ * program using kerb_init.  ALSO will have to be modified to finalize
+ * caches, if they're ever really implemented. 
+ */
+
+int
+kerb_fini()
+{
+    kerb_db_fini();
+}
+
+/*
+ * look up a principal in the cache or data base returns number of
+ * principals found 
+ */
+
+int
+kerb_get_principal(name, inst, principal, max, more)
+    char   *name;		/* could have wild card */
+    char   *inst;		/* could have wild card */
+    Principal *principal;
+    unsigned int max;		/* max number of name structs to return */
+    int    *more;		/* more tuples than room for */
+
+{
+    int     found = 0;
+#ifdef CACHE
+    static int wild = 0;
+#endif
+    if (!init)
+	kerb_init();
+
+#ifdef DEBUG
+    if (kerb_debug & 1)
+	fprintf(stderr, "\n%s: kerb_get_principal for %s %s max = %d\n",
+	    progname, name, inst, max);
+#endif
+    
+    /*
+     * if this is a request including a wild card, have to go to db
+     * since the cache may not be exhaustive. 
+     */
+
+    /* clear the principal area */
+    bzero((char *) principal, max * sizeof(Principal));
+
+#ifdef CACHE
+    /*
+     * so check to see if the name contains a wildcard "*" or "?", not
+     * preceeded by a backslash. 
+     */
+    wild = 0;
+    if (index(name, '*') || index(name, '?') ||
+	index(inst, '*') || index(inst, '?'))
+	wild = 1;
+
+    if (!wild) {
+	/* try the cache first */
+	found = kerb_cache_get_principal(name, inst, principal, max, more);
+	if (found)
+	    return (found);
+    }
+#endif
+    /* If we didn't try cache, or it wasn't there, try db */
+    found = kerb_db_get_principal(name, inst, principal, max, more);
+    /* try to insert principal(s) into cache if it was found */
+#ifdef CACHE
+    if (found) {
+	kerb_cache_put_principal(principal, found);
+    }
+#endif
+    return (found);
+}
+
+/* principals */
+kerb_put_principal(principal, n)
+    Principal *principal;
+    unsigned int n;		/* number of principal structs to write */
+{
+    long time();
+    struct tm *tp, *localtime();
+
+    /* set mod date */
+    principal->mod_date = time((long *)0);
+    /* and mod date string */
+
+    tp = localtime((time_t *)&principal->mod_date);
+    (void) sprintf(principal->mod_date_txt, "%4d-%2d-%2d",
+		   tp->tm_year > 1900 ? tp->tm_year : tp->tm_year + 1900,
+		   tp->tm_mon + 1, tp->tm_mday); /* January is 0, not 1 */
+#ifdef DEBUG
+    if (kerb_debug & 1) {
+	int i;
+	fprintf(stderr, "\nkerb_put_principal...");
+	for (i = 0; i < n; i++) {
+	    krb_print_principal(&principal[i]);
+	}
+    }
+#endif
+    /* write database */
+    if (kerb_db_put_principal(principal, n) < 0) {
+#ifdef DEBUG
+	if (kerb_debug & 1)
+	    fprintf(stderr, "\n%s: kerb_db_put_principal err", progname);
+	/* watch out for cache */
+#endif
+	return -1;
+    }
+#ifdef CACHE
+    /* write cache */
+    if (!kerb_cache_put_principal(principal, n)) {
+#ifdef DEBUG
+	if (kerb_debug & 1)
+	    fprintf(stderr, "\n%s: kerb_cache_put_principal err", progname);
+#endif
+	return -1;
+    }
+#endif
+    return 0;
+}
+
+int
+kerb_get_dba(name, inst, dba, max, more)
+    char   *name;		/* could have wild card */
+    char   *inst;		/* could have wild card */
+    Dba    *dba;
+    unsigned int max;		/* max number of name structs to return */
+    int    *more;		/* more tuples than room for */
+
+{
+    int     found = 0;
+#ifdef CACHE
+    static int wild = 0;
+#endif
+    if (!init)
+	kerb_init();
+
+#ifdef DEBUG
+    if (kerb_debug & 1)
+	fprintf(stderr, "\n%s: kerb_get_dba for %s %s max = %d\n",
+	    progname, name, inst, max);
+#endif
+    /*
+     * if this is a request including a wild card, have to go to db
+     * since the cache may not be exhaustive. 
+     */
+
+    /* clear the dba area */
+    bzero((char *) dba, max * sizeof(Dba));
+
+#ifdef CACHE
+    /*
+     * so check to see if the name contains a wildcard "*" or "?", not
+     * preceeded by a backslash. 
+     */
+
+    wild = 0;
+    if (index(name, '*') || index(name, '?') ||
+	index(inst, '*') || index(inst, '?'))
+	wild = 1;
+
+    if (!wild) {
+	/* try the cache first */
+	found = kerb_cache_get_dba(name, inst, dba, max, more);
+	if (found)
+	    return (found);
+    }
+#endif
+    /* If we didn't try cache, or it wasn't there, try db */
+    found = kerb_db_get_dba(name, inst, dba, max, more);
+#ifdef CACHE
+    /* try to insert dba(s) into cache if it was found */
+    if (found) {
+	kerb_cache_put_dba(dba, found);
+    }
+#endif
+    return (found);
+}
+@
+
+
+4.7
+log
+@return value from kerb_db_put_principal was handled incorrectly.
+@
+text
+@d2 2
+a3 2
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/kdb/RCS/krb_lib.c,v $
+ * $Author: jon $ 
+d13 1
+a13 1
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/kdb/RCS/krb_lib.c,v 4.6 89/01/24 18:11:08 jon Exp Locker: jtkohl $";
+d152 1
+a152 1
+    tp = localtime(&principal->mod_date);
+@
+
+
+4.6
+log
+@Programmer: wesommer
+Auditor: jon
+new name for print_principal
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/wesommer/kslave/build/lib/kdb/RCS/krb_lib.c,v $
+ * $Author: wesommer $ 
+d13 1
+a13 1
+"$Header: krb_lib.c,v 4.5 89/01/10 13:50:27 wesommer Locked $";
+d166 1
+a166 1
+    if (!kerb_db_put_principal(principal, n)) {
+@
+
+
+4.5
+log
+@Programmer: jtkohl
+Fix null pointer bug.
+Set the mod time of the record in put_principal..
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/kdb/RCS/krb_lib.c,v $
+ * $Author: steiner $ 
+d13 1
+a13 1
+"$Header: krb_lib.c,v 4.4 88/02/24 15:06:19 jtkohl Locked $";
+d28 1
+d31 3
+a37 2
+long    kerb_debug;
+
+a38 1
+static char *time_p;
+d47 1
+a47 1
+
+d54 1
+d56 2
+d59 1
+d92 1
+a92 1
+    u_long  i;
+d94 1
+a94 1
+
+d98 1
+d102 2
+a103 1
+
+d112 1
+d128 1
+d132 1
+d136 1
+a144 1
+    int     i;
+d156 1
+d158 1
+d161 1
+a161 1
+	    print_principal(&principal[i]);
+d164 1
+d167 3
+a169 1
+	fprintf(stderr, "\n%s: kerb_db_put_principal err", progname);
+d171 1
+d174 1
+d177 4
+a180 1
+	fprintf(stderr, "\n%s: kerb_cache_put_principal err", progname);
+d183 1
+d197 1
+a197 1
+    u_long  i;
+d199 1
+a199 1
+
+d203 1
+d207 1
+a207 1
+
+d216 1
+d233 1
+d236 1
+d241 1
+@
+
+
+4.4
+log
+@Formatted.
+@
+text
+@d13 1
+a13 1
+"$Header: krb_lib.c,v 4.3 88/02/24 14:31:17 steiner Locked $";
+d32 1
+d46 1
+d48 3
+a50 1
+	sscanf(getenv("KERB_DBG"), "%d", &kerb_debug);
+d135 2
+d138 8
+@
+
+
+4.3
+log
+@Copyright notice, etc.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+ * $Author: steiner $
+d5 1
+a5 1
+ * Copyright 1988 by the Massachusetts Institute of Technology.
+d8 1
+a8 1
+ * <mit-copyright.h>.
+d13 1
+a13 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d28 4
+a31 4
+extern	int		debug;
+extern	char	*progname;
+extern	char	*strncpy();
+extern	char	*ctime();
+d33 1
+a33 1
+long	kerb_debug;
+d35 2
+a36 2
+static	init = 0;
+static	char	*time_p;
+d39 1
+a39 1
+ *	initialization routine for data base
+d45 6
+a50 8
+	if (!init)
+		{
+		sscanf(getenv("KERB_DBG"),"%d",&kerb_debug);
+		init = 1;
+		}
+	
+	kerb_db_init();
+	kerb_cache_init();
+d52 2
+a53 2
+/* successful init, return 0, else errcode								   */
+	return(0);
+d57 3
+a59 4
+ *	finalization routine for database -- NOTE: MUST be called
+ *	by any program using kerb_init.  ALSO will have to be
+ *	modified to finalize caches, if they're ever really
+ *	implemented.
+d65 1
+a65 1
+	kerb_db_fini();
+d68 4
+a72 5
+
+/*
+*	look up a principal in the cache or data base
+*	returns number of principals found 
+*/
+d74 6
+a79 6
+	kerb_get_principal(name,inst, principal, max, more)
+char	*name;	/* could have wild card*/
+char	*inst;	/* could have wild card*/
+Principal	*principal;
+unsigned int	max;	/* max number of name structs to return*/
+int		*more;					/* more tuples than room for			   */
+d81 4
+a84 4
+	{
+	int found = 0;
+	u_long i;
+	static int	wild = 0;
+d86 2
+a87 1
+	if (!init) kerb_init();
+d89 3
+a91 2
+	if (kerb_debug & 1) fprintf(stderr,"\n%s: kerb_get_principal for %s %s max = %d\n",
+	progname,name,inst,max);
+d93 3
+a95 2
+	/* if this is a request including a wild card, have to go to db
+	 * since the cache may not be exhaustive.
+d98 2
+a99 2
+	/* clear the principal area										   */
+	bzero((char *) principal, max * sizeof (Principal));
+d101 8
+a108 6
+	/* so check to see if the name contains a wildcard "*" or "?", not
+	 * preceeded by a backslash.
+	 */
+	wild = 0;
+	if (index(name,'*') || index(name,'?') || 
+		index(inst,'*') || index(inst,'?')) wild = 1;
+d110 13
+a122 17
+	if (!wild)
+		{
+		/* try the cache first											   */
+		found = kerb_cache_get_principal(name,inst,principal,max,more);
+		if (found) return(found);
+		}
+	
+	/* If we didn't try cache, or it wasn't there, try db				   */
+	found = kerb_db_get_principal(name,inst,principal,max,more);
+	/* try to insert principal(s) into cache if it was found				   */
+	if (found) 
+		{
+		kerb_cache_put_principal(principal,found);
+		}
+	
+	return(found);
+
+d125 1
+a125 2
+
+/* principals																   */
+d127 2
+a128 2
+Principal	*principal;
+unsigned int	n;	/* number of principal structs to write*/
+d130 1
+a130 1
+	int	i;
+d132 18
+a149 24
+	if (kerb_debug & 1)
+		{
+		fprintf(stderr,"\nkerb_put_principal...");
+		for (i = 0; i < n ; i++)
+			{
+			print_principal(&principal[i]);
+			}
+		}
+			
+		/* write database												   */
+		if (!kerb_db_put_principal(principal,n))
+			{
+			fprintf(stderr,"\n%s: kerb_db_put_principal err",progname);
+			/* watch out for cache										   */
+			return -1;
+			}
+	
+		/* write cache													   */
+		if (!kerb_cache_put_principal(principal,n))
+			{
+			fprintf(stderr,"\n%s: kerb_cache_put_principal err",progname);
+			return -1;
+			}
+	return 0;
+d153 6
+a158 6
+	kerb_get_dba(name,inst, dba, max, more)
+char	*name;	/* could have wild card*/
+char	*inst;	/* could have wild card*/
+Dba		*dba;
+unsigned int	max;	/* max number of name structs to return*/
+int		*more;					/* more tuples than room for			   */
+d160 4
+a163 4
+	{
+	int found = 0;
+	u_long i;
+	static int	wild = 0;
+d165 2
+a166 1
+	if (!init) kerb_init();
+d168 3
+a170 2
+	if (kerb_debug & 1) fprintf(stderr,"\n%s: kerb_get_dba for %s %s max = %d\n",
+	progname,name,inst,max);
+d172 3
+a174 2
+	/* if this is a request including a wild card, have to go to db
+	 * since the cache may not be exhaustive.
+d177 2
+a178 2
+	/* clear the dba area										   */
+	bzero((char *) dba, max * sizeof (Dba));
+d180 4
+a183 6
+	/* so check to see if the name contains a wildcard "*" or "?", not
+	 * preceeded by a backslash.
+	 */
+	wild = 0;
+	if (index(name,'*') || index(name,'?') || 
+		index(inst,'*') || index(inst,'?')) wild = 1;
+d185 4
+a188 16
+	if (!wild)
+		{
+		/* try the cache first											   */
+		found = kerb_cache_get_dba(name,inst,dba,max,more);
+		if (found) return(found);
+		}
+	
+	/* If we didn't try cache, or it wasn't there, try db				   */
+	found = kerb_db_get_dba(name,inst,dba,max,more);
+	/* try to insert dba(s) into cache if it was found				   */
+	if (found) 
+		{
+		kerb_cache_put_dba(dba,found);
+		}
+	
+	return(found);
+d190 13
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d2 8
+a9 4
+*		$Source: /mit/s/t/steiner/kerberos/dbm/lib/RCS/kerb_lib.c,v $
+*		$Author: steiner $
+*		$Locker: steiner $
+*/
+d11 6
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d2 2
+a3 2
+*		$Source: /mit/s/t/steiner/kerberos/db/util/dbm/RCS/kerb_lib.c,v $
+*		$Author: jis $
+d16 1
+a16 1
+#include "kerb_db.h"
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 3
+a4 3
+*		$Source: /mit/projects/auth/src/db/util/RCS/kerb_lib.c,v $
+*		$Author: ostlund $
+*		$Locker:  $
+@

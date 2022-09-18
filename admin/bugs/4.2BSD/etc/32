@@ -1,0 +1,92 @@
+Return-Path: <mogul@Gregorio>
+Date: Mon, 23 Jul 84 21:22:40 pdt
+From: Jeff Mogul <mogul@Gregorio>
+Subject: telnetd cannot use all of the ptys
+Index: 	etc/telnetd.c 4.2BSD Fix
+
+Description:
+	/etc/telnetd can only use /dev/ptyp*, 16 devices, even though
+	the kernel is configured for 32 and the other 16 have entries
+	in /dev as ptyq*.  Several users running script or Emacs with
+	subprocesses can prevent other logins over the network.
+
+Repeat-By:
+	Make sure that /dev/ptyq[0-9a-f] exist; if not,
+		su
+		cd /dev; MAKEDEV pty1
+	Also, make sure that entries for ttyq* exist in /etc/ttys.
+	cd /tmp
+	Keep typing "script" until a "ps" shows that you're using
+	ptyq0 (you may need to be root to do this if the system is
+	unloaded, since it takes a bunch of processes.)  Then, 
+	"telnet localhost" and you'll get "telnetd: All network
+	ports in use".
+Fix:
+	telnetd should check all potential ptys before giving up.
+	Even though /dev/MAKEDEV can only make 48 ptys, it seems
+	reasonable to support up to 64.  For example, /usr/ucb/script
+	looks for /dev/pty[pqrs][0-9a-f]
+	
+	After recompiling and reinstalling telnetd, you'll either
+	have to reboot or find some other way of terminating all
+	telnet sessions in progress, before you can successfully
+	restart telnetd.
+
+*** telnetd.c.old	Wed May  2 14:56:57 1984
+--- telnetd.c	Mon Jul 23 12:38:30 1984
+***************
+*** 191,196
+  	int i, p, cc, t;
+  	struct sgttyb b;
+  	struct hostent *hp;
+  
+  	for (i = 0; i < 16; i++) {
+  		cp[strlen("/dev/ptyp")] = "0123456789abcdef"[i];
+
+--- 194,200 -----
+  	int i, p, cc, t;
+  	struct sgttyb b;
+  	struct hostent *hp;
++ 	char *pqrs;
+  
+  #define PQRS  "pqrs"	/* enough for NPTY == 64 in sys/tty_pty.c */
+  	for (pqrs = PQRS ; *pqrs; pqrs++) {
+***************
+*** 192,198
+  	struct sgttyb b;
+  	struct hostent *hp;
+  
+! 	for (i = 0; i < 16; i++) {
+  		cp[strlen("/dev/ptyp")] = "0123456789abcdef"[i];
+  		p = open(cp, 2);
+  		if (p > 0)
+
+--- 196,205 -----
+  	struct hostent *hp;
+  	char *pqrs;
+  
+! #define PQRS  "pqrs"	/* enough for NPTY == 64 in sys/tty_pty.c */
+! 	for (pqrs = PQRS ; *pqrs; pqrs++) {
+! 	    cp[strlen("/dev/pty")] = *pqrs;
+! 	    for (i = 0; i < 16; i++) {
+  		cp[strlen("/dev/ptyp")] = "0123456789abcdef"[i];
+  		p = open(cp, 2);
+  		if (p > 0)
+***************
+*** 197,202
+  		p = open(cp, 2);
+  		if (p > 0)
+  			goto gotpty;
+  	}
+  	fatal(f, "All network ports in use");
+  	/*NOTREACHED*/
+
+--- 204,210 -----
+  		p = open(cp, 2);
+  		if (p > 0)
+  			goto gotpty;
++ 	    }
+  	}
+  	fatal(f, "All network ports in use");
+  	/*NOTREACHED*/
+

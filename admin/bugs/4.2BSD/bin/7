@@ -1,0 +1,176 @@
+Return-Path: <decvax!microsof!uw-beaver!ubc-vision!ubc-vision!sfucmpt!kurn>
+Date: Tue, 28 Feb 84 21:04:57 pst
+From: decvax!ubc-vision!sfucmpt!kurn (Andrew Kurn)
+Subject: ld -M fails to print complete load map
+Index: bin/ld 4.2BSD
+Apparently-To: ubc-vision!uw-beaver!microsof!decvax!ucbvax!4bsd-bugs
+
+Description:
+	When asked to print load map, ld prints only those files which
+contributed code to the load module.  There is no way to get a listing of
+those modules which merely define storage (COMMON).
+
+Repeat-By:
+	Create an archive containing at least one module which does nothing
+but define a block of named storage.  The loader will not list it.
+
+Fix:
+	I add another flag to the ld command "-C" which prints these modules.
+If -M and -C are both turned on, the C modules can be distinguished by a
+"C" in col 1 of the listing.  Herewith is the output of diff -c :
+
+*** /usr/src/bin/ld.c	Fri Jul  1 23:58:46 1983
+--- u/ld.k	Tue Feb 28 20:05:48 1984
+***************
+*** 226,231
+  int	arflag;		/* original copy of rflag */
+  int	sflag;		/* discard all symbols */
+  int	Mflag;		/* print rudimentary load map */
+  int	nflag;		/* pure procedure */
+  int	dflag;		/* define common even with rflag */
+  int	zflag;		/* demand paged  */
+
+--- 226,232 -----
+  int	arflag;		/* original copy of rflag */
+  int	sflag;		/* discard all symbols */
+  int	Mflag;		/* print rudimentary load map */
++ int	Cflag;		/* mention modules which (only) define common -AK*/
+  int	nflag;		/* pure procedure */
+  int	dflag;		/* define common even with rflag */
+  int	zflag;		/* demand paged  */
+***************
+*** 414,419
+  		case 'M':
+  			Mflag++;
+  			continue;
+  		case 'x':
+  			xflag++;
+  			continue;
+
+--- 415,423 -----
+  		case 'M':
+  			Mflag++;
+  			continue;
++ 		case 'C':	/*-AK*/
++ 			Cflag++;
++ 			continue;
+  		case 'x':
+  			xflag++;
+  			continue;
+***************
+*** 597,603
+  	int kind;
+  
+  	kind = getfile(cp);
+! 	if (Mflag)
+  		printf("%s\n", filname);
+  	switch (kind) {
+  
+
+--- 601,607 -----
+  	int kind;
+  
+  	kind = getfile(cp);
+! 	if (Mflag || (Cflag && kind))
+  		printf("%s\n", filname);
+  	switch (kind) {
+  
+***************
+*** 758,763
+  	register struct nlist *sp;
+  	struct nlist *savnext;
+  	int ndef, nlocal, type, size, nsymt;
+  	register int i;
+  	off_t maxoff;
+  	struct stat stb;
+
+--- 762,768 -----
+  	register struct nlist *sp;
+  	struct nlist *savnext;
+  	int ndef, nlocal, type, size, nsymt;
++ 	int ncom;
+  	register int i;
+  	off_t maxoff;
+  	struct stat stb;
+***************
+*** 778,783
+  		error(1, "too small (old format .o?)");
+  	ctrel = tsize; cdrel += dsize; cbrel += bsize;
+  	ndef = 0;
+  	nlocal = sizeof(cursym);
+  	savnext = nextsym;
+  	loc += N_SYMOFF(filhdr);
+
+--- 783,789 -----
+  		error(1, "too small (old format .o?)");
+  	ctrel = tsize; cdrel += dsize; cbrel += bsize;
+  	ndef = 0;
++ 	ncom = 0;
+  	nlocal = sizeof(cursym);
+  	savnext = nextsym;
+  	loc += N_SYMOFF(filhdr);
+***************
+*** 811,816
+  			continue;
+  		if (cursym.n_type == N_EXT+N_UNDF) {
+  			if (cursym.n_value > sp->n_value)
+  				sp->n_value = cursym.n_value;
+  			continue;
+  		}
+
+--- 817,823 -----
+  			continue;
+  		if (cursym.n_type == N_EXT+N_UNDF) {
+  			if (cursym.n_value > sp->n_value)
++ 				{
+  				sp->n_value = cursym.n_value;
+  				ncom++;		/* size of named common has */
+  				}		/* been increased  -AK*/
+***************
+*** 812,817
+  		if (cursym.n_type == N_EXT+N_UNDF) {
+  			if (cursym.n_value > sp->n_value)
+  				sp->n_value = cursym.n_value;
+  			continue;
+  		}
+  		if (sp->n_value != 0 && cursym.n_type == N_EXT+N_TEXT)
+
+--- 819,826 -----
+  			if (cursym.n_value > sp->n_value)
+  				{
+  				sp->n_value = cursym.n_value;
++ 				ncom++;		/* size of named common has */
++ 				}		/* been increased  -AK*/
+  			continue;
+  		}
+  		if (sp->n_value != 0 && cursym.n_type == N_EXT+N_TEXT)
+***************
+*** 836,841
+  		}
+  		free(curstr);
+  		return (1);
+  	}
+  	/*
+  	 * No symbols defined by this library member.
+
+--- 845,857 -----
+  		}
+  		free(curstr);
+  		return (1);
++ 	}
++ 	if (ncom && Cflag && libflg){
++ 		/*
++ 		 * Although not loaded, this member has caused common
++ 		 * allocation to increase. -AK
++ 		 */
++ 		printf("C\t%s\n", archdr.ar_name);
+  	}
+  	/*
+  	 * No symbols defined by this library member.
+
+
+
+Andrew Kurn	sfucmpt!kurn
+Simon Fraser Univ.
+
+

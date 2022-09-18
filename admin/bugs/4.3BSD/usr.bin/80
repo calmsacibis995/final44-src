@@ -1,0 +1,104 @@
+Path: seismo!rutgers!ames!amdcad!sun!gorodish!guy
+From: guy%gorodish@Sun.COM (Guy Harris)
+Newsgroups: comp.bugs.sys5,comp.bugs.4bsd
+Subject: "lint" bug in handling "enum"s
+Sender: news@sun.uucp
+Index: usr.bin/lint 4.3BSD
+
+"lint" does not correctly check whether the types of formal and actual
+arguments match if the formal or actual argument is an "enum" or a type derived
+from "enum".
+
+The problem is that PCC eventually treats "enum"s as appropriately-sized
+integral objects ("char", "short", "int", "long").  This means that pointers to
+"enum"s get converted to pointers to that integral object type, so it thinks
+"func" is getting passed a "char *".
+
+Here is a fix.  Your line numbers, and the appearance of your code, are likely
+to be different.
+
+Given this fix, it also made sense to change "lint" NOT to do a similar
+conversion, so that it can detect attempts to pass an "enum foo" to a routine
+expecting an "enum bar".  (In addition, a mis-parenthesized expression is
+corrected here; it caused "lint" not to check whether the types of formal and
+actual parameters of type "union" matched.)
+
+The files affected are "lint.c" and "lpass2.c" in the "lint" source, and
+"trees.c" in the PCC source.
+
+lint.c:
+*** /tmp/geta169	Thu Aug 20 23:56:08 1987
+--- /tmp/getb169	Thu Aug 20 23:56:12 1987
+***************
+*** 164,175 ****
+  	exit( 0 );
+  	}
+  astype( t, i ) ATYPE *t; {
+  	TWORD tt;
+  	struct symtab *s;
+  	int k=0, l=0;
+! 	if( (tt=BTYPE(t->aty))==STRTY || tt==UNIONTY ){
+  		if( i<0 || i >= curdim-3 ) {
+  			werror( "lint's little mind is blown" );
+  			}
+--- 164,178 ----
+  	exit( 0 );
+  	}
++ /* astype - hash a struct/union/enum line number to ensure uniqueness */
++ 
+  astype( t, i ) ATYPE *t; {
+  	TWORD tt;
+  	struct symtab *s;
+  	int k=0, l=0;
+! 	if( (tt=BTYPE(t->aty))==STRTY || tt==UNIONTY
+! 	    || tt == ENUMTY || tt == MOETY ) {
+  		if( i<0 || i >= curdim-3 ) {
+  			werror( "lint's little mind is blown" );
+  			}
+
+lpass2.c:
+*** /tmp/geta183	Thu Aug 20 23:57:07 1987
+--- /tmp/getb183	Thu Aug 20 23:57:10 1987
+***************
+*** 498,508 ****
+  	TWORD t;
+  	/* check the two type words to see if they are compatible */
+! 	/* for the moment, enums are turned into ints, and should be checked as such */
+! 	if( pt1->aty == ENUMTY ) pt1->aty =  INT;
+! 	if( pt2->aty == ENUMTY ) pt2->aty = INT;
+! 	if( (t=BTYPE(pt1->aty)==STRTY) || t==UNIONTY ){
+  		if( pt1->aty != pt2->aty || pt1->extra1 != pt2->extra1 )
+  			return 1;
+  		/* if -z then don't worry about undefined structures,
+--- 498,507 ----
+  	TWORD t;
+  	/* check the two type words to see if they are compatible */
+! 	/* this used to map ENUMS to INTS */
+! 	if( (t=BTYPE(pt1->aty))==STRTY || t==UNIONTY
+! 	    || t==ENUMTY || t==MOETY ){
+  		if( pt1->aty != pt2->aty || pt1->extra1 != pt2->extra1 )
+  			return 1;
+  		/* if -z then don't worry about undefined structures,
+
+trees.c:
+*** /tmp/geta200	Thu Aug 20 23:59:41 1987
+--- /tmp/getb200	Thu Aug 20 23:59:47 1987
+***************
+*** 981,986 ****
+--- 981,987 ----
+  	/* change enums to ints, or appropriate types */
++ #ifndef LINT
+  	register TWORD ty;
+  	if( (ty=BTYPE(p->in.type)) == ENUMTY || ty == MOETY ) {
+***************
+*** 993,998 ****
+--- 994,1000 ----
+  		MODTYPE(p->in.type,ty);
+  		if( p->in.op == ICON && ty != LONG ) p->in.type = p->fn.csiz = INT;
+  		}
++ #endif 
+  	}
+  NODE *
+	Guy Harris
+	{ihnp4, decvax, seismo, decwrl, ...}!sun!guy
+	guy@sun.com

@@ -1,0 +1,201 @@
+From bart@majestix.cs.uoregon.edu Tue Jun 15 17:23:50 1993
+From: bart@majestix.cs.uoregon.edu (Barton Christopher Massey)
+Newsgroups: comp.bugs.4bsd
+Subject: quiz(6) fixes
+Message-ID: <1993Jun9.095436.18425@cs.uoregon.edu>
+Date: 9 Jun 93 09:54:36 GMT
+Article-I.D.: cs.1993Jun9.095436.18425
+Sender: news@cs.uoregon.edu (Netnews Owner)
+Organization: University of Oregon Computer and Information Sciences Dept.
+Lines: 186
+Index: games/quiz 4.4BSD-alpha
+
+The 4.3BSD quiz(6) (and those derived from it, including SunOS quiz)
+is missing quite a bit of error checking, which wouldn't be so bad
+except that a couple of arrays are dimensioned wrong for what little
+checking there is, and the standard quiz files distributed with
+quiz (e.g., bard, poetry) exceed length limits.
+
+Repeat-By:
+	/usr/games/quiz Shakespeare-line work
+
+The unidiff-format patch below should make things much nicer.
+In particular, quiz now reports roughly where the overflow
+occurred, making it much easier to fix...  As a bonus, I've
+thrown in a quiz file giving a few mathematicians' name, date
+born, date died, and approximate century of life (for wafflers
+like me :-) as given by Howard Eves in _An Introduction To The
+History Of Mathematics_ (6th ed.), Saunders College Publishing,
+1990, ISBN 0-03-029558-0.  Include a line like
+	/usr/games/lib/quiz.k/math:math{ematician}:\
+	{born|birth{day}}:{died|death}:{c|C}entury
+at the end of /usr/games/lib/quiz.k/index and install the file
+below as /usr/games/lib/quiz.k/math.  Your pathnames may vary.
+Consult local sysadmin for details.
+
+(BTW, I hacked this on my home box, since they won't let us play
+quiz on the University of Oregon Computer Science Department
+machines. (The math quiz was for a test in a math history
+course.)  Phooey.)
+
+				Bart Massey
+				bart@cs.uoregon.edu
+
+--- quiz.c.dist	Mon Jul  1 23:09:29 1991
++++ quiz.c	Wed Jun  9 02:22:26 1993
+@@ -5,7 +5,7 @@
+ #include <signal.h>
+ #define NF 10
+ #define NL 300
+-#define NC 200
++#define NC 512
+ #define SL 100
+ #define NA 10
+ 
+@@ -21,8 +21,8 @@
+ int inc;
+ int ptr = 0;
+ int nc = 0;
+-char line[150];
+-char response[100];
++char line[NC];
++char response[NC];
+ char *tmp[NF];
+ int select[NF];
+ 
+@@ -30,7 +30,7 @@
+ {
+ 	register int ch;
+ 	char *t;
+-loop:
++
+ 	for(t=line;(ch=getc(input))!=-1;t++) {
+ 		*t = ch;
+ 		nc++;
+@@ -44,14 +44,14 @@
+ 			*++t = 0;
+ 			return(1);
+ 		}
+-		if(t-line>=NC) {
+-			printf("Too hard for me\n");
++		if(t-line>=NC-2) {
++			printf("Line too long.\n");
+ 			do {
+ 				if ((ch = getc(input)) == EOF)
+ 					return(0);
+ 			} while(ch!='\n');
+ 			*line = '\n';
+-			goto loop;
++			return(-1);
+ 		}
+ 	}
+ 	return(0);
+@@ -268,8 +268,14 @@
+ find(u,m)
+ char *u[];
+ {
+-	int n;
+-	while(readline()){
++	int r, n, l=1;
++
++	while(r=readline()){
++		if(r==-1) {
++			printf("Index file entry %d too long.\n",l);
++			exit(1);
++		}
++		l++;
+ 		n = segment(line,tmp);
+ 		if(perm(u,m,tmp+1,n-1,select))
+ 			return(1);
+@@ -279,8 +285,15 @@
+ 
+ readindex()
+ {
++	int r, l=1;
++
+ 	xx[0] = nc = 0;
+-	while(readline()) {
++	while(r=readline()) {
++		if(r==-1) {
++			printf("Quiz file entry %d too long.\n",l);
++			exit(1);
++		}
++		l++;
+ 		xx[++nl] = nc;
+ 		if(nl>=NL) {
+ 			printf("I've forgotten some of it;\n");
+@@ -354,6 +367,10 @@
+ 		i = next();
+ 		fseek(input,xx[i]+0L,0);
+ 		z = xx[i+1]-xx[i];
++		if(z>NC-2) {
++			printf("Question truncated!\n");
++			z=NC-2;
++		}
+ 		for(j=0;j<z;j++)
+ 			line[j] = getc(input);
+ 		segment(line,tmp);
+@@ -393,6 +410,8 @@
+ {
+ 	char *t;
+ 	for(t=r;;t++) {
++		if(t>r+NC-1)
++			t--;
+ 		if(read(0,t,1)==0)
+ 			done();
+ 		if(*t==' '&&(t==r||t[-1]==' '))
+@@ -435,9 +454,14 @@
+ instruct(info)
+ {
+ 	char *t;
+-	int i, n;
++	int i, n, r, l=1;
+ 	printf("Subjects:\n\n");
+-	while(readline()) {
++	while(r=readline()) {
++		if(r==-1) {
++			printf("Index file entry %d too long.\n",l);
++			exit(1);
++		}
++		l++;
+ 		printf("-");
+ 		n = segment(line,tmp);
+ 		for(i=1;i<n;i++) {
+@@ -450,7 +474,9 @@
+ 	input = fopen(info,"r");
+ 	if(input==NULL)
+ 		abort();
+-	readline();
++	r = readline();
++	if(r==-1)
++		abort();
+ 	segment(line,tmp);
+ 	printf("For example,\n");
+ 	printf("    quiz ");
+
+
+---cut here for math---
+Rhind Papyrus:[1650{ }B{.}C{.}|-1650]:185[8|0]:\
+16{th}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+Pythagoras:[572{ }B{.}C{.}|-572]:[490{ }B{.}C{.}|-490]:\
+4{th}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+Euclid:[300{ }B{.}C{.}|-300]:[200{ }B{.}C{.}|-200]:\
+3{rd}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+Archimedes:[287{ }B{.}C{.}|-287]:[212{ }B{.}C{.}|-212]:\
+2{nd}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+Eratosthenes:[2[69|70]{ }B{.}C{.}|-2[69|70]]:[194{ }B{.}C{.}|-194]:\
+2{nd}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+Apollonius:[262{ }B{.}C{.}|-262]:[190{ }B{.}C{.}|-190]:\
+2{nd}[{ [C|c]entury }|{ }]{{ }B{.}C{.}}
+{Claudius }Ptolemy:150{{ }A{.}D{.}}::3{rd}{ [C|c]entury}
+Diophantus{ of Alexandria}:300{{ }A{.}D{.}}:4{th}{ [C|c]entury}
+{Blaise }Pascal:1623:1662:17{th}{ [C|c]entury}
+{Rene{'} }Descartes:1596:1650:17{th}{ [C|c]entury}
+{Pierre {de }}Fermat:1601:1665:17{th}{ [C|c]entury}
+{Leonhard }Euler:1707:1783:18{th}{ [C|c]entury}
+{Carl {Friedrich }}Gauss:1777:1855:[18{th}{ [C|c]entury}|19{th}{ [C|c]entury}]
+{Niels {Henrik }}Abel:1800:1829:19{th}{ [C|c]entury}
+{E{'}variste }Galois:1811:1832:19{th}{ [C|c]entury}
+
+
+

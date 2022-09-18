@@ -1,0 +1,100 @@
+From loverso%buffalo.csnet@relay.cs.net  Tue Mar 17 16:18:59 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA13540; Tue, 17 Mar 87 16:18:59 PST
+Received: by ucbvax.Berkeley.EDU (5.57/1.23)
+	id AA24034; Tue, 17 Mar 87 16:19:22 PST
+Received: from relay2.cs.net by RELAY.CS.NET id ad14591; 17 Mar 87 19:16 EST
+Received: from buffalo by csnet-relay.csnet id ag05387; 17 Mar 87 19:10 EST
+Received: by gort.SUNYAB (5.51/4.7)
+	id AA18881; Tue, 17 Mar 87 18:55:07 EST
+Received: by joey.SUNYAB (5.51/5.2)
+	id AA13521; Tue, 17 Mar 87 18:55:00 EST
+Date: Tue, 17 Mar 87 18:55:00 EST
+From: John LoVerso <loverso%buffalo.csnet@relay.cs.net>
+Message-Id: <8703172355.AA13521@joey.SUNYAB>
+Subject: RCS will clobber a directory if you try to check it in
+Index: 	new/rcs/src/ci.c 4.3BSD +FIX
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	RCS "ci" will attempt to check in any file, including special
+	files and directories.  Run by a normal user and given a
+	directory, ci will produce a junk RCS file.  For the super
+	user, it will unlink the original entry, leaving the contents
+	of the directory inaccessible and the filesystem corrupt.  The
+	filesystem must be unmounted and fsck run to relink the
+	directory into lost+found.  If you've ever found a directory of
+	RCS files in a lost+found, this is probably how it got there.
+
+	This bug has been in every version of RCS I've seen, and wasn't
+	fixed by Guy Harris' previously posted RCS patches.
+
+Repeat-By:
+	(as root)
+	# mkdir RCS
+	# ls -l
+	total 1
+	drwxr-xr-x  2 root          512 Mar 17 17:58 RCS/
+	# ci RCS
+	RCS/RCS,v  <--  RCS
+	initial revision: 1.1
+	enter description, terminated with ^D or '.':
+	NOTE: This is NOT the log message!
+	>> test
+	>> ^D
+	done
+	ci error: Can't find semaphore file RCS/,RCS,
+	# ls -l
+	total 0
+	# ^D
+
+Fix:
+	Apply the following patch:
+
+*** ci.c_old	Tue Mar 17 17:36:10 1987
+--- ci.c	Tue Mar 17 17:35:01 1987
+***************
+*** 5,7 ****
+   static char rcsid[]=
+!  "$Header: ci.c,v 3.11 86/07/28 23:21:50 guy Exp $ Purdue CS";
+  #endif
+--- 5,7 ----
+   static char rcsid[]=
+!  "$Header: ci.c,v 3.12 87/03/17 17:27:32 loverso Exp $ Purdue CS";
+  #endif
+***************
+*** 25,26 ****
+--- 25,29 ----
+  /* $Log:	ci.c,v $
++  * Revision 3.12  87/03/17  17:27:32  loverso
++  * Don't allow non-regular files (directories, etc) to be checked in.
++  * 
+   * Revision 3.11  86/07/28  23:21:50  guy
+***************
+*** 286,287 ****
+--- 289,307 ----
+  
++         /*
++          * make sure workfile is a regular file.
++          */
++         VOID stat(workfilename, &filestatus);
++         if ((filestatus.st_mode & S_IFMT) != S_IFREG) {
++                 error("working file %s isn't a regular file", workfilename);
++                 continue;
++         }
++ 
++         /*
++          * if RCSfile doesn't exist, use mode from workfile, otherwise
++          * keep the one from the RCSfile.
++          */
++         if (! (initflag || rcsinitflag))
++                 VOID fstat(fileno(finptr), &filestatus);
++ 
++ #ifdef notdef
+          if (initflag || rcsinitflag) /* get mode for RCSfile from workfile*/
+***************
+*** 290,291 ****
+--- 310,312 ----
+              VOID fstat(fileno(finptr), &filestatus);
++ #endif
+

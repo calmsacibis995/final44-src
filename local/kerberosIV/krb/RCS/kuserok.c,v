@@ -1,0 +1,491 @@
+head     4.7;
+branch   ;
+access   ;
+symbols  PATCH8:4.5 PATCH7:4.5 KPATCH6:4.5 ASRSNAP1001:4.5 PATCH5:4.5 KPATCH4:4.5 KPATCH3:4.5 KPATCH2:4.5 KREL1:4.5 BETA5/24/88:4.3;
+locks    ; strict;
+comment  @ * @;
+
+
+4.7
+date     90.06.23.03.11.11;  author kfall;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     90.06.21.00.15.16;  author kfall;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     89.01.23.09.25.21;  author jtkohl;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.12.01.14.13.42;  author jtkohl;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.04.06.17.32.07;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     88.03.18.21.46.47;  author jtkohl;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     88.02.24.18.13.56;  author steiner;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     88.01.19.17.11.18;  author jtkohl;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@kuserok: check name against .klogin file
+@
+
+
+4.7
+log
+@fix up include files
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/krb/RCS/kuserok.c,v $
+ * $Author: kfall $
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * kuserok: check if a kerberos principal has
+ * access to a local account
+ */
+
+#ifndef	lint
+static char rcsid_kuserok_c[] =
+"$Header: /usr/src/kerberosIV/krb/RCS/kuserok.c,v 4.6 90/06/21 00:15:16 kfall Exp Locker: kfall $";
+#endif	lint
+
+#include <mit-copyright.h>
+
+#include <sys/param.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <des.h>
+#include <krb.h>
+#include <stdio.h>
+#include <pwd.h>
+#include <strings.h>
+
+#define OK 0
+#define NOTOK 1
+#define MAX_USERNAME 10
+
+/*
+ * Given a Kerberos principal "kdata", and a local username "luser",
+ * determine whether user is authorized to login according to the
+ * authorization file ("~luser/.klogin" by default).  Returns OK
+ * if authorized, NOTOK if not authorized.
+ *
+ * If there is no account for "luser" on the local machine, returns
+ * NOTOK.  If there is no authorization file, and the given Kerberos
+ * name "kdata" translates to the same name as "luser" (using
+ * krb_kntoln()), returns OK.  Otherwise, if the authorization file
+ * can't be accessed, returns NOTOK.  Otherwise, the file is read for
+ * a matching principal name, instance, and realm.  If one is found,
+ * returns OK, if none is found, returns NOTOK.
+ *
+ * The file entries are in the format:
+ *
+ *	name.instance@@realm
+ *
+ * one entry per line.
+ *
+ * The ATHENA_COMPAT code supports old-style Athena ~luser/.klogin
+ * file entries.  See the file "kparse.c".
+ */
+
+int
+kuserok(kdata, luser)
+    AUTH_DAT *kdata;
+    char   *luser;
+{
+    struct stat sbuf;
+    struct passwd *pwd;
+    char pbuf[MAXPATHLEN];
+    int isok = NOTOK, rc;
+    FILE *fp;
+    char kuser[MAX_USERNAME];
+    char principal[ANAME_SZ], inst[INST_SZ], realm[REALM_SZ];
+    char linebuf[BUFSIZ];
+    char *newline;
+    int gobble;
+
+    /* no account => no access */
+    if ((pwd = getpwnam(luser)) == NULL) {
+	return(NOTOK);
+    }
+    (void) strcpy(pbuf, pwd->pw_dir);
+    (void) strcat(pbuf, "/.klogin");
+
+    if (access(pbuf, F_OK)) {	 /* not accessible */
+	/*
+	 * if he's trying to log in as himself, and there is no .klogin file,
+	 * let him.  To find out, call
+	 * krb_kntoln to convert the triple in kdata to a name which we can
+	 * string compare. 
+	 */
+	if (!krb_kntoln(kdata, kuser) && (strcmp(kuser, luser) == 0)) {
+	    return(OK);
+	}
+    }
+    /* open ~/.klogin */
+    if ((fp = fopen(pbuf, "r")) == NULL) {
+	return(NOTOK);
+    }
+    /*
+     * security:  if the user does not own his own .klogin file,
+     * do not grant access
+     */
+    if (fstat(fileno(fp), &sbuf)) {
+	fclose(fp);
+	return(NOTOK);
+    }
+    if (sbuf.st_uid != pwd->pw_uid) {
+	fclose(fp);
+	return(NOTOK);
+    }
+
+    /* check each line */
+    while ((isok != OK) && (fgets(linebuf, BUFSIZ, fp) != NULL)) {
+	/* null-terminate the input string */
+	linebuf[BUFSIZ-1] = '\0';
+	newline = NULL;
+	/* nuke the newline if it exists */
+	if (newline = index(linebuf, '\n'))
+	    *newline = '\0';
+	rc = kname_parse(principal, inst, realm, linebuf);
+	if (rc == KSUCCESS) {
+	    isok = (strncmp(kdata->pname, principal, ANAME_SZ) ||
+		    strncmp(kdata->pinst, inst, INST_SZ) ||
+		    strncasecmp(kdata->prealm, realm, REALM_SZ));
+	}
+	/* clean up the rest of the line if necessary */
+	if (!newline)
+	    while (((gobble = getc(fp)) != EOF) && gobble != '\n');
+    }
+    fclose(fp);
+    return(isok);
+}
+@
+
+
+4.6
+log
+@don't be case-sensitive on the realm
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d16 1
+a16 1
+"$Header: /usr/src/kerberosIV/krb/RCS/kuserok.c,v 4.5 89/01/23 09:25:21 jtkohl Exp Locker: kfall $";
+a20 3
+#include <krb.h>
+#include <stdio.h>
+#include <pwd.h>
+d25 4
+@
+
+
+4.5
+log
+@Programmer/Auditor: John Kohl
+changes: name changes to krb_xxx
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/lib/krb/RCS/kuserok.c,v $
+d16 1
+a16 1
+"$Header: kuserok.c,v 4.4 88/12/01 14:13:42 jtkohl Locked $";
+d58 1
+a58 31
+#ifdef ATHENA_COMPAT
+
+#include <kparse.h>
+
+/*
+ * The parmtable defines the keywords we will recognize with their
+ * default values, and keeps a pointer to the found value.  The found
+ * value should be filled in with strsave(), since FreeParameterSet()
+ * will release memory for all non-NULL found strings. 
+ *
+*** NOTE WELL! *** 
+ *
+ * The table below is very nice, but we cannot hard-code a default for the
+ * realm: we have to get the realm via krb_get_lrealm().  Even though the
+ * default shows as "from krb_get_lrealm, below", it gets changed in
+ * kuserok to whatever krb_get_lrealm() tells us.  That code assumes that
+ * the realm will be the entry number in the table below, so if you
+ * change the order of the entries below, you have to change the
+ * #definition of REALM_SCRIPT to reflect it. 
+ */
+#define REALM_SUBSCRIPT 1
+parmtable kparm[] = {
+
+/* keyword	default 			found value     */
+{"user",	"", 				(char *) NULL},
+{"realm",	"see krb_get_lrealm, below",	(char *) NULL},
+{"instance",	 "",				(char *) NULL},
+};
+#define KPARMS kparm,PARMCOUNT(kparm)
+#endif ATHENA_COMPAT
+
+a72 3
+#ifdef ATHENA_COMPAT
+    char local_realm[REALM_SZ];
+#endif ATHENA_COMPAT
+a108 13
+#ifdef ATHENA_COMPAT
+    /* Accept old-style .klogin files */
+
+    /*
+     * change the default realm from the hard-coded value to the
+     * accepted realm that Kerberos specifies. 
+     */
+    rc = krb_get_lrealm(local_realm, 1);
+    if (rc == KSUCCESS)
+	kparm[REALM_SUBSCRIPT].defvalue = local_realm;
+    else
+	return (rc);
+
+a109 23
+    while ((isok != OK) && (rc = fGetParameterSet(fp, KPARMS)) != PS_EOF) {
+	switch (rc) {
+	case PS_BAD_KEYWORD:
+	case PS_SYNTAX:
+	    while (((gobble = fGetChar(fp)) != EOF) && (gobble != '\n'));
+	    break;
+
+	case PS_OKAY:
+	    isok = (ParmCompare(KPARMS, "user", kdata->pname) ||
+		    ParmCompare(KPARMS, "instance", kdata->pinst) ||
+		    ParmCompare(KPARMS, "realm", kdata->prealm));
+	    break;
+
+	default:
+	    break;
+	}
+	FreeParameterSet(kparm, PARMCOUNT(kparm));
+    }
+    /* reset the stream for parsing new-style names, if necessary */
+    rewind(fp);
+#endif ATHENA_COMPAT
+
+    /* check each line */
+d121 1
+a121 1
+		    strncmp(kdata->prealm, realm, REALM_SZ));
+@
+
+
+4.4
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d16 1
+a16 1
+"$Header: kuserok.c,v 4.3 88/04/06 17:32:07 steiner Locked $";
+d71 3
+a73 3
+ * realm: we have to get the realm via get_krbrlm().  Even though the
+ * default shows as "from get_krbrlm, below", it gets changed in
+ * kuserok to whatever get_krbrlm() tells us.  That code assumes that
+d83 1
+a83 1
+{"realm",	"see get_krbrlm, below",	(char *) NULL},
+d149 1
+a149 1
+    rc = get_krbrlm(local_realm, 1);
+@
+
+
+4.3
+log
+@Took out emacs commands at end.
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d16 1
+a16 1
+"$Header: kuserok.c,v 4.2 88/03/18 21:46:47 steiner Locked $";
+d35 21
+a55 4
+ * kuserok: check ~luser/.klogin to see if principal named in *kdata
+ * is granted access to the account.
+ * ~luser/.klogin should have names parsable by kname_parse, one per line.
+ * return 0 if OK, 1 if not OK
+@
+
+
+4.2
+log
+@Add compatibility code for old-style files.
+Programmer: jtkohl
+Auditor: jon
+@
+text
+@d2 2
+a3 2
+ * $Source$
+ * $Author$
+d16 1
+a16 1
+"$Header$";
+a181 16
+/* The following must come at the end of the program in order for EMACS	 */
+/* to read the new defaults for editing this file.  These defaults try	 */
+/* to impose some restrictions on the coding style so as to maintain a	 */
+/* standard.								 */
+
+/* Local Variables:			 */
+/* mode:c				 */
+/* c-indent-level:4			 */
+/* c-argdecl-indent:0			 */
+/* comment-column:33			 */
+/* c-label-offset:-4			 */
+/* c-continued-statement-indent:0	 */
+/* c-continued-statement-offset:4	 */
+/* c-auto-newline:nil			 */
+/* c-brace-offset:0			 */
+/* End:					 */
+@
+
+
+4.1
+log
+@Copyright notice, etc.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/krb/RCS/kuserok.c,v $
+ * $Author: jtkohl $
+d9 3
+d16 1
+a16 1
+"$Header: kuserok.c,v 4.0 88/01/19 17:11:18 steiner Locked $";
+d27 2
+d30 13
+a44 5
+#ifndef TRUE
+#define TRUE 1
+#define FALSE 0
+#endif
+
+d70 1
+a70 1
+#define MAX_USERNAME 10
+d78 11
+a88 5
+    char    pbuf[MAXPATHLEN];
+    int     ok = FALSE, rc, ch;
+    FILE   *fp;
+    char    kuser[MAX_USERNAME];
+    char    krb_realm[REALM_SZ];
+d90 1
+a90 8
+    /*
+     * if he's trying to log in as himself, let him.  To find out, call
+     * an_to_ln to convert the triple in kdata to a name which we can
+     * string compare. 
+     */
+    if (!krb_kntoln(kdata, kuser) && (strcmp(kuser, luser) == 0)) {
+	return (0);
+    }
+d92 1
+a92 1
+	return (-1);
+d97 12
+d110 1
+a110 1
+	return (-1);
+d112 5
+a116 2
+    (void) fstat(fileno(fp), &sbuf);
+    if (sbuf.st_uid && sbuf.st_uid != pwd->pw_uid) {
+d118 1
+a118 1
+	return (-1);
+d120 8
+d132 1
+a132 1
+    rc = get_krbrlm(krb_realm, 1);
+d134 1
+a134 1
+	kparm[REALM_SUBSCRIPT].defvalue = krb_realm;
+d138 2
+a139 1
+    while (!ok && (rc = fGetParameterSet(fp, KPARMS)) != PS_EOF) {
+d143 1
+a143 1
+	    while (((ch = fGetChar(fp)) != EOF) && (ch != '\n'));
+d147 3
+a149 3
+	    ok = ((ParmCompare(KPARMS, "user", kdata->pname) == 0)
+	       && (ParmCompare(KPARMS, "instance", kdata->pinst) == 0)
+	       && (ParmCompare(KPARMS, "realm", kdata->prealm) == 0));
+d157 22
+d180 1
+a180 1
+    return(!ok);
+@
+
+
+4.0
+log
+@this is a bogus version for compatibility; a newer version
+that understands foo.bar@@baz style names will follow
+@
+text
+@d2 2
+a3 2
+ * $Source$
+ * $Author$
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d7 2
+a8 4
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+ *
+ * Description of routines and other interesting stuff.
+d13 1
+a13 1
+"$Header$";
+d16 1
+a16 1
+#include	<mit-copyright.h>
+@

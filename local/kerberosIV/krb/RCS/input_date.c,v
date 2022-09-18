@@ -1,0 +1,265 @@
+head     4.2;
+branch   ;
+access   ;
+symbols  PATCH8:4.2 PATCH7:4.2 KPATCH6:4.2 ASRSNAP1001:4.2 PATCH5:4.2 KPATCH4:4.2 KPATCH3:4.2 KPATCH2:4.2 KREL1:4.2 BETA5/24/88:4.2;
+locks    ; strict;
+comment  @ * @;
+
+
+4.2
+date     87.10.20.17.09.40;  author jtkohl;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.46.43;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.05.14.15.26.18;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.2
+log
+@lint fixes
+@
+text
+@/*	Copyright	1986	by the Massachusetts Institute of Technology	   */
+
+/*	input_date.c 
+ *	spm	3/86	MIT Project Athena
+ *	$Source: /u3/kerberos.new/lib/krb/RCS/input_date.c,v $
+ *	$Author: steiner $
+ *	$Locker: jtkohl $
+ * 
+ * This routine accepts as input a string of the form mm/dd/yy and returns
+ * either a valid number of seconds since 00:00 Jan 1,1970, as used by
+ * 4.3 Unix, or an error value of -1 indicating invalid input.  Twentieth
+ * century is assumed.  May this code live so long!
+ *
+ *	Beware Europe, this is the American style date.
+ *	What this country needs is a good 5 cent general purpose date converter.
+ */
+
+
+/* System include files													   */
+# include	<stdio.h>
+# include	<sys/time.h>
+
+#ifndef	lint
+static char		*rcsid_input_date_c="$Header: input_date.c,v 4.1 87/09/01 15:46:43 jtkohl Locked $";
+static char		*copyright = 
+				"Copyright 1986 by the Massachusetts Institute of Technology";
+#endif lint
+
+
+long	input_date(s)
+	char	*s;
+	{
+/* parse from input														   */
+	static	int		month;
+	static	int		day;
+	static	int	    year;
+
+/*	calculate															   */
+	static	int		days;
+	static	int		yrs;
+	static	int		hour;		/* assume 0								   */
+	static	int		min;		/* assume 0								   */
+	static	long	sec;
+	static	int		month_size[12] =
+    	{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	static struct	timeval		t;
+	static struct	timezone	z;
+	static	int		is_dst;
+	static	int		wday;
+	static	int		i;
+
+	/* Determine the timezone correction */
+	if (!t.tv_sec)
+		(void) gettimeofday(&t,&z);
+
+	if (s == NULL)	return -1;
+
+	month = day = year = sec = 0;		
+	if (sscanf(s,"%d/%d/%d",&month,&day,&year) != 3)
+		return -1;
+
+	if (month < 1 || month > 12) return -1;
+	if (day < 1 ) return -1;
+
+/* ASSUME 20th century													   */
+	if (year < 70 || year > 99) return -1;
+
+	/* now convert this to seconds and microseconds of current GMT;
+	 * seconds is number of seconds since midnight Jan 1, 1970
+	 */
+	
+	yrs = year - 70;
+	/* adjust for leap years											   */
+	if (month >2) 
+		{
+		days = (yrs + 2)/4;	/* 1970 was two years from leap		   */
+		}
+	else
+		{
+		days = (yrs +1)/4;	/* don't count this one yet				   */
+		}		
+
+	days += yrs * 365;
+
+#ifdef	DEBUG
+	fprintf(stderr,"\nyrs = %d days = %d", yrs, days);
+#endif
+
+	/* adjust for leap seconds
+	 * adjust for the fact that each century is NOT a leap year
+	 * FAT CHANCE!
+	 */
+
+	/* add the amount for months										   */
+
+	for (i = 1; i < month ; i++)
+		{
+		days += month_size[i-1];
+		}
+	
+#ifdef	DEBUG
+	fprintf(stderr,"\nmonth = %d , now days = %d", month, days);
+#endif
+	/* add full days within month										   */
+		days += day -1;		
+
+#ifdef	DEBUG
+		fprintf(stderr,
+	"\nday = %d , now days = %d\n\thour = %d min = %d",
+		 day, days, hour, min, sec);
+#endif
+
+	/* 
+	 * convert to sec, add full hours, minutes and sec within day
+	 * BEWARE 16 bit expression evals
+     */
+
+	sec = ((((days*24L)+hour)*60L)+min)*60L + sec;
+
+	/* what if today is feb 29?											   */
+
+	/* adjust for gmt													   */
+		sec += z.tz_minuteswest*60;
+
+#ifdef	DEBUG
+	fprintf(stderr,"\nDST = %d",z.tz_dsttime);
+#endif
+	is_dst = 0;
+	if (z.tz_dsttime)			/* DST observed							   */
+		{
+		/* adjust for daylight savings time								   */
+
+		/* figure day of week											   */
+		wday = (days+3)%7;
+		switch (month)
+			{
+			case	4:			/* 30 days hath April					   */
+					/* is it at or beyond last Sunday in month ?		   */
+					if ((day - wday) > 23) 
+						{
+						/* just make sure it is not before 2am on Sunday   */
+						if (  (wday == 0)  && ( hour < 2 )) break;
+						is_dst = 1;
+						}
+					break;
+	
+			case	5:
+			case	6:
+			case	7:
+			case	8:
+			case	9:
+					is_dst = 1;
+					break;
+	
+			case	10:			/* 31 days for October					   */
+					/* is it at or beyond last sunday in month?			   */
+					if ((day - wday) < 25) 
+						{
+						is_dst = 1;
+						}
+					
+					else
+						{
+						/* just make sure it is not before 2am on Sunday   */
+						if (  (wday == 0)  && ( hour <2 ))
+							{
+							is_dst = 1;
+							}	
+						}
+					break;
+			}
+		
+		if (is_dst)	sec -= 3600L;
+		}
+#ifdef	DEBUG
+	fprintf(stderr,"\n is_dst = %d",is_dst);
+#endif	
+	/* stuff and return													   */
+	return sec;
+}
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d5 3
+a7 6
+ *	$Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/input_date.c,v $
+ *	$Author: spm $
+ *	$Locker: steiner $
+ *	$Log:	input_date.c,v $
+ * Revision 1.1  86/05/14  15:26:18  spm
+ * Initial revision
+a8 2
+ * 
+ * 
+d24 1
+a24 1
+static char		*rcsid_input_date_c="$Header: input_date.c,v 1.1 86/05/14 15:26:18 steiner Locked $";
+a43 3
+	static	int		leap;
+	static	char	*p;
+	static	int		ok;
+d52 3
+a54 2
+	/* Determine the timezone correction								   */
+	if (!t.tv_sec)	gettimeofday(&t,&z);
+d59 2
+a60 1
+	sscanf(s,"%d/%d/%d",&month,&day,&year);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 6
+a10 4
+ *	$Source$
+ *	$Author$
+ *	$Locker$
+ *	$Log$
+d13 1
+d29 1
+a29 1
+static char		*rcsid_input_date_c="$Header$";
+@

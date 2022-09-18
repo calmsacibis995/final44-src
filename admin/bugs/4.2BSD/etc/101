@@ -1,0 +1,325 @@
+Return-Path: <linus!ramsdell@mitre-bedford>
+Date: 19 Mar 1985 20:35:15-EST
+From: linus!ramsdell@Mitre-Bedford
+Date: Tue, 19 Mar 85 09:44:09 est
+From: linus!ramsdell (John D. Ramsdell)
+Subject: Users cannot chown on ptys.
+Index: etc 4.2BSD
+
+Description:
+	I use a Dvorak keyboard.  I map the characters typed by
+setting up a process which simply maps the characters, and connect
+it to the shell using ptys.  If I do not use login ptys, I do not
+own the pty.  Others can write on my pty, which spells disaster.
+
+Repeat-By:
+	Run the code included on two terminals at the same time.
+
+Fix:
+	There are two possible fixes.  The best one from my point
+of view is to modify the terminal driver so that so that a call to
+stty will do the Dvorak mapping in the terminal driver.  I have the
+code to do that fix, but our guru does not want to modify our kernel.
+
+	Another possiblity is to allow user to own ptys.  Then I can
+set the protection on the ptys such that no one else can destroy me.
+
+Code:
+
+/*
+>From bccvax!security!axiom!harvard!larry Tue Apr 24 20:07:39 1984
+Date: Tue, 24 Apr 84 16:52:08 est
+From: axiom!harvard!larry (Larry Denenberg)
+To: denenberg@harvard.arpa, linus!ramsdell@Mitre-Bedford.ARPA
+Subject: Dvorak software
+*/
+
+#include <stdio.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <signal.h>
+
+#define iocheck(r) if ((r) < 0) { bailout(buf, login); }
+/* #define DEBUG */
+
+extern int errno;
+extern int sys_nerr;
+extern char *sys_errlist[];
+
+bailout(s,b)
+char *s;
+{
+FILE *err, *fopen();
+
+#ifdef DEBUG
+	err = fopen ("dvorak.err","w");
+#else
+	err = stderr;
+#endif
+	if ((errno > 0) && (errno < sys_nerr))
+		fprintf(err,"\n%s", sys_errlist[errno]);
+	fprintf(err, "\n%s\n",s);
+	if (b) {
+		fprintf(err, "starting standard shell\n");
+		execl("/bin/csh", "-csh", 0);
+	}
+	fprintf(err, "quitting\n");
+	exit(1);
+}
+
+pick_pty(login, pty, tty, pfd)
+int login, *pfd;
+char *pty, *tty;
+{
+	char c; int i;
+	for (c = 'p'; c <= 'r'; c++)
+		for (i = 15; i >= 0; i--) {
+			sprintf(pty, "/dev/pty%c%x", c, i);
+			*pfd = open(pty, 2);
+			if (pfd >= 0) {
+				sprintf(tty, "/dev/tty%c%x", c, i);
+				return(0);
+			}
+		}
+	bailout("No free ptys", login);
+}
+
+#undef CTRL
+#define CTRL(x) (x&037)
+#define DSKTOGGLE CTRL('_')
+char map[] = {
+/* control characters */
+
+	CTRL('@'),
+	CTRL('A'),
+	CTRL('X'),
+	CTRL('J'),
+	CTRL('E'),
+	CTRL('S'),
+	CTRL('U'),
+	CTRL('I'),
+	CTRL('D'),
+	CTRL('C'),
+	CTRL('H'),
+	CTRL('T'),
+	CTRL('N'),
+	CTRL('M'),
+	CTRL('B'),
+	CTRL('R'),
+	CTRL('L'),
+	CTRL('V'),
+	CTRL('P'),
+	CTRL('O'),
+	CTRL('Y'),
+	CTRL('G'),
+	CTRL('K'),
+	CTRL('W'),
+	CTRL('Q'),
+	CTRL('F'),
+	CTRL('_'),
+	CTRL('['),
+	CTRL('\\'),
+	CTRL(']'),
+	CTRL('^'),
+	CTRL('Z'),
+/* special characters */
+ 
+	' ',
+	'!',
+	'_',
+	'#',
+	'$',
+	'%',
+	'&',
+	'-',
+	'(',
+	')',
+	'*',
+	'+',
+	'w',
+	']',
+	'v',
+	'z',
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9',
+	'S',
+	's',
+	'W',
+	'=',
+	'V',
+	'Z',
+/* upper case */
+
+	'@',
+	'A',
+	'X',
+	'J',
+	'E',
+	'>',
+	'U',
+	'I',
+	'D',
+	'C',
+	'H',
+	'T',
+	'N',
+	'M',
+	'B',
+	'R',
+	'L',
+	'\"',
+	'P',
+	'O',
+	'Y',
+	'G',
+	'K',
+	'<',
+	'Q',
+	'F',
+	':',
+	'/',
+	'\\',
+	'}',
+	'^',
+	'[',
+/* lower case */
+
+	'`',
+	'a',
+	'x',
+	'j',
+	'e',
+	'.',
+	'u',
+	'i',
+	'd',
+	'c',
+	'h',
+	't',
+	'n',
+	'm',
+	'b',
+	'r',
+	'l',
+	'\'',
+	'p',
+	'o',
+	'y',
+	'g',
+	'k',
+	',',
+	'q',
+	'f',
+	';',
+	'?',
+	'|',
+	'{',
+	'~',
+	'\177',
+};
+
+main(argc, argv)
+int argc;
+char **argv;
+{
+	/* third arg to ioctl. */
+        struct sgttyb save, vec;
+        struct tchars tc;
+        struct ltchars ltc;
+	int local, line, pgrp;
+	/* end of ioctl dcls. */
+        int readfds, nfound, n, pfd, fd, i, pid, mapping;
+	int login, pseudoin, realin;
+	char buf[512], *p, pty[20], tty[20];
+
+	login = (*argv[0] == '-'); 
+	pick_pty(login, pty, tty, &pfd);
+#ifdef DEBUG
+	fprintf(stderr, "Picked %s.\n", pty);
+	sprintf(buf, "GETP");
+#endif
+	iocheck(ioctl(0, TIOCGETP, &save));
+	vec = save;
+	pid = fork();
+	if(pid < 0) bailout("can't fork",login);
+	if(pid == 0){
+#ifdef DEBUG
+		sprintf(buf,"GETD in fork");
+#endif
+		iocheck(ioctl(0, TIOCGETD, &line));
+		iocheck(ioctl(0, TIOCGETC, &tc));
+		iocheck(ioctl(0, TIOCGLTC, &ltc));
+		iocheck(ioctl(0, TIOCLGET, &local));
+		if ((fd = open("/dev/tty", 2)) < 0) {
+		    perror("/dev/tty");
+		    exit(1);}
+		iocheck(ioctl(fd, TIOCNOTTY, ""));
+#ifdef DEBUG
+		fprintf(stderr, "Starting to close\n");
+#endif
+		close(fd);
+		close(0);
+		close(1);
+		close(2);
+		close(pfd);
+		if((fd = open(tty, 2)) != 0){
+			perror(buf); /* Where does this print to? */
+			exit(1);
+		}
+		dup(0);
+		dup(0);
+#ifdef DEBUG
+		sprintf(buf,"SETD");
+#endif
+		iocheck(ioctl(2, TIOCSETD, &line));
+		iocheck(ioctl(2, TIOCSETP, &save)); 
+		iocheck(ioctl(0, TIOCSETC, &tc));
+		iocheck(ioctl(0, TIOCSLTC, &ltc));
+		iocheck(ioctl(0, TIOCLSET, &local));
+		pgrp = getpid();
+		setpgrp(0, pgrp);
+		iocheck(ioctl(0, TIOCSPGRP, &pgrp));
+#ifdef DEBUG
+		fprintf(stderr, "Start shell\n");
+#endif
+		if (login) execl("/bin/csh", "-csh", 0);
+		else execl("/bin/csh", "csh", 0);
+		exit(-1);
+	}
+
+	vec.sg_flags = EVENP | ODDP | RAW;
+	iocheck(ioctl(0, TIOCSETP, &vec));
+	pseudoin = 1<<pfd;
+	realin = 1<<0;
+	readfds = pseudoin | realin;
+	mapping = 1;
+	while((nfound = select(20, &readfds, 0, 0, 0)) >= 0){
+		if(readfds & pseudoin){
+			n = read(pfd, buf, sizeof(buf));
+			if(n <= 0) break;
+			if(write(1, buf, n) <= 0) break;
+		}
+		if(readfds & realin){
+			n = read(0, buf, sizeof(buf));
+			if(n <= 0) break;
+			for (i=0,p=buf; i<n; i++,p++) {
+				if (mapping) *p = map[*p & 0177];
+				if ((*p & 0177) == DSKTOGGLE)
+					mapping = !mapping;
+			}
+			if(write(pfd, buf, n) <= 0) break;
+		}
+		readfds = (1<<pfd) | (1<<0);
+	}
+	if(nfound < 0) bailout("selection error",login);
+	iocheck(ioctl(0, TIOCSETP, &save));
+	exit(0);
+}

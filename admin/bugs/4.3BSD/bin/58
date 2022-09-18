@@ -1,0 +1,101 @@
+From dalcs!david@seismo.css.gov  Mon Mar 16 21:02:21 1987
+Date: Mon, 16 Mar 87 16:07:34 AST
+From: David Trueman <dalcs!david@seismo.css.gov>
+Subject: mt(1) doesn't flag ambiguous commands
+Index: bin/mt.c 4.3BSD
+
+Description:
+	mt(1) is documented to recognize the minimal unambiguous
+	prefix for each of its commands.  In fact, it selects the first
+	matching command in its internal table of commands, and fails
+	to warn the user that other commands matched.
+Repeat-By:
+	Run the command:
+		mt fs
+	and watch the tape spin forward, even though "fs" might have
+	been intended to mean "fsr".
+Fix:
+	Change mt to search the whole table of commands, and exit if more
+	than one matches.  A diff of the changes follows.
+
+RCS file: RCS/mt.c,v
+retrieving revision 1.1
+diff -c -r1.1 mt.c
+*** /tmp/,RCSt1000487	Mon Mar 16 13:20:52 1987
+--- mt.c	Mon Mar 16 13:01:17 1987
+***************
+*** 54,60 ****
+  {
+  	char line[80], *getenv();
+  	register char *cp;
+! 	register struct commands *comp;
+  
+  	if (argc > 2 && (equal(argv[1], "-t") || equal(argv[1], "-f"))) {
+  		argc -= 2;
+--- 54,60 ----
+  {
+  	char line[80], *getenv();
+  	register char *cp;
+! 	register struct commands *comp, *found = NULL;
+  
+  	if (argc > 2 && (equal(argv[1], "-t") || equal(argv[1], "-f"))) {
+  		argc -= 2;
+***************
+*** 70,86 ****
+  	cp = argv[1];
+  	for (comp = com; comp->c_name != NULL; comp++)
+  		if (strncmp(cp, comp->c_name, strlen(cp)) == 0)
+! 			break;
+! 	if (comp->c_name == NULL) {
+  		fprintf(stderr, "mt: don't grok \"%s\"\n", cp);
+  		exit(1);
+  	}
+! 	if ((mtfd = open(tape, comp->c_ronly ? 0 : 2)) < 0) {
+  		perror(tape);
+  		exit(1);
+  	}
+! 	if (comp->c_code != MTNOP) {
+! 		mt_com.mt_op = comp->c_code;
+  		mt_com.mt_count = (argc > 2 ? atoi(argv[2]) : 1);
+  		if (mt_com.mt_count < 0) {
+  			fprintf(stderr, "mt: negative repeat count\n");
+--- 70,91 ----
+  	cp = argv[1];
+  	for (comp = com; comp->c_name != NULL; comp++)
+  		if (strncmp(cp, comp->c_name, strlen(cp)) == 0)
+! 			if (found == NULL)
+! 				found = comp;
+! 			else {
+! 				fprintf(stderr, "mt: ambiguous command\n");
+! 				exit(1);
+! 			}
+! 	if (found == NULL) {
+  		fprintf(stderr, "mt: don't grok \"%s\"\n", cp);
+  		exit(1);
+  	}
+! 	if ((mtfd = open(tape, found->c_ronly ? 0 : 2)) < 0) {
+  		perror(tape);
+  		exit(1);
+  	}
+! 	if (found->c_code != MTNOP) {
+! 		mt_com.mt_op = found->c_code;
+  		mt_com.mt_count = (argc > 2 ? atoi(argv[2]) : 1);
+  		if (mt_com.mt_count < 0) {
+  			fprintf(stderr, "mt: negative repeat count\n");
+***************
+*** 87,93 ****
+  			exit(1);
+  		}
+  		if (ioctl(mtfd, MTIOCTOP, &mt_com) < 0) {
+! 			fprintf(stderr, "%s %s %d ", tape, comp->c_name,
+  				mt_com.mt_count);
+  			perror("failed");
+  			exit(2);
+--- 92,98 ----
+  			exit(1);
+  		}
+  		if (ioctl(mtfd, MTIOCTOP, &mt_com) < 0) {
+! 			fprintf(stderr, "%s %s %d ", tape, found->c_name,
+  				mt_com.mt_count);
+  			perror("failed");
+  			exit(2);

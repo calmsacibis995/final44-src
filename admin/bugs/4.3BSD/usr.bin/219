@@ -1,0 +1,69 @@
+From dls@j.cc.purdue.edu  Mon Aug  7 20:43:37 1989
+Date: Mon, 7 Aug 89 22:43:06 -0500
+From: dls@j.cc.purdue.edu (David L Stevens)
+Subject: Find(1) is intrusive
+Index: usr.bin/find/find.c 4.3BSD
+
+Description:
+	find(1) changes atimes for all directories it searches, which makes
+the "-atime" argument less useful.
+
+Repeat-By:
+	find / -atime
+
+Fix:
+	Save the utimes for directories before reading them and restore them
+on the way back up.  (Works for root or directory owners, only) Diffs follow:
+
+*** NEW find.c	Mon Aug  7 22:33:48 1989
+--- OLD find.c	Mon Aug  7 22:30:29 1989
+***************
+*** 6,11 ****
+--- 6,14 ----
+  #include <sys/param.h>
+  #include <sys/dir.h>
+  #include <sys/stat.h>
++ #ifdef	STEALTH
++ #include <sys/time.h>
++ #endif	/* STEALTH */
+  
+  #define A_DAY	86400L /* a day full of seconds */
+  #define EQ(x, y)	(strcmp(x, y)==0)
+***************
+*** 665,670 ****
+--- 668,676 ----
+  	char *endofname;
+  	auto char sbkeep_dir[MAXPATHLEN+MAXNAMLEN+2];
+  	struct stat lstatb;
++ #ifdef	STEALTH
++ 	struct	timeval	tvp[2];
++ #endif	/* STEALTH */
+  
+  	if ((follow?stat(fname, &Statb):lstat(fname, &Statb))<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+***************
+*** 699,704 ****
+--- 705,714 ----
+  
+  	if (chdir(fname) == -1)
+  		return(0);
++ #ifdef	STEALTH
++ 	tvp[0].tv_sec = Statb.st_atime;
++ 	tvp[1].tv_sec = Statb.st_mtime;
++ #endif	/* STEALTH */
+  	if ((dir = opendir(".")) == NULL) {
+  		fprintf(stderr, "find: cannot open < %s >\n", name);
+  		rv = 0;
+***************
+*** 725,730 ****
+--- 735,743 ----
+  ret:
+  	if(dir)
+  		closedir(dir);
++ #ifdef	STEALTH
++ 	(void) utimes(".", tvp);
++ #endif	/* STEALTH */
+  	if (chdir(*sbkeep_dir ? sbkeep_dir : "..") == -1) {
+  		*endofname = '\0';
+  		fprintf(stderr, "find: bad directory <%s>\n", name);
+

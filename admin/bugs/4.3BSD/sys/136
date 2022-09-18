@@ -1,0 +1,66 @@
+From cpw%sneezy@lanl.gov  Tue Jun 30 18:04:26 1987
+Date: Tue, 30 Jun 87 17:01:12 MDT
+From: cpw%sneezy@lanl.gov (C. Philip Wood)
+Subject: MCLGET does not set proper failure condition
+Index: sys/h/mbuf.h 4.3BSD
+
+Description:
+	On rare occasions it is possible for vmunix to panic with either
+		panic: mget
+	or
+		panic: Segmentation fault
+	This results when two conditions exist:
+		1. the next message buffer on the 'mfree' list was
+		   used to hold a cluster buffer (m_len == CLBYTES).
+		2. MCLGET fails to get a cluster.
+	There are at least 4 places in the kernel where MCLGET is
+	called:
+		./net/if_sl.c
+		./sys/uipc_socket.c
+		./vaxif/if_ec.c
+		./vaxif/if_uba.c
+	None of these initialize 'm_len' prior to a call to MCLGET.
+	They all check for success by testing if (m_len == CLBYTES)
+	Consequently, if the above conditions are true at the time
+	of the MCLGET, some part of the message buffer pool is over-
+	written and soon a panic results.
+
+Repeat-By:
+	Set up the conditions stated above.
+Fix:
+	The fix is to modify the MCLGET macro in h/mbuf.h to set a failure
+	condition by setting m_len to something other than CLBYTES.
+	See diff below.
+
+*** mbuf.h      Tue Jun 30 15:25:25 1987
+--- mbuf.h.orig Thu Jun  5 00:24:58 1986
+***************
+*** 5,7 ****
+   *
+!  *    @(#)mbuf.h      7.3.1 (LANL) 6/30/87
+   */
+--- 5,7 ----
+   *
+!  *    @(#)mbuf.h      7.1 (Berkeley) 6/4/86
+   */
+***************
+*** 97,100 ****
+        { int ms = splimp(); \
+-         if (mclfree == 0) \
+-               (void)m_clalloc((i), MPG_CLUSTERS, M_DONTWAIT); \
+          if ((m)=mclfree) \
+--- 97,98 ----
+***************
+*** 107,108 ****
+--- 105,108 ----
+        { struct mbuf *p; \
++         if (mclfree == 0) \
++               (void)m_clalloc(1, MPG_CLUSTERS, M_DONTWAIT); \
+          MCLALLOC(p, 1); \
+***************
+*** 112,115 ****
+          } \
+-         else \
+-               (m)->m_len = 0; \
+        }
+--- 112,113 ----

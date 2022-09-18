@@ -1,0 +1,401 @@
+Path: seismo!uunet!husc6!tut.cis.ohio-state.edu!mailrus!nrl-cmf!ames!lll-tis!elxsi!beatnix!gww
+From: gww@beatnix.UUCP (Gary Winiger)
+Newsgroups: comp.bugs.4bsd
+Subject: Make(1) does not support file inclusion +Fix
+Index:	bin/make/{Makefile,defs,gram.y,main.c,misc.c} 4.3BSD
+
+Description:
+	4.3BSD make does not support file inclusion.  Other makes do.
+Repeat-By:
+	Use a System V.3 or SunOS makefile with a include directive.
+Fix:
+	Elxsi received a large third party package that used the SunOS
+	make include directive.  Rather than redo all the makefiles,
+	Luong Nguyen-Duy made the following additions to 4.3 make.
+
+	The attached code solves this problem at Elxsi.
+
+Gary..
+{ucbvax!sun,uunet,lll-lcc!lll-tis,amdahl!altos86,bridge2}!elxsi!gww
+--------- cut --------- snip --------- :.,$w diff -------------
+Index: /usr/src/etc/make/Makefile
+*** /tmp/,RCSt1000738	Fri Aug  7 14:07:03 1987
+--- Makefile	Fri Aug  7 14:05:57 1987
+***************
+*** 1,6 ****
+! #	$Header: Makefile,v 1.1 86/12/11 12:53:09 gww Exp $ ENIX BSD
+  # $Log:	Makefile,v $
+  # Revision 1.1  86/12/11  12:53:09  gww
+  # Initial revision
+--- 1,9 ----
+! #	$Header: Makefile,v 1.2 87/08/07 14:05:43 gww Exp $ ENIX BSD
+  # $Log:	Makefile,v $
++ # Revision 1.2  87/08/07  14:05:43  gww
++ # Add include Files feature.
++ # 
+  # Revision 1.1  86/12/11  12:53:09  gww
+  # Initial revision
+***************
+*** 12,18 ****
+  OBJECTS=ident.o main.o doname.o misc.o files.o dosys.o gram.o 
+  LIBES= 
+  LINT=	lint -ps
+! CFLAGS=	-O -DASCARCH -I. -I/usr/src/bin/make 
+  all:	make
+--- 15,22 ----
+  OBJECTS=ident.o main.o doname.o misc.o files.o dosys.o gram.o 
+  LIBES= 
+  LINT=	lint -ps
+! DFLAGS=	-DINCLUDES
+! CFLAGS=	-O -DASCARCH ${DFLAGS} -I. -I/usr/src/bin/make 
+  all:	make
+***************
+*** 20,25 ****
+--- 24,35 ----
+  	${CC} -o make ${CFLAGS} ${OBJECTS} ${LIBES}
+  ${OBJECTS}:  defs
++ 
++ .y.c:
++ 	/lib/cpp -P -E ${DFLAGS} $*.y >y.tab.y
++ 	${YACC} y.tab.y
++ 	rm -f y.tab.y
++ 	mv y.tab.c $*.c
+  clean:
+  	-rm -f *.o gram.c make a.out errs
+Index: /usr/src/etc/make/defs
+*** /tmp/,RCSt1000738	Fri Aug  7 14:07:07 1987
+--- defs	Fri Aug  7 14:06:02 1987
+***************
+*** 1,6 ****
+! /*	$Header: defs,v 1.1 86/12/11 12:53:11 gww Exp $ ENIX BSD
+   *
+   * $Log:	defs,v $
+   * Revision 1.1  86/12/11  12:53:11  gww
+   * Initial revision
+   * 
+--- 1,9 ----
+! /*	$Header: defs,v 1.2 87/08/07 14:05:58 gww Exp $ ENIX BSD
+   *
+   * $Log:	defs,v $
++  * Revision 1.2  87/08/07  14:05:58  gww
++  * Add include Files feature.
++  * 
+   * Revision 1.1  86/12/11  12:53:11  gww
+   * Initial revision
+   * 
+***************
+*** 139,141 ****
+--- 142,157 ----
+  int *ckalloc();
+  struct nameblock *srchname(), *makename();
+  TIMETYPE exists();
++ 
++ #ifdef	INCLUDES
++ struct include_stack
++ 	{
++ 	FILE *file;
++ 	int lineno;
++ 	char *nextc;
++ 	};
++ #define	MAX_INCLUDES 20
++ extern push();
++ extern empty_stack();
++ extern FILE *pop();
++ #endif	INCLUDES
+Index: /usr/src/etc/make/gram.y
+*** /tmp/,RCSt1000738	Fri Aug  7 14:07:10 1987
+--- gram.y	Fri Aug  7 14:06:05 1987
+***************
+*** 1,15 ****
+  %{#include "defs"
+  /*
+   * $Log:	gram.y,v $
+   * Revision 1.1  86/12/11  12:53:18  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: gram.y,v 1.1 86/12/11 12:53:18 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)gram.y	4.1 (Berkeley) 81/02/28";
+  %}
+  %term NAME SHELLINE START MACRODEF COLON DOUBLECOLON GREATER
+  %union
+  	{
+  	struct shblock *yshblock;
+--- 1,22 ----
+  %{#include "defs"
+  /*
+   * $Log:	gram.y,v $
++  * Revision 1.2  87/08/07  14:06:03  gww
++  * Add include Files feature.
++  * 
+   * Revision 1.1  86/12/11  12:53:18  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: gram.y,v 1.2 87/08/07 14:06:03 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)gram.y	4.1 (Berkeley) 81/02/28";
+  %}
++ #ifdef	INCLUDES
++ %term NAME SHELLINE START MACRODEF COLON DOUBLECOLON GREATER INCLUDE
++ #else
+  %term NAME SHELLINE START MACRODEF COLON DOUBLECOLON GREATER
++ #endif	INCLUDES
+  %union
+  	{
+  	struct shblock *yshblock;
+***************
+*** 43,48 ****
+--- 50,58 ----
+  	;
+  comline:  START
++ #ifdef	INCLUDES
++ 	| INCLUDE
++ #endif	INCLUDES
+  	| MACRODEF
+  	| START namelist deplist shellist = {
+  	    while( --nlefts >= 0)
+***************
+*** 272,278 ****
+  	if((c = text[0]) == '\t')
+  		return( retsh(text) );
+! 	
+  	if(isalpha(c) || isdigit(c) || c==' ' || c=='.')
+  		for(p=text+1; *p!='\0'; )
+  			if(*p == ':')
+--- 282,293 ----
+  	if((c = text[0]) == '\t')
+  		return( retsh(text) );
+! #ifdef	INCLUDES
+! 	else if((strncmp(text, "include ", 8) == 0) ||
+! 		(strncmp(text, "include\t", 8) == 0))
+! 		return(do_include(text+8));
+! #endif	INCLUDES
+! 
+  	if(isalpha(c) || isdigit(c) || c==' ' || c=='.')
+  		for(p=text+1; *p!='\0'; )
+  			if(*p == ':')
+***************
+*** 312,314 ****
+--- 327,366 ----
+  		return(START);
+  goto again;
+  }
++ 
++ 
++ 
++ #ifdef	INCLUDES
++ do_include (text)
++ char *text;
++ {
++ 	register char *p;
++ 	register char *pend;
++ 	char filename[MAXPATHLEN];
++ 
++ 	/* skip leading white space */
++ 
++ 	for (; *text == ' ' || *text == '\t'; text++)
++ 		continue;
++ 
++ 	/* get file name */
++ 
++ 	subst(text, filename);		/* Substitute for macros */
++ 
++ 	if(dbgflag) printf("Include file: %s\n", filename);
++ 
++ 	if (rddescf(filename))
++ 		fatal1("could not do include %s\n", filename);
++ 
++ 	return(INCLUDE);
++ }
++ #endif	INCLUDES
+Index: /usr/src/etc/make/main.c
+*** /tmp/,RCSt1000738	Fri Aug  7 14:07:14 1987
+--- main.c	Fri Aug  7 14:06:09 1987
+***************
+*** 1,10 ****
+  /*
+   * $Log:	main.c,v $
+   * Revision 1.1  86/12/11  12:53:21  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: main.c,v 1.1 86/12/11 12:53:21 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)main.c	4.8 (Berkeley) 86/01/09";
+  # include "defs"
+  /*
+--- 1,13 ----
+  /*
+   * $Log:	main.c,v $
++  * Revision 1.2  87/08/07  14:06:06  gww
++  * Add include Files feature.
++  * 
+   * Revision 1.1  86/12/11  12:53:21  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: main.c,v 1.2 87/08/07 14:06:06 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)main.c	4.8 (Berkeley) 86/01/09";
+  # include "defs"
+  /*
+***************
+*** 280,285 ****
+--- 283,292 ----
+  char *descfile;
+  {
+  FILE * k;
++ #ifdef	INCLUDES
++ extern int	yylineno;
++ extern char	*zznextc;
++ #endif	INCLUDES
+  /* read and parse description */
+***************
+*** 309,315 ****
+--- 316,338 ----
+  	return( rdd1(stdin) );
+  if( (k = fopen(descfile,"r")) != NULL)
++ #ifdef	INCLUDES
++ {
++ 	if(fin != NULL) {
++ 		push(fin, yylineno, zznextc);
++ 	}
++ 	if(rdd1(k)) {
++ 		fatal("rddescf(), could not make %s ", descfile);
++ 	}
++ 	else {
++ 		if(!empty_stack())
++ 			fin = pop();
++ 		return(0);
++ 	}
++ }
++ #else
+  	return( rdd1(k) );
++ #endif	INCLUDES
+  return(1);
+  }
+Index: /usr/src/etc/make/misc.c
+*** /tmp/,RCSt1000738	Fri Aug  7 14:07:20 1987
+--- misc.c	Fri Aug  7 14:06:13 1987
+***************
+*** 1,10 ****
+  /*
+   * $Log:	misc.c,v $
+   * Revision 1.1  86/12/11  12:53:23  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: misc.c,v 1.1 86/12/11 12:53:23 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)misc.c	4.3 (Berkeley) 85/08/30";
+  #include "defs"
+--- 1,13 ----
+  /*
+   * $Log:	misc.c,v $
++  * Revision 1.2  87/08/07  14:06:10  gww
++  * Add include Files feature.
++  * 
+   * Revision 1.1  86/12/11  12:53:23  gww
+   * Initial revision
+   * 
+   */
+! static char *ERcsId = "$Header: misc.c,v 1.2 87/08/07 14:06:10 gww Exp $ ENIX BSD";
+  static	char *sccsid = "@(#)misc.c	4.3 (Berkeley) 85/08/30";
+  #include "defs"
+***************
+*** 345,347 ****
+--- 348,391 ----
+  *--qbufp = '\0';
+  return(qbuf);
+  }
++ 
++ #ifdef	INCLUDES
++ struct	include_stack stack[MAX_INCLUDES];
++ static	int top = -1;
++ 
++ push (file, lineno, nextc)
++ FILE *file;
++ int lineno;
++ char *nextc;
++ {
++ 	if ( top < MAX_INCLUDES-1 ) {
++ 	    top++;
++ 	    stack[top].file = file;
++ 	    stack[top].lineno = lineno;
++ 	    stack[top].nextc = nextc;
++ 	}
++ 	else fatal1("include depth > %d\n", MAX_INCLUDES);
++ }
++ 
++ FILE *
++ pop()
++ {
++ extern int	yylineno;
++ extern char	*zznextc;
++ 
++ 	if (top == -1) {
++ 		fatal("pop() trying to pop null include stack\n");
++ 	}
++ 	else {
++ 		yylineno = stack[top].lineno;
++ 		zznextc = stack[top].nextc;
++ 		return(stack[top--].file);
++ 	}
++ }
++ 
++ 
++ int empty_stack()
++ {
++ 	return( (top == -1) ? 1 : 0 );
++ }
++ #endif	INCLUDES
+Index: /usr/man/man1/make.1
+*** /tmp/,RCSt1000941	Fri Aug  7 15:01:47 1987
+--- make.1	Fri Aug  7 15:01:20 1987
+***************
+*** 1,6 ****
+! .\"	$Header: make.1,v 1.1 86/12/12 16:17:38 gww Exp $ ENIX BSD
+  .\"
+  .\" $Log:	make.1,v $
+  .\" Revision 1.1  86/12/12  16:17:38  gww
+  .\" Initial revision
+  .\" 
+--- 1,9 ----
+! .\"	$Header: make.1,v 1.2 87/08/07 15:01:04 gww Exp $ ENIX BSD
+  .\"
+  .\" $Log:	make.1,v $
++ .\" Revision 1.2  87/08/07  15:01:04  gww
++ .\" Add include support.
++ .\" 
+  .\" Revision 1.1  86/12/12  16:17:38  gww
+  .\" Initial revision
+  .\" 
+***************
+*** 233,238 ****
+--- 236,254 ----
+  unless the target is a directory or
+  depends on the special name `.PRECIOUS'.
+  .PP
++ Files may be included within a
++ .I makefile
++ similarly to the
++ .I #include
++ directive of the C preprocessor.
++ If the first seven characters of a line in a
++ .I makefile
++ are `include' and the eighth is either a blank or tab, the remainder of
++ the line is interpreted as the path name of the file to be included.
++ Marco substitutions are done on the `include' line before the path name
++ is interpreted.
++ Includes may be nested up to 20 deep.
++ .PP
+  Other options:
+  .TP
+  .B \-i
+***************
+*** 281,283 ****
+--- 297,303 ----
+  .PP
+  `VPATH' is intended to act like the System V `VPATH' support,
+  but there is no guarantee that it functions identically.
++ .PP
++ `Include' is intended to act like the System V `include' support,
++ but there is no guarantee that it functions identically.
++ `include' does not follow `VPATH's.

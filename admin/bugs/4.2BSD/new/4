@@ -1,0 +1,111 @@
+Return-Path: <gww@lll-tis-gw>
+Date: Wed, 29 May 85 18:12:35 pdt
+From: Gary W. Winiger <gww@lll-tis-gw>
+Subject: sccstorcs
+Index: new/sccstorcs/src/sccstorcs.c 4.2BSD
+
+Description:
+	Sccstorcs does not ignore removed SCCS deltas.
+	This causes RCS to abort when asked to check in the same
+	revision more than once.
+Repeat-By:
+	Create an SCCS file with a removed delta and then deltas 
+	following it.
+	Try to convert the SCCS file to RCS with sccstorcs.
+	(I discovered the problem converting /usr/src/etc/ftpd/SCCS/s.ftpd.c.
+	It contains a removed delta of 4.6.)
+Fix:
+	Ignore removed deltas with collecting the header information.
+*** /tmp/,RCSt1029899	Wed May 29 18:05:48 1985
+--- /tmp/,RCSt2029899	Wed May 29 18:05:49 1985
+***************
+*** 1,5
+  static char *RCSid =
+! "$Header: sccstorcs.c,v 1.1 85/05/29 16:40:40 sys Exp $";
+  
+  /*
+   * SCCSTORCS - build RCS file from SCCS file preserving deltas.
+
+--- 1,5 -----
+  static char *RCSid =
+! "$Header: sccstorcs.c,v 1.2 85/05/29 17:16:07 sys Exp $";
+  
+  /*
+   * SCCSTORCS - build RCS file from SCCS file preserving deltas.
+***************
+*** 12,17
+   * author.
+   *
+   * $Log:	sccstorcs.c,v $
+   * Revision 1.1  85/05/29  16:40:40  sys
+   * Initial revision
+   * 
+
+--- 12,20 -----
+   * author.
+   *
+   * $Log:	sccstorcs.c,v $
++  * Revision 1.2  85/05/29  17:16:07  sys
++  * Skip removed deltas.  gww
++  * 
+   * Revision 1.1  85/05/29  16:40:40  sys
+   * Initial revision
+   * 
+***************
+*** 176,181
+      USERLIST *userlist = NULL;
+      static HEADER header;
+      char line[512], *description = NULL;
+      while (fgets (line, sizeof line, fd))
+      {
+  	if (line[0] != SOH)
+
+--- 179,185 -----
+      USERLIST *userlist = NULL;
+      static HEADER header;
+      char line[512], *description = NULL;
++     int skipping = FALSE;		/* not now skipping removed delta */
+      while (fgets (line, sizeof line, fd))
+      {
+  	if (line[0] != SOH)
+***************
+*** 180,185
+      {
+  	if (line[0] != SOH)
+  	    continue;
+  	if (line[1] == 'I')		/* The first INCLUDE */
+  	    break;
+  	switch (line[1])
+
+--- 184,194 -----
+      {
+  	if (line[0] != SOH)
+  	    continue;
++ 	if (skipping) {			/* skip removed delta */
++ 	    if (line[1] == 'e')		/* end of removed delta header */
++ 		skipping = FALSE;
++ 	    continue;
++ 	}
+  	if (line[1] == 'I')		/* The first INCLUDE */
+  	    break;
+  	switch (line[1])
+***************
+*** 185,190
+  	switch (line[1])
+  	{
+  	    case 'd': 		       /* New delta */
+  		delta = new_delta (line);
+  		delta -> next = head;
+  		head = delta;
+
+--- 194,203 -----
+  	switch (line[1])
+  	{
+  	    case 'd': 		       /* New delta */
++ 		if (line[3] == 'R') {  /* skip removed delta */
++ 		    skipping = TRUE;
++ 		    break;
++ 		}
+  		delta = new_delta (line);
+  		delta -> next = head;
+  		head = delta;

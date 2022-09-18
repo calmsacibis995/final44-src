@@ -1,0 +1,1228 @@
+From forys@snake.utah.edu  Fri Mar 23 01:39:57 1990
+From: Jeff Forys <forys@snake.utah.edu>
+To: security-emergency@cpd.com, cert@SEI.CMU.EDU, hotline@sun.com,
+        4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Two sendmail security holes +FIXes
+Cc: trent@boulder.Colorado.EDU, bowen@cs.buffalo.edu, rich@wsl.dec.com
+Date: Fri, 23 Mar 90 02:38:49 MST
+
+Subject: Two sendmail security holes +FIXes
+Index:	usr.lib/sendmail/src 4.3BSD
+
+Description:
+
+	1) A user can run programs with root's group privileges by
+	   getting root to send them mail (e.g. by using calendar).
+	2) A user can run programs as any other (non-root) user by
+	   getting the other user to send them mail.
+
+	N.B. The do-it-yourself hacker can also fake a letter from
+	the target user eliminating the need to elicit a response.
+
+	These holes exist in sendmail 5.61 and apparently all previous
+	versions, as well as every vendors' sendmail release that I
+	have come across.  So, now that I have your attention...  :-)
+
+	The first hole is easiest to explain.  When delivering to
+	files and programs, sendmail does not do an initgroups(3)
+	after forking on final delivery.  As a result, the sender's
+	group list remains in effect throughout this stage.  This is
+	particularly serious when root is sending the mail since a
+	program executed out of a ".forward" file gains interesting
+	privileges like "wheel" and "kmem".
+
+	The second hole is more complicated, and before I go into
+	the gnarly details (i.e. before I lose your attention and
+	you skip to the "Repeat-By:" part :-)), I have to mention
+	that this one was first reported/fixed by Larry Parmelee
+	<parmelee@wayback.cs.cornell.edu> one year ago this month.
+	I came across this hole in testing my fix to the first.
+	The fix that follows is the result of a joint effort by the
+	two of us.
+
+	The second hole can be broken down into a "problem" and an
+	"aggravation".  The "problem" is that queued local mail no
+	longer has the original recipient's uid associated with it.
+	Control files only store a list of exploded recipients (i.e.
+	users, files and programs) -- one per line -- each prefaced
+	with an `R'.  So, after an address resolves to the local
+	machine and has undergone alias and ".forward" expansion, if
+	the letter happen to get queued, on the succeeding queue
+	run sendmail doesnt know who to run the final delivery as.
+
+	The "aggravation" is that, when doing this final delivery
+	of queued local mail, sendmail will setuid() itself to the
+	*sender's* uid if it is available; in general, the sender's
+	uid will be used when the sender is on the local machine.
+	As a result, a user can run a program as anyone who sends
+	them mail from the local machine.
+
+	There is also an added "complication" which was not fixed
+	in Larry's original set of patches; the default uid and gid
+	are also set to the sender when delivering mail!  Since the
+	default uid and gid are only used when calling setuid() and
+	setgid() (to reset the uid/gid before doing final delivery),
+	these variables should never be set to the sender.
+
+Repeat-By:
+
+	Save the following program as "sploit.c" changing MYUID to your
+	user id.  Compile "sploit.c" producing the executable "sploit"
+	in your home directory.  Create a ".forward" file containing:
+
+		\<user>, "|<path>/sploit"
+
+	[change <user> to your username so you dont lose mail (unless,
+	of course, you'd rather lose mail) and set <path> to your home
+	directory path (where sploit lives)]
+
+	Now, as another user, send yourself some mail.  Note that the
+	sploit program defers delivery the first time thru; check out
+	"/tmp/whoami" to see that sploit ran as you.  Now, run your
+	mail queue (or open a beer and wait for sendmail to run it).
+	After the queue run, note that the sploit accepted the letter
+	and returned a successful exit status; check out "/tmp/whoami"
+	again to see that this time, sploit ran as the sender!
+
+	You can also use "sploit.c" to test for the root initgroups()
+	hole by checking the group list when "sploit" was first called.
+
+---------------------------------------------------------------------------
+/*
+ * sploit.c	JEF	2/24/90
+ *
+ * compile: cc sploit.c -o sploit
+ */
+
+#include <sys/param.h>
+#include <sys/types.h>
+#include <stdio.h>
+#include <sysexits.h>
+#include <pwd.h>
+#include <grp.h>
+
+#define	MYUID	438	/* your uid (i.e. your ".forward" invokes this) */
+
+#define	getuser(uid)	getpwuid(uid)->pw_name	/* assume valid uid */
+#define	getgrp(gid)	getgrgid(gid)->gr_name	/* assume valid gid */
+
+main()
+{
+	FILE *fp;
+	uid_t myuid;
+	int i, rval, ngrps, grplst[NGROUPS];
+
+	if ((myuid = getuid()) == MYUID)
+		rval = EX_TEMPFAIL;
+	else
+		rval = EX_OK;
+
+	if ((fp = fopen("/tmp/whoami", "a")) != NULL) {
+
+		/* real user/group ids */
+		fprintf(fp, "%susr:%s grp:%s",
+			(rval == EX_OK)? "": "Def> ",
+			getuser(myuid), getgrp(getgid()));
+
+		/* effective user/group ids */
+		fprintf(fp, " eusr:%s egrp:%s",
+			getuser(geteuid()), getgrp(getegid()));
+
+		/* group list */
+		if ((ngrps = getgroups(NGROUPS, grplst)) > 0) {
+			fprintf(fp, " grps:");
+			for (i = 0; i < ngrps; i++)
+				fprintf(fp, " %s", getgrp(grplst[i]));
+		}
+		fprintf(fp, "\n");
+
+		(void) fclose(fp);
+	}
+
+	exit(rval);
+}
+---------------------------------------------------------------------------
+
+Fix:
+	To fix the first hole, I simply call initgroups(3) when doing
+	final delevery of mail.  One minor point is that initgroups(3)
+	takes a user name (as opposed to a uid).  Since determining
+	the username for the "default uid" on each non-local delivery
+	would be a waste of time, I added a `DefUser' global variable
+	which simply tracks changes to the `DefUid' global variable.
+
+	The `DefUid' and `DefGid' variables used to be set to the
+	*sender* of the mail.  This code has been safely removed,
+	except for the special case which allows the sender to write
+	a "dead.letter" file in their directory.  As a result of this
+	change, a delivery agent is more likely to run as the default
+	DefUid/DefGid (as spec'd in the config file) and I recommend
+	that this be changed from `daemon' to an unprivileged user
+	like `nobody'.
+
+	Since mailers will no longer run as the sender, you should
+	check your sendmail configuration file for any mailers that
+	used to depend on this "feature".  Specifically, if your
+	local mailer is "/bin/mail", be sure to add a "-r $f" to the
+	argv spec (A=) and remove the "r" from the flag spec (F=).
+	This will result in a "-r <user>" argument on each invocation
+	of "/bin/mail", rather than only on "network forward opers".
+	You may need a similar change if you use the "f" mailer flag.
+	For example, if your "Mlocal" definition looks like:
+
+	   Mlocal, P=/bin/mail, F=rlsDFMmn, S=10, R=20, A=mail -d $u
+
+	Change it to:
+
+	   Mlocal, P=/bin/mail, F=lsDFMmn, S=10, R=20, A=mail -r $f -d $u
+
+	so that /bin/mail doesnt choose the default username for its
+	"From " line when delivering local mail.
+
+	To fix the second hole, I used the fact that the definition
+	of the `R' and `E' lines in the queue control file state that
+	only one address can be associated with each line.  This,
+	coupled with the fact that `R' (and `E') lines are sent thru
+	parseaddr() before and after their stay in the queue file, made
+	a backward compatible, nice looking fix possible.  I put the
+	original target user name inside a comment field, "()", at the
+	front of each `R' (and `E') line.  When de-queueing these
+	addresses, I check for this comment field and, if it exists,
+	set the *new* "q_ruser" field in the ADDRESS struct to the
+	"real" target user (i.e. who to execute final delivery as).
+	Older sendmails will strip this info off and deliver normally.
+
+	The rest of the fix centers on how this "real" target user
+	gets integrated back into the address list.  In sendtolist(),
+	there is a loop which calls recipient() for "everyone on the
+	local send list".  We added a call to setctladdr() with each
+	address, however this call will have no effect unless `CtlUser'
+	(a static variable toward the end of "queue.c") is set to a
+	controlling user name, and the address setctladdr() was passed
+	does not yet have a controlling user.  The call to sendtolist()
+	for the `R' and `E' queue file commands now looks like:
+
+		sendtolist(setctluser(&buf[1]), [...]);
+		clrctluser();
+
+	So the `CtlUser' is only set for this short period of time.
+	It is not possible to longjmp() during this time, so `CtlUser'
+	will never be incorrectly set.  We believe there is no "clean"
+	way to handle this (other than some major rewriting) and this
+	was as close as Larry and I could get.
+
+	Now say for example, I have a ".forward" that reads:
+
+		forys@cs, guest1, guest2, guest3, /tmp/XX
+
+	Where each guest account's ".forward" file sends its account a
+	copy of the letter, and also executes "sploit" (as coded above).
+	What you will initially see in the mailq is:
+
+		AA23150*      23 Mon Feb 26 12:13 forys
+					  (forys) /tmp/XX
+					  (guest3) "|/u/guest3/sploit"
+					  \guest3
+					  (guest2) "|/u/guest2/sploit"
+					  \guest2
+					  (guest1) "|/u/guest1/sploit"
+					  \guest1
+					  forys@cs
+
+	And later, after everything gets delivered, what remains is:
+
+		AA23150       23 Mon Feb 26 12:13 forys
+			 (Deferred)
+				  (guest3) "|/u/guest3/sploit"
+				  (guest2) "|/u/guest2/sploit"
+				  (guest1) "|/u/guest1/sploit"
+
+	The above should be read as, "in trying to exec /u/guestX/sploit
+	as guestX, sendmail got a temporary failure and will try again
+	later".  If it isnt obvious from the above example, this will
+	*only* affect queued, local mail.
+
+	Finally, if someone had an account named "(xxx)" and you wanted
+	to send them mail, you would have to use "\(xxx\)" to prevent
+	crackaddr() from stripping off the paren.  I checked this, and
+	in the queue command file, an address of this form looks like:
+
+		R\(xxx\)
+
+	which is easily distinguished from:
+
+		R(xxx) ...
+
+	which I claim, can never occur.  However, since one can never
+	be sure about sendmail, I added a sanity (or security) check to
+	prevent a bogus controlling address from being written out to
+	the queue command file.
+
+	As a footnote, Larry's original fix introduced a `C' command to
+	the control file to do the same thing as the parenthesis; while
+	this could be added very easily, as Larry said, it does create
+	a backward compatibility problem with existing queued "cf" files
+	which this fix avoids.  The `C' command also introduced an order
+	on commands in the queue file which didnt seem to be in keeping
+	with the way the command file format was designed.
+
+	We have been running most of these changes for nearly a month on
+	our machines.  Please read this entire report so you understand
+	what these patches are doing; there is a reason behind each one
+	of them.  Also, be sure to check the mailer definitions in your
+	config file (as described above).  If you have any questions or
+	find a problem with this fix, send me mail (forys@cs.utah.edu);
+	I'll respond as time permits.
+
+-----------------------------------------------------------------------------
+*** /tmp/,RCSt1016458	Sun Mar 18 01:47:19 1990
+--- conf.c	Sun Mar 18 01:38:25 1990
+***************
+*** 153,159 ****
+--- 153,178 ----
+  	FileMode = 0644;
+  	DefUid = 1;
+  	DefGid = 1;
++ 	setdefuser();
+  }
++ 
++ 
++ /*
++ **  SETDEFUSER -- set/reset DefUser using DefUid (for initgroups())
++ */
++ 
++ setdefuser()
++ {
++ 	struct passwd *defpwent;
++ 
++ 	if (DefUser != NULL)
++ 		free(DefUser);
++ 	if ((defpwent = getpwuid(DefUid)) != NULL)
++ 		DefUser = newstr(defpwent->pw_name);
++ 	else
++ 		DefUser = newstr("nobody");
++ }
++ 
+  
+  /*
+  **  GETRUID -- get real user id (V7)
+*** /tmp/,RCSt1016468	Sun Mar 18 01:47:22 1990
+--- envelope.c	Sat Mar 17 18:23:45 1990
+***************
+*** 533,544 ****
+  		CurEnv->e_from.q_gid = getgid();
+  	}
+  
+- 	if (CurEnv->e_from.q_uid != 0)
+- 	{
+- 		DefUid = CurEnv->e_from.q_uid;
+- 		DefGid = CurEnv->e_from.q_gid;
+- 	}
+- 
+  	/*
+  	**  Rewrite the from person to dispose of possible implicit
+  	**	links in the net.
+--- 533,538 ----
+*** /tmp/,RCSt1016473	Sun Mar 18 01:47:24 1990
+--- parseaddr.c	Sun Feb 25 01:51:18 1990
+***************
+*** 1055,1063 ****
+  		first = FALSE;
+  		printf("%x=", a);
+  		(void) fflush(stdout);
+! 		printf("%s: mailer %d (%s), host `%s', user `%s'\n", a->q_paddr,
+! 		       a->q_mailer->m_mno, a->q_mailer->m_name, a->q_host,
+! 		       a->q_user);
+  		printf("\tnext=%x, flags=%o, alias %x\n", a->q_next, a->q_flags,
+  		       a->q_alias);
+  		printf("\thome=\"%s\", fullname=\"%s\"\n", a->q_home,
+--- 1055,1063 ----
+  		first = FALSE;
+  		printf("%x=", a);
+  		(void) fflush(stdout);
+! 		printf("%s: mailer %d (%s), host `%s', user `%s', ruser `%s'\n",
+! 		       a->q_paddr, a->q_mailer->m_mno, a->q_mailer->m_name,
+! 		       a->q_host, a->q_user, a->q_ruser? a->q_ruser: "<null>");
+  		printf("\tnext=%x, flags=%o, alias %x\n", a->q_next, a->q_flags,
+  		       a->q_alias);
+  		printf("\thome=\"%s\", fullname=\"%s\"\n", a->q_home,
+*** /tmp/,RCSt1016478	Sun Mar 18 01:47:26 1990
+--- queue.c	Sat Mar 17 18:25:32 1990
+***************
+*** 26,31 ****
+--- 26,32 ----
+  #endif
+  #endif /* not lint */
+  
++ # include <pwd.h>
+  # include <sys/stat.h>
+  # include <sys/dir.h>
+  # include <signal.h>
+***************
+*** 144,150 ****
+  		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+  			       bitset(QQUEUEUP, q->q_flags))
+  		{
+! 			fprintf(tfp, "R%s\n", q->q_paddr);
+  			if (announce)
+  			{
+  				e->e_to = q->q_paddr;
+--- 145,160 ----
+  		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+  			       bitset(QQUEUEUP, q->q_flags))
+  		{
+! 			char *ctluser, *getctluser();
+! 			bool badctladdr();
+! 
+! 			if (badctladdr(q))	/* sanity/safety */
+! 				continue;
+! 
+! 			if ((ctluser = getctluser(q)) == NULL)
+! 				fprintf(tfp, "R%s\n", q->q_paddr);
+! 			else
+! 				fprintf(tfp, "R(%s) %s\n", ctluser, q->q_paddr);
+  			if (announce)
+  			{
+  				e->e_to = q->q_paddr;
+***************
+*** 165,171 ****
+  	for (q = e->e_errorqueue; q != NULL; q = q->q_next)
+  	{
+  		if (!bitset(QDONTSEND, q->q_flags))
+! 			fprintf(tfp, "E%s\n", q->q_paddr);
+  	}
+  
+  	/*
+--- 175,192 ----
+  	for (q = e->e_errorqueue; q != NULL; q = q->q_next)
+  	{
+  		if (!bitset(QDONTSEND, q->q_flags))
+! 		{
+! 			char *ctluser, *getctluser();
+! 			bool badctladdr();
+! 
+! 			if (badctladdr(q))	/* sanity/safety */
+! 				continue;
+! 
+! 			if ((ctluser = getctluser(q)) == NULL)
+! 				fprintf(tfp, "E%s\n", q->q_paddr);
+! 			else
+! 				fprintf(tfp, "E(%s) %s\n", ctluser, q->q_paddr);
+! 		}
+  	}
+  
+  	/*
+***************
+*** 676,682 ****
+  	char *qf;
+  	register FILE *qfp;
+  	char buf[MAXFIELD];
+! 	extern char *fgetfolded();
+  	extern long atol();
+  
+  	/*
+--- 697,703 ----
+  	char *qf;
+  	register FILE *qfp;
+  	char buf[MAXFIELD];
+! 	extern char *fgetfolded(), *setctluser();
+  	extern long atol();
+  
+  	/*
+***************
+*** 701,711 ****
+  		switch (buf[0])
+  		{
+  		  case 'R':		/* specify recipient */
+! 			sendtolist(&buf[1], (ADDRESS *) NULL, &e->e_sendqueue);
+  			break;
+  
+  		  case 'E':		/* specify error recipient */
+! 			sendtolist(&buf[1], (ADDRESS *) NULL, &e->e_errorqueue);
+  			break;
+  
+  		  case 'H':		/* header */
+--- 722,736 ----
+  		switch (buf[0])
+  		{
+  		  case 'R':		/* specify recipient */
+! 			sendtolist(setctluser(&buf[1]), (ADDRESS *) NULL,
+! 			           &e->e_sendqueue);
+! 			clrctluser();
+  			break;
+  
+  		  case 'E':		/* specify error recipient */
+! 			sendtolist(setctluser(&buf[1]), (ADDRESS *) NULL,
+! 			           &e->e_errorqueue);
+! 			clrctluser();
+  			break;
+  
+  		  case 'H':		/* header */
+***************
+*** 1026,1029 ****
+--- 1051,1273 ----
+  	/* last but not least, remove the lock */
+  	xunlink(queuename(e, 'l'));
+  # endif QUEUE
++ }
++ /*
++ **  GETCTLUSER -- return controlling user if mailing to prog or file
++ **
++ **	Check for a "|" or "/" at the beginning of the address.  If
++ **	found, return a controlling username.
++ **
++ **	Parameters:
++ **		a - the address to check out
++ **
++ **	Returns:
++ **		Either NULL, if we werent mailing to a program or file,
++ **		or a controlling user name (possibly in getpwuid's
++ **		static buffer).
++ **
++ **	Side Effects:
++ **		none.
++ **
++ **	Discussion:
++ **		Bugfix:  Mail to a file or program is occasionally
++ **		delivered with an inappropriate uid/gid.  Problem
++ **		arises usually because of a .forward file and the
++ **		fact the message got queued instead of immediately
++ **		delivered.  The proper Control Address info (and it's
++ **		uid/gid info) is usually lost irretrievably when a
++ **		program or file recipient is written into the queuefile.
++ **
++ **		It may be better to emit a controlling address in all
++ **		cases where a "ctladdr" can be found.  The use of a
++ **		new "C" record was considered, but would result in
++ **		non-backward-compatible queue files.
++ **
++ **	Larry Parmelee 9-Mar-89			Jeff Forys 25-Feb-90
++ **	parmelee@cs.cornell.edu			forys@cs.utah.edu
++ */
++ 
++ char *
++ getctluser(a)
++ 	ADDRESS *a;
++ {
++ 	extern ADDRESS *getctladdr();
++ 	struct passwd *pw;
++ 	char *retstr, buf[MAXNAME];
++ 
++ 	/* get unquoted user for file, program or user.name check */
++ 	(void) strncpy(buf, a->q_paddr, MAXNAME);
++ 	buf[MAXNAME-1] = '\0';
++ 	stripquotes(buf, TRUE);
++ 
++ 	if (buf[0] != '|' && buf[0] != '/')
++ 		return((char *)NULL);
++ 
++ 	a = getctladdr(a);		/* find controlling address */
++ 
++ 	if (a != NULL && a->q_uid != 0 && (pw = getpwuid(a->q_uid)) != NULL)
++ 		retstr = pw->pw_name;
++ 	else				/* use default user */
++ 		retstr = DefUser;
++ 
++ 	if (tTd(40, 5))
++ 		printf("Set controlling user for `%s' to `%s'\n",
++ 		       (a == NULL)? "<null>": a->q_paddr, retstr);
++ 
++ 	return(retstr);
++ }
++ 
++ static char CtlUser[MAXNAME];
++ 
++ /*
++ **  SETCTLUSER - sets `CtlUser' to controlling user if appropriate
++ **  CLRCTLUSER - clears controlling user (no params, nothing returned)
++ **
++ **	These routines manipulate `CtlUser'.
++ **
++ **	Parameters:
++ **		str  - string checked for a controlling user
++ **
++ **	Returns:
++ **		If `str' is of the form "(user) anything", `CtlUser'
++ **		is set to "user", and "anything" is returned, otherwise
++ **		`str' is returned.
++ **
++ **	Side Effects:
++ **		setctluser() may chop up `str' into two strings.
++ **		`CtlUser' is changed.
++ **
++ **	Larry Parmelee 9-Mar-89			Jeff Forys 25-Feb-90
++ **	parmelee@cs.cornell.edu			forys@cs.utah.edu
++ */
++ 
++ char *
++ setctluser(str)
++ register char *str;
++ {
++ 	register char *ectl;
++ 	int depth = 0, bslash = 0;
++ 
++ 	if (*str != '(')	/* no controlling user */
++ 		return(str);
++ 
++ 	/*
++ 	**  Look thru the string for the matching right paren,
++ 	**  being careful about nesting and backslash escapes.
++ 	**  This is done to take care of any "weird" user names
++ 	**  which could conceivably show up between our paren.
++ 	*/
++ 	for (ectl = str; *ectl; ectl++) {
++ 		if (bslash == 0 && *ectl == '\\') {	/* escape */
++ 			bslash = 1;
++ 			continue;
++ 		}
++ 		if (bslash) {				/* escaped char */
++ 			bslash = 0;
++ 			continue;
++ 		}
++ 		if (*ectl == '(')			/* left paren */
++ 			depth++;
++ 		else if (*ectl == ')') {		/* right paren */
++ 			if (--depth == 0)
++ 				break;
++ 		}
++ 	}
++ 
++ 	if (depth)		/* no controlling user */
++ 		return(str);
++ 
++ 	/* we have a controlling user */
++ 	*ectl++ = '\0';
++ 	(void) strncpy(CtlUser, ++str, MAXNAME);
++ 	CtlUser[MAXNAME-1] = '\0';
++ 
++ 	return((*ectl == ' ')? ++ectl: ectl);
++ }
++ 
++ clrctluser()
++ {
++ 	*CtlUser = '\0';
++ }
++ 
++ /*
++ **  SETCTLADDR -- create a controlling address
++ **
++ **	If global variable `CtlUser' is set and we are given a valid
++ **	address, make that address a controlling address; change the
++ **	`q_uid', `q_gid', and `q_ruser' fields and set QGOODUID.
++ **
++ **	Parameters:
++ **		a - address for which control uid/gid info may apply
++ **
++ **	Returns:
++ **		None.	
++ **
++ **	Side Effects:
++ **		Fills in uid/gid fields in address and sets QGOODUID
++ **		flag if appropriate.
++ **
++ **	Larry Parmelee 9-Mar-89			Jeff Forys 25-Feb-90
++ **	parmelee@cs.cornell.edu			forys@cs.utah.edu
++ */
++ 
++ setctladdr(a)
++ 	ADDRESS *a;
++ {
++ 	struct passwd *pw;
++ 
++ 	if (*CtlUser == '\0' || a == NULL || a->q_ruser)
++ 		return;
++ 
++ 	if ((pw = getpwnam(CtlUser)) != NULL) {
++ 		if (a->q_home)
++ 			free(a->q_home);
++ 		a->q_home = newstr(pw->pw_dir);
++ 		a->q_uid = pw->pw_uid;
++ 		a->q_gid = pw->pw_gid;
++ 		a->q_ruser = newstr(CtlUser);
++ 	} else {
++ 		a->q_uid = DefUid;
++ 		a->q_gid = DefGid;
++ 		a->q_ruser = newstr(DefUser);
++ 	}
++ 
++ 	a->q_flags |= QGOODUID;		/* flag as a "ctladdr"  */
++ 
++ 	if (tTd(40, 5))
++ 		printf("Restored controlling user for `%s' to `%s'\n",
++ 		       (a == NULL)? "<null>": a->q_paddr, a->q_ruser);
++ }
++ 
++ /*
++ **  BADCTLADDR - ensure that an address does not look like "(user) xxx".
++ **	This is only a sanity check and is probably unnecessary, however
++ **	being wrong could lead to another security hole so we do it!
++ **
++ **	Parameters:
++ **		addr  - address to be checked
++ **
++ **	Returns:
++ **		0 if the address is valid, 1 otherwise.
++ **
++ **	Side Effects:
++ **		If `addr->q_paddr' looks like "(user) xxx", `addr->q_flags'
++ **		gets set to QBADADDR and `addr->q_paddr' gets chopped up.
++ */
++ 
++ bool
++ badctladdr(addr)
++ ADDRESS *addr;
++ {
++ 	char *setctluser();
++ 	char *opaddr = addr->q_paddr;
++ 
++ 	if (setctluser(addr->q_paddr) != opaddr) {
++ 		usrerr("Bad format for qf command: %s %s",
++ 		       CtlUser, addr->q_paddr);
++ 		clrctluser();
++ 		addr->q_flags |= QBADADDR;
++ 		return(TRUE);
++ 	}
++ 	return(FALSE);
+  }
+*** /tmp/,RCSt1016483	Sun Mar 18 01:47:29 1990
+--- readcf.c	Sat Feb 24 01:23:14 1990
+***************
+*** 943,948 ****
+--- 943,949 ----
+  
+  	  case 'u':		/* set default uid */
+  		DefUid = atoi(val);
++ 		setdefuser();
+  		break;
+  
+  	  case 'v':		/* run in verbose mode */
+*** /tmp/,RCSt1016488	Sun Mar 18 01:47:30 1990
+--- recipient.c	Sun Feb 25 01:43:17 1990
+***************
+*** 117,122 ****
+--- 117,123 ----
+  		extern ADDRESS *recipient();
+  
+  		al = a->q_next;
++ 		setctladdr(a);
+  		a = recipient(a, sendq);
+  
+  		/* arrange to inherit full name */
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+	From:    bostic@okeeffe.Berkeley.EDU (Keith Bostic)
+	Subject:  sendmail bugs
+	
+	However, I'm not as sure about the other two changes.  First,
+	I think I prefer Larry's change, adding the C type record to
+	the queue file.  I don't think that backward compatibility is
+	a problem, here, simply because the issue only arises if new
+	qf files are run under old mailers.
+---
+Hi Keith,
+
+Doing the `C' type record is an easy change.  Just remove the sanity
+badctladdr() checks, change the fprintf()'s to emit the `C' record,
+add a state variable when reading back the queue file; the code for
+the `C' command should just be a call to setctluser() and this routine
+can be simplified quite a bit.  If you want, I'll look over your fixes
+before you release 5.62.
+
+I added the backward compatibility issue mainly for your (Berkeley's)
+sake.  However, it turns out to be useful when the controlling user
+is displayed in the mailq command; you may wanna add this part.  Oh,
+and please consider the fix I sent last year to use a double-buffer
+when collect()'ing messages.  It fixes a couple buffer overruns.
+
+	Secondly, I don't think that I want to make the jump to running
+	as the recipient, not the sender.  Yes, I agree *completely*
+	that that is the way that it should have been done in the first
+	place, but I'm pretty nervous that there may be unexpected side-
+	effects from the change.
+---
+Well, we've been doing it here since early March and havent had any
+problems.  If you dont do it, you leave the same hole open -- it's
+just a little more tricky -- while testing the other fixes as "guest",
+I was able to use the same hole because the default user was set to
+the sender.  Leaving that open wouldnt be acceptable here (i.e. where
+Lepreau's hang out :-)).
+
+	Incidentally, I couldn't interest one or the other of you in
+	joining me for some serious sendmail whacking, could I?
+---
+I'd like to help, unfortunately I'm committed to the HP-PA BSD port.
+The thing stays multi-user now, until one of several VM bugs crash it!
+Still stuck with HP's compiler suite tho (GCC is far from happy)...
+
+Jeff
+
+P.S. Are you guys hiring Trent Hein for the summer?  Hey remember,
+     he's gotta get past Utah to get to Berkeley so...  :-)
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From parmelee@wayback.cs.cornell.edu Tue Apr 10 09:05:12 1990
+Date: Tue, 10 Apr 90 12:04:51 -0400
+From: parmelee@wayback.cs.cornell.edu (Larry Parmelee)
+To: bostic@okeeffe.Berkeley.EDU
+Subject: Re: sendmail bugs
+Cc: forys@snake.utah.edu
+Status: RO
+
+Glad it looks like things are getting serious on fixing this.  Jeff
+Forys has contacted me with his bug and fixes, but I haven't really looked
+at sendmail since over a year ago, and I've been too busy with other
+stuff to get into it again.  No end in sight.
+
+> However, I'm not as sure about the other two changes.  First, I think I
+> prefer Larry's change, adding the C type record to the queue file.  I don't
+> think that backward compatibility is a problem, here, simply because the
+> issue only arises if new qf files are run under old mailers.  I don't really
+> see that happening and I think the fix is cleaner.
+
+Well, I like my change better too :-) but mainly because I haven't had
+time to study Jeff's.  On general principles and without having looked
+at Jeff's fix in detail, I think the new "C" record is less likely to
+have unforeseen side affects.
+ 
+> Secondly, I don't think that I want to make the jump to running as the
+> recipient, not the sender.  Yes, I agree *completely* that that is the way
+> that it should have been done in the first place, but I'm pretty nervous
+> that there may be unexpected side-effects from the change.
+> 
+> What do you guys think?
+
+Without having time to study things in detail, I think I have to
+side with Keith in general, the exception being that when processing
+stuff ( "|" pipes or "/" stuff primarily) derived from the recipient's
+.forward file, the only safe thing to do is to run as the recipient.
+The fact that this was not what was happening is the central part
+of my bug report.
+
+> Incidentally, I couldn't interest one or the other of you in joining me
+> for some serious sendmail whacking, could I?  Or, do you know of anyone
+> who might be interested?
+>
+> --keith
+
+Still too busy right now.  Maybe in a month or three (but i've been saying
+that since Thanksgiving )-:
+
+I'll probably get around to it eventually, since I've thought of
+an  enhancement to sendmail that would allow us to use it on our
+suns instead of Sun's ancient hacked version of sendmail.  I want
+to add a new option: "ORhostname" to the .cf file.  If "hostname"
+is not the local hostname, then when dealing with an apparently
+local name, I want the aliasing routine to magically find the alias
+"localname: localname@hostname" without really checking the alias
+file or anything else.  This would help alot in trying to set up
+a centralized mail server.
+
+-Larry
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+	From:    bostic%okeeffe.Berkeley.EDU@ucbvax.Berkeley.EDU (Keith Bostic)
+	Subject:  Re: sendmail bugs
+
+	OK, can I talk you into making a new set of diffs that would
+	use the `C' record?
+---
+Okay, sometime this weekend I'll make the changes for the `C' record.
+I should have something working/tested for you by Monday.
+
+	> Oh, and please consider the fix I sent last year to use a
+	> double-buffer when collect()'ing messages.  It fixes a
+	> couple buffer overruns.
+
+	Feel free to add those in.
+---
+You can work on this one now.  I put a copy of our current "collect.c"
+in my home directory on Okeeffe.  This has been stable for well over a
+year.  To get the gist of what was changed, check out the text of:
+
+	okeeffe:/usr/src/local/bugs/4.3BSD/usr.lib/127
+
+This new version includes part of the fix I described in:
+
+	okeeffe:/usr/src/local/bugs/4.3BSD/usr.lib/134
+
+You should definitely check that one out as well.
+
+Also, since we sometimes get long headers, I have MAXFIELD set to 4096
+here.  In doing this, I once noticed almost 4k of header being stuffed
+into a 1k (i.e. BUFSIZ) buffer.  I didnt track this down, but I assumed
+it was the result of (MAXFIELD WayGreaterThan BUFSIZ).  At the end of
+this letter is a quick patch to "sendmail/src/headers.c" which can do
+no harm, and appears to have corrected the problem.
+
+Jeff
+=====================================================================
+*** /tmp/,RCSt1027960	Fri Feb 17 19:33:41 1989
+--- headers.c	Mon Feb 13 14:28:17 1989
+***************
+*** 20,25 ****
+--- 20,26 ----
+  static char sccsid[] = "@(#)headers.c	5.13 (Berkeley) 1/1/89";
+  #endif /* not lint */
+  
++ # include <sys/param.h>
+  # include <errno.h>
+  # include "sendmail.h"
+  
+***************
+*** 621,631 ****
+  	register MAILER *m;
+  	register ENVELOPE *e;
+  {
+! 	char buf[BUFSIZ];
+  	register HDR *h;
+  	extern char *arpadate();
+  	extern char *capitalize();
+! 	char obuf[MAXLINE];
+  
+  	for (h = e->e_header; h != NULL; h = h->h_link)
+  	{
+--- 622,632 ----
+  	register MAILER *m;
+  	register ENVELOPE *e;
+  {
+! 	char buf[MAX(MAXFIELD,BUFSIZ)];
+  	register HDR *h;
+  	extern char *arpadate();
+  	extern char *capitalize();
+! 	char obuf[MAX(MAXFIELD,MAXLINE)];
+  
+  	for (h = e->e_header; h != NULL; h = h->h_link)
+  	{
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From forys@snake.utah.edu Tue Apr 17 00:05:11 1990
+From: Jeff Forys <forys@snake.utah.edu>
+To: Keith Bostic <bostic@okeeffe.Berkeley.EDU>
+Subject: Re: sendmail bugs 
+In-Reply-To: Your message of Sat, 14 Apr 90 01:13:09 MST
+Date: Tue, 17 Apr 90 01:05:19 MST
+Status: RO
+
+	From:    Jeff Forys <forys@snake>
+	Subject:  Re: sendmail bugs 
+
+		From:    bostic@okeeffe.Berkeley.EDU (Keith Bostic)
+		Subject:  Re: sendmail bugs
+	
+		OK, can I talk you into making a new set of diffs that would
+		use the `C' record?
+	---
+	Okay, sometime this weekend I'll make the changes for the `C' record.
+	I should have something working/tested for you by Monday.
+---
+Yikes, well... I ended up doing the party-thing this weekend (I know,
+hard-to-believe it could happen in Utah :-)) and then I veg'd out on
+Sunday.  I just got to sendmail tonight, but since the re-patch of
+"queue.c" was straight-forward, I'll send it along now.  I tested it,
+and am running it on all our machines here.
+
+What follows is a new patch for "queue.c" -- everything else remains
+the same as in my original report.  Since it'll probably take a couple
+days before you release anything, I'll let you know if any new problems
+come up; it's almost a entirely a simplification of the old code, so I
+dont expect anything will go wrong.
+
+The one thing I added was, when displaying the mail queue, I display
+the controlling user if one was given.  I found this to be useful, and
+I used the same format as the original code.  If you dont like it, chop
+it out and I'll just keep it in our local version.
+
+Lemme know if ya have any questions,
+Jeff
+
+==========================================================================
+*** /tmp/,RCSt1015097	Tue Apr 17 00:42:57 1990
+--- queue.c	Mon Apr 16 23:27:16 1990
+***************
+*** 26,31 ****
+--- 26,32 ----
+  #endif
+  #endif /* not lint */
+  
++ # include <pwd.h>
+  # include <sys/stat.h>
+  # include <sys/dir.h>
+  # include <signal.h>
+***************
+*** 144,149 ****
+--- 145,154 ----
+  		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+  			       bitset(QQUEUEUP, q->q_flags))
+  		{
++ 			char *ctluser, *getctluser();
++ 
++ 			if ((ctluser = getctluser(q)) != NULL)
++ 				fprintf(tfp, "C%s\n", ctluser);
+  			fprintf(tfp, "R%s\n", q->q_paddr);
+  			if (announce)
+  			{
+***************
+*** 165,171 ****
+--- 170,182 ----
+  	for (q = e->e_errorqueue; q != NULL; q = q->q_next)
+  	{
+  		if (!bitset(QDONTSEND, q->q_flags))
++ 		{
++ 			char *ctluser, *getctluser();
++ 
++ 			if ((ctluser = getctluser(q)) != NULL)
++ 				fprintf(tfp, "C%s\n", ctluser);
+  			fprintf(tfp, "E%s\n", q->q_paddr);
++ 		}
+  	}
+  
+  	/*
+***************
+*** 678,683 ****
+--- 689,695 ----
+  	char buf[MAXFIELD];
+  	extern char *fgetfolded();
+  	extern long atol();
++ 	int gotctluser = 0;
+  
+  	/*
+  	**  Read and process the file.
+***************
+*** 700,705 ****
+--- 712,722 ----
+  			printf("+++++ %s\n", buf);
+  		switch (buf[0])
+  		{
++ 		  case 'C':		/* specify controlling user */
++ 			setctluser(&buf[1]);
++ 			gotctluser = 1;
++ 			break;
++ 
+  		  case 'R':		/* specify recipient */
+  			sendtolist(&buf[1], (ADDRESS *) NULL, &e->e_sendqueue);
+  			break;
+***************
+*** 746,753 ****
+--- 763,787 ----
+  				LineNumber, buf);
+  			break;
+  		}
++ 		/*
++ 		**  The `C' queue file command operates on the next line,
++ 		**  so we use "gotctluser" to maintain state as follows:
++ 		**	0 - no controlling user,
++ 		**	1 - controlling user has been set but not used,
++ 		**	2 - controlling user must be used on next iteration.
++ 		*/
++ 		if (gotctluser == 1)
++ 			gotctluser++;
++ 		else if (gotctluser == 2)
++ 		{
++ 			clrctluser();
++ 			gotctluser = 0;
++ 		}
+  	}
+  
++ 	/* sanity: clear controlling user in case we break out prematurely */
++ 	clrctluser();
++ 
+  	(void) fclose(qfp);
+  	FileName = NULL;
+  
+***************
+*** 781,786 ****
+--- 815,821 ----
+  	FILE *f;
+  	int nrequests;
+  	char buf[MAXLINE];
++ 	char cbuf[MAXLINE];
+  
+  	/*
+  	**  Read and order the queue.
+***************
+*** 833,838 ****
+--- 868,874 ----
+  		errno = 0;
+  
+  		message[0] = '\0';
++ 		cbuf[0] = '\0';
+  		while (fgets(buf, sizeof buf, f) != NULL)
+  		{
+  			fixcrlf(buf, TRUE);
+***************
+*** 854,860 ****
+--- 890,912 ----
+  					printf("\n\t\t (%.60s)", message);
+  				break;
+  
++ 			  case 'C':	/* controlling user */
++ 				if (strlen(buf) < MAXLINE-3)	/* sanity */
++ 					(void) strcat(buf, ") ");
++ 				cbuf[0] = cbuf[1] = '(';
++ 				(void) strncpy(&cbuf[2], &buf[1], MAXLINE-1);
++ 				cbuf[MAXLINE-1] = '\0';
++ 				break;
++ 
+  			  case 'R':	/* recipient name */
++ 				if (cbuf[0] != '\0') {
++ 					/* prepend controlling user to `buf' */
++ 					(void) strncat(cbuf, &buf[1],
++ 					              MAXLINE-strlen(cbuf));
++ 					cbuf[MAXLINE-1] = '\0';
++ 					(void) strcpy(buf, cbuf);
++ 					cbuf[0] = '\0';
++ 				}
+  				if (Verbose)
+  					printf("\n\t\t\t\t\t %.38s", &buf[1]);
+  				else
+***************
+*** 1026,1029 ****
+--- 1078,1224 ----
+  	/* last but not least, remove the lock */
+  	xunlink(queuename(e, 'l'));
+  # endif QUEUE
++ }
++ /*
++ **  GETCTLUSER -- return controlling user if mailing to prog or file
++ **
++ **	Check for a "|" or "/" at the beginning of the address.  If
++ **	found, return a controlling username.
++ **
++ **	Parameters:
++ **		a - the address to check out
++ **
++ **	Returns:
++ **		Either NULL, if we werent mailing to a program or file,
++ **		or a controlling user name (possibly in getpwuid's
++ **		static buffer).
++ **
++ **	Side Effects:
++ **		none.
++ */
++ 
++ char *
++ getctluser(a)
++ 	ADDRESS *a;
++ {
++ 	extern ADDRESS *getctladdr();
++ 	struct passwd *pw;
++ 	char *retstr;
++ 
++ 	/*
++ 	**  Get unquoted user for file, program or user.name check.
++ 	**  N.B. remove this code block to always emit controlling
++ 	**  addresses (at the expense of backward compatibility).
++ 	*/
++ 
++ 	{
++ 		char buf[MAXNAME];
++ 		(void) strncpy(buf, a->q_paddr, MAXNAME);
++ 		buf[MAXNAME-1] = '\0';
++ 		stripquotes(buf, TRUE);
++ 
++ 		if (buf[0] != '|' && buf[0] != '/')
++ 			return((char *)NULL);
++ 	}
++ 
++ 	a = getctladdr(a);		/* find controlling address */
++ 
++ 	if (a != NULL && a->q_uid != 0 && (pw = getpwuid(a->q_uid)) != NULL)
++ 		retstr = pw->pw_name;
++ 	else				/* use default user */
++ 		retstr = DefUser;
++ 
++ 	if (tTd(40, 5))
++ 		printf("Set controlling user for `%s' to `%s'\n",
++ 		       (a == NULL)? "<null>": a->q_paddr, retstr);
++ 
++ 	return(retstr);
++ }
++ /*
++ **  SETCTLUSER - sets `CtlUser' to controlling user
++ **  CLRCTLUSER - clears controlling user (no params, nothing returned)
++ **
++ **	These routines manipulate `CtlUser'.
++ **
++ **	Parameters:
++ **		str  - controlling user as passed to setctluser()
++ **
++ **	Returns:
++ **		None.
++ **
++ **	Side Effects:
++ **		`CtlUser' is changed.
++ */
++ 
++ static char CtlUser[MAXNAME];
++ 
++ setctluser(str)
++ register char *str;
++ {
++ 	(void) strncpy(CtlUser, str, MAXNAME);
++ 	CtlUser[MAXNAME-1] = '\0';
++ }
++ 
++ clrctluser()
++ {
++ 	CtlUser[0] = '\0';
++ }
++ 
++ /*
++ **  SETCTLADDR -- create a controlling address
++ **
++ **	If global variable `CtlUser' is set and we are given a valid
++ **	address, make that address a controlling address; change the
++ **	`q_uid', `q_gid', and `q_ruser' fields and set QGOODUID.
++ **
++ **	Parameters:
++ **		a - address for which control uid/gid info may apply
++ **
++ **	Returns:
++ **		None.	
++ **
++ **	Side Effects:
++ **		Fills in uid/gid fields in address and sets QGOODUID
++ **		flag if appropriate.
++ */
++ 
++ setctladdr(a)
++ 	ADDRESS *a;
++ {
++ 	struct passwd *pw;
++ 
++ 	/*
++ 	**  If there is no current controlling user, or we were passed a
++ 	**  NULL addr ptr or we already have a controlling user, return.
++ 	*/
++ 
++ 	if (CtlUser[0] == '\0' || a == NULL || a->q_ruser)
++ 		return;
++ 
++ 	/*
++ 	**  Set up addr fields for controlling user.  If `CtlUser' is no
++ 	**  longer valid, use the default user/group.
++ 	*/
++ 
++ 	if ((pw = getpwnam(CtlUser)) != NULL)
++ 	{
++ 		if (a->q_home)
++ 			free(a->q_home);
++ 		a->q_home = newstr(pw->pw_dir);
++ 		a->q_uid = pw->pw_uid;
++ 		a->q_gid = pw->pw_gid;
++ 		a->q_ruser = newstr(CtlUser);
++ 	}
++ 	else
++ 	{
++ 		a->q_uid = DefUid;
++ 		a->q_gid = DefGid;
++ 		a->q_ruser = newstr(DefUser);
++ 	}
++ 
++ 	a->q_flags |= QGOODUID;		/* flag as a "ctladdr"  */
++ 
++ 	if (tTd(40, 5))
++ 		printf("Restored controlling user for `%s' to `%s'\n",
++ 		       a->q_paddr, a->q_ruser);
+  }
+
+

@@ -1,0 +1,954 @@
+head     4.16;
+branch   ;
+access   ;
+symbols  PATCH8:4.15 PATCH7:4.15 KPATCH6:4.15 ASRSNAP1001:4.15 PATCH5:4.14 KPATCH4:4.13 KPATCH3:4.13 KPATCH2:4.12 KREL1:4.11 BETA5/24/88:4.7;
+locks    ; strict;
+comment  @ * @;
+
+
+4.16
+date     90.06.25.21.01.52;  author kfall;  state Exp;
+branches ;
+next     4.15;
+
+4.15
+date     89.08.30.11.19.16;  author jtkohl;  state Exp;
+branches ;
+next     4.14;
+
+4.14
+date     89.07.07.15.26.45;  author jtkohl;  state Exp;
+branches ;
+next     4.13;
+
+4.13
+date     89.05.16.14.42.48;  author wesommer;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     89.04.18.16.40.24;  author wesommer;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     89.01.23.09.34.58;  author jtkohl;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     89.01.11.17.40.56;  author rfrench;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     89.01.04.11.50.03;  author jtkohl;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.06.23.12.27.06;  author shanzer;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.05.04.13.38.17;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.04.27.15.08.53;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.02.24.11.19.23;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.01.29.13.47.49;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.01.14.13.28.14;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.22.13.18.57;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.13.43.23;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.12.12.14.29.07;  author wesommer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@List kerberos tickets.
+@
+
+
+4.16
+log
+@include des.h
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/src/kuser/RCS/klist.c,v $
+ * $Author: jtkohl $ 
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ *
+ * Lists your current Kerberos tickets.
+ * Written by Bill Sommerfeld, MIT Project Athena.
+ */
+
+#ifndef	lint
+static char rcsid_klist_c[] =
+"$Header: /usr/src/kerberosIV/src/kuser/RCS/klist.c,v 4.15 89/08/30 11:19:16 jtkohl Exp Locker: kfall $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <strings.h>
+#include <sys/file.h>
+#include <des.h>
+#include <krb.h>
+#include <prot.h>
+
+char   *tkt_string();
+char   *short_date();
+char   *whoami;			/* What was I invoked as?? */
+char   *getenv();
+
+extern char *krb_err_txt[];
+
+/* ARGSUSED */
+main(argc, argv)
+    int     argc;
+    char  **argv;
+{
+    int     long_form = 1;
+    int     tgt_test = 0;
+    int     do_srvtab = 0;
+    char   *tkt_file = NULL;
+    char   *cp;
+
+    whoami = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+
+    while (*(++argv)) {
+	if (!strcmp(*argv, "-s")) {
+	    long_form = 0;
+	    continue;
+	}
+	if (!strcmp(*argv, "-t")) {
+	    tgt_test = 1;
+	    long_form = 0;
+	    continue;
+	}
+	if (!strcmp(*argv, "-l")) {	/* now default */
+	    continue;
+	}
+	if (!strcmp(*argv, "-file")) {
+	    if (*(++argv)) {
+		tkt_file = *argv;
+		continue;
+	    } else
+		usage();
+	}
+	if (!strcmp(*argv, "-srvtab")) {
+		if (tkt_file == NULL)	/* if no other file spec'ed,
+					   set file to default srvtab */
+		    tkt_file = KEYFILE;
+		do_srvtab = 1;
+		continue;
+	}
+	usage();
+    }
+
+    if (do_srvtab)
+	display_srvtab(tkt_file);
+    else
+	display_tktfile(tkt_file, tgt_test, long_form);
+    exit(0);
+}
+
+
+display_tktfile(file, tgt_test, long_form)
+char *file;
+int tgt_test, long_form;
+{
+    char    pname[ANAME_SZ];
+    char    pinst[INST_SZ];
+    char    prealm[REALM_SZ];
+    char    buf1[20], buf2[20];
+    int     k_errno;
+    CREDENTIALS c;
+    int     header = 1;
+
+    if ((file == NULL) && ((file = getenv("KRBTKFILE")) == NULL))
+	file = TKT_FILE;
+
+    if (long_form)
+	printf("Ticket file:	%s\n", file);
+
+    /* 
+     * Since krb_get_tf_realm will return a ticket_file error, 
+     * we will call tf_init and tf_close first to filter out
+     * things like no ticket file.  Otherwise, the error that 
+     * the user would see would be 
+     * klist: can't find realm of ticket file: No ticket file (tf_util)
+     * instead of
+     * klist: No ticket file (tf_util)
+     */
+
+    /* Open ticket file */
+    if (k_errno = tf_init(file, R_TKT_FIL)) {
+	if (!tgt_test)
+		fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+	exit(1);
+    }
+    /* Close ticket file */
+    (void) tf_close();
+
+    /* 
+     * We must find the realm of the ticket file here before calling
+     * tf_init because since the realm of the ticket file is not
+     * really stored in the principal section of the file, the
+     * routine we use must itself call tf_init and tf_close.
+     */
+    if ((k_errno = krb_get_tf_realm(file, prealm)) != KSUCCESS) {
+	if (!tgt_test)
+	    fprintf(stderr, "%s: can't find realm of ticket file: %s\n",
+		    whoami, krb_err_txt[k_errno]);
+	exit(1);
+    }
+
+    /* Open ticket file */
+    if (k_errno = tf_init(file, R_TKT_FIL)) {
+	if (!tgt_test)
+		fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+	exit(1);
+    }
+    /* Get principal name and instance */
+    if ((k_errno = tf_get_pname(pname)) ||
+	(k_errno = tf_get_pinst(pinst))) {
+	    if (!tgt_test)
+		    fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+	    exit(1);
+    }
+
+    /* 
+     * You may think that this is the obvious place to get the
+     * realm of the ticket file, but it can't be done here as the
+     * routine to do this must open the ticket file.  This is why 
+     * it was done before tf_init.
+     */
+       
+    if (!tgt_test && long_form)
+	printf("Principal:\t%s%s%s%s%s\n\n", pname,
+	       (pinst[0] ? "." : ""), pinst,
+	       (prealm[0] ? "@@" : ""), prealm);
+    while ((k_errno = tf_get_cred(&c)) == KSUCCESS) {
+	if (!tgt_test && long_form && header) {
+	    printf("%-15s  %-15s  %s\n",
+		   "  Issued", "  Expires", "  Principal");
+	    header = 0;
+	}
+	if (tgt_test) {
+	    c.issue_date += ((unsigned char) c.lifetime) * 5 * 60;
+	    if (!strcmp(c.service, TICKET_GRANTING_TICKET) &&
+		!strcmp(c.instance, prealm)) {
+		if (time(0) < c.issue_date)
+		    exit(0);		/* tgt hasn't expired */
+		else
+		    exit(1);		/* has expired */
+	    }
+	    continue;			/* not a tgt */
+	}
+	if (long_form) {
+	    (void) strcpy(buf1, short_date(&c.issue_date));
+	    c.issue_date += ((unsigned char) c.lifetime) * 5 * 60;
+	    (void) strcpy(buf2, short_date(&c.issue_date));
+	    printf("%s  %s  ", buf1, buf2);
+	}
+	printf("%s%s%s%s%s\n",
+	       c.service, (c.instance[0] ? "." : ""), c.instance,
+	       (c.realm[0] ? "@@" : ""), c.realm);
+    }
+    if (tgt_test)
+	exit(1);			/* no tgt found */
+    if (header && long_form && k_errno == EOF) {
+	printf("No tickets in file.\n");
+    }
+}
+
+char   *
+short_date(dp)
+    long   *dp;
+{
+    register char *cp;
+    extern char *ctime();
+    cp = ctime(dp) + 4;
+    cp[15] = '\0';
+    return (cp);
+}
+
+usage()
+{
+    fprintf(stderr,
+        "Usage: %s [ -s | -t ] [ -file filename ] [ -srvtab ]\n", whoami);
+    exit(1);
+}
+
+display_srvtab(file)
+char *file;
+{
+    int stab;
+    char serv[SNAME_SZ];
+    char inst[INST_SZ];
+    char rlm[REALM_SZ];
+    unsigned char key[8];
+    unsigned char vno;
+    int count;
+
+    printf("Server key file:   %s\n", file);
+	
+    if ((stab = open(file, O_RDONLY, 0400)) < 0) {
+	perror(file);
+	exit(1);
+    }
+    printf("%-15s %-15s %-10s %s\n","Service","Instance","Realm",
+	   "Key Version");
+    printf("------------------------------------------------------\n");
+
+    /* argh. getst doesn't return error codes, it silently fails */
+    while (((count = ok_getst(stab, serv, SNAME_SZ)) > 0)
+	   && ((count = ok_getst(stab, inst, INST_SZ)) > 0)
+	   && ((count = ok_getst(stab, rlm, REALM_SZ)) > 0)) {
+	if (((count = read(stab,(char *) &vno,1)) != 1) ||
+	     ((count = read(stab,(char *) key,8)) != 8)) {
+	    if (count < 0)
+		perror("reading from key file");
+	    else
+		fprintf(stderr, "key file truncated\n");
+	    exit(1);
+	}
+	printf("%-15s %-15s %-15s %d\n",serv,inst,rlm,vno);
+    }
+    if (count < 0)
+	perror(file);
+    (void) close(stab);
+}
+
+/* adapted from getst() in librkb */
+/*
+ * ok_getst() takes a file descriptor, a string and a count.  It reads
+ * from the file until either it has read "count" characters, or until
+ * it reads a null byte.  When finished, what has been read exists in
+ * the given string "s".  If "count" characters were actually read, the
+ * last is changed to a null, so the returned string is always null-
+ * terminated.  ok_getst() returns the number of characters read, including
+ * the null terminator.
+ *
+ * If there is a read error, it returns -1 (like the read(2) system call)
+ */
+
+ok_getst(fd, s, n)
+    int fd;
+    register char *s;
+{
+    register count = n;
+    int err;
+    while ((err = read(fd, s, 1)) > 0 && --count)
+        if (*s++ == '\0')
+            return (n - count);
+    if (err < 0)
+	return(-1);
+    *s = '\0';
+    return (n - count);
+}
+@
+
+
+4.15
+log
+@Programmer: Kevin Fall
+Auditor: John Kohl
+tf_close() return value is undefined, so ignore it.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/kuser/RCS/klist.c,v $
+d16 1
+a16 1
+"$Header: klist.c,v 4.14 89/07/07 15:26:45 jtkohl Exp $";
+d23 1
+@
+
+
+4.14
+log
+@changes to use new krb_get_tf_realm (reads realm of first ticket).
+Programmer: Jay Berkenbilt
+Auditor: John Kohl
+@
+text
+@d3 1
+a3 1
+ * $Author: wesommer $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.13 89/05/16 14:42:48 qjb Locked $";
+d119 1
+a119 5
+    if (k_errno = tf_close()) {
+	if (!tgt_test)
+	    fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+	exit(1);
+    }
+@
+
+
+4.13
+log
+@Programmer: John Kohl.
+More signed/unsigned fixes.
+@
+text
+@d16 1
+a16 1
+"$Header: klist.c,v 4.12 89/04/18 16:40:24 jtkohl Locked $";
+d102 10
+d118 26
+d151 8
+a158 5
+    if ((k_errno = krb_get_lrealm(prealm, 1)) != KSUCCESS) {
+	fprintf(stderr, "%s: can't find local realm: %s\n",
+		whoami, krb_err_txt[k_errno]);
+	exit(1);
+    }
+@
+
+
+4.12
+log
+@Fix up sign-extension problems.
+Programmer: jtkohl.
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.11 89/01/23 09:34:58 jtkohl Locked $";
+d143 1
+a143 1
+	    c.issue_date += c.lifetime * 5 * 60;
+@
+
+
+4.11
+log
+@Programmer/Auditor: John Kohl
+changes: name changes to krb_xxx
+@
+text
+@d3 1
+a3 1
+ * $Author: rfrench $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.10 89/01/11 17:40:56 jtkohl Locked $";
+d131 1
+a131 1
+	    c.issue_date += c.lifetime * 5 * 60;
+@
+
+
+4.10
+log
+@Programmer: jtkohl
+Auditor: rfrench
+Added support for displaying srvtabs
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.9 89/01/04 11:50:03 jtkohl Locked $";
+d115 1
+a115 1
+    if ((k_errno = get_krbrlm(prealm, 1)) != KSUCCESS) {
+@
+
+
+4.9
+log
+@Programmer: Stan Zanarotti
+Auditor: John Kohl
+changes: fix null-pointer problem with ticket file names
+@
+text
+@d3 1
+a3 1
+ * $Author: shanzer $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.8 88/06/23 12:27:06 srz Locked $";
+d24 1
+a25 2
+#define	TGT_SERVICE	"krbtgt"
+
+a37 6
+    FILE   *fopen();
+    char    pname[ANAME_SZ];
+    char    pinst[INST_SZ];
+    char    prealm[REALM_SZ];
+    char    buf1[20], buf2[20];
+    int     k_errno;
+d40 1
+a40 2
+    int     header = 1;
+    CREDENTIALS c;
+a42 1
+    long    time_now;
+d66 7
+d76 6
+a81 2
+    if ((tkt_file == NULL) && ((tkt_file = getenv("KRBTKFILE")) == NULL))
+	tkt_file = TKT_FILE;
+d83 16
+d100 2
+a101 1
+	printf("Ticket file:	%s\n", tkt_file);
+d103 1
+a103 1
+    if (k_errno = tf_init(tkt_file, R_TKT_FIL)) {
+d132 1
+a132 1
+	    if (!strcmp(c.service, TGT_SERVICE) &&
+d134 1
+a134 1
+		if ((time_now = time(0)) < c.issue_date)
+a155 1
+    exit(0);
+d172 1
+a172 1
+        "Usage: %s [ -s | -t ] [ -file filename ]\n", whoami);
+d174 68
+@
+
+
+4.8
+log
+@Added explit call to exit at the end of main() so it does not exit with
+a status of -1.
+Programmer: shanzer
+Auditor: jtkohl
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $ 
+d16 1
+a16 1
+"$Header: klist.c,v 4.7 88/05/04 13:38:17 steiner Exp $";
+d78 1
+a78 1
+    if (!*tkt_file && !(tkt_file = getenv("KRBTKFILE")))
+@
+
+
+4.7
+log
+@Added -l option (which is default) for backward
+compatibility with list_tkts.
+Programmer: steiner.
+Auditor: jtkohl.
+@
+text
+@d16 1
+a16 1
+"$Header: klist.c,v 4.6 88/04/27 15:08:53 steiner Exp $";
+d137 1
+@
+
+
+4.6
+log
+@Open for reading not writing.
+Programmer: steiner.
+Auditor: jtkohl.
+@
+text
+@d16 1
+a16 1
+"$Header: klist.c,v 4.5 88/02/24 11:19:23 steiner Exp $";
+d39 1
+a39 1
+    FILE   *tf_fp, *fopen();
+a42 4
+    char    sname[ANAME_SZ];
+    char    sinst[INST_SZ];
+    char    srealm[REALM_SZ];
+    KTEXT_ST buf;
+d63 3
+@
+
+
+4.5
+log
+@Copyright notice, etc.
+@
+text
+@d16 1
+a16 1
+"$Header: klist.c,v 4.4 88/01/29 13:47:49 steiner Locked $";
+d85 1
+a85 1
+    if (k_errno = tf_init(tkt_file, 1)) {
+@
+
+
+4.4
+log
+@Made long format default, added tgt test.
+Programmer: jtkohl.
+Auditor: wesommer.
+@
+text
+@d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology. 
+a13 2
+#include	<mit-copyright.h>
+
+d16 1
+a16 1
+"$Header: klist.c,v 4.3 88/01/14 13:28:14 jtkohl Locked $";
+d19 5
+a23 4
+#include        <stdio.h>
+#include	<strings.h>
+#include	<sys/file.h>
+#include        <krb.h>
+@
+
+
+4.3
+log
+@Formatted.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/s/t/steiner/kerberos/client/RCS/list_tkts.c,v $
+d17 2
+a18 2
+static char rcsid_module_c[] =
+"$Header: list_tkts.c,v 4.2 87/09/22 13:18:57 steiner Exp $";
+d26 2
+d50 2
+a51 1
+    int     long_form = 0;
+d56 1
+d61 2
+a62 2
+	if (!strcmp(*argv, "-l")) {
+	    long_form = 1;
+d65 5
+d87 2
+a88 1
+	fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+d94 3
+a96 2
+	fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+	exit(1);
+d103 4
+a106 3
+    if (long_form)
+	printf("Principal:	%s%s%s%s%s\n\n", pname,
+	(pinst[0] ? "." : ""), pinst, (prealm[0] ? "@@" : ""), prealm);
+d108 1
+a108 1
+	if (long_form && header) {
+d113 11
+d134 2
+d154 2
+a155 1
+    fprintf(stderr, "Usage: %s [ -l ] [ -file filename ]\n", whoami);
+@
+
+
+4.2
+log
+@Revised user-level commands.
+@
+text
+@d1 3
+a3 2
+/* $Source$
+ * $Author$
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d7 2
+a8 2
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+a11 1
+ * Revised by Jennifer Steiner, MIT Project Athena.
+d18 1
+a18 1
+"$Header$";
+d26 4
+a29 4
+char *tkt_string();
+char *short_date();
+char *whoami;			/* What was I invoked as?? */
+char *getenv();
+d33 4
+a36 4
+/*ARGSUSED*/
+main(argc, argv)	
+	int argc;
+	char **argv;
+d38 15
+a52 15
+	FILE	*tf_fp, *fopen();
+	char pname[ANAME_SZ];
+	char pinst[INST_SZ];
+	char prealm[REALM_SZ];
+	char sname[ANAME_SZ];
+	char sinst[INST_SZ];
+	char srealm[REALM_SZ];
+	KTEXT_ST buf;
+	char buf1[20], buf2[20];
+	int k_errno;
+	int long_form = 0;
+	int header = 1;
+	CREDENTIALS c;
+	char *tkt_file = NULL;
+	char *cp;
+d54 1
+a54 1
+	whoami = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+d56 10
+a65 12
+	while (*(++argv)) {
+		if (!strcmp(*argv, "-l")) {
+			long_form = 1;
+			continue;
+		}
+		if (!strcmp(*argv, "-file")) {
+			if (*(++argv)) {
+				tkt_file = *argv;
+				continue;
+			}
+			else usage();
+		}
+d68 2
+d71 29
+a99 9
+	if (!*tkt_file && !(tkt_file = getenv("KRBTKFILE")))
+			tkt_file = TKT_FILE;
+			
+	if (long_form)
+		printf("Ticket file:	%s\n", tkt_file);
+	/* Open ticket file */
+	if (k_errno = tf_init(tkt_file, 1)) {
+		fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+		exit(1);
+d101 5
+a105 5
+	/* Get principal name and instance */
+	if ((k_errno = tf_get_pname(pname)) ||
+	    (k_errno = tf_get_pinst(pinst))) {
+		fprintf(stderr, "%s: %s\n", whoami, krb_err_txt[k_errno]);
+		exit(1);
+d107 7
+a113 27
+	if ((k_errno = get_krbrlm(prealm,1)) != KSUCCESS) {
+		fprintf(stderr, "%s: can't find local realm: %s\n", 
+			whoami, krb_err_txt[k_errno]);
+		exit(1);
+	}
+	if (long_form)
+		printf("Principal:	%s%s%s%s%s\n\n", pname,
+		(pinst[0]?".":""), pinst, (prealm[0]?"@@":""), prealm);
+	while((k_errno = tf_get_cred(&c)) == KSUCCESS) {
+		if(long_form && header) {
+			printf("%-15s  %-15s  %s\n", 
+			       "  Issued", "  Expires", "  Principal");
+			header = 0;
+		}
+		if(long_form) {
+			(void)strcpy(buf1, short_date(&c.issue_date));
+			c.issue_date += c.lifetime * 5 * 60;
+			(void)strcpy(buf2, short_date(&c.issue_date));
+			printf("%s  %s  ", buf1, buf2);
+		}
+		printf("%s%s%s%s%s\n",
+		       c.service, (c.instance[0]?".":""), c.instance,
+		       (c.realm[0]?"@@":""), c.realm);
+	}
+	if (header && long_form && k_errno == EOF) {
+		printf("No tickets in file.\n");
+	}
+d116 3
+a118 2
+char *short_date(dp)
+	long *dp;
+d120 5
+a124 5
+	register char *cp;
+	extern char *ctime();
+	cp=ctime(dp) + 4;
+	cp[15]='\0';
+	return(cp);
+d127 1
+a127 1
+usage() 
+d129 2
+a130 2
+	fprintf(stderr, "Usage: %s [ -l ] [ -file filename ]\n", whoami);
+	exit(1);
+a131 1
+
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d1 2
+a2 3
+/*
+ *	$Source: /mit/s/t/steiner/kerberos/client/RCS/list_tkts.c,v $
+ *	$Header: list_tkts.c,v 1.1 86/12/12 14:29:07 steiner Locked $
+d4 1
+a4 1
+ *	Copyright (C) 1986 by the Massachusetts Institute of Technology
+d6 6
+a11 2
+ *	Lists your current Kerberos tickets.
+ *	Written by Bill Sommerfeld, MIT Project Athena.
+d14 1
+a14 3
+#ifndef lint
+static char *rcsid_list_tkt_c = "$Header: list_tkts.c,v 1.1 86/12/12 14:29:07 steiner Locked $";
+#endif lint
+d16 5
+d22 2
+a24 2
+#include	<sys/file.h>
+#include	<strings.h>
+d29 1
+d31 2
+d38 1
+a38 1
+	FILE	*tktfile, *fopen();
+d47 1
+a47 4
+	long dead;
+	long date;
+	int life;
+	int code;
+d50 3
+a52 3
+	C_Block session;
+	char *tkt_file = TKT_FILE;
+	whoami = argv[0];
+d54 2
+d70 6
+a75 1
+		
+d77 2
+a78 2
+	if ((tktfile = fopen(tkt_file, "r")) == NULL) {
+		perror(TKT_FILE);
+d81 4
+a84 7
+
+	(void)getst(tktfile,pname,ANAME_SZ); /* Read pname   */
+	(void)getst(tktfile,pinst,INST_SZ); /* And instance */
+
+	if ((code=get_krbrlm(prealm,1)) != KSUCCESS) {
+		fprintf(stderr, "Can't find local realm: %s\n", 
+			krb_err_txt[code]);
+d87 9
+a95 13
+	if (long_form) printf("Ticket file for principal %s%s%s%s%s\n", 
+	       pname, (pinst[0]?".":""), pinst,
+	       (prealm[0]?"@@":""), prealm);
+
+	while (getst(tktfile,sname,SNAME_SZ) > 0) { 	/* Read sname   */
+		(void)getst(tktfile,sinst,INST_SZ);	/* Instance     */
+		(void)getst(tktfile,srealm,REALM_SZ);	/* Realm        */
+		(void)fread((char*)session,1,8,tktfile);/* Session key  */
+		(void)fread((char*)&life,1,sizeof(int),tktfile);/* Lifetime */
+		(void)fread((char*)&dead,1,sizeof(int),tktfile);    
+		(void)fread((char*)(&buf.length),1,sizeof(int),tktfile);  
+		(void)fread((char*)(buf.dat),1,buf.length,tktfile);
+		(void)fread((char*)&date,1,sizeof(long),tktfile);
+d102 3
+a104 3
+			(void)strcpy(buf1, short_date(&date));
+			date += life * 5 * 60;
+			(void)strcpy(buf2, short_date(&date));
+d108 2
+a109 1
+		       sname, (sinst[0]?".":""), sinst, (srealm[0]?"@@":""), srealm);
+d111 1
+a111 1
+	if (header && long_form) {
+a113 14
+}
+
+int
+getst(fd,s,n)
+	register FILE *fd;
+	register int     n;
+	register char    *s;
+{
+        register int count = n;
+        while (fread(s,1,1,fd) && --count) {
+                if (*(s++) == '\0') return(n - count);
+	}
+        *(s++) = '\0';
+        return(n - count);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 2
+a3 2
+ *	$Source$
+ *	$Header$
+d12 1
+a12 1
+static char *rcsid_list_tkt_c = "$Header$";
+@

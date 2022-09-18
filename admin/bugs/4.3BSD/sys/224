@@ -1,0 +1,59 @@
+From mogul@decwrl.dec.com  Mon Nov 14 16:39:37 1988
+From: mogul@decwrl.dec.com (Jeffrey Mogul)
+Message-Id: <8811150009.AA02865@acetes.pa.dec.com>
+Date: 14 Nov 1988 1609-PST (Monday)
+To: 4bsd-bugs@monet.Berkeley.EDU
+Subject: lurking bug in pty driver
+Index: sys/tty_pty.c 4.3BSD Fix
+
+Description:
+	In certain circumstances, the use of a TIOCREMOTE ioctl
+	can cause an uninitialized variable to be used as an
+	index into cdevsw[].
+	
+	More specifically: in ptyioctl(), a TIOCREMOTE ioctl
+	causes ttyflush() to be called on the pty.  If the
+	slave side of the pty has not yet been opened, then
+	tp->t_dev has not yet been initialized at this point.
+	ttyflush() uses t_dev as an index into cdevsw[].
+	
+	The effect of this bug is that potentially the wrong
+	d_stop routine is called from ttyflush().  I believe
+	that in most cases this either has no harmful effect,
+	or one so small that it probably hasn't been noticed.
+	I'm maintaining a system that has a weird cdevsw[], and
+	in this kernel the result is a wild jump.
+	
+	Most programs probably open both sides of the pty
+	before using TIOCREMOTE (actually, most programs don't
+	use TIOCREMOTE at all!).
+
+Repeat-By:
+	use TIOCREMOTE on the master side of a pty before the
+	slave side is opened.
+Fix:
+	I believe that this is a reasonable fix (don't flush
+	the slave if the slave isn't open).
+
+*** tty_pty.c.old	Mon Nov 14 16:05:52 1988
+--- tty_pty.c	Mon Nov 14 15:32:05 1988
+***************
+*** 464,470
+  				pti->pt_flags |= PF_REMOTE;
+  			else
+  				pti->pt_flags &= ~PF_REMOTE;
+! 			ttyflush(tp, FREAD|FWRITE);
+  			return (0);
+  
+  		case FIONBIO:
+
+--- 464,472 -----
+  				pti->pt_flags |= PF_REMOTE;
+  			else
+  				pti->pt_flags &= ~PF_REMOTE;
+! 			/* can only call ttyflush safely if slave is open */
+! 			if (tp->t_state&TS_ISOPEN)
+! 				ttyflush(tp, FREAD|FWRITE);
+  			return (0);
+  
+  		case FIONBIO:

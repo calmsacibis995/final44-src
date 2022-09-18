@@ -1,0 +1,103 @@
+From root@j.cc.purdue.edu  Tue Nov  1 13:41:23 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.60/1.29)
+	id AA27592; Tue, 1 Nov 88 13:41:23 PST
+Received: from j.cc.purdue.edu by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA24334; Tue, 1 Nov 88 13:41:01 PST
+Received: by j.cc.purdue.edu (5.54/1.14)
+	id AA23076; Tue, 1 Nov 88 16:40:17 EST
+Date: Tue, 1 Nov 88 16:40:17 EST
+From: root@j.cc.purdue.edu (Kevin Braunsdorf)
+Message-Id: <8811012140.AA23076@j.cc.purdue.edu>
+Subject: syslog only takes 5 printf args, drops core
+Index: 	lib/syslog.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	We look at /usr/src/lib/libc/gen/syslog.c:
+		syslog(pri, fmt, p0, p1, p2, p3, p4)
+			int pri;
+			char *fmt;
+		{ ...
+			sprintf(o, fmt, p0, p1, p2, p3, p4);
+			...
+		}
+	There is no excuse for this.  (As well as the fact it
+	should be documented *well*.)  {mild flame here}
+
+	Should this routine be in the stdio directory now?
+	I do not know.
+	
+Repeat-By:
+	syslog(LOG_INFO, "%d %d %d %d %d %d %d", 1, 2, 3, 4, 5, 6, 7);
+
+Fix:
+	Patchs for 4.3 below.  For Tahoe a void cast is replaced too.
+	Just inline sprintf() here...
+
+*** /tmp/,RCSt1022826	Tue Nov  1 16:32:14 1988
+--- syslog.c	Tue Nov  1 16:31:41 1988
+***************
+*** 32,40 ****
+--- 32,43 ----
+  #include <sys/syslog.h>
+  #include <netdb.h>
+  #include <strings.h>
++ #include <stdio.h>
+  
+  #define	MAXLINE	1024			/* max message size */
++ #if !defined(NULL)
+  #define NULL	0			/* manifest */
++ #endif
+  
+  #define PRIMASK(p)	(1 << ((p) & LOG_PRIMASK))
+  #define PRIFAC(p)	(((p) & LOG_FACMASK) >> 3)
+***************
+*** 54,60 ****
+  extern	int errno, sys_nerr;
+  extern	char *sys_errlist[];
+  
+! syslog(pri, fmt, p0, p1, p2, p3, p4)
+  	int pri;
+  	char *fmt;
+  {
+--- 57,63 ----
+  extern	int errno, sys_nerr;
+  extern	char *sys_errlist[];
+  
+! syslog(pri, fmt, args)
+  	int pri;
+  	char *fmt;
+  {
+***************
+*** 63,68 ****
+--- 66,72 ----
+  	register int c;
+  	long now;
+  	int pid, olderrno = errno;
++ 	auto FILE _strbuf;
+  
+  	/* see if we should just throw out this message */
+  	if (pri <= 0 || PRIFAC(pri) >= LOG_NFACILITIES || (PRIMASK(pri) & LogMask) == 0)
+***************
+*** 114,120 ****
+  	}
+  	*b++ = '\n';
+  	*b = '\0';
+! 	sprintf(o, buf, p0, p1, p2, p3, p4);
+  	c = strlen(outline);
+  	if (c > MAXLINE)
+  		c = MAXLINE;
+--- 118,130 ----
+  	}
+  	*b++ = '\n';
+  	*b = '\0';
+! 
+! 	_strbuf._flag = _IOWRT+_IOSTRG;
+! 	_strbuf._ptr = o;
+! 	_strbuf._cnt = (MAXLINE-1)+(outline-o);
+! 	_doprnt(fmt, &args, &_strbuf);
+! 	putc('\000', &_strbuf);
+! 
+  	c = strlen(outline);
+  	if (c > MAXLINE)
+  		c = MAXLINE;

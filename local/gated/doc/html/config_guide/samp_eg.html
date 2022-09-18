@@ -1,0 +1,221 @@
+<html>
+<!--
+$Header$
+
+%(Copyright)
+>
+<head>
+<TITLE>Gated Configuration Guide - Sample Exterior
+Configurations</TITLE>
+</head>
+<body>
+
+<H1>Sample Exterior Gateway Configurations</H1>
+
+<P><STRONG>We need more examples.</STRONG>  If you don't see what 
+you need here, and you create a <EM>working</EM> config file that 
+you're willing to share, <EM>please</EM> send it to us.  (Also, if 
+you find mistakes in the examples here, well, ahem, just tell us 
+quietly and we'll fix them.)
+
+<H3>RIP/EGP Configuration</H3>
+
+This configuration enables both an interior (RIP) and an exterior (EGP) 
+protocol and sets certain protocol specific parameters.
+     
+
+<PRE>
+    #  generate a default route if an EGP  neighbor is acquired
+    #
+    options gendefault ;
+    #
+    # define the autonomous system number for EGP
+    #
+    autonomoussystem 303 ;
+    #
+    # enable RIP
+    #
+    rip yes ;
+    #
+    # enable EGP with hello interval 1 1/2 minute, poll
+    #  interval 10 minutes, neighbors 26.6.0.103 and 26.20.0.72
+    #
+    egp yes
+    { packetsize 24488 ;
+      group minhello 1:30 minpoll 10:00
+      {
+           neighbor 26.6.0.103 ;
+           neighbor 26.20.0.72 ;
+      } ;
+    } ;
+    #
+    # announce 136. 66 to AS 183
+    #
+    export proto egp as 183 {
+           proto direct {
+                announce 136.66.0.0 metric 0 ;
+           } ;
+      } ;
+    #
+    # announce default via RIP with a metric of 3
+    #
+    export proto rip interface 136.66.12.1 {
+           proto default {
+                announce 0.0.0.0 metric 3 ;
+           } ;
+    } ;
+</PRE>
+                 
+<P>The AS number 303 is defined early as it is a definition statement and 
+must occur before the first protocol statement.  EGP is enabled by the 
+<CODE>yes</CODE> in the EGP statement, which defines additional EGP 
+parameters e.g.  the <CODE>packetsize</CODE> parameter defining the initial 
+size of update packets accepted, the <CODE>group</CODE> clause which sets 
+parameters for all of the EGP neighbors in the group, and 
+<CODE>minhello</CODE> and <CODE>minpoll</CODE> used to set the protocol 
+timers.  The first <CODE>export</CODE> statement directs GateD to use EGP 
+to advertise the network (136.66.0.0) to the Internet.  This is the address 
+of the network, not of a gateway.  The second <CODE>export</CODE> statement 
+is used to announce the default route to subnet 136.66.12.0 with a metric 
+of 3.
+
+
+
+<H3>BGP/OSPF Configuration</H3>
+
+<STRONG>Warning, this example is currently WRONG ... swb</STRONG>
+(SWB: You were right about formatting. JC)
+
+
+<PRE>
+
+                                                  P2P
+                                                   |                  Router ID = 19.1.1.18            |  OSPF
+          Backbone (area 0.0.0.0)
+                  AS Number = 1019                 |
+                                                   |  BGP
+          IGP
+                                                   |
+                 Network:            119.2.128.18  |
+          09.1.1.19
+                 119.2.128                   ______|______
+             EN  ---------------------------|             |
+                 OSPF area 0.0.0.2          |             |
+          BGP External to AS 2021
+                                            |   Router A  |-
+          -------------------- FR
+                 Network:                   |             |
+          21.1.1.21
+                 119.4.128                  |             |
+             EN  ---------------------------|_____________|
+                 OSPF area 0.0.0.2   119.4.128.18
+     In   this   sample   configuration,  GateD  implements   the
+     transformation  of  distance metrics  between  the  internal
+     (OSPF)  and  external  (BGP) protocols.   Autonomous  system
+     1019, of which GateD is a member, contains network 19.0.0.0.
+     The   GateD   machine  has  several  interfaces  into   this
+     autonomous system.  GateD is using BGP to peer with AS 2021,
+     neighbor 21.5.1.21.
+                    
+                    / etc / gated.conf
+                    # # # # # # # # # # # # # # # # # # #
+                    interfaces {options all passive; };
+                    autonomoussystem 1019;
+                    routerid 19.1.1.18;
+                    rip no;
+                    hello no;
+                    egp no;
+                    bgp yes {
+                     preference 50 ;
+                     group type
+                         External peeras 2021
+                     {
+                    
+                         peer 21.5.1.21
+                              ;
+                     } ;
+                       group type
+                         IGP peeras 1019
+                       {
+                    
+                        peer 19.1.1.19
+                           ;
+                     } ;
+                    } ;
+                    ospf yes {
+                     area 0.0.0.2 {
+                       authtype none;
+                      networks {
+                        119.0.0.0 mask 255.0.0.0 ;
+                       } ;
+                     interface 119.2.128.18
+                       cost 1 {
+                        retransmitinterval 5;
+                        transitdelay 1;
+                        priority 1;
+                        hello interval 10;
+                        routerdeadinterval 40;
+                       } ;
+                     interface 119.4.128.18
+                       cost 1 {
+                        retransmitinterval 5;
+                        transitdelay 1;
+                        priority 1;
+                        hellointerval 60;
+                        routerdeadinterval 180;
+                       } ;
+                     } ;
+                     backbone {
+                       authype none;
+                     interface 19.1.1.19
+                       cost 1 {
+                        retransmitinterval 5;
+                        transitdelay 1;
+                        priority 1;
+                        hellointerval 60;
+                        routerdeadinterval 180;
+                       } ;
+                     } ;
+                    } ;
+                    export proto ospfase type 1 {
+                     proto bgp as 2021 {
+                       ALL
+                        metric 1;      };
+                     proto direct {
+                       ALL
+                        metric 1;  };
+                    } ;
+                    export proto bgp as 2021 {
+                     proto direct {
+                       ALL
+                        metric 1;      } ;
+                     proto ospfase {
+                       ALL
+                        metric 1;      } ;
+                    } ;
+                    
+
+</PRE>
+
+
+<P>In this configuration two autonomous systems (one internal, one 
+external) are directly connected through a router that is attached to a 
+backbone speaking OSPF.  The AS number 1019 is defined early as it is a 
+definition statement that occurs again in the first protocol statement 
+which enables BGP.  The first <CODE>export</CODE> statement directs GateD 
+to advertise routes from the internal group AS 1019 running OSPF as the IGP 
+gathering routing information to the external group AS 2021 using BGP.  
+Routes to two local ethernets in AS 1019, identified as 119.2.128.18 and 
+119.4.128.18 (119.0.0.0 mask 255.0.0.0), are advertised along with the OSPF 
+backbone (19.1.1.19.) The parameters for AS path, path origin and 
+transitive optional attributes including transmission intervals are 
+defined.  The second <CODE>export</CODE> statement announces the default 
+route to AS 2021 with a metric of 1.
+
+<hr>
+     
+Last updated $Date$.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

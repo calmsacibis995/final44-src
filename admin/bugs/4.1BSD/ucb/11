@@ -1,0 +1,47 @@
+Return-Path: <mullen@nrl-css>
+Date: Wed, 11 May 83 23:37:05 EDT
+From: Preston Mullen <mullen@NRL-CSS>
+Subject: bad function 'hash' in ucb mail
+To: 4bsd-bugs@ucb-arpa
+
+Index:	ucb/mail 4.1 Fix
+
+Description:
+	Function "hash" in ucb mail can return a value outside
+	its proper range, which should be 0 <= value < HSHSIZE.
+	This causes subscript errors when that value is used to
+	index variables[].  Specifically, the value returned can
+	actually be < 0 if the hashed string is long enough.
+Repeat-By:
+	Modify mail program to call value("closewithdate")
+	as result of "r" command.  There may be also be other ways
+	to induce buggy behavior; like many subscript-out-of-range errors,
+	whether or not it blows up depends on the state of the computation.
+	You can verify the error by just looking at the result of
+	hash("closewithdate").
+Fix:
+	The following code appears in the function "hash" in the
+	4.1bsd file /usr/src/cmd/ucbmail/vars.c:
+
+	register int h;
+	...
+	h &= ~0100000;
+	return (h % HSHSIZE);
+
+	The &= is obviously intended to make the sign bit of h = 0, but this
+	will only work if h is a 16-bit quantity.  It doesn't work on a VAX.
+	Correct this by deleting the line "h &= ~0100000;" and also either
+
+	1. changing "return (h % HSHSIZE);" to "return abs(h % HSHSIZE);"
+or	2. changing "register int h;" to "register unsigned h;"
+
+	The second alternative is preferable because it more directly
+	reflects the modular arithmetic used in hashing.  Either
+	alternative results in a slightly different hash function from
+	the one intended, but there's nothing sacred about the original
+	algorithm.  (Actually, it's sort of stupid to involve every
+	character of the hashed string in a hash function with only
+	19 buckets.)
+
+	I wonder how many other hash functions out there have this sort of
+	problem?

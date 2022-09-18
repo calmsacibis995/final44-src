@@ -1,0 +1,469 @@
+head     4.1;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.1 KPATCH4:4.1 KPATCH3:4.1 KPATCH2:4.1 KREL1:4.1 BETA5/24/88:4.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.1
+date     87.09.01.15.47.11;  author steiner;  state Exp;
+branches ;
+next     3.2;
+
+3.2
+date     86.05.14.15.27.25;  author spm;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.03.28.14.36.56;  author bcn;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     86.03.25.15.54.47;  author spm;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     85.12.06.14.15.53;  author bcn;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     85.12.04.10.08.10;  author bcn;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     85.11.11.15.51.41;  author spm;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     85.11.05.17.03.35;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     85.11.03.16.54.58;  author bcn;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.11.03.16.41.17;  author bcn;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.10.10.11.10.41;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial RCS checkin
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@/* 
+ * 	$Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/pcsend_to_kdc.c,v $
+ * 	$Author: spm $
+ * 	$Locker: steiner $
+ *
+ * Copyright 1985,1986 by the Massachusetts Institute of Technology
+ *
+ */
+
+#ifndef lint
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 3.2 86/05/14 15:27:25 steiner Locked $";
+#endif	lint
+
+#include <krb.h>
+#include "prot.h"
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <task.h>
+#include <q.h>
+#include <netq.h>
+#include <net.h>
+#include <custom.h>
+#include <netbuf.h>
+#include <icmp.h>
+#include <ip.h>
+#include <udp.h>
+#include <timer.h>
+
+
+static int	krb_recv(),krb_wake();  /* upcall receivers */
+static task 	*krb_task;		/* this task's id  */
+timer		*tm;			/* timer for rcvd packet */
+int		rcvd;			/* received packet flag */
+unsigned	reclen;			/* length of received packet */
+PACKET		p;			/* send packet */
+char		*rcvbuff;		/* received message */
+char		*sendbuff;		/* message to be sent */
+UDPCONN		cn;			/* the UDP connection  */
+
+char		*get_krbhst();
+	
+extern		debug;
+
+/*
+
+ Much of the code for send_to_kdc came from ...
+
+*/
+
+
+send_to_kdc(pkt,rpkt)
+KTEXT	pkt;
+KTEXT	rpkt;
+{
+    	int 		i;
+	int		nrxmit;
+	char		*krbhst_name;		/* Name of KDC host */
+        in_name		krb_hst;		/* Address of KDC */
+
+	Netinit(600);
+	in_init();
+	IcmpInit();
+	GgpInit();
+	UdpInit();
+	nm_init();
+
+	krbhst_name = get_krbhst(1);
+
+	if (!krbhst_name)
+	    {
+		printf("pcsend_to_kdc: Can't find krbhst_name\n");
+		exit(1);
+	    }
+
+	if ((krb_hst = resolve_name(krbhst_name)) == 0L)
+	    {
+		printf("pcdepcl: host %s unknown\n", krbhst_name);
+		exit(1);
+	    }
+	if(krb_hst == 1L)
+	    {
+		printf("pcdepcl: Name servers not responding.\n");
+		exit(1);
+	    }
+
+	krb_task = tk_cur;
+
+
+	cn = udp_open(krb_hst, KRB_PORT,  udp_socket(), krb_recv, 0);
+	if(cn == 0)
+	    {
+		printf("pcdepcl: Couldn't open UDP connection!\n");
+		exit(1);
+	    }
+	for (i=0;i<NBUF;i++) tk_yield(); /* Try to free up some pkt buffers.*/
+	p = (PACKET)udp_alloc(CLIENT_KRB_BUFLEN,0);
+	if(p == 0)
+	    {
+		printf("pcdepcl: couldn't allocate packet buffer!\n");
+		exit(1);
+	    }
+	sendbuff = udp_data(udp_head(in_head(p)));
+
+	bcopy(pkt->dat,sendbuff,pkt->length);
+
+	tm = tm_alloc();
+	krb_task = tk_cur;
+	nrxmit = CLIENT_KRB_RETRY;
+	rcvd = FALSE;
+	while (nrxmit-- >= 0)
+	  {
+		  if (debug) printf("pcdepcl: sending to %a. . . \n",krb_hst);
+	      udp_write(cn, p, pkt->length);
+	      tm_set(CLIENT_KRB_TIMEOUT, krb_wake, 0, tm);
+	      tk_block();		/* Wait for response to come back */
+	      				/* or timer to go off */
+	      tm_clear(tm);
+	      if (rcvd)			/*  Did a packet come in?  */
+		  {
+		      tm_free(tm);	/*  Yes, shut down and return it  */
+			  if (debug) printf("pcdepcl: got response.\n");
+		      bcopy(rcvbuff,rpkt->dat,reclen);
+		      rpkt->length = reclen;
+		      return 0;
+		  }
+		 if (debug) printf("pcdepcl:  timeout\n");
+	    }
+	printf("pcdepcl:  retry count exceeded\n");
+	tm_free(tm);			/*  Too many retries, give up.  */
+	return -1;
+
+
+}
+
+
+/*
+ * This routine is called when a packet arrives in reply to
+ * our request.
+ */
+
+static	krb_recv(rp, len, host)
+PACKET		rp;			/*  The arriving packet */
+unsigned	len;			/*  its size */
+in_name		host;			/*  where it came from */
+{
+
+	if (debug) printf("pcdepcl: rcvd packet\n");
+	rcvbuff = udp_data(udp_head(in_head(rp)));	/*  Find data */
+	rcvbuff[len] = '\0';		/*  Make proper string */
+	rcvd = TRUE;			/*  Notify main task */
+	reclen = len;
+ 	krb_wake();
+}
+
+/*  Call this to wake up the waiting control-exchange task.  */
+
+static  krb_wake()
+{
+	tk_wake(krb_task);
+}
+@
+
+
+3.2
+log
+@*** empty log message ***
+@
+text
+@d2 3
+a4 3
+ * 	$Source: /mit/projects/auth/src/lib/krb/RCS/pcsend_to_kdc.c,v $
+ * 	$Author: bcn $
+ * 	$Locker: spm $
+d11 1
+a11 1
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 3.1 86/03/28 14:36:56 bcn Exp $";
+@
+
+
+3.1
+log
+@Update major revision number.
+@
+text
+@d3 2
+a4 2
+ * 	$Author: spm $
+ * 	$Locker: bcn $
+d11 1
+a11 1
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 1.8 86/03/25 15:54:47 spm Exp $";
+d18 1
+a18 1
+#include <types.h>
+@
+
+
+1.8
+log
+@change to KTEXT
+@
+text
+@d3 2
+a4 22
+ * 	$Author: bcn $
+ * 	$Locker:  $
+ *    	$Log:	pcsend_to_kdc.c,v $
+ * Revision 1.7  85/12/06  14:15:53  bcn
+ * Updated to get host to send to from get_krbhst.
+ * 
+ * Revision 1.6  85/12/04  10:08:10  bcn
+ * Moved into libkrb.
+ * 
+ * Revision 1.5  85/11/11  15:51:41  spm
+ * change messages, add debug print flag
+ * 
+ * Revision 1.4  85/11/05  17:03:35  spm
+ * change returns values.
+ * 
+ * Revision 1.3  85/11/03  16:54:58  bcn
+ * Same for sendbuff since it is no longer
+ * humanly readable.
+ * 
+ * Revision 1.1  85/10/10  11:10:41  bcn
+ * Initial revision
+ * 
+d6 1
+a6 1
+ * Copyright 1985 by the Massachusetts Institute of Technology
+d11 1
+a11 1
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 1.7 85/12/06 14:15:53 bcn Exp $";
+@
+
+
+1.7
+log
+@Updated to get host to send to from get_krbhst.
+@
+text
+@d4 1
+a4 1
+ * 	$Locker: bcn $
+d6 3
+d31 1
+a31 1
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 1.6 85/12/04 10:08:10 bcn Exp $";
+d73 2
+a74 2
+struct packet	*pkt;
+struct packet	*rpkt;
+@
+
+
+1.6
+log
+@Moved into libkrb.
+@
+text
+@d3 1
+a3 1
+ * 	$Author: spm $
+d6 3
+d28 1
+a28 1
+static char *rcsid_pcsend_to_kdc_c = "$Header: pcsend_to_kdc.c,v 1.5 85/11/11 15:51:41 spm Exp $";
+d58 2
+d75 1
+d85 3
+a87 1
+	if ((krb_hst = resolve_name(KRB_TBLHST)) == 0L)
+d89 7
+a95 1
+		printf("pcdepcl: host %s unknown\n", KRB_TBLHST);
+@
+
+
+1.5
+log
+@change messages, add debug print flag
+@
+text
+@d2 1
+a2 1
+ * 	$Source: /mit/projects/auth/src/client/RCS/pcdepcl.c,v $
+d4 5
+a8 2
+ * 	$Locker: spm $
+ *    	$Log:	pcdepcl.c,v $
+d25 1
+a25 1
+static char *rcsid_pcdepcl_c = "$Header: pcdepcl.c,v 1.4 85/11/05 17:03:35 spm Exp $";
+d28 2
+a29 2
+#include "client.h"
+#include "../kdc/prot.h"
+@
+
+
+1.4
+log
+@change returns values.
+@
+text
+@d3 1
+a3 1
+ * 	$Author: bcn $
+d6 3
+d22 1
+a22 1
+static char *rcsid_pcdepcl_c = "$Header: pcdepcl.c,v 1.3 85/11/03 16:54:58 bcn Exp $";
+d52 1
+d113 1
+a113 3
+#ifdef DEBUG
+              printf("pcdepcl: sending to %a. . . \n",krb_hst);
+#endif
+d122 1
+a122 3
+#ifdef DEBUG
+                      printf("pcdepcl: got response.\n");
+#endif
+d127 1
+a127 3
+#ifdef DEBUG
+	      printf("pcdepcl:  timeout\n");
+#endif
+a128 1
+#ifdef DEBUG
+a129 1
+#endif
+d148 1
+a148 3
+#ifdef DEBUG
+        printf("pcdepcl: rcvd packet\n");
+#endif
+@
+
+
+1.3
+log
+@Same for sendbuff since it is no longer
+humanly readable.
+@
+text
+@d4 1
+a4 1
+ * 	$Locker:  $
+d6 4
+d19 1
+a19 1
+static char *rcsid_pcdepcl_c = "$Header: pcdepcl.c,v 1.1 85/10/10 11:10:41 bcn Exp $";
+d125 1
+a125 1
+		      return;
+d135 1
+a135 1
+	return NULL;
+@
+
+
+1.2
+log
+@No longer prints received packet since it is not humanly
+readable any longer.
+@
+text
+@d106 1
+a106 1
+              printf("pcdepcl: sending to %a. . . %s\n",krb_hst, sendbuff);
+d117 1
+a117 1
+                      printf("pcdepcl: got response.");
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 7
+a8 4
+ * 	$Source: $
+ * 	$Author: $
+ * 	$Locker: $
+ *    	$Log:	 $
+d15 1
+a15 1
+static char *rcsid_pcdepcl_c = "$Header: $";
+d117 1
+a117 1
+                      printf("pcdepcl: got response:\n%s\n", rcvbuff);
+@

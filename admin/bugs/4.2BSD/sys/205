@@ -1,0 +1,71 @@
+Return-Path: <elsie!ado@seismo.CSS.GOV>
+Return-Path: <elsie!ado>
+Date: Mon, 9 Sep 85 18:33:49 EDT
+From: elsie!ado@seismo.CSS.GOV
+To: 4bsd-bugs@ucbarpa
+Subject: 4.3bsd hp.c partitions too big
+
+Index: sys/vabmba/hp.c 4.2BSD
+
+Description:
+	The bad144(8) writeup in the 4.2bsd UNIX Programmer's Manual reads
+	(in part):
+		The bad sector information and replacement sectors are
+		conventionally only accessible through the "c" file system
+		partition of the disk.
+
+	Although clearly an effort was made to have this be so, the bad sector
+	information and replacement sectors of rm05's or rm80's can be accessed
+	(and clobbered) through the "f" and "g" file system partitions if you
+	use the "hp.c" in the beta version of 4.3bsd running at UC San Diego.
+	The same may be true of other types of disk; rm05's and rm80's are what
+	we have.
+
+Fix:
+	I believe these are the changes to "hp.c" to ensure that bad sector
+	information and replacement sectors can only be accessed through the
+	"c" file partition.
+
+	The first change is to the "rm05_sizes" table in "hp.c":
+
+> #ifdef OLDVERSION
+> 	86240,	681,		/* F=cyl 681 thru 822 */
+> 	158592,	562,		/* G=cyl 562 thru 822 */
+> #else
+> 	32*19*(823-681)-(32+126), 681,	/* F=cyl 681 thru 822 less bad sector */
+> 					/* 86178 512-byte sectors net */
+> 					/* 43089 1024-byte sectors */
+> 	32*19*(823-562)-(32+126), 562,	/* G=cyl 562 thru 822 less bad sector */
+> 					/* 158530 512-byte sectors net */
+> 					/* 79265 1024-byte sectors */
+> #endif
+
+	The second change is to the "rm80_sizes" table in "hp.c":
+
+> #ifdef OLDVERSION
+> 	120559,	281,		/* F=cyl 281 thru 558 */
+> 	192603,	115,		/* G=cyl 115 thru 558 */
+> #else
+> 	31*14*(559-281)-(31+126), 281,	/* F=cyl 281 thru 558 less bad sector */
+>  					/* 120495 512-byte sectors net */
+> 	31*14*(559-115)-(31+126), 115,	/* G=cyl 115 thru 558 less bad sector */
+>  					/* 192539 512-byte sectors net */
+> #endif
+
+	In each of the expressions of the form
+		31*14*(559-115)-(31+126)
+	the first number is the number of sectors per track,
+	the second is the number of tracks per cylinder,
+	the third is the number of cylinders per disk,
+	and the fourth is number of the starting cylinder for the partition.
+	The result of the multiplications is the number of sectors that you'd
+	have in the partition if it were to include the bad sector stuff. 
+	The fifth number is the number of sectors per track--
+	the last track on the disk is used to hold bad sector information--
+	and the sixth number, 126, is the number of bad sector replacement
+	sectors used in DEC's scheme.  The sum of these last two must be
+	subtracted from the result of the multiplications for the "bad sector
+	sectors" to be excluded from the partition.
+--
+	UUCP: ..decvax!seismo!elsie!ado    ARPA: elsie!ado@seismo.ARPA
+	DEC, VAX and Elsie are Digital Equipment and Borden trademarks

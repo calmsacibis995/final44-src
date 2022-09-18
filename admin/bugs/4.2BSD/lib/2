@@ -1,0 +1,93 @@
+Return-Path: <cak@Purdue.ARPA>
+From: Christopher A Kent <cak@Purdue.ARPA>
+Date: 11 Jan 1984 1659-EST (Wednesday)
+To: 4bsd-bugs@ucb-arpa.ARPA
+Subject: syslog(3) in distributed libc.a broken
+Index: lib/syslog.c 4.2BSD Fix
+
+Description:
+	Attempts to use syslog(3) fail in programs that perform other
+network functions. Output to the log file is garbled, or correct
+network system call invocations fail for no apparent reason.
+
+	The syslog supplied with sendmail does, however, function
+correctly. Inspection of the two versions shows that the C library
+version neglects to bind the datagram socket to any address. 
+
+	Recompiling the supplied libc source and reinstalling
+/lib/libc.a causes the problem to go away(!).
+
+Repeat-By:
+	Compile and run the following, both with and without an
+argument, and inspect the syslog output.
+
+/* 
+ * demonstrate broken syslog
+ */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <syslog.h>
+
+struct	sockaddr_in sin = { AF_INET };	/* socket address */
+
+main(argc, argv)
+char **argv;
+{
+	int s;
+
+	if(fork())
+		exit(0);
+
+	if(argc > 1)
+		openlog("stest", LOG_PID);
+
+	syslog(LOG_INFO, "starting up");
+
+	sin.sin_addr.s_addr = INADDR_ANY;
+	sin.sin_port = htons(77);
+	s = socket(AF_INET, SOCK_STREAM, 0, 0);
+	if(s < 0){
+		perror("socket");
+		exit(1);
+	}
+	if(bind(s, &sin, sizeof(sin)) < 0){
+		perror("bind");
+		exit(1);
+	}
+	syslog(LOG_INFO, "message1");
+	syslog(LOG_INFO, "message2");
+}
+
+Fix:
+	While the recompiled version seems to work correctly, the
+following diff supplies the "missing" bind, for the conservative-minded:
+
+*** syslog.c.old
+--- syslog.c.new
+***************
+*** 119,124
+  	}
+  	bzero(&SyslogAddr, sizeof SyslogAddr);
+  	SyslogAddr.sin_family = hp->h_addrtype;
+  	bcopy(hp->h_addr, (char *)&SyslogAddr.sin_addr, hp->h_length);
+  	SyslogAddr.sin_port = sp->s_port;
+  	LogStat |= LOG_DGRAM;
+
+--- 119,130 -----
+  	}
+  	bzero(&SyslogAddr, sizeof SyslogAddr);
+  	SyslogAddr.sin_family = hp->h_addrtype;
++ 	if(bind(LogFile, &SyslogAddr, sizeof SyslogAddr, 0) < 0){
++ 		perror("syslog: bind");
++ 		close(LogFile);
++ 		LogFile = -1;
++ 		goto bad;
++ 	}
+  	bcopy(hp->h_addr, (char *)&SyslogAddr.sin_addr, hp->h_length);
+  	SyslogAddr.sin_port = sp->s_port;
+  	LogStat |= LOG_DGRAM;
+
+----------

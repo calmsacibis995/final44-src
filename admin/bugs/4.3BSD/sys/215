@@ -1,0 +1,73 @@
+From jqj@hogg.cc.uoregon.edu  Fri Jun 10 04:45:14 1988
+Return-Path: jqj@hogg.cc.uoregon.edu
+Date: Wed, 8 Jun 88 10:36:52 PDT
+From: jqj@hogg.cc.uoregon.edu
+Subject: bogus ICMP Port Unreachable
+Index: sys/netinet/in.c 4.3BSD
+
+Description:
+        Given some valid network configurations, 4.3BSD incorrectly
+        generates ICMP error messages in response to Ethernet broadcast
+        packets, adding to the traffic on the local Ethernet and
+        potentially causing serious collision problems.  Note that the
+        problem is alleviated in the latest IP code (ucbarpa:
+        4.3/in.tar, 7 Apr 1988 19:25) but not yet fixed.
+
+        This is a manifestation of two more general problems:
+        (1) a lack of clarity as to what the "broadcast address"
+        (ia_broadaddr) settable for interfaces is supposed to mean.  I
+        interpret it as the address that is to be used for outgoing IP
+        broadcast traffic, but it is used in many places as the
+        expected incoming broadcast address as well, blithely ignoring
+        the fact that the IP RFCs mandate several different broadcast
+        addresses.
+        (2) the protocol layering that makes it difficult for IP-level
+        code to be told if a packet arrived as a media broadcast.  Note
+        that the IP RFCs (notably RFC 1009) require different treatment
+        of packets that arrived as media broadcasts versus directed.
+
+Repeat-By:
+        Configure one 4.3BSD system as a TCP/IP host, and set the
+        broadcast address on its interface (i.e. ia_broadaddr) to the
+        network broadcast address; for example, assuming a class B
+        network with 8-bit subnets, we might have host 128.32.130.111
+        with a broadcast address of 128.32.255.255.  Alternatively, set
+        its broadcast address to 255.255.255.255, the local broadcast
+        address.  Configure a gateway with a broadcast address set to
+        the default of the subnet broadcast address; for example,
+        128.32.130.11 might have an interface configured with a
+        broadcast address of 128.32.130.255.  Note that both are
+        perfectly legal broadcast addresses (e.g., see RFC 1009).
+
+        Now, run RIP (routed or gated) on the gateway, but not on the
+        host.  The host will respond to every RIP packet with an "ICMP
+        port unreachable" message.  If there are several hosts so
+        configured, they are likely to generate Ethernet collisions as
+        they all try to reply simultaneously.
+
+Fix:
+        Make in_broadcast() even more robust than it already is.
+        Instead of just checking for a match of the destination address
+        on incoming packets against ia_broadaddr, also check against
+        the network broadcast address (and, perhaps, the subnet broadcast
+        address):
+Old:
+                if (satosin(&ia->ia_broadaddr)->sin_addr.s_addr == in.s_addr)
+                     return (1);
+                if ((t = ntohl(in.s_addr)) == ia->ia_subnet || t == ia->ia_net)
+                    return (1);
+Suggested minimal new:
+                if (satosin(&ia->ia_broadaddr)->sin_addr.s_addr == in.s_addr
+                    || ia->ia_netbroadcast.s_addr == in.s_addr     /*+jqj*/
+                    || (t = ntohl(in.s_addr)) == ia->ia_subnet
+                    || t == ia->ia_net)
+                     return (1);
+Note that this still isn't adequate if the system administrator on the
+host resets ia_broadaddr and the gateway uses the subnet broadcast address.
+I would thus consider, though I don't recommend at this time, also adding
+an explicit check against the subnet broadcast address, perhaps:
+                    || htonl(ia->ia_subnet |
+                             (INADDR_BROADCAST &~ ia->ia_subnetmask)) ==
+                       in.s_addr
+
+

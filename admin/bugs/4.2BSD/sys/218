@@ -1,0 +1,110 @@
+Return-Path: <koda@hobgoblin>
+Date: Wed, 22 Feb 84 23:11:04 pst
+From: koda@hobgoblin (Jim Koda)
+Subject: dztimer() can lower IPL and cause random panics
+Index: sys/vaxuba/dz.c 4.2BSD
+
+Description:
+	the spl5() in dztimer can actually lower the IPL and can cause
+	random failures.  In particular, suppose the hardclock routine
+	(IPL 18) is called during servicing of a ethernet interrupt on
+	the 3com board (IPL 16) when the hardclock routine calls dztimer
+	it promptly does a spl5() lowering IPL to 15.  Thus another
+	ethernet interrupt can occur and its all over.
+Repeat-By:
+	With sufficient dz and ethernet traffic, random panics in the
+	dz or 3com drivers will occur.
+Fix:
+	Remove the spl5 in dztimer.  For the path from hardclock no spl
+	is necessary.  The other path from dzreset should have a spl6.
+	Note: spl6 not spl5 as spl5 is not high enough because of 3com
+	interfaces interrupt at IPL 16.  More details on a following bug
+	report.
+
+	Here is the diff:
+
+*** save/dz.c	Thu Oct 20 15:06:19 1983
+--- dz.c	Fri Dec 16 16:28:35 1983
+***************
+*** 598,604
+  dztimer()
+  {
+  	register int dz;
+- 	register int s = spl5();
+  
+  	for (dz = 0; dz < NDZ; dz++)
+  		dzrint(dz);
+
+--- 609,614 -----
+  dztimer()
+  {
+  	register int dz;
+  
+  	for (dz = 0; dz < NDZ; dz++)
+  		dzrint(dz);
+***************
+*** 602,608
+  
+  	for (dz = 0; dz < NDZ; dz++)
+  		dzrint(dz);
+- 	splx(s);
+  }
+  
+  /*
+
+--- 612,617 -----
+  
+  	for (dz = 0; dz < NDZ; dz++)
+  		dzrint(dz);
+  }
+  
+  /*
+***************
+*** 615,620
+  	register int unit;
+  	register struct tty *tp;
+  	register struct uba_device *ui;
+  
+  	for (unit = 0; unit < NDZLINE; unit++) {
+  		ui = dzinfo[unit >> 3];
+
+--- 624,630 -----
+  	register int unit;
+  	register struct tty *tp;
+  	register struct uba_device *ui;
++ 	int s;
+  
+  	for (unit = 0; unit < NDZLINE; unit++) {
+  		ui = dzinfo[unit >> 3];
+***************
+*** 630,635
+  			dzstart(tp);
+  		}
+  	}
+  	dztimer();
+  }
+  #endif
+
+--- 640,646 -----
+  			dzstart(tp);
+  		}
+  	}
++ 	s = spl6();
+  	dztimer();
+  	splx(s);
+  }
+***************
+*** 631,635
+  		}
+  	}
+  	dztimer();
+  }
+  #endif
+
+--- 642,647 -----
+  	}
+  	s = spl6();
+  	dztimer();
++ 	splx(s);
+  }
+  #endif

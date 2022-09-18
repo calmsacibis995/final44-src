@@ -1,0 +1,121 @@
+				-[Thu Feb 10 20:47:48 1983 by jkf]-
+plan for adding new data type(s).
+
+Summary of new functions (described below):
+
+ From a user's view, a vector contains an indexed sequence of data elements
+ and an lisp object called a vector property.
+
+ In the implementation of vectors, one more field is added: the size of the
+ vector.  The size is maintained as the number of bytes in the vector's
+ data.
+ 
+ Vector creation (by size with optional fill value):
+    (new-vector	 	'x_size ['g_fill ['g_prop]])
+    (new-vectori-byte	'x_size ['x_fill ['g_prop]])
+    (new-vectori-word	'x_size ['x_fill ['g_prop]])
+    (new-vectori-long   'x_size ['x_fill ['g_prop]])
+
+ Vector creation by initial values:
+    (vector [g_val ...])
+    (vectori-byte [x_val ...])
+    (vectori-word [x_val ...])
+    (vectori-long [x_val ...])
+
+ Vector accessors
+    (vref 	  'v_vect  'x_index)
+    (vrefi-byte   'vi_vect 'x_bindex)	; signed
+    (vrefi-word   'vi_vect 'x_windex)
+    (vrefi-long	  'vi_vect 'x_index)
+ not implemented yet:
+    (vrefi-byteu 'vi_vect 'x_bindex)	; unsigned 
+    (vrefi-wordu 'vi_vect 'x_windex)
+
+ Vector modifiers:    
+    (vset 'v_vect 'x_index 'g_val)
+    (vseti-byte 'vi_vect 'x_bindex 'x_val)
+    (vseti-word 'vi_vect 'x_windex 'x_val)
+    (vseti-long 'vi_vect 'x_dindex 'x_val)
+
+  Other functions:
+    (vsize 'viv_vect)
+    (vsize-byte 'vi_vect)	; size as if byte vector
+    (vsize-word 'vi_vect)	; size as if word vector
+ 
+    (vprop 'viv_vect)
+   
+    (vsetprop 'v_vect 'g_value)	 [not implemented  yet]
+
+
+The types are named 'vector' and 'vectori' (vector immediate).
+The vector type will be a sequence of 0 or more lispvals of user information
+plus one longword of system information and a lisp property object.
+
+  The form of a Vector is this
+	----------------------------------------------------------
+	| size = 4*n | prop  | elt 0   | elt 1    | ... | elt n-1  |
+	----------------------------------------------------------
+		               ^--- pointer to vector goes to here.
+
+  size = the length of the data portion of the vector in bytes.
+The size is non negative and is not modifiable by the user.  It is 
+represented as an immediate fixnum because its value is important when the
+vector is unused (when it is on the free list).  There is no limit to 
+the size of a vector, other than the maximum size of lisp data segment
+when the lisp system was built.
+   
+   prop is an arbitrary lisp object.  It permits lisp data to be stored 
+in otherwise unmarked vectori's, and it provides a good place to place
+information about an object (for doing multidimensional array simulation).
+It may be better to restrict what prop can look like, thus allowing
+vectors to be used to make user defined objects.
+
+    A 'vectori' looks the same as a 'vector'.  The only differences are that
+the data portion of a 'vectori' is not marked by the garbage collector 
+and there are ways of accessing smaller data objects. 
+
+
+   Accessing a vector is done with (vref 'v_vector 'x_index). x_index is 0 
+based and must be less than the size of the vector.  The accessor
+for vectori's is 'vrefi'.  It extracts a longword from the vector and 
+converts it to an fixnum (never to a bignum).
+
+  As for the other sizes, vrefi-byte and vrefi-word extract and sign
+extend a byte or word, placing it in a fixnum.  vrefi-byteu and vrefi-wordu
+zero fill rather than sign extend. The index for vrefi-byte selects a 
+particular byte from 0 to size - 1.   The index for vrefi-word selects a
+particular word from 0 to size/2 - 1.  
+
+Motivation:
+  The purpose of vector data types is to allow programs to quickly 
+access indexed data types.  This purpose is achieved by: 
+  1) the data object has a very simple form and a very simple bounds check
+     can be done.
+  2) the accessing functions are unambiguous which makes it possible
+     for the the compiler to open code the accesses.
+
+ In order to implement high-level abstractions in terms of vectors,
+we will require the vector prop to have a standard form.  The standard
+form hasn't been completely ironed out yet, but it will probably
+be a list (or nil).  The car of the list is a hash table relating
+function name to function body, providing an object oriented data type
+extension facility.
+ Define a hash table to be a vector with the following form:
+   elmt		meaning
+   ----		-------
+     0 		 symbol: label for table class
+     1		 symbol: label for this table
+     2		 max index in table plus 1
+     3		 number of objects in table
+     4 .. max index   data elements, either nil or an assq list
+     		car is symbol which is key, cdr is bcd or lambda
+		expression to apply to args.
+
+  by choosing a single symbol like  'user-defined-type' to mean just that,
+the interpreter can detect when a normal call should be turned into a
+message call:
+ (read 'vector)
+ --> (send 'vector 'read)
+ 
+
+

@@ -1,0 +1,107 @@
+
+/* $XConsortium: iss5.pi,v 5.1 91/02/16 10:01:26 rws Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+## iss5.pi -  
+## Test requirements:
+##   Test that incremental spatial search(3) operation works with model 
+##   clipping
+
+source macro.pi
+source shmacro.pi
+
+tbegintest("iss5","incremental spatial search(3) - with model clipping");
+
+# INITIALIZE: data for a polyline, found and paths expected paths, normal and
+#             inverted filters, reference points and half-spaces
+#	      for setting model clipping volumes
+
+pts = IA_Ppoint(2, 0.3,0.5, 0.7,0.5);
+pl = I_Ppoint_list(2,pts);
+refpt1 = I_Ppoint(0.3,0.5);
+refpt2 = I_Ppoint(0.7,0.5);
+buf = malloc(128);
+
+er00 = I_Pelem_ref(0,0);
+er03 = I_Pelem_ref(0,3);
+startpath = I_Pelem_ref_list(1,&er00);
+exppath = I_Pelem_ref_list(1,&er03);
+nullpath = I_Pelem_ref_list(0,NULL);
+foundpath = I_Pelem_ref_list(0,buf);
+
+normfilter = I_Pfilter_list(0,NULL);
+invfilter = I_Pfilter_list(0,NULL);
+
+pt = I_Ppoint(0.5,0.5);
+norm = I_Pvec(1.0,0.0);
+hs = I_Phalf_space(pt,norm);
+hslst = I_Phalf_space_list(1,hs);
+
+
+# SETUP: open phigs, create a structure, set model clip indicator ON,
+#        set model clipping volume and a polyline element
+#        
+
+i_open_phigs(NULL,0);
+popen_struct(0);
+pset_model_clip_ind(PIND_CLIP);
+pset_model_clip_vol(PMC_REPLACE,&hslst);
+ppolyline(&pl);
+
+# incremental spatial search would be operates: 
+#  . without a ceiling (ceiling = 1)
+#  . with empty search normal filter 
+#  . with search distance = 0.0
+#  . with reference points such that a search would always be successful if
+#    the primitive is not model clipped
+
+#OPERATIONS 1: 
+# iss using the clipped end point of the line as the reference point
+	err = i_bogus_error();
+	pincr_spa_search(&refpt1,0.0,&startpath,PIND_CLIP,1,&normfilter,
+		&invfilter,128,0,&err,&foundpath,&total_len);
+	im_ifneq(err,0,"ERROR: %d in pincr_spa_search\n",err);
+
+#VERIFICATIONS 1:
+# resulting path should be NULL
+	im_confirm_isspath(foundpath,nullpath,
+	"failed: found path != expected with clipped point as reference\n");
+
+#OPERATIONS 2: 
+# iss using the non-clipped end point of the line as the reference point
+	err = i_bogus_error();
+	pincr_spa_search(&refpt2,0.0,&startpath,PIND_CLIP,1,&normfilter,
+		&invfilter,128,0,&err,&foundpath,&total_len);
+	im_ifneq(err,0,"ERROR: %d in pincr_spa_search\n",err);
+
+#VERIFICATIONS 2:
+# resulting path should be (0,1)
+	im_confirm_isspath(foundpath,exppath,
+	"failed: found path != expected with non-clipped point as reference\n");
+
+
+tendtest();

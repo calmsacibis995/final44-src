@@ -1,0 +1,37 @@
+From jsq@ut-sally  Sun Dec 11 20:59:07 1983
+Date: Sat, 10 Dec 83 15:25:03 cst
+From: jsq@ut-sally.ARPA (John Quarterman)
+Subject: TCP connections hanging forever in FIN_WAIT_2 state
+Index: 	sys/netinet/tcp_input.c 4.2BSD
+
+Description:
+	TCP connections with TOPS-20 systems occassionally hang in
+	FIN_WAIT_2 state.  When this happens, the connection *never*
+	closes and such hung connections accumulate.
+Repeat-By:
+	If you have frequent TCP connections with a TOPS-20 host,
+	you will notice, using netstat, connections in FIN_WAIT_2 state
+	accumulating.  If you have frequent TOPS-20 traffic, all your
+	incoming network pty ports will eventually be eaten up.
+Fix:
+	Add the line marked with +, 533, to /sys/netinet/tcp_input.c.
+	This kludge does not agree complete with the TCP spec,
+	but it does solve the problem.
+
+		/*
+		 * In FIN_WAIT_1 STATE in addition to the processing
+		 * for the ESTABLISHED state if our FIN is now acknowledged
+		 * then enter FIN_WAIT_2.
+		 */
+		case TCPS_FIN_WAIT_1:
+			if (ourfinisacked) {
+				/*
+				 * If we can't receive any more
+				 * data, then closing user can proceed.
+				 */
+				if (so->so_state & SS_CANTRCVMORE)
+					soisdisconnected(so);
+				tp->t_state = TCPS_FIN_WAIT_2;
++				tp->t_timer[TCPT_2MSL] = 2 * TCPTV_MSL;
+			}
+			break;

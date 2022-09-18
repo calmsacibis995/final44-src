@@ -1,0 +1,123 @@
+Internals of Franz Lisp:
+    There are three stacks:
+    1) c - runtime stack (always kept in register sp)
+    2) bindstack - a stack of pairs: symbol name, lisp value.
+       This stack is used to save shallow binding information.
+       The bindstack pointer is kept in global variable bnp.
+    3) namestack - a stack of lisp values.  This stack is used to
+       pass arguments to lisp functions and to store temporary values
+       which must be marked during garbage collection.  
+         There are two pointers into this stack: np and lbot.  These 
+       pointers remain in registers r6 and r7 respectively.  
+       
+Calling convention:
+         When a lisp function is entered, lbot points the the first 
+       argument (if any) and np points one above the last argument.  If 
+       np equals lbot then there are no arguments.  If the arguments
+       are to be evaluated then they have already been evaluated.
+       A lisp function may use registers r0-r5 without saving them.
+       All other user registers (r6-r11) must be preserved across
+       function calls.
+         The bindstack pointer, bnp, must have the same value when
+       a function exits as when it is entered.
+       
+Context Saving
+    There is a uniform method for saving the state of the lisp system to 
+permit throw's, returns (within the interpreter), go's (within the
+interpreter), errsets, err's and evalframe.  The global variable
+errp points to a linked list of state-frame's on the C runtime
+stack.  When in *rset mode ((*rset t) has been done),  calls to
+eval and funcall cause state information to be stacked to permit
+debugging through evalframe.
+
+Function linkages:
+    The function associated with a symbol is stored in the function 
+definition slot of the symbol.  If the function slot contains a
+list then the function is to be interpreted and its 'car' will 
+be lambda, nlambda, lexpr or macro.  If the function is compiled then 
+the function definition slot will contain a 'bcd' object. 
+A 'bcd' is composed of two independent parts: the discipline and the entry.
+   The discipline is one of:
+   lambda :   function whose arguments should be evaluated.
+   nlambda:   function whose arguments should not be evaluated but
+   		which should be passed as a list
+   macro:     function which should be passed the unevaluated form
+   	      being evaluated and whose result should be evaluated.
+   "subroutine": foreign function subroutine
+   "integer-function": foreign function returning an integer
+   "real-function": foreign function returning a flonum.
+   
+   [ note that lexpr is not in the list as there is no difference
+     between compiled lambda's and compiled lexprs]
+   
+Most calls from compiled code to other lisp functions go through
+transfer tables.  A transfer table entry is a pair: symbol, address
+of routine.  The 'calls' instruction which is compiled will 
+indirectly jump through the address in the transfer table.  This
+address may point to the desired function or it may point to the
+interface routine.  If a call ends up in the interface routine, 
+then that routine will trace back through the call stack and eventually
+reach the tranfer table entry which was 'called through'. Since the
+transfer table entry contains a symbol which names the function
+to be called, the interface routine can determine which routine
+was to have been called.  If that routine is compiled then the 
+interface routine can modify the transfer table so that a call
+through that table entry will go directly to the desired function.
+If the routine to be called is interpreted, or if the user has
+requested that transfer linkages should be diabled, then the
+interface routine will go through the 'funcall' function 
+in the interpreter to continue the call.  
+
+
+  calling sequence in the compiler:
+  
+Calling sequence When transfer tables are used:
+
+	foreach arg
+	 compute and stack using (r6)+
+	 for example: movl r0,(r6)+
+	movab -n(r6),r7    where n = 4*number of args to fcn
+	calls  $0,*trantb+m      where m is the index of the function
+				 in the transfer table.
+	movl r7,r6		restore r6
+
+
+Local functions: these are functions only accessable within a file.
+
+	foreach arg
+	 compute and stack using (r6)+
+	jsb	LOCALNAME	go directly to the function, it will 
+				restore r6 before it returns.
+
+
+Header code for functions:
+Through a transfer table:
+topsim is the label jumped to when tail merging.
+For non lexprs:
+
+	.word	0x5c0		# save r6, r7, r8, r10
+    [   movab	mcounts,r0	# if profiling, mcounts replaced by fasl
+	jsb	mcount	]
+	movab	linker,r8	# set up r8
+	movl	r7,r10		# set up oldlbot
+	movab	n(r10),r6	# n = 4*Number of args expected.
+topsim:
+
+
+For lexprs:
+	.word	0x5c0
+    [   movab	mcounts,r0	# if profiling. [mcounts replaced by fasl]
+	jsb	mcount	]
+	movab	linker,r8	# set up r8
+	subl3	$4,r7,-(sp)	# address one word below bottom of args
+topsim:
+	movl	r6,r10		# first free addr to arg base
+	subl3	r7,r6,r0	# number of args * 4 into r0
+	movab 	0x1400(r0),(r6)+ # stack boxed number of args
+	movl	0(r10),-(sp)	# also store on stack so user can't clobber
+
+
+For local functions:
+	movl	r10,-(sp)	# save r10
+	movab	-n(r6),r10	# set up arg base using arg top
+topsim:

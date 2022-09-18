@@ -1,0 +1,146 @@
+Return-Path: <decwrl!turtlevax!ralph>
+Date: Wed, 28 Aug 85 09:50:49 pdt
+From: decwrl!turtlevax!ralph (Ralph Campbell)
+Subject: bug in printing register vars in dbx dump command
+Index: 	ucb/dbx 4.3BSD FIX
+
+Description:
+	If you have register variables in a procedure and you give the
+	'dump' command to print them out, dbx will try to print the contents
+	addressed by the register and not the value in the register.
+
+Repeat-By:
+	Compile the following, run it, run dbx on it and type 'dump foo'
+
+	main(){
+		int a = 1;
+		register int b = 2;
+	
+		foo();
+	}
+
+	foo(){
+		register int c = 3;
+	
+		abort();
+	}
+
+Fix:
+	Diff -c follows.
+
+*** printsym.c	Fri May 31 10:14:13 1985
+--- printsym.c.new	Wed Aug 28 09:42:13 1985
+***************
+*** 282,288
+  {
+      Address addr;
+      int len;
+-     Symbol t;
+  
+      if (isambiguous(s) and ismodule(container(s))) {
+  	printname(stdout, s);
+
+--- 282,287 -----
+  {
+      Address addr;
+      int len;
+  
+      if (isambiguous(s) and ismodule(container(s))) {
+  	printname(stdout, s);
+***************
+*** 297,304
+  	addr = address(s, frame);
+      }
+      len = size(s);
+!     if (canpush(len)) {
+! 	rpush(addr, len);
+  	printval(s->type);
+      } else {
+  	printf("*** expression too large ***");
+
+--- 296,305 -----
+  	addr = address(s, frame);
+      }
+      len = size(s);
+!     if (not canpush(len)) {
+! 	printf("*** expression too large ***");
+!     } else if (isreg(s)) {
+! 	push(Address, addr);
+  	printval(s->type);
+      } else {
+  	rpush(addr, len);
+***************
+*** 301,307
+  	rpush(addr, len);
+  	printval(s->type);
+      } else {
+! 	printf("*** expression too large ***");
+      }
+  }
+  
+
+--- 302,309 -----
+  	push(Address, addr);
+  	printval(s->type);
+      } else {
+! 	rpush(addr, len);
+! 	printval(s->type);
+      }
+  }
+  
+***************
+*** 514,520
+  
+  	default:
+  	    if (t->language == nil or t->language == primlang) {
+! 		(*language_op(findlanguage(".c"), L_PRINTVAL))(t);
+  	    } else {
+  		(*language_op(t->language, L_PRINTVAL))(t);
+  	    }
+
+--- 516,522 -----
+  
+  	default:
+  	    if (t->language == nil or t->language == primlang) {
+! 		(*language_op(findlanguage(".s"), L_PRINTVAL))(t);
+  	    } else {
+  		(*language_op(t->language, L_PRINTVAL))(t);
+  	    }
+
+*** symbols.c	Fri May 31 10:19:17 1985
+--- symbols.c.new	Wed Aug 28 09:42:36 1985
+***************
+*** 125,130
+  #define nosource(f) (not (f)->symvalue.funcv.src)
+  #define isinline(f) ((f)->symvalue.funcv.inline)
+  
+  #include "tree.h"
+  
+  /*
+
+--- 125,132 -----
+  #define nosource(f) (not (f)->symvalue.funcv.src)
+  #define isinline(f) ((f)->symvalue.funcv.inline)
+  
++ #define isreg(s)		(s->level < 0)
++ 
+  #include "tree.h"
+  
+  /*
+***************
+*** 550,556
+  #define isglobal(s)		(s->level == 1)
+  #define islocaloff(s)		(s->level >= 2 and s->symvalue.offset < 0)
+  #define isparamoff(s)		(s->level >= 2 and s->symvalue.offset >= 0)
+- #define isreg(s)		(s->level < 0)
+  
+  public Address address (s, frame)
+  Symbol s;
+
+--- 552,557 -----
+  #define isglobal(s)		(s->level == 1)
+  #define islocaloff(s)		(s->level >= 2 and s->symvalue.offset < 0)
+  #define isparamoff(s)		(s->level >= 2 and s->symvalue.offset >= 0)
+  
+  public Address address (s, frame)
+  Symbol s;

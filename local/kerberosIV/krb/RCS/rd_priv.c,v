@@ -1,0 +1,1146 @@
+head     4.14;
+branch   ;
+access   ;
+symbols  PATCH8:4.14 PATCH7:4.14 KPATCH6:4.14 ASRSNAP1001:4.14 PATCH5:4.14 KPATCH4:4.14 KPATCH3:4.14 KPATCH2:4.13 KREL1:4.12 BETA5/24/88:4.8;
+locks    ; strict;
+comment  @ * @;
+
+
+4.14
+date     89.04.28.11.59.42;  author jtkohl;  state Exp;
+branches ;
+next     4.13;
+
+4.13
+date     89.03.22.14.51.33;  author jtkohl;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     89.01.23.15.16.23;  author steiner;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     88.12.05.15.21.36;  author steiner;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     88.12.01.14.20.46;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.08.26.12.37.34;  author shanzer;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.02.24.18.15.28;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.01.12.21.23.26;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     87.12.06.11.25.02;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     87.10.28.16.05.07;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.28.15.59.04;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.20.17.12.25;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.21.00;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.47.25;  author steiner;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     86.08.18.16.45.51;  author root;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     86.08.18.15.13.15;  author root;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     86.07.02.17.56.33;  author spm;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     86.05.23.13.12.13;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     86.05.14.15.26.39;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.05.06.16.31.17;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.04.16.12.23.36;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@works!!
+@
+
+
+4.14
+log
+@put #ifndef NOENCRYPTION around an encryption comment
+@
+text
+@/*
+ * $Source: /mit/kerberos/src/lib/krb/RCS/rd_priv.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine dissects a a Kerberos 'private msg', decrypting it,
+ * checking its integrity, and returning a pointer to the application
+ * data contained and its length.
+ *
+ * Returns 0 (RD_AP_OK) for success or an error code (RD_AP_...).  If
+ * the return value is RD_AP_TIME, then either the times are too far
+ * out of synch, OR the packet was modified.
+ *
+ * Steve Miller    Project Athena  MIT/DEC
+ */
+
+#ifndef lint
+static char *rcsid_rd_priv_c=
+"$Header: rd_priv.c,v 4.14 89/04/28 11:56:51 jtkohl Exp $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+
+/* system include files */
+#include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/time.h>
+
+/* application include files */
+#include <des.h>
+#include <krb.h>
+#include <prot.h>
+#include "lsb_addr_comp.h"
+
+extern char *errmsg();
+extern int errno;
+extern int krb_debug;
+
+/* static storage */
+
+static u_long c_length;
+static int swap_bytes;
+static struct timeval local_time;
+static long delta_t;
+int private_msg_ver = KRB_PROT_VERSION;
+
+/*
+#ifdef NOENCRPYTION
+ * krb_rd_priv() checks the integrity of an
+#else
+ * krb_rd_priv() decrypts and checks the integrity of an
+#endif
+ * AUTH_MSG_PRIVATE message.  Given the message received, "in",
+ * the length of that message, "in_length", the key "schedule"
+#ifdef NOENCRYPTION
+ * and "key", and the network addresses of the
+#else
+ * and "key" to decrypt with, and the network addresses of the
+#endif
+ * "sender" and "receiver" of the message, krb_rd_safe() returns
+ * RD_AP_OK if the message is okay, otherwise some error code.
+ *
+ * The message data retrieved from "in" are returned in the structure
+#ifdef NOENCRYPTION
+ * "m_data".  The pointer to the application data
+#else
+ * "m_data".  The pointer to the decrypted application data
+#endif
+ * (m_data->app_data) refers back to the appropriate place in "in".
+ *
+ * See the file "mk_priv.c" for the format of the AUTH_MSG_PRIVATE
+ * message.  The structure containing the extracted message
+ * information, MSG_DAT, is defined in "krb.h".
+ */
+
+long krb_rd_priv(in,in_length,schedule,key,sender,receiver,m_data)
+    u_char *in;			/* pointer to the msg received */
+    u_long in_length;		/* length of "in" msg */
+    Key_schedule schedule;	/* precomputed key schedule */
+    C_Block key;		/* encryption key for seed and ivec */
+    struct sockaddr_in *sender;
+    struct sockaddr_in *receiver;
+    MSG_DAT *m_data;		/*various input/output data from msg */
+{
+    register u_char *p,*q;
+    static u_long src_addr;	/* Can't send structs since no
+				 * guarantees on size */
+
+    if (gettimeofday(&local_time,(struct timezone *)0))
+        return  -1;
+
+    p = in;			/* beginning of message */
+    swap_bytes = 0;
+
+    if (*p++ != KRB_PROT_VERSION && *(p-1) != 3)
+        return RD_AP_VERSION;
+    private_msg_ver = *(p-1);
+    if (((*p) & ~1) != AUTH_MSG_PRIVATE)
+        return RD_AP_MSG_TYPE;
+    if ((*p++ & 1) != HOST_BYTE_ORDER)
+        swap_bytes++;
+
+    /* get cipher length */
+    bcopy((char *)p,(char *)&c_length,sizeof(c_length));
+    if (swap_bytes)
+        swap_u_long(c_length);
+    p += sizeof(c_length);
+    /* check for rational length so we don't go comatose */
+    if (VERSION_SZ + MSG_TYPE_SZ + c_length > in_length)
+        return RD_AP_MODIFIED;
+
+#ifndef NOENCRYPTION
+    /*
+     * decrypt to obtain length, timestamps, app_data, and checksum
+     * use the session key as an ivec
+     */
+#endif
+
+    q = p;			/* mark start of encrypted stuff */
+
+#ifndef NOENCRYPTION
+    /* pcbc decrypt, use key as ivec */
+    pcbc_encrypt((C_Block *) q,(C_Block *) q, (long) c_length,
+                 schedule,key,DECRYPT);
+#endif
+
+    /* safely get application data length */
+    bcopy((char *) p,(char *)&(m_data->app_length),
+          sizeof(m_data->app_length));
+    if (swap_bytes)
+        swap_u_long(m_data->app_length);
+    p += sizeof(m_data->app_length);    /* skip over */
+
+    if (m_data->app_length + sizeof(c_length) + sizeof(in_length) +
+        sizeof(m_data->time_sec) + sizeof(m_data->time_5ms) +
+        sizeof(src_addr) + VERSION_SZ + MSG_TYPE_SZ
+        > in_length)
+        return RD_AP_MODIFIED;
+
+#ifndef NOENCRYPTION
+    /* we're now at the decrypted application data */
+#endif
+    m_data->app_data = p;
+
+    p += m_data->app_length;
+
+    /* safely get time_5ms */
+    bcopy((char *) p, (char *)&(m_data->time_5ms),
+	  sizeof(m_data->time_5ms));
+    /*  don't need to swap-- one byte for now */
+    p += sizeof(m_data->time_5ms);
+
+    /* safely get src address */
+    bcopy((char *) p,(char *)&src_addr,sizeof(src_addr));
+    /* don't swap, net order always */
+    p += sizeof(src_addr);
+
+    if (src_addr != (u_long) sender->sin_addr.s_addr)
+	return RD_AP_MODIFIED;
+
+    /* safely get time_sec */
+    bcopy((char *) p, (char *)&(m_data->time_sec),
+	  sizeof(m_data->time_sec));
+    if (swap_bytes) swap_u_long(m_data->time_sec);
+
+    p += sizeof(m_data->time_sec);
+
+    /* check direction bit is the sign bit */
+    /* For compatibility with broken old code, compares are done in VAX 
+       byte order (LSBFIRST) */ 
+    if (lsb_net_ulong_less(sender->sin_addr.s_addr,
+			   receiver->sin_addr.s_addr)==-1) 
+	/* src < recv */ 
+	m_data->time_sec =  - m_data->time_sec; 
+    else if (lsb_net_ulong_less(sender->sin_addr.s_addr, 
+				receiver->sin_addr.s_addr)==0) 
+	if (lsb_net_ushort_less(sender->sin_port,receiver->sin_port)==-1)
+	    /* src < recv */
+	    m_data->time_sec =  - m_data->time_sec; 
+    /*
+     * all that for one tiny bit!
+     * Heaven help those that talk to themselves.
+     */
+
+    /* check the time integrity of the msg */
+    delta_t = abs((int)((long) local_time.tv_sec
+			- m_data->time_sec));
+    if (delta_t > CLOCK_SKEW)
+	return RD_AP_TIME;
+    if (krb_debug)
+	printf("\ndelta_t = %d",delta_t);
+
+    /*
+     * caller must check timestamps for proper order and
+     * replays, since server might have multiple clients
+     * each with its own timestamps and we don't assume
+     * tightly synchronized clocks.
+     */
+
+#ifdef notdef
+    bcopy((char *) p,(char *)&cksum,sizeof(cksum));
+    if (swap_bytes) swap_u_long(cksum)
+    /*
+     * calculate the checksum of the length, sequence,
+     * and input data, on the sending byte order!!
+     */
+    calc_cksum = quad_cksum(q,NULL,p-q,0,key);
+
+    if (krb_debug)
+	printf("\ncalc_cksum = %u, received cksum = %u",
+	       calc_cksum, cksum);
+    if (cksum != calc_cksum)
+	return RD_AP_MODIFIED;
+#endif
+    return RD_AP_OK;        /* OK == 0 */
+}
+@
+
+
+4.13
+log
+@#ifdef NOENCRYPTION for comments
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d24 1
+a24 1
+"$Header: rd_priv.c,v 4.12 89/01/23 15:16:23 jtkohl Locked $";
+d55 3
+d59 1
+d62 3
+d66 1
+@
+
+
+4.12
+log
+@Programmer: jtkohl
+Auditor: steiner
+Fixed address comparisons.
+@
+text
+@d24 1
+a24 1
+"$Header: rd_priv.c,v 4.11 88/12/05 15:21:36 jtkohl Locked $";
+d63 3
+d67 1
+d111 1
+d116 1
+d139 5
+a143 2
+    m_data->app_data = p;	/* we're now at the decrypted
+				 * application data */
+@
+
+
+4.11
+log
+@Added #ifdef NOENCRYPTION code (to send stuff
+in the clear in case no DES library present).
+Programmer: jtkohl
+Auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d24 1
+a24 1
+"$Header: rd_priv.c,v 4.10 88/12/01 14:20:46 jtkohl Locked $";
+d40 1
+a41 2
+#include "addr_comp.h"
+
+d159 11
+a169 7
+    if (long_less_than((u_char *)&sender->sin_addr.s_addr, /* src < recv */
+		       (u_char *)&receiver->sin_addr.s_addr)==-1)
+      m_data->time_sec =  - m_data->time_sec;
+    else if (long_less_than((u_char *)&sender->sin_addr.s_addr,
+			    (u_char *)&receiver->sin_addr.s_addr)==0)
+            if (sender->sin_port < receiver->sin_port)
+                m_data->time_sec =  - m_data->time_sec;
+@
+
+
+4.10
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: shanzer $
+d24 1
+a24 1
+"$Header: rd_priv.c,v 4.9 88/08/26 12:37:34 steiner Locked $";
+d115 1
+d119 1
+@
+
+
+4.9
+log
+@Fixed so it works form one machine type to another.. 
+Programmer: dachurch
+Auditor: jtkohl
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d24 1
+a24 1
+"$Header: rd_priv.c,v 4.8 88/02/24 18:15:28 steiner Exp $";
+d55 16
+a70 1
+/* routine bodies */
+a71 1
+/* RETURNS 0 if ok, else error code */
+d74 1
+a74 1
+    u_long in_length;		/* of in msg */
+d82 1
+a82 1
+    static u_long src_addr;	/* Cant send structs since no
+d104 1
+a104 1
+    /* check for rational length so we dont go comatose */
+d115 1
+a115 1
+    /* pcbc encrypt, pad as needed, use key as ivec */
+d139 1
+a139 1
+    /*  dont need to swap-- one byte for now */
+d144 1
+a144 1
+    /* dont swap, net order always */
+d181 1
+a181 1
+     * each with its own timestamps and we dont assume
+@
+
+
+4.8
+log
+@Copyright notice, etc.
+@
+text
+@d24 1
+a24 1
+"$Header: rd_priv.c,v 4.7 88/01/12 21:23:26 steiner Locked $";
+d41 2
+d144 5
+a148 4
+    if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr)
+        m_data->time_sec =  - m_data->time_sec;
+    else
+        if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr)
+@
+
+
+4.7
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 1
+ * Copyright    1986    Massachusetts Institute of Technology
+d5 2
+a6 3
+ *      $Source: /mit/kerberos/lib/krb/RCS/rd_priv.c,v $
+ *      $Author: steiner $
+ *      $Locker:  $
+d8 2
+a9 1
+ *      Steve Miller    Project Athena  MIT/DEC
+d18 2
+d22 7
+a45 5
+
+#ifndef lint
+static char *rcsid_rd_private_msg_c=
+    "$Header: rd_priv.c,v 4.6 87/12/06 11:25:02 steiner Exp $";
+#endif /* lint */
+@
+
+
+4.6
+log
+@Changed user routine names to krb_xxxxxxx
+@
+text
+@d1 2
+a2 1
+/*	Copyright	1986	Massachusetts Institute of Technology	
+d4 3
+a6 9
+ *  $Source: /mit/kerberos/lib/krb/RCS/rd_priv.c,v $
+ *	$Author: steiner $
+ *	$Locker: steiner $
+ * 
+ *	Steve Miller	Project Athena	MIT/DEC
+ * 
+ *	This routine dissects a a Kerberos 'private msg', decrypting it,
+ *  checking its integrity, and returning a pointer to the application
+ *  data contained and its length.
+d8 9
+a16 3
+ *	Returns 0 (RD_AP_OK) for success or an error code (RD_AP_...)
+ *	If the return value is RD_AP_TIME, then either the times are
+ *	too far out of synch , OR the packet was modified.
+a18 1
+
+d20 5
+a24 5
+# include	<stdio.h>
+# include	<errno.h>
+# include	<sys/types.h>
+# include	<netinet/in.h>
+# include	<sys/time.h>
+d27 3
+a29 3
+#include	<des.h>
+#include	<krb.h>
+#include	<prot.h>
+d31 3
+a33 3
+extern 	char	*errmsg();
+extern	int 	errno;
+extern	int		krb_debug;
+a34 5
+/* local defines */
+
+/* global storage */
+
+
+d37 4
+a40 4
+#ifndef	lint
+static char		*rcsid_rd_private_msg_c=
+"$Header: rd_priv.c,v 4.5 87/10/28 16:05:07 steiner Locked $";
+#endif lint
+d42 4
+a45 4
+static	u_long	c_length;
+static	int		swap_bytes;
+static	struct	timeval	local_time;
+static	long	delta_t;
+d50 9
+a58 10
+long
+krb_rd_priv(in,in_length,schedule,key,sender,receiver,m_data)
+u_char *in;				/* pointer to the msg received */
+u_long in_length;			/* of in msg */
+Key_schedule schedule;			/* precomputed key schedule */
+C_Block key;				/* encryption key for seed and ivec */
+struct sockaddr_in *sender;
+struct sockaddr_in *receiver;
+MSG_DAT *m_data;			/*various input/output data from msg */
+/* RETURNS	0 if ok, else error code */
+d60 3
+a62 3
+	register u_char	*p,*q;
+	static	u_long	src_addr;	/* Cant send structs since no
+					   guarantees on size */
+d64 2
+a65 3
+	if (gettimeofday(&local_time,(struct timezone *)0)) {
+		return	-1;
+	}
+d67 2
+a68 2
+	p = in;						/* beginning of message					   */
+	swap_bytes = 0;
+d70 7
+a76 4
+	if (*p++ != KRB_PROT_VERSION && *(p-1) != 3)	return RD_AP_VERSION;
+	private_msg_ver = *(p-1);
+	if ( ((*p) & ~1) != AUTH_MSG_PRIVATE) return RD_AP_MSG_TYPE;
+	if (  (*p++ & 1) != HOST_BYTE_ORDER) swap_bytes++;
+d78 8
+a85 6
+	/* get cipher length */
+	bcopy((char *)p,(char *)&c_length,sizeof(c_length));
+	if (swap_bytes) swap_u_long(c_length);
+	p += sizeof(c_length);
+	/* check for rational length so we dont go comatose					   */
+	if (VERSION_SZ + MSG_TYPE_SZ + c_length > in_length) return RD_AP_MODIFIED;
+d87 4
+a90 3
+	/* decrypt to obtain length, timestamps, app_data, and checksum
+	 * use the session key as an ivec
+	 */
+d92 1
+a92 1
+	q = p;						/* mark start of encrypted stuff		   */
+d94 3
+a96 3
+	/* pcbc encrypt, pad as needed, use key as ivec */
+	pcbc_encrypt((C_Block *) q,(C_Block *) q, (long) c_length,
+		     schedule,key,DECRYPT);
+d98 6
+a103 5
+	/* safely get application data length	   */
+	bcopy((char *) p,(char *)&(m_data->app_length),
+	      sizeof(m_data->app_length));
+	if (swap_bytes) swap_u_long(m_data->app_length);
+	p += sizeof(m_data->app_length);	/* skip over					   */
+d105 5
+a109 4
+	if (m_data->app_length + sizeof(c_length) + sizeof(in_length) +
+		sizeof(m_data->time_sec) +	sizeof(m_data->time_5ms) +
+		sizeof(src_addr) + VERSION_SZ + MSG_TYPE_SZ > in_length)
+		 return RD_AP_MODIFIED;
+d111 3
+a113 2
+	m_data->app_data = p;	/* we're now at the decrypted application data  */
+	p += m_data->app_length;
+d115 5
+a119 4
+	/* safely get time_5ms		   */
+	bcopy((char *) p,(char *)&(m_data->time_5ms),sizeof(m_data->time_5ms));
+	/*	dont need to swap-- one byte for now							   */
+	p += sizeof(m_data->time_5ms);
+d121 4
+a124 4
+	/* safely get src address */
+	bcopy((char *) p,(char *)&src_addr,sizeof(src_addr));
+	/* dont swap, net order always */
+	p += sizeof(src_addr);
+d126 2
+a127 1
+	if (src_addr != (u_long) sender->sin_addr.s_addr) return RD_AP_MODIFIED;
+d129 4
+a132 29
+	/* safely get time_sec */
+	bcopy((char *) p,(char *)&(m_data->time_sec),sizeof(m_data->time_sec));
+	if (swap_bytes) swap_u_long(m_data->time_sec);
+	
+	p += sizeof(m_data->time_sec);
+	
+	/* check direction bit is the sign bit */	
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) {
+		m_data->time_sec =  - m_data->time_sec;
+	} else {
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr) {
+			if (sender->sin_port < receiver->sin_port) {
+				m_data->time_sec =  - m_data->time_sec;
+			}
+		}
+	}
+	/* all that for one tiny bit!
+	 * Heaven help those that talk to themselves.
+	 */
+	
+	/* check the time integrity of the msg */
+	delta_t = abs((int)((long) local_time.tv_sec - m_data->time_sec));
+	if (delta_t > CLOCK_SKEW) return RD_AP_TIME;
+	if (krb_debug)	printf("\ndelta_t = %d",delta_t);
+	
+	/* caller must check timestamps for proper order and replays, since
+	 * server might have multiple clients each with its own timestamps
+	 * and we dont assume tightly synchronized clocks.
+	 */
+d134 1
+a134 3
+#ifdef	notdef
+	bcopy((char *) p,(char *)&cksum,sizeof(cksum));
+	if (swap_bytes) swap_u_long(cksum)
+d136 11
+a146 4
+	/* calculate the checksum of the length, sequence, and input data, on the
+	 * sending byte order !!
+	 */
+	calc_cksum = quad_cksum(q,NULL,p-q,0,key);
+d148 29
+a176 3
+	if (krb_debug) printf("\ncalc_cksum = %u, received cksum = %u",calc_cksum,
+						cksum);
+	if (cksum != calc_cksum) return RD_AP_MODIFIED;
+d178 1
+a178 3
+
+	return RD_AP_OK;	/* OK	== 0				   */
+						
+@
+
+
+4.5
+log
+@Took byteorder.h out; that info is now in krb_conf.h.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/rd_private_msg.c,v $
+d44 1
+a44 1
+"$Header: rd_private_msg.c,v 4.4 87/10/28 15:59:04 steiner Locked $";
+d56 1
+a56 1
+rd_private_msg(in,in_length,schedule,key,sender,receiver,m_data)
+@
+
+
+4.4
+log
+@jtkohl's changes.
+@
+text
+@d3 3
+a5 3
+ *  $Source: /paris/u3/kerberos.new/lib/krb/RCS/rd_private_msg.c,v $
+ *	$Author: jtkohl $
+ *	$Locker: jtkohl $
+a29 1
+#include	<byteorder.h>
+d43 2
+a44 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 4.3 87/10/20 17:12:25 jtkohl Locked $";
+@
+
+
+4.3
+log
+@lint fixes.
+@
+text
+@d3 2
+a4 2
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/rd_private_msg.c,v $
+ *	$Author: steiner $
+d34 1
+a34 1
+extern	int		debug;
+d44 1
+a44 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 4.2 87/09/10 16:21:00 jtkohl Locked $";
+d148 1
+a148 1
+	if (debug)	printf("\ndelta_t = %d",delta_t);
+d164 1
+a164 1
+	if (debug) printf("\ncalc_cksum = %u, received cksum = %u",calc_cksum,
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/rd_private_msg.c,v $
+d5 1
+a5 4
+ *	$Locker: steiner $
+ *	$Log:	rd_private_msg.c,v $
+ * Revision 4.1  87/09/01  15:47:25  steiner
+ * No change; starting version 4.
+a6 22
+ * Revision 1.7  86/08/18  16:45:51  root
+ *  Hacked on private message version hack.  Watch out for private_msg_ver.
+ * 
+ * Revision 1.6  86/08/18  15:13:15  root
+ * Hacked rd_private_msg to accept a version number of 3.
+ * 
+ * Revision 1.5  86/07/02  17:56:33  spm
+ * add second arg to gettimeofday
+ * 
+ * Revision 1.4  86/05/23  13:12:13  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.3  86/05/14  15:26:39  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  86/04/16  12:23:36  spm
+ * Initial revision
+ * 
+ * Revision 1.1  86/04/04  18:08:43  spm
+ * Initial revision
+ * 
+ * 
+d19 1
+a19 1
+/* system include files													   */
+d26 1
+a26 1
+/* application include files											   */
+d30 1
+d36 1
+a36 1
+/* local defines														   */
+d38 1
+a38 1
+/* global storage														   */
+d41 1
+a41 1
+/* static storage														   */
+d44 1
+a44 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 4.1 87/09/01 15:47:25 steiner Locked $";
+a46 1
+static	u_long	cksum, calc_cksum;
+a47 1
+static 	C_Block	temp;
+a49 1
+static	long	local_time_sec;
+d53 1
+a53 1
+/* routine bodies														   */
+d56 9
+a64 12
+	rd_private_msg(in,in_length,schedule,key,sender,receiver,m_data)
+
+	u_char			*in;		/* pointer to the msg received			   */
+	u_long			in_length;	/* of in msg							   */
+	Key_schedule	schedule;	/* precomputed key schedule				   */
+	C_Block			*key;		/* encryption key for seed and ivec		   */
+	struct	sockaddr_in	*sender;
+	struct  sockaddr_in *receiver;
+	MSG_DAT			*m_data;	/* various input/output data from msg	   */
+
+/* RETURNS	0 if ok, else error code									   */
+
+d67 4
+a70 5
+	static	u_long	src_addr;	/* Cant send structs since no guarantees
+								 * on size
+								 */
+	if (gettimeofday(&local_time,NULL))
+		{
+d72 1
+a72 1
+		}
+d82 2
+a83 1
+	bcopy(p,&c_length,sizeof(c_length)); /* get cipher length			   */
+d96 2
+a97 1
+	pcbc_encrypt(q,(C_Block *) q, c_length,	schedule,key,DECRYPT);
+d100 2
+a101 1
+	bcopy(p,&(m_data->app_length),sizeof(m_data->app_length));
+d114 1
+a114 1
+	bcopy(p,&(m_data->time_5ms),sizeof(m_data->time_5ms));
+d118 3
+a120 2
+	bcopy(p,&src_addr,sizeof(src_addr));	/* safely get src address  */
+	/* dont swap, net order always										   */
+d125 2
+a126 2
+	/*	safely get time_sec		   */
+	bcopy(p,&(m_data->time_sec),sizeof(m_data->time_sec));
+d132 1
+a132 2
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) 
+		{
+d134 3
+a136 7
+		}		
+	else 
+		{
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr)
+			{
+			if (sender->sin_port < receiver->sin_port)
+				{
+a137 1
+				}
+d140 1
+d145 2
+a146 2
+	/* check the time integrity of the msg								   */
+	delta_t = abs((long) local_time.tv_sec - m_data->time_sec) ;
+d156 1
+a156 1
+	bcopy(p,&cksum,sizeof(cksum));
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d4 1
+a4 1
+ *	$Author: root $
+d7 3
+d54 1
+a54 1
+#include	"prot.h"
+d68 1
+a68 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.7 86/08/18 16:45:51 steiner Locked $";
+@
+
+
+1.7
+log
+@ Hacked on private message version hack.  Watch out for private_msg_ver.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/projects/auth/src/lib/krb/RCS/rd_private_msg.c,v $
+d5 1
+a5 1
+ *	$Locker:  $
+d7 3
+d65 1
+a65 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.6 86/08/18 15:13:15 root Exp $";
+@
+
+
+1.6
+log
+@Hacked rd_private_msg to accept a version number of 3.
+@
+text
+@d4 1
+a4 1
+ *	$Author: spm $
+d7 3
+d62 1
+a62 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.5 86/07/02 17:56:33 spm Exp $";
+d72 1
+d103 1
+@
+
+
+1.5
+log
+@add second arg to gettimeofday
+@
+text
+@d5 1
+a5 1
+ *	$Locker: spm $
+d7 3
+d59 1
+a59 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.4 86/05/23 13:12:13 spm Exp $";
+d98 1
+a98 1
+	if (*p++ != KRB_PROT_VERSION)	return RD_AP_VERSION;
+@
+
+
+1.4
+log
+@*** empty log message ***
+@
+text
+@d7 3
+d56 1
+a56 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.3 86/05/14 15:26:39 spm Exp $";
+d87 1
+a87 1
+	if (gettimeofday(&local_time))
+@
+
+
+1.3
+log
+@*** empty log message ***
+@
+text
+@d7 3
+d53 1
+a53 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.1 86/04/16 12:23:36 spm Exp $";
+d67 1
+a67 2
+	rd_private_msg(in,out,length,schedule,key,sender,receiver,app_length,
+				   time_sec, time_5ms, replay)
+d70 2
+a71 4
+	u_char			**out;		/* ptr to ptr to the app data, after decrypted
+								 * in place
+								 */
+	u_long			length;		/* of in msg							   */
+d73 3
+a75 6
+	Key_schedule	schedule;	/* precomputed key schedule				   */
+	struct	sockaddr_in	*sender; /* sender's address					   */
+	struct	sockaddr_in *receiver;	/* receiver's address -- me			   */
+	u_long			*app_length;	/* resulting app data length		   */
+	long			*time_sec;		/* received timestamp sec			   */
+	u_char			*time_5ms;		/* received timestamp - 5ms			   */
+d100 1
+a100 1
+	if (VERSION_SZ + MSG_TYPE_SZ + c_length > length) return RD_AP_MODIFIED;
+d111 4
+a114 3
+	bcopy(p,app_length,sizeof(*app_length));	/* safely get length		   */
+	if (swap_bytes) swap_u_long(*app_length);
+	p += sizeof(*app_length);	/* skip over							   */
+d116 3
+a118 4
+#ifdef	notdef
+	if (*app_length + sizeof(c_length) + sizeof(length) + sizeof(*time_sec) +
+		sizeof(*time_5ms) + sizeof(cksum) + sizeof(src_addr) +
+		VERSION_SZ + MSG_TYPE_SZ > length)
+a119 1
+#endif
+d121 2
+a122 4
+	if (*app_length + sizeof(c_length) + sizeof(length) + sizeof(*time_sec) +
+		sizeof(*time_5ms) + sizeof(src_addr) +
+		VERSION_SZ + MSG_TYPE_SZ > length)
+		 return RD_AP_MODIFIED;
+d124 2
+a125 4
+	*out = p;	/* we're now at the decrypted application data  */
+	p += *app_length;
+
+	bcopy(p,time_5ms,sizeof(*time_5ms));	/* safely get time_5ms		   */
+d127 1
+a127 1
+	p += sizeof(*time_5ms);
+d135 3
+a137 2
+	bcopy(p,time_sec,sizeof(*time_sec)); /*	safely get time_sec		   */
+	if (swap_bytes) swap_u_long(*time_sec);
+d139 1
+a139 1
+	p += sizeof(*time_sec);
+d144 1
+a144 1
+		*time_sec =  -*time_sec;
+d152 1
+a152 1
+				*time_sec  = -*time_sec;
+d161 1
+a161 1
+	delta_t = abs((long) local_time.tv_sec - *time_sec) ;
+@
+
+
+1.2
+log
+@reorder protocol
+@
+text
+@d21 2
+d59 1
+a59 1
+static	u_long	delta_t;
+d118 1
+d123 1
+d125 8
+d170 1
+d177 1
+a177 4
+	*out = p;	/* we're now at the decrypted application data  */
+
+	/* skip to received checksum										   */
+	p += *app_length;
+d189 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 3
+d19 2
+d29 1
+d48 1
+a48 1
+static char		*rcsid_rd_private_msg_c="$Header: rd_private_msg.c,v 1.1 86/04/04 18:08:43 spm Exp $";
+d51 8
+d60 2
+a61 1
+u_long
+d63 1
+a63 1
+				   time_sec,time_5ms)
+d82 7
+a88 5
+	static	u_long	cksum, calc_cksum;
+	static	u_long	c_length;
+	static	long	n;
+	static 	C_Block	temp;
+	static	int		swap_bytes;
+d117 2
+a118 1
+		sizeof(*time_5ms) + sizeof(cksum) + VERSION_SZ + MSG_TYPE_SZ > length)
+d121 13
+a133 2
+	bcopy(p,time_sec,sizeof(*time_sec)); /*	safely get time_sec 		   */
+	if (swap_bytes) swap_u_long(n);
+d155 4
+a158 4
+	bcopy(p,time_5ms,sizeof(*time_5ms));	/* safely get time_5ms		   */
+	/*	dont need to swap-- one byte for now							   */
+	p += sizeof(*time_5ms);
+
+@

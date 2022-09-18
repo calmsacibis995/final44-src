@@ -1,0 +1,111 @@
+Subject: socketpair for SOCK_DGRAM type will not work
+Index: sys/uipc_usrreq.c 4.3BSD
+
+Description:
+
+Note 100      socketpair for SOCK_DGRAM type will    1 response 
+yip@ccvaxa                                   3:47 pm  Mar  9, 1986
+
+SHORT BUT DESCRIPTIVE ONE LINE TITLE:  (Type on next line)
+socketpair for SOCK_DGRAM type will not work
+
+Operating System:  	UTX/32
+Release:  		1.1
+Patch Level:  		C
+Product Name:           UTX/32
+Hardware Environment:   9080 
+Organization:		Gould-CSD/Urbana      (217) 384-8500 
+                        1101 E. University, Urbana, Il 61801
+
+MODULE NAME:
+socketpair system call
+
+SPR TYPE:  (Software/Doc/ER)
+Software
+
+PRIORITY:  (1 = High, 5 = Low)
+
+DESCRIPTION OF PROBLEM:
+According to the man page, socketpair will  work for both SOCK_STREAM
+and SOCK_DGRAM types. Yes, it will work, it will even return two
+new socket descriptors. But the problem is, you can never send
+data across to each other if SOCK_DGRAM is specified when the
+socketpair system call was made, errno 39 (EDESTADDRREQ) will be
+returned. The reason for this error to be returned is these
+sockets were never set to be connected.
+
+If you look at the code of the uipc_usrreq.c, under case PRU_CONNECT2,
+things are not set up correctly if the socket type is for datagram.
+So, when a send is issued, it checks to see if the state of the
+socket is connected, ....
+Anyway, we should either disallow socketpair
+for SOCK_DGRAM or change the code in uipc_usrreq.c to make this
+work.
+
+SAMPLE BROKEN OUTPUT:
+
+HOW TO REPRODUCE THE PROBLEM:  (preferably a shell script)
+Try to run the following program.
+
+/* To test socketpair system call */
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
+#define BUFSIZ 1024
+
+/*============================================================================*/
+
+extern int errno;
+
+main()
+{
+        int     i,s;
+        int     iws;
+        int     sv[2];
+        char    pwbuf[1024];
+        char    prbuf[1024];
+        struct sockaddr recvAddress;
+
+        for (iws = 0; iws < BUFSIZ; iws++)
+	{
+                pwbuf[iws] = 'A' + iws%26;
+        }
+        pwbuf[BUFSIZ - 1] = '\0';
+
+        if ((s = socketpair(AF_UNIX, SOCK_DGRAM, 0, sv)) < 0) 
+	{
+		printf("socketpair failed\n");
+        }
+
+        if ((i = send(sv[0], pwbuf, iws, 0)) != iws)
+	{
+                printf("#bytes written on sv[0] is %d\n", i);
+		printf("errno %d received on the send call\n", errno);
+        }
+
+        if ((i = recv(sv[1], prbuf, iws, 0)) != iws)
+	{
+                printf("#bytes read from sv[1] is %d \n", i);
+		printf("errno %d received from recv call\n", errno);
+        }
+
+        if ((i = strcmp(pwbuf,prbuf)) != 0)
+	{
+                printf("The received and sent messages differ\n");
+        }
+
+        close(sv[0]);
+        close(sv[1]);
+}
+
+SUGGESTED FIX:
+
+OTHER COMMENTS:
+
+CURRENT WORKING DIRECTORY:
+	/mnt/yip
+
+PATH:
+	.:/mnt/yip/bin:/usr/local:/usr/new:/usr/ucb:/bin:/usr/bin
+

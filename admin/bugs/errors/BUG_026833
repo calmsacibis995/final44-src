@@ -1,0 +1,138 @@
+From jik@PIT-MANAGER.MIT.EDU  Wed Jun 20 06:50:18 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA26829; Wed, 20 Jun 90 06:50:18 -0700
+Received: from PIT-MANAGER.MIT.EDU by ucbvax.Berkeley.EDU (5.63/1.41)
+	id AA17594; Wed, 20 Jun 90 06:50:26 -0700
+Received:  by PIT-MANAGER.MIT.EDU (5.61/2.0JIK) id <AA23649@PIT-MANAGER.MIT.EDU>; Wed, 20 Jun 90 09:50:14 -0400
+Date: Wed, 20 Jun 90 09:50:14 -0400
+Message-Id: <9006201350.AA23649@PIT-MANAGER.MIT.EDU>
+From: "Jonathan I. Kamens" <jik@pit-manager.MIT.EDU>
+Sender: jik@PIT-MANAGER.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: ps reports sizes inconsistently
+
+Index bin 4.3BSD-tahoe
+Bcc: "Jonathan I. Kamens" <jik@Athena.MIT.EDU>
+
+
+Description:
+	Ps can report different SIZE and RSS values depending on what
+	command-line options are given to it.  In general, there is
+	some inconsistency in its output.
+
+Repeat-By:
+	Run "ps ux" and "ps alx" on the same process.  Observe that
+	the SZ and RSS values are different in each case.
+
+Fix:
+	The patch at the end of this message should fix the problem.
+	Credit for this patch goes to John Carr (jfc@athena.mit.edu).
+
+Jonathan Kamens			              USnail:
+MIT Project Athena				11 Ashford Terrace
+jik@Athena.MIT.EDU				Allston, MA  02134
+Office: 617-253-8495			      Home: 617-782-0710
+
+*** /mit/4.3tahoe/man/man1/ps.1	Thu Mar 10 20:14:35 1988
+--- ps.1	Wed Jun 20 09:40:31 1990
+***************
+*** 130,136 ****
+  .TP 5
+  .B v
+  A version of the output containing virtual memory statistics is output.
+! This includes fields RE, SL, PAGEIN, SIZE, RSS, LIM, TSIZ, TRS, %CPU
+  and %MEM, described below.
+  .TP 5
+  .B w
+--- 130,136 ----
+  .TP 5
+  .B v
+  A version of the output containing virtual memory statistics is output.
+! This includes fields RE, SL, PAGEIN, DSIZ, DRS, LIM, TSIZ, TRS, %CPU
+  and %MEM, described below.
+  .TP 5
+  .B w
+***************
+*** 190,195 ****
+--- 190,199 ----
+  size of text (shared program) image
+  .IP TRS 10
+  size of resident (real memory) set of text
++ .IP DSIZ 10
++ size of data and stack image
++ .IP DRS 10
++ size of resident set of data and stack
+  .IP %MEM 10
+  percentage of real memory used by this process.
+  .IP RE 10
+*** /mit/4.3tahoe/bin/ps.c	Thu Apr 14 01:33:39 1988
+--- ps.c	Wed Jun 20 09:44:27 1990
+***************
+*** 631,637 ****
+  		cantread("ecmx", kmemf);
+  		exit(1);
+  	}
+! 	if (uflg || vflg) {
+  		ntext = getw(nl[X_NTEXT].n_value);
+  		text = (struct text *)
+  			calloc((unsigned) ntext, sizeof (struct text));
+--- 631,637 ----
+  		cantread("ecmx", kmemf);
+  		exit(1);
+  	}
+! 	if (lflg || uflg || vflg) {
+  		ntext = getw(nl[X_NTEXT].n_value);
+  		text = (struct text *)
+  			calloc((unsigned) ntext, sizeof (struct text));
+***************
+*** 1207,1213 ****
+  	    (ap->a_flag &~ SPTECHG),				/* XXX */
+  	    ap->a_uid, ap->a_pid, lp->l_ppid,
+  	    lp->l_cpu > 99 ? 99 : lp->l_cpu, ap->a_pri-PZERO,
+! 	    ap->a_nice, lp->l_addr, pgtok(ap->a_size), pgtok(ap->a_rss));
+  	if (lp->l_wchan == 0)
+  		printf(" %*s", wcwidth, "");
+  	else if (nflg)
+--- 1207,1214 ----
+  	    (ap->a_flag &~ SPTECHG),				/* XXX */
+  	    ap->a_uid, ap->a_pid, lp->l_ppid,
+  	    lp->l_cpu > 99 ? 99 : lp->l_cpu, ap->a_pri-PZERO,
+! 	    ap->a_nice-NZERO, lp->l_addr, pgtok(ap->a_size + ap->a_tsize),
+! 	       pgtok(ap->a_rss + (ap->a_xccount ? ap->a_txtrss : 0)));
+  	if (lp->l_wchan == 0)
+  		printf(" %*s", wcwidth, "");
+  	else if (nflg)
+***************
+*** 1244,1250 ****
+  	vmsize = pgtok((ap->a_size + ap->a_tsiz));
+  	rmsize = pgtok(ap->a_rss);
+  	if (ap->a_xccount)
+! 		rmsize += pgtok(ap->a_txtrss/ap->a_xccount);
+  	if (nflg)
+  		printf("%4d ", ap->a_uid);
+  	else
+--- 1245,1251 ----
+  	vmsize = pgtok((ap->a_size + ap->a_tsiz));
+  	rmsize = pgtok(ap->a_rss);
+  	if (ap->a_xccount)
+! 		rmsize += pgtok(ap->a_txtrss);
+  	if (nflg)
+  		printf("%4d ", ap->a_uid);
+  	else
+***************
+*** 1258,1264 ****
+  }
+  
+  char *vhdr =
+! " SIZE  PID TT STAT TIME SL RE PAGEIN  SIZE   RSS   LIM TSIZ TRS %CPU %MEM"+5;
+  vpr(sp)
+  	struct savcom *sp;
+  {
+--- 1259,1265 ----
+  }
+  
+  char *vhdr =
+! " SIZE  PID TT STAT TIME SL RE PAGEIN  DSIZ   RSS   LIM TSIZ TRS %CPU %MEM"+5;
+  vpr(sp)
+  	struct savcom *sp;
+  {

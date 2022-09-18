@@ -1,0 +1,61 @@
+From mcvax!cwi.nl!epg@seismo.CSS.GOV  Tue Jun 30 06:51:18 1987
+Date: Tue, 30 Jun 87 15:38:41 +0200
+From: mcvax!cwi.nl!epg@seismo.CSS.GOV (Ed Gronke)
+Subject: Rshell connections get hung in FIN_WAIT_2 / LAST_ACK state.
+Index: sys/netinet/tcp_input.c tahoe
+
+Description:
+	When doing an rshell of the kind listed in the Repeat-By between
+	a 750 (the originator) and a Harris (CCI), the TCP connection on
+	the 750 will end up in FIN_WAIT_2 and the TCP connection on the
+	Harris will end up in LAST_ACK.
+Repeat-By:
+
+As a user which has /bin/sh as it's login shell, run the following script.
+Notice the state of the TCP connections on both machines (netstat -A).
+
+#!/bin/sh
+
+SHELL=/bin/sh
+export SHELL
+
+CFLAGS=
+
+while true
+do
+	(cat /etc/termcap | rsh <insert_your_favorite_cci> "compress $CFLAGS") |
+	uncompress > /tmp/rshtest$$
+	echo "Comparing /tmp/rshtest$$ and /etc/termcap"
+	if cmp /tmp/rshtest$$ /etc/termcap > /dev/null
+	then
+		continue;
+	else
+		echo "Compare failed"
+		exit 1
+	fi
+	echo "OK, next"
+done
+Fix:
+
+In the section when tcp_input is checking for what to do with an ack, there
+is a case for TCPS_LAST_ACK inside a switch on (tp->t_state) which, if the
+state is TCPS_LAST_ACK, drops the packet. This ignores the fact that there
+might still be untransmitted segments on the sendq for the socket (which
+has been closed) though snd_nxt and snd_una are the same. So, if you add
+the test for whether the sendq still contains characters and break (thereby
+causing the socket to do output if it needs to), then the socket drains
+happily. 
+
+------- tcp_input.c -------
+775a776,785
+> 			/* If there is still mbufs on the send queue
+> 			 * and all sent data has been acknowledged, then
+> 			 * our FIN hasn't been sent yet. So, we break out of
+> 			 * this loop and send some more data. This is probably
+> 			 * conservative way of fixing the hanging send-q
+> 			 * problem. 
+> 			 */
+> 			if (so->so_snd.sb_cc > 0 &&  		/* XXX */
+> 				tp->snd_una == tp->snd_nxt) 	/* XXX */
+> 				break;				/* XXX */
+

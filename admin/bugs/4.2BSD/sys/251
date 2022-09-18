@@ -1,0 +1,205 @@
+From: steve@EDN-VAX (Steve Castro)
+Date: 27 Feb 1985 1217-EST (Wednesday)
+Subject: System hangs with use of sockets in the UNIX domain
+Index: sys 4.2BSD
+
+Description:
+	We have been having serious problems with the use of sockets
+in the UNIX domain. It seems that the system gets in a hung state at
+some times and not others, despite using the same pieces of code. 
+The symptoms of the hung state are as follows:
+	
+	1) The system is not dead (has not crashed) BUT,
+
+	2) The tty driver waits EXACTLY 16 input characters before
+		they show up on the screen  AND
+
+	3) NOTHING can be executed from any terminals and
+		control characters are useless (NO PROMPTS
+		NO NOTHING)  THUS
+
+	4) our only way out has been to halt and reboot from the console.
+
+We have had several different users use the UNIX socket domain and
+each has hung the system. They have also stated that what they had written
+was working fine before the time that hung the system.  The best we have been 
+to do at reproducing the situation is this MESS below, it seems to hang
+the system more often then not. Good Luck.
+
+				Steve Castro
+				steve@edn-vax.arpa  (7.0.0.3)
+				(703) 437-2525
+				Defense Communications Engineering Center
+
+Here is the MESS:
+----------------
+compile as
+cc port.c -c
+cc mailer.c port.o -o mailer
+cc server.c port.o -o server
+
+First start the server in the BACKGROUND. Then repeatedly start a mailer,
+send a few characters then stop it with control-Z. start a mailer, send
+	a few characters then stop it with control-Z. start a .....
+ 
+eventually after about 9 or so of these the system should hang, MAYBE.
+It seems to have something to do with opening a connection when
+there are no descriptors left, but I'm not sure.
+
+/*
+
+**************************mailer.c mailer.c mailer.c *****************/
+#include <sys/errno.h>
+#include <sys/file.h>
+#include <signal.h>
+main()
+{
+int len;
+int conn;
+char to[9];
+char hold[512];
+int rfd,wfd;
+	while ((conn = open("EAR",O_RDONLY)) == -1) ;
+	printf("Ear opended\n");
+	read(conn,to,5);
+	rfd = port(to,&wfd,'c');
+	printf("mailer returned\n");
+	if (rfd == -1) { perror("pmailer - port");  exit(1); }
+	while ((len = read(0,hold,512)) > 0) { 
+		write(wfd,hold,len);
+		if (hold[0] == '.') break;
+	}
+	closeport(to);
+}
+
+
+/*
+
+**************************server.c server.c server.c******************/
+#define child 0
+#include <sys/file.h>
+#include <signal.h>
+main(argc,argv)
+int argc;
+char **argv;
+{
+int f,fork();
+char buf[512],pho[5];
+int Sc,Snew,S,wfd,er,earr;
+long pid;
+	pid = getpid();
+	earr = creat("EAR",0000);	
+	if (earr == -1) { perror("pserver - creat"); exit(1); }
+	sprintf(pho,"%d",pid);
+	er = write(earr,pho,5);
+	if (er == -1) { perror("pserver -ear write"); exit(1); }
+	chmod("EAR",0600);
+	close(earr);
+	Snew = port(pho,&wfd,'s');
+	printf("server returned \n");
+	if (Snew == -1) { perror("pserver - port"); exit(1); }
+	if ((f = fork()) == child) {
+		execl("pserver","pserver",0);
+		perror("exec");	
+		exit(0);
+	}
+	while ((Sc = read(Snew,buf,512)) >0) {
+		write(1,buf,Sc);
+		if (buf[0] == '.') break;
+	}
+	closeport(pho);
+}
+
+
+/*
+***************************port.c port.c port.c****************************/
+#include <errno.h>
+#include <sys/un.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+extern errno;
+port(name,wfd,what)
+char *name;
+int *wfd;
+char what;
+{
+struct sockaddr_un socketmeS,to;
+int S,cc,rfd;
+	switch (what) {
+	case 's' :
+		printf("port s: opening socket\n");
+		S = socket(AF_UNIX,SOCK_STREAM,0);
+		if (S <=0) { 
+			perror("port s: -socket");
+			return(-1);
+		}
+		socketmeS.sun_family = AF_UNIX;
+		sprintf(socketmeS.sun_path,"%s",name);
+		printf("port s: binding socket\n");
+ 		cc = bind(S,&socketmeS,sizeof(struct sockaddr_un) -1);
+		if (cc == -1) { 
+			perror("port s:- bind");
+			return(-1);
+		}
+		printf("port s: listening...\n");
+		if ((listen(S,5)) == -1) { perror("port s:-listen");
+ 			return(-1);
+		}
+		printf("port s: accepting...\n");
+		rfd = accept(S,0,0);
+		if (rfd == -1) { 
+			perror("port s:-accept");
+			return(-1);
+		}
+		to.sun_family = AF_UNIX;
+		sprintf(to.sun_path,"%s.ttemp",name);
+		sleep(2);
+		printf("port s: -connecting..\n");
+		if ((connect(S,&to,sizeof(to) -1)) == -1) { 
+			perror("port s:-connect");
+			unlink(socketmeS.sun_path);
+			return(-1);
+		}
+		*wfd = S;
+		return(rfd);
+	case 'c' :
+		printf("port c: opening socket\n");
+  		S = socket(AF_UNIX,SOCK_STREAM,0);    
+		to.sun_family = AF_UNIX;
+		sprintf(to.sun_path,"%s",name);
+		socketmeS.sun_family = AF_UNIX;
+		sprintf(socketmeS.sun_path,"%s.ttemp",name);
+		printf("port c: binding socket\n");
+ 		cc = bind(S,&socketmeS,sizeof(struct sockaddr_un) -1);
+		if (cc == -1) {
+			perror("port c: bind");
+			unlink(socketmeS.sun_path);
+			return(-1);
+		}
+		printf("port c: connecting..\n");
+		if ((connect(S,&to,sizeof(to) -1)) == -1) { 
+			perror("port c: connect");
+			unlink(socketmeS.sun_path);
+			return(-1);
+		}
+		*wfd = S;
+		printf("port c: listening...\n");
+		if ((listen(S,5)) == -1) { 
+			perror("port c: listen");
+ 			return(-1);
+		}
+		printf("port c: accepting...\n");
+		return(accept(S,0,0));
+	default : { errno = EINVAL; return(-1) ; } 
+	}
+}
+
+closeport(name)
+char *name;
+{
+char holder[109];
+	unlink(name);
+	sprintf(holder,"%s.ttemp",name);
+	unlink(holder);
+	return(0);	
+}

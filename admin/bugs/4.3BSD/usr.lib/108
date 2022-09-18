@@ -1,0 +1,61 @@
+From steve@eleazar.Dartmouth.EDU  Wed Jun 15 11:40:58 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.59/1.28)
+	id AA27409; Wed, 15 Jun 88 11:40:58 PDT
+Received: from DARTVAX.DARTMOUTH.EDU by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA05143; Wed, 15 Jun 88 11:40:09 PDT
+Received: from eleazar.dartmouth.edu by dartvax.dartmouth.edu (5.59/3.6R)
+	id AA28281; Wed, 15 Jun 88 14:39:06 EDT
+Received: by eleazar.dartmouth.edu (5.59/3.2LEAF)
+	id AA00555; Wed, 15 Jun 88 14:38:51 EDT
+Date: Wed, 15 Jun 88 14:38:51 EDT
+From: steve@eleazar.Dartmouth.EDU (Steve Campbell)
+Message-Id: <8806151838.AA00555@eleazar.dartmouth.edu>
+Subject: sendmail makes inappropriate calls to getmxrr
+Index: usr.lib/sendmail/src/deliver.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Version 5.59 sendmail calls getmxrr when connecting to any mailer
+	that talks SMTP.  This is inappropriate if the mailer is not an
+	"[IPC]" mailer.  Getmxrr should be called iff the mailer talks SMTP
+	and is an "[IPC]" mailer and is not connecting to an IP dot address.
+Repeat-By:
+	Write a non-TCP/IP mailer (ie an executable program) that speaks
+	SMTP with sendmail.  Sendmail calls getmxrr to query the name
+	domain server about the target host, even though that host may
+	not be in the NDS database.
+Fix:
+	Change deliver() to call getmxrr only when it really needs to.
+	
+*** /tmp/,RCSt1020604	Fri Jun  3 15:02:45 1988
+--- deliver.c	Fri Jun  3 14:38:01 1988
+***************
+*** 374,386 ****
+  	_res.options &= ~(RES_DEFNAMES | RES_DNSRCH);		/* XXX */
+  #ifdef SMTP
+  	if (clever) {
+- 		expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+  		rcode = EX_OK;
+! 		if (host[0] == '[') {
+  			Nmx = 1;
+  			MxHosts[0] = host;
+! 		} else
+! 			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+  		if (Nmx >= 0) {
+  			message(Arpa_Info, "Connecting to %s (%s)...",
+  			    MxHosts[0], m->m_name);
+--- 374,387 ----
+  	_res.options &= ~(RES_DEFNAMES | RES_DNSRCH);		/* XXX */
+  #ifdef SMTP
+  	if (clever) {
+  		rcode = EX_OK;
+! 		if (strcmp(m->m_mailer,"[IPC]") == 0 && host[0] != '[') {
+! 			expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+! 			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+! 		} else {
+  			Nmx = 1;
+  			MxHosts[0] = host;
+! 		}
+  		if (Nmx >= 0) {
+  			message(Arpa_Info, "Connecting to %s (%s)...",
+  			    MxHosts[0], m->m_name);

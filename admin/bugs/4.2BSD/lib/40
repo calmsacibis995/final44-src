@@ -1,0 +1,146 @@
+Return-Path: <forwarder@wisc-crys.arpa>
+Date: Sun, 6 May 84 11:45:48 cdt
+Subject: C compiler bug report
+Sender: forwarder@wisc-crys.arpa
+From: solomon@wisc-crys.arpa
+
+Subject: Four-byte records can cause the pcc second pass to bomb
+Index:    lib/mip/match.c 4.2BSD
+
+Description:
+    In some circumstances, the second (code-generation) pass of the portable C
+    compiler cannot cope with a procedure call when an actual parameter is a
+    record of length exactly 4 bytes.
+Repeat-By:
+    The problem is difficult to reproduce reliably.
+    Try compiling the following program.
+        struct {
+            int a;
+        } arr[3];
+        main() {
+            register i;
+            f(arr[i]);
+        }
+    During the course of compilation, /lib/ccom will reference an array
+    with a subscript value that is too large.  The results are unpredictable;
+    there may be an error message, a segmentation violation, or no error at all
+    depending on the details of how /lib/ccom was compiled (e.g., whether the
+    -O flag was specified).  However, you can catch it red-handed by putting
+    in the appropriate subscript check.  For example:
+
+    *** match.c.orig    Sat May  5 08:18:07 1984
+    --- match.c    Fri May  4 13:08:34 1984
+    ***************
+    *** 133,138
+            STBREG    any temporary lvalue register
+            */
+            mask = isbreg( p->tn.rval ) ? SBREG : SAREG;
+            if( istreg( p->tn.rval ) && busy[p->tn.rval]<=1 ) mask |= mask==SAREG ? STAREG : STBREG;
+            return( shape & mask );
+      
+
+    --- 133,143 -----
+            STBREG    any temporary lvalue register
+            */
+            mask = isbreg( p->tn.rval ) ? SBREG : SAREG;
+    +       if (p->tn.rval >= REGSZ) {
+    +           fprintf(stderr,"line %d, ridiculous register number 0x%x\n",
+    +               lineno, p->tn.rval);
+    +           fflush(stderr);
+    +       }
+            if( istreg( p->tn.rval ) && busy[p->tn.rval]<=1 ) mask |= mask==SAREG ? STAREG : STBREG;
+            return( shape & mask );
+  
+Fix:
+    The problem is rather deep, and I'm not sure my fix is completely right,
+    but here goes:  There problem seems to arise from lines 483-527
+    of src/lib/pcc/order.c, especially line 494 (marked below):
+
+        pasg = talloc();
+        pasg->in.op = STASG;
+        pasg->stn.stsize = size;
+        pasg->stn.stalign = align;
+        pasg->in.right = p;
+        pasg->in.left = tcopy( ptemp );
+
+        /* the following line is done only with the knowledge
+        that it will be undone by the STASG node, with the
+        offset (lval) field retained */
+
+--->    if( p->in.op == OREG ) p->in.op = REG;  /* only for temporaries */
+
+         order( pasg, FORARG );
+
+    The temporary tree created in pasg has this format (printed using the
+    debugging output routine eprint() in pcc/reader.c):
+
+        561644) STASG size=4 align=4, undef, PREF r0, SU= 0
+            561704) OREG (sp), undef, NOPREF, SU= 0
+            561404) OREG _arr+12[r0], strty, NOPREF, SU= 2
+
+    The marked line 494 changes the type of the right child from OREG to REG
+    yielding:
+
+        561644) STASG size=4 align=4, undef, PREF r0, SU= 0
+            561704) OREG (sp), undef, NOPREF, SU= 0
+            561404) REG r??, strty, NOPREF, SU= 2
+
+    Now here's the rub:  In the VAX version of the pcc compiler, the rval
+    fields of REG and OREG nodes are interpreted differently.  In the case
+    of REG nodes, the field is simply a register number, while in the
+    case of an OREG, it is may be three things packed together:  a base
+    register, an index register, and a set of flags to tell whether the
+    indexing mode is indirect, auto-increment, or auto-decrement.
+    After line 494 munges this node, it passes the whole tree to order()
+    to try to generate code for it, and eventually match() calls tshape()
+    on the munged node to see if it matches a required shape.
+    Poor tshape() thinks the node is a REG node, and so tries to interpret
+    the rval field as a register number, thus giving the bogus index.
+    (In fact, eprint() in reader.c would also bomb on this bogus node;
+    I had to fix it to print "r??" in the above example.)
+
+    Here's my tenative fix:  if the argument to tshape is a REG node with
+    a packed rval field, and there is only one register specified (that is,
+    there is an index register but not a displecement register--indicated
+    by a value of 100 in the displacement register field), then use the
+    index register in place of the rval field.  I don't know what to do
+    if both an index AND a base are specified, and I've been unable to
+    manufacture a case in which it happens, so I simply print an error
+    message if it comes up.  Somebody with a better understanding of pcc
+    wizzardry should look this over.
+
+    By the way, a corresponding fix is required for /lib/f1, which is
+    used by both the f77 and pc compilers (which is where I first found the
+    bug).
+
+    The fix is to src/mip/match.c:
+
+*** match.c.orig    Sun May  6 11:37:22 1984
+--- match.c    Sun May  6 11:36:03 1984
+***************
+*** 132,139
+          SBREG    any lvalue (index) register
+          STBREG    any temporary lvalue register
+          */
+!         mask = isbreg( p->tn.rval ) ? SBREG : SAREG;
+!         if( istreg( p->tn.rval ) && busy[p->tn.rval]<=1 ) mask |= mask==SAREG ? STAREG : STBREG;
+          return( shape & mask );
+  
+      case OREG:
+
+--- 132,146 -----
+          SBREG    any lvalue (index) register
+          STBREG    any temporary lvalue register
+          */
+!         {
+!             register reg = p->tn.rval;
+!             if (R2TEST(reg)) {
+!                 if (R2UPK1(reg)!=100) cerror("tshape: double index");
+!                 reg = R2UPK2(reg);
+!             }
+!             mask = isbreg( reg ) ? SBREG : SAREG;
+!             if( istreg( reg ) && busy[reg]<=1 ) mask |= mask==SAREG ? STAREG : STBREG;
+!         }
+          return( shape & mask );
+  
+      case OREG:

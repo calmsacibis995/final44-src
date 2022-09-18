@@ -1,0 +1,92 @@
+From sun!elxsi!marduk!gww@ucbvax.Berkeley.EDU  Fri Sep  4 14:20:37 1987
+Return-Path: <marduk!gww>
+Date: Fri, 4 Sep 87 14:21:34 PDT
+From: sun!elxsi!marduk!gww@ucbvax.Berkeley.EDU (Gary Winiger)
+Subject: Timezone fields can be destroyed +Fix
+Index: lib/libc/gen/timezone.c 4.3BSD +Fix
+
+Description:
+	Certain calls to timezone(3) will return a pointer not to
+	an area of bss, but to the static data that timezone uses
+	to determine the correct timezone nmumonic.
+	On systems which permit the modification of static data, this
+	may result in future calls to timezone to return bad information.
+	On systems in which static data is in a write protected segment,
+	segmentation violations may occur.
+Repeat-By:
+	Have no TIMEZONE environment variable.
+	extern char *timezone();
+	main()
+	{
+		char *tz;
+		tz = timezone(8*60,1);
+		printf("The current timezone is %s\n", tz);
+		strcpy(tz, "ZZZ");
+		tz = timezone(8*60,1);
+		printf("The future timezone is %s\n", tz);
+	}
+	On a system which permits modification of static data, this will 
+	print out a future time zone of ZZZ. 
+	On a system in which static data is in a write protected segment,
+	it will cause a segmentation fault.
+Fix:
+	Always return the timezone in the bss area.
+	The attached code solves this problem at Elxsi.
+
+Gary..
+{ucbvax!sun,lll-lcc!lll-tis,amdahl!altos86,bridge2}!elxsi!gww
+--------- cut --------- snip --------- :.,$w diff -------------
+*** /tmp/,RCSt1000316	Wed Jul  8 18:55:00 1987
+--- timezone.c	Wed Jul  8 18:54:23 1987
+***************
+*** 1,5 ****
+--- 1,10 ----
+  /*
+   * $Log:	timezone.c,v $
++  * Revision 1.2  87/07/08  18:53:25  gww
++  * Don't return a pointer to static data, but copy the data to the
++  * bss area.  Then if the user overwrites it, the data will still be
++  * valid for the next call.
++  * 
+   * Revision 1.1  87/01/15  15:35:59  gww
+   * Initial revision
+   * 
+***************
+*** 11,17 ****
+   */
+  
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char *ERcsId = "$Header: timezone.c,v 1.1 87/01/15 15:35:59 gww Exp $ ENIX BSD";
+  static char sccsid[] = "@(#)timezone.c	5.2 (Berkeley) 3/9/86";
+  #endif LIBC_SCCS and not lint
+  
+--- 16,22 ----
+   */
+  
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char *ERcsId = "$Header: timezone.c,v 1.2 87/07/08 18:53:25 gww Exp $ ENIX BSD";
+  static char sccsid[] = "@(#)timezone.c	5.2 (Berkeley) 3/9/86";
+  #endif LIBC_SCCS and not lint
+  
+***************
+*** 72,80 ****
+  	for (zp=zonetab; zp->offset!=-1; zp++)
+  		if (zp->offset==zone) {
+  			if (dst && zp->dlzone)
+! 				return(zp->dlzone);
+  			if (!dst && zp->stdzone)
+! 				return(zp->stdzone);
+  		}
+  	if (zone<0) {
+  		zone = -zone;
+--- 77,86 ----
+  	for (zp=zonetab; zp->offset!=-1; zp++)
+  		if (zp->offset==zone) {
+  			if (dst && zp->dlzone)
+! 				strcpy(czone, zp->dlzone);
+  			if (!dst && zp->stdzone)
+! 				strcpy(czone, zp->stdzone);
+! 		return (czone);
+  		}
+  	if (zone<0) {
+  		zone = -zone;

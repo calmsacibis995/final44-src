@@ -1,0 +1,57 @@
+Return-Path: <louie@trantor.umd.edu>
+Date: Tue, 26 Aug 86 19:29:41 EDT
+From: Louis A. Mamakos <louie@trantor.umd.edu>
+Subject: sending data after a FIN
+Index: 	sys/netinet/tcp_output.c 4.3BSD
+
+Description:
+	tcp_output.c will emit a segment with a FIN even if it cannot send
+	all of the remaining data in the socket.  Consider a host which 
+	offers a 1000 byte window, but whose maximum segment size is 576
+	bytes.  Take the case where the user has sent some data on a
+	connection, and close()ed the socket.  If there is between 576
+	and 1000 bytes remaining, it will attempt to send it all.  It will
+	not clear the FIN since it fits within the offered window, but
+	will only send the max segment size number of bytes.  Later, it
+	will emit a subsequent segment with a FIN, carrying a different
+	sequence number.
+Repeat-By:
+	Difficult to reproduce;  try to FTP to such a host. 
+Fix:
+	Add check of tp->t_maxseg when clearing the FIN bit in the
+	segment to be sent.
+
+RCS file: RCS/tcp_output.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1000310	Tue Aug 26 19:19:54 1986
+--- /tmp/,RCSt2000310	Tue Aug 26 19:19:56 1986
+  
+***************
+*** 91,97 ****
+  
+  	len = MIN(so->so_snd.sb_cc, win) - off;
+  	flags = tcp_outflags[tp->t_state];
+! 	if (SEQ_LT(tp->snd_nxt + len, tp->snd_una + so->so_snd.sb_cc))
+  		flags &= ~TH_FIN;
+  
+  	if (len < 0) {
+--- 92,99 ----
+  
+  	len = MIN(so->so_snd.sb_cc, win) - off;
+  	flags = tcp_outflags[tp->t_state];
+! 	if (SEQ_LT(tp->snd_nxt + len, tp->snd_una + so->so_snd.sb_cc) ||
+! 	   (len > tp->t_maxseg))	/* what we're REALLY going to send */
+  		flags &= ~TH_FIN;
+  
+  	if (len < 0) {
+
+
+
+Share and enjoy.
+
+-----------------------------------------------------------------------------
+Louis A. Mamakos  WA3YMH    Internet: louie@TRANTOR.UMD.EDU
+University of Maryland, Computer Science Center - Systems Programming
+

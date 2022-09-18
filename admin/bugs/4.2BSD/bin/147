@@ -1,0 +1,53 @@
+Date: Thursday, 4 Aug 83 17:02:14 PDT
+From: teklabs!rickk.tektronix@Rand-Relay
+Return-Path: <teklabs!rickk.tektronix@Rand-Relay>
+Subject: Bug in ftp daemon rename cmd, 4.1c
+Index: bin 4.2BSD
+
+If the file to be renamed doesn't exist, the appropriate error reply is
+sent to the user ftp.  Then, the next cmd sent to the daemon will cause
+an error.  This is because of an error in the yacc grammar:
+	rename_cmd  ::= rename_from rename_to
+	rename_from ::= RNFR check_login SP pathname CRLF
+	rename_to   ::= RNTO SP pathname CRLF
+	rename_to   ::= EPSILON    /* needs adding			*/
+
+When the bad pathname causes the rename cmd to abort (and no RNTO sent),
+the rename_cmd production is not fulfilled.  Thus, an epsilon production
+is needed for rename_to.  It should set $$ = 0 as the attribute to
+the rename_to epsilon production.  Since the rename_from failed, it returns
+a 0 also ($$ = (int)from).  So, one last change was necessary.  This one
+is in rename_cmd.  The renamecmd will be called if $1 and $2 are set.  On
+a failure of rename_from, $1 is 0, and it will give a Bad sequence reply.
+Making this 'else' clause into 'else if ($1)' will mean that only a valid
+rename_from can elicit the Bad sequence message.  The ftp cmd that causes
+the epsilon production to reduce to rename_to will not give any reply
+and go back to parsing at the cmd level.
+
+rename_cmd:	rename_from rename_to
+	= {
+		if ($1 && $2)
+			renamecmd($1, $2);
+		else /* make this 'else if ($1)'			*/
+			reply(503, "Badd sequence of commands.");
+		.....
+
+rename_to:	RNTO SP pathname CRLF
+	= {
+		$$ = $3;
+	}
+	/* this is the epsilon production needed			*/
+	|
+	= {
+		$$ = 0;
+	}
+
+Note that the rename_cmd production is not fulfilled until another command
+is sent to the ftp daemon which causes the reduction on the epsilon
+production.  Since there will always be another command sent (at least a BYE),
+this will not cause any problems.
+
+Since this is the only nonterminal in the list of 'cmd's, this is the only
+problem of this sort (meaning, USER-PASS-{ACCT} won't have this problem).
+
+Rick Krull

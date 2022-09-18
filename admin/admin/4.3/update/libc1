@@ -1,0 +1,88 @@
+Subject: gethostbyname fails when using virtual circuits
+Index: lib/libc/net/res_send.c 4.3BSD
+
+Description:
+	Programs that use virtual circuits to connect to the name
+	daemon (that is they call `sethostent(1)'), do not properly
+	fall back to using /etc/hosts when the name server is not
+	running.
+Repeat-By:
+	This affects only `netstat' and `systat' on the standard
+	distribution. Kill the name server and run netstat. Instead
+	of printing symbolic names it will print net addresses.
+	After installing this fix, it will properly resolve any
+	addresses that are listed in /etc/hosts when the name
+	server is not running.
+Fix:
+*** res_send.c.6.13	Wed Mar  4 14:19:56 1987
+--- res_send.c.6.14	Wed Mar  4 14:19:35 1987
+***************
+*** 8,10 ****
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char sccsid[] = "@(#)res_send.c	6.13 (Berkeley) 5/7/86";
+  #endif LIBC_SCCS and not lint
+--- 8,10 ----
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char sccsid[] = "@(#)res_send.c	6.14 (Berkeley) 7/2/86";
+  #endif LIBC_SCCS and not lint
+***************
+*** 47,48 ****
+--- 47,49 ----
+	struct iovec iov[2];
++ 	int terrno = ETIMEDOUT;
+  
+***************
+*** 77,78 ****
+--- 78,80 ----
+				if (s < 0) {
++ 					terrno = errno;
+  #ifdef DEBUG
+***************
+*** 85,86 ****
+--- 87,89 ----
+				   sizeof(struct sockaddr)) < 0) {
++ 					terrno = errno;
+  #ifdef DEBUG
+***************
+*** 103,104 ****
+--- 106,108 ----
+			if (writev(s, iov, 2) != sizeof(len) + buflen) {
++ 				terrno = errno;
+  #ifdef DEBUG
+
+***************
+*** 122,123 ****
+--- 126,128 ----
+			if (n <= 0) {
++ 				terrno = errno;
+  #ifdef DEBUG
+***************
+*** 138,139 ****
+--- 143,145 ----
+			if (n <= 0) {
++ 				terrno = errno;
+  #ifdef DEBUG
+***************
+*** 262,269 ****
+	}
+! 	(void) close(s);
+! 	s = -1;
+! 	if (v_circuit == 0 && gotsomewhere == 0)
+! 		errno = ECONNREFUSED;
+	else
+! 		errno = ETIMEDOUT;
+	return (-1);
+--- 268,280 ----
+	}
+! 	if (s >= 0) {
+! 		(void) close(s);
+! 		s = -1;
+! 	}
+! 	if (v_circuit == 0)
+! 		if (gotsomewhere == 0)
+! 			errno = ECONNREFUSED;
+! 		else
+! 			errno = ETIMEDOUT;
+	else
+! 		errno = terrno;
+	return (-1);

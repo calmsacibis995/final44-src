@@ -1,0 +1,149 @@
+From kiely%lownlab@harvard.harvard.edu  Mon Feb 13 22:59:05 1989
+Date: Tue, 14 Feb 89 01:55:41 EST
+From: kiely%lownlab@harvard.harvard.edu (James P. Kiely)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: syslog(3) can cause core dump
+Index:	lib/???/syslog.c	4.2BSD
+			(it is unknown if this problem exists in 4.3BSD)
+
+Type:	bug
+
+Priority: medium
+
+Description:
+	If the arguments to syslog(3) are too long, it will cause the
+	calling program to dump core.  On an ISI68K, it causes a
+	"segmentation violation".  On a VAX running Ultrix 1.2 it
+	causes a "bus error".
+
+Repeat-By:
+	Run the following program:
+-------------------- CUT HERE ------------------------------------
+#include <stdio.h>
+#include <syslog.h>
+#include <strings.h>
+
+#define	MAXSTRING	256
+
+/*
+ * EXERCISE LOG 
+ *
+ * exercise syslog(3) to see if it can be made to dump core
+ * and wreak havoc on an otherwise perfectly ok program 
+ */
+
+main(argc, argv)
+int             argc;
+char           *argv[];
+{
+	int             i;
+	int             retval;
+	char            arg1[MAXSTRING + 1];
+	char            arg2[MAXSTRING + 1];
+	char            arg3[MAXSTRING + 1];
+	char            arg4[MAXSTRING + 1];
+	char            arg5[MAXSTRING + 1];
+	char            temp1[5];
+	char            temp2[5];
+	char            temp3[5];
+	char            temp4[5];
+	char            temp5[5];
+
+	for (i = 0; i < MAXSTRING / 4; i++) {
+		sprintf(temp1, "a%3.3d", i);
+		strcat(arg1, temp1);
+		sprintf(temp2, "b%3.3d", i);
+		strcat(arg2, temp2);
+		sprintf(temp3, "c%3.3d", i);
+		strcat(arg3, temp3);
+		sprintf(temp4, "d%3.3d", i);
+		strcat(arg4, temp4);
+		sprintf(temp5, "e%3.3d", i);
+		strcat(arg5, temp5);
+	}
+	fprintf(stderr, "strlen(arg1) == %d\n", strlen(arg1));
+	fprintf(stderr, "strlen(arg2) == %d\n", strlen(arg2));
+	fprintf(stderr, "strlen(arg3) == %d\n", strlen(arg3));
+	fprintf(stderr, "strlen(arg4) == %d\n", strlen(arg4));
+	fprintf(stderr, "strlen(arg5) == %d\n", strlen(arg5));
+	fprintf(stderr, "about to call openlog\n");
+	retval = openlog(argv[0], LOG_PID);
+	fprintf(stderr, "openlog returned %d\n", retval);
+	/*
+	 * Use LOG_ERR so we're sure it will actually get logged. syslog.conf
+	 * still has to be checked to make sure. 
+	 */
+	fprintf(stderr, "about to call syslog(LOG_ERR, \"arg1 == %%s        arg2 == %%s        arg3 == %%s        arg4 == %%s        arg5 == %%s\", arg1, arg2, arg3, arg4, arg5\n\n");
+	retval = syslog(LOG_ERR, "arg1 == %s        arg2 == %s        arg3 == %s        arg4 == %s        arg5 == %s", arg1, arg2, arg3, arg4, arg5);
+	fprintf(stderr, "syslog returned %d\n", retval);
+}
+
+------------------- CUT HERE ----------------------------------------
+	Sample IS68K Output:
+-----------------------------------------------------------------------
+Script started on Tue Feb 14 01:14:44 1989
+<1> is% exerciselog
+strlen(arg1) == 256
+strlen(arg2) == 256
+strlen(arg3) == 256
+strlen(arg4) == 256
+strlen(arg5) == 256
+about to call openlog
+openlog returned 8
+about to call syslog(LOG_ERR, "arg1 == %s        arg2 == %s        arg3 == %s        arg4 == %s        arg5 == %s", arg1, arg2, arg3, arg4, arg5
+
+Segmentation fault (core dumped)
+<2> is% adb exerciselog core
+$c
+__doprnt(3ff48c,3ff054,3ff030) from _sprintf+#2a
+_sprintf(3ff07b,3ff48c,3ffce3,3ffbe2,3ffae1,3ff9e0,3ff8df) from _syslog+#f0
+sigtramp(34653031,35653031,36653031) from _end+#3362e0ed
+data address not found
+$q
+<3> is% exit
+<4> is% 
+script done on Tue Feb 14 01:16:29 1989
+-----------------------------------------------------------------------
+
+	Sample Ultrix 1.2 Output:
+-----------------------------------------------------------------------
+Script started on Tue Feb 14 01:19:28 1989
+va% exerciselog
+strlen(arg1) == 256
+strlen(arg2) == 256
+strlen(arg3) == 256
+strlen(arg4) == 256
+strlen(arg5) == 256
+about to call openlog
+openlog returned 0
+about to call syslog(LOG_ERR, "arg1 == %s        arg2 == %s        arg3 == %s        arg4 == %s        arg5 == %s", arg1, arg2, arg3, arg4, arg5
+
+Bus error (core dumped)
+va% adb exerciselog core
+$C
+__doprnt() from 18f5
+_sprintf(7fffd54f,7fffd94c,7fffe1a7,7fffe0a6,7fffdfa5,7fffdea4,7fffdda3) from 13db
+_syslog() from 408
+$q
+va% exit
+va% 
+script done on Tue Feb 14 01:20:09 1989
+----------------------------------------------------------------------
+
+
+Discussion:
+	This may seem like a silly, obscure bug that will never happen,
+	but it is not.  Using sendmail V5.54 with lib/nsyslog.c this can
+	happen quite easily when sending to large numbers of people
+	simultaneously (like a mailing list).  The easy fix in this situation
+	is to make MAXLINE in lib/nsyslog.c the same as MAXLINE in src/sendmail.h.
+	(As distributed, they were 1000 and 1024 respectively).  Syslog(3)
+	can still be made to dump core if the fully formatted arguments
+	passed to it are longer than MAXLINE.  Since MAXLINE is not included
+	in the manual page, it is quite possible for this to happen.
+
+Suggestion:
+	The problem is that sprintf() is bombing.  What we really need is
+	a gsprintf() {guaranteed string print formatted} which returns a
+	pointer to the formatted character string; with all the malloc'ing
+	being done within gsprintf().

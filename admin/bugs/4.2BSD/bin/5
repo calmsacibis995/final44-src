@@ -1,0 +1,94 @@
+Return-Path: <mogul@coyote>
+Date: Wed, 1 Feb 84 23:09:17 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: /bin/df dies if a disk is not online
+Index:  bin/df.c 4.2BSD
+
+Description:
+	This affects systems with removeable packs.  If a disk
+	is listed in /etc/fstab, but is offline for some reason,
+	df dies when it tries to list the drive.
+Repeat-By:
+	umount a disk mentioned in /etc/fstab;
+	take it off line;
+	type "df"
+Fix:
+	Check errno after a failed read() in bread(); assume that
+	errno == EIO means that the disk is offline (since we were
+	able to open the file.)
+
+*** /usr/src/bin/df.c	Sun Jun 19 18:09:14 1983
+--- df.c	Wed Feb  1 22:53:46 1984
+***************
+*** 5,10
+  #include <sys/param.h>
+  #include <sys/fs.h>
+  #include <sys/stat.h>
+  
+  #include <stdio.h>
+  #include <fstab.h>
+
+--- 5,11 -----
+  #include <sys/param.h>
+  #include <sys/fs.h>
+  #include <sys/stat.h>
++ #include <errno.h>
+  
+  #include <stdio.h>
+  #include <fstab.h>
+***************
+*** 115,121
+  		perror(file);
+  		return;
+  	}
+! 	bread(SBLOCK, (char *)&sblock, SBSIZE);
+  	printf("%-12.12s", file);
+  	totalblks = sblock.fs_dsize;
+  	free = sblock.fs_cstotal.cs_nbfree * sblock.fs_frag +
+
+--- 116,125 -----
+  		perror(file);
+  		return;
+  	}
+! 	if (bread(SBLOCK, (char *)&sblock, SBSIZE) == 0) {
+! 		(void) close(fi);
+! 		return;
+! 	}
+  	printf("%-12.12s", file);
+  	totalblks = sblock.fs_dsize;
+  	free = sblock.fs_cstotal.cs_nbfree * sblock.fs_frag +
+***************
+*** 149,154
+  
+  	(void) lseek(fi, (long)(bno * DEV_BSIZE), 0);
+  	if ((n=read(fi, buf, cnt)) != cnt) {
+  		printf("\nread error bno = %ld\n", bno);
+  		printf("count = %d; errno = %d\n", n, errno);
+  		exit(0);
+
+--- 153,160 -----
+  
+  	(void) lseek(fi, (long)(bno * DEV_BSIZE), 0);
+  	if ((n=read(fi, buf, cnt)) != cnt) {
++ 		if (errno == EIO)	/* probably a dismounted disk */
++ 			return(0);
+  		printf("\nread error bno = %ld\n", bno);
+  		printf("count = %d; errno = %d\n", n, errno);
+  		exit(0);
+***************
+*** 153,158
+  		printf("count = %d; errno = %d\n", n, errno);
+  		exit(0);
+  	}
+  }
+  
+  /*
+
+--- 159,165 -----
+  		printf("count = %d; errno = %d\n", n, errno);
+  		exit(0);
+  	}
++ 	return(1);
+  }
+  
+  /*

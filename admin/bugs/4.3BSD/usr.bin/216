@@ -1,0 +1,331 @@
+From escd!doug@decwrl.dec.com  Mon Oct 23 04:46:33 1989
+Date: Mon, 23 Oct 89 04:42:03 PDT
+From: escd!doug@decwrl.dec.com (Doug Hosking)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: dangerous assumptions in nroff
+Subject: dangerous assumptions in nroff
+Index:  usr.bin/nroff/n10.c 4.3BSD (also 4.3 Tahoe)
+
+Description:
+	The code in ptinit() in usr.bin/nroff/n10.c makes some dangerous
+	assumptions about the format of an object file.  In particular,
+	it has hard coded values for the size of the a.out header, it
+	"knows" that the initialized data size is in word 2 of that header,
+	and "knows" that the first thing seen in the .c file will be the
+	first thing put into the object file.
+Repeat-By:
+	Try to port nroff to an Evans and Sutherland ES-1 and watch it
+	dump core because not all of the previously mentioned assumptions
+	are true on an ES-1.
+Fix:
+	This part isn't so easy.  It's easy to make it work, but not clear
+	what the "right" fix really is.  I'm tempted to shoot the whole
+	idea of the /usr/lib/term files, particularly for binary only sites,
+	who can't easily add new types, even with the existing scheme.
+	The current scheme made sense in the days of 16 bit machines, and
+	when most sites had source licenses, but
+	it makes more sense now to have a termcap-like database and/or
+	link ALL of the data for supported tty types into the nroff
+	executable, where it can be demand paged as needed for the
+	desired terminal type.
+
+	I find it kind of disgusting to have to do an nlist() to look up
+	the real value of "_t" for each invocation of nroff, but don't see
+	a particularly safe way around that without rewriting lots of code.
+
+	Here's a start at making a slightly safer version of this code.
+	It's by no means a complete job, but should be enough to get
+	the point across about what's broken in the existing code.
+	It seems to work on an ES-1, but I make no guarantees about
+	how well it will work on other machines.  Diffs are against
+	a vanilla 4.3 version of n10.c.  Line numbers will differ due
+	to copyright/rcsid mods.  Sorry.
+
+*** /tmp/,RCSt1a00293	Mon Oct 23 04:23:58 1989
+--- /tmp/,RCSt2a00293	Mon Oct 23 04:23:58 1989
+***************
+*** 51,62 ****
+  int bdmode;
+  int plotmode;
+  
+  ptinit(){
+  	register i, j;
+  	register char **p;
+! 	char *q;
+  	int x[8];
+! 	extern char *setbrk();
+  
+  	if(((i=open(termtab,0)) < 0) && (i=open("/usr/lib/term/tablpr",0)) < 0){
+  		prstr("Cannot open ");
+--- 51,77 ----
+  int bdmode;
+  int plotmode;
+  
++ /*
++  * The first part of ptinit() is basically a relocating loader.
++  * It sucks in a file from /usr/lib/term.  That file contains a
++  * structure definition for the "t" structure.  Since this structure
++  * contains pointers to character strings, the pointers must be
++  * relocated.  The 4.3 and 4.3 Tahoe versions of this code made
++  * horrible assumptions about the order of things in a .o file, etc.
++  * This code isn't a whole lot better, but it doesn't seem to be
++  * worth the effort to really do it right.  drh 10/23/89.
++  */
++ 
++ #define INITIALIZED_DATA_SIZE x[2]
++ #define	DOT_O_BUF_SIZE	8192	/* should be more than enough */
++ 
+  ptinit(){
+  	register i, j;
+  	register char **p;
+! 	int offset;
+! 	char	dot_o_file[DOT_O_BUF_SIZE];
+  	int x[8];
+! 	extern get_t_addr();
+  
+  	if(((i=open(termtab,0)) < 0) && (i=open("/usr/lib/term/tablpr",0)) < 0){
+  		prstr("Cannot open ");
+***************
+*** 64,76 ****
+  		prstr("\n");
+  		exit(-1);
+  	}
+  	read(i,(char *)x,8*sizeof(int));
+! 	read(i,(char *)&t.bset,j = sizeof(int)*((int *)&t.zzz - &t.bset));
+! 	x[2] -= j;
+! 	q = setbrk(x[2]);
+! 	lseek(i,(long)t.twinit+8*sizeof(int),0);
+! 	i = read(i,q,x[2]);
+! 	j = q - t.twinit;
+  	for(p = &t.twinit; p < &t.zzz; p++){
+  		if(*p)*p += j;else *p = "";
+  	}
+--- 79,133 ----
+  		prstr("\n");
+  		exit(-1);
+  	}
++ 
++ 	/*
++ 	 * Read in the .o file header.
++ 	 */ 
++ 
+  	read(i,(char *)x,8*sizeof(int));
+! 
+! 	/*
+! 	 * Read in the .o file data section.  All we really care about is
+! 	 * the "t" structure.  This used to make the bogus 
+! 	 * assumption that "t" is the first thing in the .o file.
+! 	 * This is dangerous in the VAX case, and just plain wrong
+! 	 * for the ES-1 case.  (CodeGen string is first in ES-1 .o file.)
+! 	 */
+! 
+! 	if (INITIALIZED_DATA_SIZE > DOT_O_BUF_SIZE) {
+! 		prstr("nroff ptinit(): buffer overflow\n");
+! 		exit(-1);
+! 	}
+! 	j = read(i,  dot_o_file, INITIALIZED_DATA_SIZE);
+! 	if (j != INITIALIZED_DATA_SIZE) {
+! 		perror("read error");
+! 		prstr("in nroff ptinit() read of /usr/lib/term file\n");
+! 		exit(-1);		
+! 	}
+! 	(void) close(i);
+! 
+! 	/*
+! 	 * Figure out where the "t" structure is, and copy it onto
+! 	 * nroff's global "t" structure, so that other routines can
+! 	 * easily find it.  Should really be done with t being a
+! 	 * pointer to this buf, but that would mean lots of code rewrite.
+! 	 */
+! 
+! 	offset = get_t_addr(termtab);
+! 	if (offset == -1) {	
+! 		prstr("nlist() error on file in /usr/lib/term\n");
+! 		exit(-1);
+! 	}
+! 
+! 	bcopy(&dot_o_file[offset], (char *) &t,
+! 	 	(char *) &t.zzz - (char *) &t.bset);
+! 	
+! 	/*
+! 	 * Do relocation of all of the pointers in the "t" structure,
+! 	 * but only if they contain non-NULL values.
+! 	 */
+! 
+! 	j = (int) dot_o_file;
+  	for(p = &t.twinit; p < &t.zzz; p++){
+  		if(*p)*p += j;else *p = "";
+  	}
+
+
+............
+
+The code above calls get_t_addr().  Here's a quickie version of that.
+I put it and a renamed copy of the libc nlist() in a new file, to avoid
+conflicts with the existing "nlist" array.  A better long term approach
+might be to just rename the existing nlist array, but for now I want to
+minimize the number of files I have to rip up.
+
+#include <sys/types.h>
+#include <stdio.h>
+#include <a.out.h>
+
+/*
+ * The code below looks up the value of the symbol "_t" and returns it.
+ * Sigh... nroff already has a data structure called "nlist" so we
+ * can't just use the standard libc nlist routine.
+ */
+
+int get_t_addr(file)
+char *file;
+{
+	struct nlist nl[2];
+	nl[0].n_un.n_name = "_t";	/* the symbol we want   */
+	nl[1].n_un.n_name = "";		/* null terminated list */
+	libc_nlist(file, nl);		/* get value of "_t"    */
+	if (nl[0].n_value == 0)		/* return impossible    */
+		return(-1);		/* value if not found   */
+	return(nl[0].n_value);		/* else real value	*/
+}
+
+
+
+/*
+ * Rest of file is just the standard libc nlist() function.
+ * libc_nlist() only exists to get around the name conflict.
+ */
+
+libc_nlist(name, list)
+	char *name;
+	struct nlist *list;
+{
+	<take the standard lib/libc/gen/nlist.c and put it here.>
+}
+
+			Doug Hosking
+			Evans and Sutherland Computer Division
+			email: doug@escd.uucp
+---------------------------------------------------------------------------
+From donn@cs.utah.edu Thu Nov  2 01:45:04 1989
+Date: Thu, 2 Nov 89 02:45:32 -0700
+From: donn@cs.utah.edu (Donn Seeley)
+To: escd!doug@cs.utah.edu
+Subject: Re: dangerous assumptions in nroff [4.3BSD/usr.bin/216]
+Cc: bostic@okeeffe.Berkeley.EDU
+
+I hit this problem some time ago.  The solution I chose, which is
+installed at Berkeley, was to generate terminal driver tables the way
+that nroff likes them, independently of the local compiler and object
+format.  Here's the C source file you need, which belongs in the
+nroff/term directory:
+
+------------------------------------------------------------------------
+/*
+ * mktab.c
+ *
+ * Function:	Build nroff terminal tables in a compiler-independent way.
+ * Usage:	cc -Itroff mktab.c tabnnn.c -o mktab; mktab > tabnnn
+ * Date:	Sat Feb 25 00:10:06 MST 1989
+ * Author:	Donn Seeley
+ * Remarks:
+ *	Traditional nroff terminal table construction works by compiling
+ *	a C file into a binary that is read directly into nroff as it runs.
+ *	If your C compiler or your relocation format differ from what nroff
+ *	expects, you lose.  This program, when linked with a terminal table
+ *	object file, fakes up an 'object' file that looks enough like the
+ *	traditional one to fool nroff.
+ */
+
+#include <stdio.h>
+#include "tw.h"
+
+main()
+{
+	static struct fake_exec {
+		int bogus[8];	/* bogus[2] == a_data */
+	} fe;
+	register int *bip;
+	register char **tip;
+	register int offset = sizeof t;
+	int buf[sizeof t / sizeof (int)];
+	char *malloc();
+	int twbase = (int *) &t.twinit - &t.bset;
+
+	/*
+	 * Copy the integers at the start of the table.
+	 */
+	bcopy((char *) &t, (char *) buf, twbase * sizeof (int));
+
+	/*
+	 * Replace the character pointers in the copy with integer offsets.
+	 * This duplicates the effect of relocation offsets.
+	 * Take care to count the possibly null control bytes in the codetab
+	 *	section.
+	 */
+	for (bip = &buf[twbase], tip = &t.twinit;
+	     tip < &t.codetab[0];
+	     ++bip, ++tip)
+		if (*tip) {
+			*bip = offset;
+			offset += strlen(*tip) + 1;
+		} else
+			*bip = 0;
+	for (; tip < &t.zzz; ++bip, ++tip)
+		if (*tip) {
+			*bip = offset;
+			offset += strlen(*tip + 1) + 2;
+		} else
+			*bip = 0;
+
+	/*
+	 * Patch in a fake data segment size field.
+	 */
+	fe.bogus[2] = offset;
+
+	/*
+	 * Dump the header and the table.
+	 */
+	(void) fwrite((char *) &fe, sizeof fe, 1, stdout);
+	(void) fwrite((char *) buf, sizeof t, 1, stdout);
+
+	/*
+	 * Dump the strings.
+	 */
+	for (tip = &t.twinit; tip < &t.codetab[0]; ++tip)
+		if (*tip) {
+			fputs(*tip, stdout);
+			putchar('\0');
+		}
+	for (tip = &t.codetab[0]; tip < &t.zzz; ++tip)
+		if (*tip) {
+			putchar(**tip);
+			fputs(*tip + 1, stdout);
+			putchar('\0');
+		}
+
+	return 0;
+}
+------------------------------------------------------------------------
+
+Makefiles change from site to site and release to release; I'll just
+give you relevant excerpts from our 'term' makefile and I'm sure you
+can fix your own appropriately:
+
+------------------------------------------------------------------------
+CFLAGS= -I../../troff
+ ...
+tab37:		mktab.o tab37.o
+ ...
+${ALL}:
+	${CC} mktab.o $@.o -o mktab
+	./mktab > $@
+ ...
+------------------------------------------------------------------------
+
+Note that we made these changes so that we could build nroff terminal
+tables on machines where GCC is the native compiler...
+
+Hope this works for you too,
+
+Donn
+

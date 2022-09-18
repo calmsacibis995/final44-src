@@ -1,0 +1,66 @@
+Return-Path: <quarles@ucbic>
+Date: Mon, 19 Mar 84 22:37:28 PST
+From: quarles@ucbic (Tom Quarles)
+Subject: make dies after a limited number of compiles
+Index: 	bin/make 4.2BSD
+
+Description:
+	Make loses track of file descriptors when making very large programs,
+	and eventually a compiler will die due to an inability to open a
+	temporary file - f77 seems to be the most common cause, although
+	it probably bothers other compilers also.
+Repeat-By:
+	attempt to 'make' a program that has many subroutines in separate
+	files and a command that must be exec'd (by the shell - ie has a 
+	metacharacterin it) for each one.  After about 15 subroutines have 
+	been compiled, the compiler will complain about inability to open 
+	temp files.
+Fix:
+	in make/dosys.c, function doshell(), carefully vforks, then in the
+	child closes all of the file descriptors and dismantles the data 
+	structure built describing them.  Since it hasn't done the exec yet,
+	this destroys the data structures in the parent also, while the parent 
+	still has the files open.  When the parent later wants to look in the 
+	same directory, it finds no entry in its data structures that says it 
+	has it open, so it opens it again.... until it reaches MAXFILES
+
+	The fix is simple - remove the call to doclose just before the exec, and
+	instead in make/files.c, function srchdir(), add a fcntl( ,F_SETFD,1) on
+	the open of the directory to invoke the automatic close in child on 
+	exec.
+
+	In addition, by making this same change (delete the call to doclose),
+	the fork in doexec can be replaced with a vfork for efficiency.  
+	(This is the last reference to doclose(), so it can be deleted too.)
+
+	diffs follow:
+
+********diff /usr/src/bin/make/files.c files.c:
+0a1
+> #include <fcntl.h>
+240a242
+> 		fcntl(dirf->dd_fd,F_SETFD,1);
+
+********diff /usr/src/bin/make/dosys.c dosys.c:
+42d41
+< 	doclose();
+81,90d79
+< doclose()	/* Close open directory files before exec'ing */
+< {
+< register struct dirhdr *od;
+< 
+< for (od = firstod; od; od = od->nxtopendir)
+< 	if (od->dirfc != NULL) {
+< 		closedir(od->dirfc);
+< 		od->dirfc = NULL;
+< 	}
+< }
+123c112
+< if((waitpid = fork()) == 0)
+---
+> if((waitpid = vfork()) == 0)
+126d114
+< 	doclose();
+
+	Tom Quarles
+	quarles@ucbcad

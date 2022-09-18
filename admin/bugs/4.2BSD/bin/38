@@ -1,0 +1,118 @@
+Return-Path: <fluke!jeff@uw-beaver.arpa>
+Date: Wed, 30 Jan 85 15:06:29 pst
+From: fluke!jeff@uw-beaver.arpa (Jeff Stearns)
+Subject: Awk doesn't wait for child processes
+Index: 	bin/awk 4.2BSD
+Apparently-To: 4bsd-bugs@BERKELEY.ARPA
+
+Description:
+	Awk doesn't wait for its child processes to complete before awk itself
+	exits.  This can cause shell scripts to fail in mysterious and
+	non-deterministic ways.
+Repeat-By:
+	Arrange for awk to pipe some data to a slow-running process such as sort.
+	When awk is finished, it will exit without waiting for its child:
+
+		</etc/passwd awk '{ print $0 | "sort" }' >/tmp/awkout
+		# Now note that the size changes as sort continues to run:
+		wc /tmp/awkout
+		wc /tmp/awkout
+		wc /tmp/awkout
+		wc /tmp/awkout
+Fix:
+	My previous bug report included a bogus bug fix which would fail
+	under some race conditions.  Here is a proper bug fix which works.
+	Two files are affected: main.c and run.c:
+
+
+*** main.c.old	Wed Jan 30 14:47:01 1985
+--- main.c	Wed Jan 30 14:45:27 1985
+***************
+*** 89,94
+  		exit(0);
+  	}
+  	run();
+  	exit(errorflag);
+  }
+  
+
+--- 89,102 -----
+  		exit(0);
+  	}
+  	run();
++ 	/*
++ 	 *  Awk may have spawned some children (printf "....." | sort).
++ 	 *  The children may still be alive (sort can be quite slow).
++ 	 *  It is a bad idea to exit before our children have completed,
++ 	 *  as the next command to be executed may depend on ALL of our
++ 	 *  processing being complete.  Thus we wait for our kids.
++ 	 */
++ 	WaitForChildren();
+  	exit(errorflag);
+  }
+
+*** run.c.old	Wed Jan 30 14:47:21 1985
+--- run.c	Wed Jan 30 14:45:50 1985
+***************
+*** 13,18
+  {
+  	FILE *fp;
+  	char *fname;
+  } files[FILENUM];
+  FILE *popen();
+  
+
+--- 13,19 -----
+  {
+  	FILE *fp;
+  	char *fname;
++ 	 int CreatedByPopen;
+  } files[FILENUM];
+  FILE *popen();
+  
+***************
+*** 858,863
+  	if (i >= FILENUM)
+  		error(FATAL, "too many output files %d", i);
+  	if (a == '|')	/* a pipe! */
+  		files[i].fp = popen(x.optr->sval, "w");
+  	else if (a == APPEND)
+  		files[i].fp = fopen(x.optr->sval, "a");
+
+--- 859,865 -----
+  	if (i >= FILENUM)
+  		error(FATAL, "too many output files %d", i);
+  	if (a == '|')	/* a pipe! */
++ 		files[i].CreatedByPopen = 1,   /* so we remember to pclose it */
+  		files[i].fp = popen(x.optr->sval, "w");
+  	else if (a == APPEND)
+  		files[i].fp = fopen(x.optr->sval, "a");
+***************
+*** 872,875
+  	fflush(files[i].fp);	/* in case someone is waiting for the output */
+  #endif
+  	tempfree(x);
+  }
+
+--- 874,894 -----
+  	fflush(files[i].fp);	/* in case someone is waiting for the output */
+  #endif
+  	tempfree(x);
++ }
++ 
++ /*
++  *  Awk may have spawned some children (printf "....." | sort).
++  *  The children may still be alive (sort can be quite slow).
++  *  It is a bad idea to exit before our children have completed,
++  *  as the next command to be executed may depend on ALL of our
++  *  processing being complete.  Thus we wait for our kids.
++  */
++ WaitForChildren () {
++     int i;
++     for (i=0; i<FILENUM; i++) {
++ 	if (files[i].fp  && files[i].CreatedByPopen) {
++ 	    (void) pclose (files[i].fp);
++ 	    files[i].fp = 0;
++ 	}
++     }
+  }

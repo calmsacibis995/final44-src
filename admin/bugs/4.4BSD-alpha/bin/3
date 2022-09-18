@@ -1,0 +1,57 @@
+From chet@odin.INS.CWRU.Edu Fri Feb 19 14:14:24 1993
+Date: Fri, 19 Feb 1993 17:09:11 -0500
+From: Chet Ramey <chet@odin.INS.CWRU.Edu>
+To: bostic@vangogh.CS.Berkeley.EDU
+Subject: Bug in 4.4 sh + fix
+Cc: chet@odin.INS.CWRU.Edu
+Reply-To: chet@po.CWRU.Edu
+Read-Receipt-To: chet@po.CWRU.Edu
+Mime-Version: 1.0
+Content-Type: text/plain; charset=us-ascii
+Index: bin/sh 4.4BSD-alpha
+
+[Sorry about sending it directly to you, but I don't have my copy of 4.4 yet
+and don't know where bug reports should go.]
+
+I've found a bug in the editing code in the 4.4 sh.  Reproduce by
+set -o emacs or set -o vi.  The shell aborts:
+
+odin(2)$ ./obj/sh
+${HOST}($SHLVL)\$ set -o emacs
+Abort (core dumped)
+
+It's dumping core trying to initialize the arrow keys.  Frankly,
+I don't see how this could ever have worked.  Say we're trying to
+reset the arrow keys in term_reset_arrow(), which is what happens
+on set -o emacs.  That ends up calling
+
+	key_add("\033[A", xxx, 0);
+
+where `xxx' specifies ED_PREV_HISTORY.  key_add calls node__try
+to actually install the binding into the keymap.  node__try runs
+through the string, creating a node for each character in the key
+sequence with node__get.  node__get never sets the type of the
+nodes it returnsto anything but XK_NOD.  When the end of the key
+sequence is reached, node__try attempts to discover whether or
+not anything needs to be freed by checking the type of the node. 
+If it gets XK_NOD, it calls abort(). 
+
+The fix for libedit is appended (node__try).
+
+*** key.c.orig	Mon Oct 12 01:56:34 1992
+--- key.c	Fri Feb 19 16:54:30 1993
+***************
+*** 351,354 ****
+--- 351,355 ----
+  	switch (ptr->type) {
+  	case XK_CMD:
++ 	case XK_NOD:
+  	    break;
+  	case XK_STR:
+
+--
+``The use of history as therapy means the corruption of history as history.''
+	-- Arthur Schlesinger
+
+Chet Ramey, Case Western Reserve University	Internet: chet@po.CWRU.Edu
+

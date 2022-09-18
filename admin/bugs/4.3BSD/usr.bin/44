@@ -1,0 +1,116 @@
+From chris@brillig.umd.edu  Sat Mar 21 21:56:48 1987
+Date: Sun, 22 Mar 87 00:55:13 EST
+From: Chris Torek <chris@brillig.umd.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: lint misses out on initialisers
+
+Index: usr.bin/lint 4.3BSD
+
+Description:
+	Lint does not realise that an initaliser that uses the
+	address of an object can both set and use that object.
+
+Repeat-By:
+	% cat bug.c
+	int **p;
+
+	main()
+	{
+		static int i;
+
+		i = 1;
+		{ static int *ip = &i; *p++ = ip; }
+	}
+	% lint bug.c
+	bug.c(8): warning: i set but not used in function main
+
+	Note that lint does not complain if this is changed to
+
+		static int i = 1;
+		{ static int *ip = &i; *p++ = ip; }
+
+	(This came up in the context of a union initialiser, which
+	of course must be written as code, not an aggregate constant.)
+
+========================================================================
+From elsie!ado@seismo.CSS.GOV Mon Apr 13 14:28:54 1987
+Date: Mon, 13 Apr 87 17:26:03 EDT
+From: elsie!ado@seismo.CSS.GOV (Arthur David Olson)
+Subject: Re:  lint bug
+
+> Description:
+> 	Lint does not realise that an initaliser that uses the
+> 	address of an object can both set and use that object.
+> 
+> Repeat-By:
+> 	% cat bug.c
+> 	int **p;
+> 
+> 	main()
+> 	{
+> 		static int i;
+> 
+> 		i = 1;
+> 		{ static int *ip = &i; *p++ = ip; }
+> 	}
+
+The problem here is that initialization of statics is handled in the
+function "doinit" without calling "ecode", which is where lint fiddles
+the "SET" and "USED" bits.  This fix to "lib/mip/pftn.c" should compensate:
+
+	*** OLD/pftn.c	Mon Apr 13 17:14:29 1987
+	--- NEW/pftn.c	Mon Apr 13 17:07:46 1987
+	***************
+	*** 1096,1101 ****
+	--- 1096,1109 ----
+		inforce( pstk->in_off );
+	  
+		p = buildtree( ASSIGN, block( NAME, NIL,NIL, t, d, s ), p );
+	+ #ifndef ASWAS
+	+ #ifdef LINT
+	+ 	/*
+	+ 	** Give lint a gander.
+	+ 	*/
+	+ 	ecode(p);
+	+ #endif /* LINT */
+	+ #endif /* !ASWAS */
+		p->in.left->in.op = FREE;
+		p->in.left = p->in.right;
+		p->in.right = NIL;
+
+And while we're worrying about "set but not used" messages,
+let's worry about the fact that running this code:
+
+	main()
+	{
+		int	i = 1;
+		int	j;
+
+		j = 1;
+	}
+
+through lint produces these messages:
+
+	(6): warning: j set but not used in function main
+	(3): warning: i unused in function main
+
+This change to "usr.bin/lint/lint.c" should ensure that both i and j are
+recognized as having been "set":
+
+	*** OLD/lint.c	Mon Apr 13 17:12:29 1987
+	--- NEW/lint.c	Mon Apr 13 17:08:40 1987
+	***************
+	*** 486,491 ****
+	--- 486,495 ----
+				if( uses & VALSET ) q->sflags |= SSET;
+				if( uses & VALUSED ) q->sflags |= SREF;
+				if( uses & VALADDR ) q->sflags |= (SREF|SSET);
+	+ #ifndef ASWAS
+	+ 			if ((uses & (VALSET | VALADDR)) != 0)
+	+ 				q->suse = -lineno;
+	+ #endif /* !ASWAS */
+				if( p->tn.lval == 0 ){
+					lnp->lid = id;
+					lnp->flgs = (uses&VALADDR)?0:((uses&VALSET)?VALSET:VALUSED);
+
+				--ado

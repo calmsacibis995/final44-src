@@ -1,0 +1,148 @@
+<html>
+<!--
+$Header$
+
+%(Copyright)
+>
+<head>
+<TITLE>Gated Configuration Guide - Route Aggregation</TITLE>
+</head>
+<body>
+<H1>Route Aggregation</H1>
+
+<A NAME="aggr"></A><A NAME="generate"></A>
+
+Route aggregation is a method of generating a more general route given
+the presence of a specific route.  It is used, for example, at an
+autonomous system border to generate a route to a network to be
+advertised via EGP given the presence of one or more subnets of that
+network learned via RIP.  Older versions of GateD automatically
+performed this function, generating an aggregate route to a
+<em>natural</em> network (using the old Class A, B and C concept)
+given an interface to a subnet of that <em>natural</em> network.
+However that was not always the correct thing to do, and with the
+advent of classless interdomain routing it is even more frequently the
+wrong thing to do, so aggregation must be explicitly configured.  No
+aggregation is performed unless explicitly requested in an
+<code>aggregate</code> statement. <p>
+
+Route aggregation is also used by regional and national networks to 
+reduce the amount of routing information passed around.  With careful 
+allocation of network addresses to clients, regional networks can just 
+announce one route to regional networks instead of hundreds. <p>
+
+Aggregate routes are not actually used for packet forwarding by the
+originator of the aggregate route, only by the receiver (if it
+wishes).  A router receiving a packet which does not match one of the
+component routes which led to the generation of an aggregate route is
+supposed to respond with an ICMP <var>network unreachable</var>
+message.  This is to prevent packets for unknown component routes from
+following a default route into another network where they would be
+forwarded back to the border router, and around and around again and
+again, until their TTL expires.  Sending an unreachable message for a
+missing piece of an aggregate is only possible on systems with support
+for <a href="glossary.html#reject_route">reject routes</a>.  <p>
+
+A slight variation of aggregation is the generation of a route based
+on the existence of certain conditions.  This is sometimes known as
+the <em>route of last resort</em>.  This route inherits the next hops
+and aspath from the contributor specified with the lowest (most
+favorable) preference.  The most common usage for this is to generate
+a default based on the presence of a route from a peer on a
+neighboring backbone.
+
+<hr>
+
+<h2>Aggregation and Generation syntax</h2>
+
+<pre>
+<strong>aggregate</strong> <strong>default</strong>
+    | ( <var>network</var> [ ( <strong>mask</strong> <var>mask</var> ) | ( <strong>masklen</strong> <var>number</var> ) ] )
+    [ <strong>preference</strong> <var><a href="pref.html">preference</a></var> ] [ <strong>brief</strong> ] <strong>{</strong>
+    <strong>proto</strong> [ <strong>all</strong> | <strong>direct</strong> | <strong>static</strong> | <strong>kernel</strong> | <strong>aggregate</strong> | <var>proto</var> ] 
+        <strong>restrict</strong> ;
+    <strong>proto</strong> [ <strong>all</strong> | <strong>direct</strong> | <strong>static</strong> | <strong>kernel</strong> | <strong>aggregate</strong> | <var>proto</var> ] 
+        [ <strong>preference</strong> <var><a href="pref.html">preference</a></var> ] <strong>{</strong>
+        <var><a href="#route filter">route_filter</a></var> [ <strong>restrict</strong> | ( <strong>preference</strong> <var><a href="pref.html">preference</a></var> ) ] <strong>;</strong>
+    <strong>}</strong> <strong>;</strong>
+<strong>}</strong> <strong>;</strong>
+
+<strong>generate</strong> <strong>default</strong>
+    | ( <var>network</var> [ ( <strong>mask</strong> <var>mask</var> ) | ( <strong>masklen</strong> <var>number</var> ) ] )
+    [ <strong>preference</strong> <var><a href="pref.html">preference</a></var> ] <strong>{</strong>
+    <strong>proto</strong> [ <strong>all</strong> | <strong>direct</strong> | <strong>static</strong> | <strong>kernel</strong> | <strong>aggregate</strong> | <var>proto</var> ] 
+        <strong>restrict</strong> ;
+    <strong>proto</strong> [ <strong>all</strong> | <strong>direct</strong> | <strong>static</strong> | <strong>kernel</strong> | <strong>aggregate</strong> | <var>proto</var> ] 
+        [ <strong>preference</strong> <var><a href="pref.html">preference</a></var> ] <strong>{</strong>
+        <var><a href="#route filter">route_filter</a></var> [ <strong>restrict</strong> | ( <strong>preference</strong> <var><a href="pref.html">preference</a></var> ) ] <strong>;</strong>
+    <strong>}</strong> <strong>;</strong>
+<strong>}</strong> <strong>;</strong>
+</pre>
+
+Routes that match the route filters are called <em>contributing</em>
+routes.  They are ordered according to the aggregation preference that
+applies to them.  If there are more than one contributing routes with
+the same aggregating preference, the route's own preferences are used
+to order the routes.  The preference of the aggregate route will be
+that of contributing route with the lowest aggregate preference.
+
+<dl>
+<dt> <strong>preference</strong> <var><a href="pref.html">preference</a></var>
+<dd> Specifies the preference to assign to the resulting aggregate
+     route.  The default preference is 130.
+	
+<dt> <strong>brief</strong>
+<dd> Used to specify that the AS path should be truncated to the
+     longest common AS path.  The default is to build an AS path
+     consisting of SETs and SEQUENCEs of all contributing AS paths.
+
+<dt> <var>proto</var>
+<dd> In addition to the special protocols listed, the contributing
+     protocol may be chosen from among any of the ones supported (and
+     currently configured into) GateD.
+     
+<dt> <strong>restrict</STRONG>
+<dd> Indicates that these routes are not to be considered as
+     contributors of the specified aggregate.  The specified protocol
+     may be any of the protocols supported by GateD. 
+
+<dt> <var>route_filter</var>
+<dd> See below.     
+</dl>
+
+A route may only contribute to an aggregate route which is more
+general than itself; it must match the aggregate under its mask.
+Any given route may only contribute to one aggregate route, which will
+be the most specific configured, but an aggregate route may contribute
+to a more general aggregate. <p>
+
+<hr>
+
+<h2><a name="route filter">Route Filters</a></h2>
+
+All the formats allow route filters as shown below.  See the section
+on <a href="filter.html">route filters</a> for a detailed
+explaination of how they work.  When no route filtering is specified
+(i.e. when <code>restrict</code> is specified on the first line of a
+statement), all routes from the specfied source will match that
+statement.  If any filters are specified, only routes that match the
+specified filters will be considered as contributors.  Put
+differently, if any filters are specified, an <code>all restrict
+;</code> is assumed at the end of the list.
+
+<pre>
+    <var>network</var> [ <strong>exact</strong> | <strong>refines</strong> ]
+    <var>network</var> <strong>mask</strong> <var>mask</var> [<strong>exact</strong> | <strong>refines</strong> ]
+    <var>network</var> <strong>masklen</strong> <var>number</var> [ <strong>exact</strong> | <strong>refines</strong> ]
+    <strong>default</strong>
+    <strong>host</strong> <var>host</var>
+</pre>
+
+
+<hr>
+
+Last updated $Date$.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

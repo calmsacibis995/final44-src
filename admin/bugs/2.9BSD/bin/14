@@ -1,0 +1,122 @@
+From stevea@uiphysed.cso.uiuc.edu  Mon Nov 25 10:57:23 1985
+Date: Mon, 25 Nov 85 12:52:16 cst
+From: stevea@uiphysed.cso.uiuc.edu (Steve Alexander)
+To: goldberg@a.cs.uiuc.edu
+Subject: f77bugs
+
+Subject: A couple of bugs in f77 error handling.
+
+Index:	bin/f77/{gram.head,error.c} 2.9BSD
+
+Description:
+
+	1)    Yacc errors (usually syntax errors) do not display
+	   a line number, and cause compilation to abort.
+
+	2)    Fatal compiler errors do not display the type of error.
+	   This is because f77pass1 exits before it has a chance to 
+	   print the arguments to the error() call.
+
+Repeat-By:
+
+	#1 can be reproduced by compiling any program that contains
+	a continuation character after a tab, rather than after 5 spaces.
+
+	program t
+	character*1
+	+ foo
+	stop
+	end
+
+	-----------------------
+	#2 is hard to do on demand.  I got it by compiling a very
+	large program with the distributed compiler.
+
+Fix:
+
+	1) Apply the following diffs to gram.head
+
+*** gram.head.dist	Tue Nov 12 17:07:35 1985
+--- gram.head	Tue Nov 12 21:09:41 1985
+***************
+*** 3,9
+  #include "string_defs"
+  
+  #ifdef	C_OVERLAY
+! #define	yyerror(x)	{fprintf(diagfile, "%s\n", x); done(3); exit(3);}
+  #else
+  #define	yyerror(x)	error(x, 0, 0, FATAL)
+  #endif
+
+--- 3,10 -----
+  #include "string_defs"
+  
+  #ifdef	C_OVERLAY
+! #define	yyerror(x)	{fprintf(diagfile, "Error on line %d of %s: %s\n",\
+! 				lineno,infname,x); nerr++;}
+  #else
+  #define	yyerror(x)	error(x, 0, 0, YYERR)
+  #endif
+***************
+*** 5,11
+  #ifdef	C_OVERLAY
+  #define	yyerror(x)	{fprintf(diagfile, "%s\n", x); done(3); exit(3);}
+  #else
+! #define	yyerror(x)	error(x, 0, 0, FATAL)
+  #endif
+  
+  static int nstars;
+
+--- 6,12 -----
+  #define	yyerror(x)	{fprintf(diagfile, "Error on line %d of %s: %s\n",\
+  				lineno,infname,x); nerr++;}
+  #else
+! #define	yyerror(x)	error(x, 0, 0, YYERR)
+  #endif
+  
+  static int nstars;
+
+	2) Apply the following diffs to error.c
+
+*** error.c.dist	Tue Nov 12 21:11:28 1985
+--- error.c	Tue Nov 12 21:18:43 1985
+***************
+*** 42,47
+  
+  	    case FATAL1:
+  	    case FATAL:
+  		fprintf(diagfile,"f77 compiler error line %d of %s: ", lineno, infname);
+  		if(debugflag)
+  			abort();
+
+--- 42,51 -----
+  
+  	    case FATAL1:
+  	    case FATAL:
++ 		if (buf[0] != '\0') {
++ 			fprintf(diagfile, buf, t, u);
++ 			fprintf(diagfile, "\n");
++ 		}
+  		fprintf(diagfile,"f77 compiler error line %d of %s: ", lineno, infname);
+  		if(debugflag)
+  			abort();
+***************
+*** 94,99
+  
+  	    case FATAL1:
+  	    case FATAL:
+  		fprintf(diagfile,"f77 compiler error line %d of %s: ", lineno, infname);
+  		if(debugflag)
+  			abort();
+
+--- 98,107 -----
+  
+  	    case FATAL1:
+  	    case FATAL:
++ 		if (str != NULL) {
++ 			fprintf(diagfile, str, t, u);
++ 			fprintf(diagfile, "\n");
++ 		}
+  		fprintf(diagfile,"f77 compiler error line %d of %s: ", lineno, infname);
+  		if(debugflag)
+  			abort();

@@ -1,0 +1,100 @@
+From jack@dsl.pitt.edu  Wed Aug  2 07:33:33 1989
+Date: Wed, 2 Aug 89 10:32:02 EDT
+From: jack@cadre.dsl.pitt.edu (Jack Nelson)
+Subject: VI wrapmargin bug which dumps text into command mode
+#Index: ucb 4.3BSD-tahoe 4.3BSD 2BSD
+Index: ucb/ex 4.3BSD-tahoe
+
+Description:
+	A wrapmargin bug exists in which a non-interactive
+	text insertion into the margin area, i.e. with a 'p'
+	command, leads to junk being interpreted as commands and
+	also no proper wrap onto the next line, and sometimes leaving
+	the editor in insert mode depending on the junk.
+Repeat-By:
+	Test: put the next two lines into a file "wmtest"
+	+---------+---------+---------+---------+---------+---------+---------+---------
+	this is a 123456 1234567 line on the second line
+	Now:
+	  $ vi +'set wm=30' wmtest
+	    yank the first two words 'this is ' into a buffer
+	    move to the end of the line and then do a 'p'
+	You should hear beeping, but note that the second word 'is ' doesn't
+	move onto the second line as it should, but the ' is '
+	is compressed into 's':
+
+	this is a 123456 1234567 line on the second linethiss
+
+	Also note that you are left in
+	insert mode.  If you just yank one word, then repeat the put at
+	the end of the line, the trailing space gets eaten, and repeat
+	puts of the same word just pile up at the end with no spaces
+	between them.
+
+	Explanation:
+
+	The stuff to be wrapped (after the space between the two words)
+	in the wrap margin is macpush()'d in vgetline() in ex_vops2.c.
+	The idea is that it should be restored on the next line.
+	When a space is encountered in the wrap margin area, the newline
+	and non-space characters which follow the space are macpush()'d,
+	then a jump is made to the 'vbackup:' code section where the
+	insert mode is turned off.  When the newline is seen as the
+	next character, vgetline() exits back to vappend(), then
+	control returns to vappend() and 'vinsrch()' is again made the
+	output routine to turn on insert mode for insertion on the new line.
+		This works well with type-in of text, but not with a 'p' or '.'
+	commands.  In the latter cases, 'vglobp' is not NULL, and also
+	with macpush()'d text the 'vmacp' also is not NULL.
+	The bug comes into play during the next
+	call to getkey(), if there is macpush()'d text
+	waiting.  Getkey() calls getbr(), which in the original code
+	pulls in 'vglobp' text in precedence to the 'vmacp' text
+	using non-pushed text, and signals completion when it is done
+	so that the macpush()'d '\n' is never seen; unless the 
+	newline "escape" is seen, vgetline() can't
+	exit back to vappend(); since the insert mode is not then
+	turned on again until vappend() re-calls vgetline(),
+	the "doomed" 'vglobp' characters are interpreted 
+	as command-mode input with the expected chaos resulting, the
+	exact nature of which depends on the characters themselves,
+	which is why the bug is so multiform and destructive.
+Fix:
+	move the 'vmacp' code in ex_vgets.c to have higher precedence
+	than the 'vglobp' code, by putting it above it in the subroutine.
+	One could also skip the 'vglobp' code if 'vmacp' not NULL, but
+	I think these are equivalent.
+
+*** orgs/ex_vget.c	Tue Feb 17 01:07:33 1987
+--- ex_vget.c	Sat Jul 22 00:55:44 1989
+***************
+*** 94,105 ****
+  		return (c);
+  	}
+  #endif
+- 	if (vglobp) {
+- 		if (*vglobp)
+- 			return (lastvgk = *vglobp++);
+- 		lastvgk = 0;
+- 		return (ESCAPE);
+- 	}
+  	if (vmacp) {
+  		if (*vmacp)
+  			return(*vmacp++);
+--- 94,99 ----
+***************
+*** 109,114 ****
+--- 103,114 ----
+  			vundkind = VMANY;
+  		inopen = 1;	/* restore old setting now that macro done */
+  		vch_mac = VC_NOTINMAC;
++ 	}
++ 	if (vglobp) {
++ 		if (*vglobp)
++ 			return (lastvgk = *vglobp++);
++ 		lastvgk = 0;
++ 		return (ESCAPE);
+  	}
+  	flusho();
+  again:
+

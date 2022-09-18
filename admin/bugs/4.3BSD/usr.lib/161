@@ -1,0 +1,100 @@
+From trb@IMA.IMA.ISC.COM  Thu Jul 26 16:45:39 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA19618; Thu, 26 Jul 90 16:45:39 -0700
+Received: from ima.ima.isc.com by ucbvax.Berkeley.EDU (5.63/1.41)
+	id AA07377; Thu, 26 Jul 90 16:45:48 -0700
+Received: from haddock.ima.isc.com by ima.ima.isc.com (5.61/1.35h)
+	id AA05278; Thu, 26 Jul 90 19:45:53 -0400
+Received: by haddock.ima.isc.com (5.61/1.37)
+	id AA17057; Thu, 26 Jul 90 19:45:24 -0400
+Date: Thu, 26 Jul 90 19:45:24 -0400
+From: trb@IMA.IMA.ISC.COM (Andrew Tannenbaum)
+Message-Id: <9007262345.AA17057@haddock.ima.isc.com>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: crash bug in sendmail 5.64 with fix
+Cc: karl@IMA.IMA.ISC.COM
+
+Index:	usr.lib/sendmail/src/conf.c 4.3BSD
+
+Description:
+	sendmail 5.64 aborts when ported to a 386
+	(running AT&T UNIX Sys V.3 ISC version 2.2) with 
+
+		Jul 26 18:00:10 localhost sendmail[953]: NOQUEUE: SYSERR: Out of memory!!
+
+Repeat-By:
+	/usr/lib/sendmail -bz				# to freeze, then
+	/usr/lib/sendmail -v person@place.domain	# to crash
+
+Fix:
+	The problem is that the freeze-file thaw code uses brk(2) and
+	its nasty friends with abandon.  thaw assumes that there have
+	been no malloc's done before it, since it is going to replace
+	whatever malloc arena is there with a previously frozen
+	incarnation.  5.64 calls
+
+		main (line 186) ->
+		setdefaults ->
+		setdefuser ->
+		newstr ->
+		xmalloc ->
+		malloc
+
+	before calling the thaw code.  This is the only call to malloc
+	before the thaw code.  It took us a few hours to figure out why
+	the malloc arena was all of a sudden full of a thousand valid
+	malloc'd entries without hitting the malloc breakpoint.
+
+	Rather than rewriting the freeze/thaw code (the right solution)
+	to not use brk, I have included a patch to fix setdefuser so it
+	doesn't call malloc.  This is kludgy, but no worse than
+	previous versions of sendmail.
+
+
+	Andrew Tannenbaum
+	Karl Heuer
+
+	INTERACTIVE Systems Corporation  Cambridge, MA   +1 617 661 7474
+	A Kodak Company
+
+<<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>><<>>
+This patch applies to:
+static char sccsid[] = "@(#)conf.c      5.26 (Berkeley) 6/1/90";
+
+*** conf.c	Thu Jul 26 19:09:25 1990
+--- conf.c.fix	Thu Jul 26 19:09:00 1990
+***************
+*** 167,179 ****
+  setdefuser()
+  {
+  	struct passwd *defpwent;
+  
+- 	if (DefUser != NULL)
+- 		free(DefUser);
+  	if ((defpwent = getpwuid(DefUid)) != NULL)
+! 		DefUser = newstr(defpwent->pw_name);
+  	else
+! 		DefUser = newstr("nobody");
+  }
+  
+  
+--- 167,185 ----
+  setdefuser()
+  {
+  	struct passwd *defpwent;
++ 	/*
++ 	 * don't call newstr here, because you can't malloc
++ 	 * until after calling thaw.  Thaw really shouldn't
++ 	 * rely on brk&co.
++ 	 */
++ 	static char DefUserBuf[128];
+  
+  	if ((defpwent = getpwuid(DefUid)) != NULL)
+! 		strcpy(DefUserBuf, defpwent->pw_name);
+  	else
+! 		strcpy(DefUserBuf, "nobody");
+! 		
+! 	DefUser = DefUserBuf;
+  }
+  
+  

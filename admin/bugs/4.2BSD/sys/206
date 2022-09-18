@@ -1,0 +1,51 @@
+Return-Path: <nbires!rhoads>
+Date: Fri, 11 Oct 85 17:22:24 mdt
+From: nbires!rhoads (Rhoads Hollowell)
+
+Subject: Data in mbufs is not necessarily adjusted off properly, which
+	 could result in data being presented to a user twice.
+
+Index:	sys/sys/uipc_mbuf.c 4.2BSD
+
+Description:
+	In uipc_mbuf.c, procedure m_adj(mp,len) is not logically correct
+	for len < 0.  In the second part of this procedure (which handles
+	negative lengths) a 2-pass algorithm IS better, as the one given
+	is not only slow for long mbuf chains, but also fails under certain
+	circumstances.
+
+Repeat-By:
+	Given a chain of three mbufs, the first with m->m_len 'x', the
+	second with m->m_len 'y', and the third with m->m_len 'z', call
+	m_adj, first with a len of 'x', then with a len of '-z'.  The
+	routine will fail because the first mbuf has a m_len of 0, so the
+	while(len > 0 && m->m_len != 0) loop never executes.  This will
+	happen if any of the mbufs in the chain have a length of 0 and some
+	mbufs after it have a non-0 length.
+Fix:
+	declare "register int accum;" in m_adj, then replace the second
+	half of m_adj (starting with /* a 2 pass algorithm might be better */
+	with:
+
+	/*
+	 * for the case of a negative value, we need to make two passes. the
+	 * first will determine the total length of the mbuf chain, the second
+	 * will figure out where to start shortening it and then do it.
+	 */
+	for(accum = 0; m != NULL; m = m->m_next)
+		accum += m->m_len;
+	/*
+	 * now start the second pass, skipping any mbufs whose length is
+	 * not needed
+	 */
+	for(m = mp; (accum + len) >= m->m_len; m = m->m_next)
+		accum -= m->m_len;
+	/*
+	 * we are on the first mbuf which needs to be shortened.  shorten it
+	 * and zero all of the rest of the mbufs in the chain.
+	 */
+	m->m_len = (accum + len > 0) ? (accum + len) : 0;
+	for(m = m->m_next; m != NULL; m = m->m_next)
+		m->m_len = 0;
+	}
+}

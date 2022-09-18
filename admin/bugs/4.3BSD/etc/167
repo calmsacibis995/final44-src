@@ -1,0 +1,108 @@
+Subject: /etc/ncheck fails in certain situations
+Index: etc/ncheck.c 4.3BSD
+
+Description:
+	/etc/ncheck fails in certain situations.  This has serious implications
+	because "/etc/ncheck -s" is one important tool in detecting security
+	breaches, and this is the situation where ncheck can fail.
+
+	This appears to have been a problem in the 4.2BSD and 4.3BSD versions
+	of ncheck, and perhaps earlier ones as well. 
+
+	Failure #1:
+	If applied to a file system with > 8016 inodes in use, ncheck dies
+	with "ncheck: out of core".  This is actually a bogus error message;
+	it is really out of hash table slots.  In fact, what is happening is
+	that there appears to be a bug in the code for the function "pass1()";
+	I've provided the source code in question:
+
+	if ((ip->di_mode & IFMT) != IFDIR) {
+		if (sflg==0 || nxfile>=NB)
+			return;
+		if ((ip->di_mode&IFMT)==IFBLK || (ip->di_mode&IFMT)==IFCHR ||
+								/* 1 */
+		(ip->di_mode&IFMT)==IFPORT || ip->di_mode&(ISUID|ISGID)) {
+			ilist[nxfile].ino = ino;
+			ilist[nxfile].mode = ip->di_mode;
+			ilist[nxfile].uid = ip->di_uid;
+			ilist[nxfile++].gid = ip->di_gid;
+			return;
+		}
+	}
+	lookup(ino, 1);
+
+	Translated into pseudo-code, what this does is:
+
+	IF file is not a directory THEN
+	    if sflag is set and ilist isn't full THEN
+		if file is special or setuid THEN
+		    enter into ilist
+		ELSE
+		    enter into hash table;	/* APPARENT BUG HERE */
+		END
+	    END;
+	ELSE	/* file is a directory */
+	    enter file into hash table;
+	END
+
+	The bug appears to be that all non-setuid regular files are entered
+	into the hash table, which (as far as I can tell) is only supposed
+	to contain directories.  Since there are only 8017 hash table slots,
+	and since modern disks are big enough for 10's of thousands
+	of files to be stored in one partition, this breaks.
+
+	Failure #2:
+	If there are more than 500 special or setuid files on a file system,
+	ncheck does not report some of them.  This bug is actually more insid-
+	ious, because it can silently hide security breaches.  It turns out
+	that on our 8800 system, we have more than 500 entries in /dev alone;
+	this means that /etc/ncheck -s will not find all the setuid or special
+	files on the root partition, and so certain security breaches will go
+	undetected.
+
+Repeat-By:
+	see above
+
+Fix:
+	Description of how to fix the problem.
+	If you don't know the fix, don't include this section or "Fix:".
+
+	FIX#1
+	add a "return" statement so that regular files are not
+	entered into the hash table (see code below).
+
+	Also, the #define for HSIZE should probably be increased
+	from 8017 to something about an order of magnitude bigger,
+	since I can imagine customers (such as universities) who
+	will try to put many directories on gigabyte disk partitions.
+
+	FIX#2
+	Ncheck should at least report when it is unable to add more
+	files to the "ilist" array.  Also, the size of that array
+	should be increased significantly (say, from 500 to 5000).
+
+	Here is my modified code for the end of "pass1()", incorporating
+	fixes to both bugs:
+
+	if ((ip->di_mode & IFMT) != IFDIR) {
+		if (sflg==0)	/* changed by Jeff Mogul, 21 March 1990 */
+			return;
+		if ((ip->di_mode&IFMT)==IFBLK || (ip->di_mode&IFMT)==IFCHR ||
+								/* 1 */
+		(ip->di_mode&IFMT)==IFPORT || ip->di_mode&(ISUID|ISGID)) {
+			if (nxfile >= NB) {	/* added by Jeff Mogul */
+			    printf("%-5u\t(name unknown, table too small)",
+					ino);
+			    printf("\tmode %-6o uid %-5d gid %-5d\n",
+					ip->di_mode, ip->di_uid, ip->di_gid);
+			    return;
+			}
+			ilist[nxfile].ino = ino;
+			ilist[nxfile].mode = ip->di_mode;
+			ilist[nxfile].uid = ip->di_uid;
+			ilist[nxfile++].gid = ip->di_gid;
+			return;
+		}
+		return;		/* added by Jeff Mogul/DECWRL 21 March 1990 */
+	}
+	lookup(ino, 1);

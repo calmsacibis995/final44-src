@@ -1,0 +1,116 @@
+Return-Path: <mogul@Gregorio>
+Date: Fri, 17 Aug 84 15:49:20 pdt
+From: Jeff Mogul <mogul@Gregorio>
+Subject: TM78 driver (4.[12]BSD) causes panic in rare cases
+Index: 	sys/vaxmba/mt.c 4.2BSD Fix
+	sys/dev/mt.c 4.1BSD Fix
+
+Description:
+	If a TU78 tape drive on a TM78 formatter is reading a tape and
+	cannot completely read a record in the forward direction, it
+	may interrupt the CPU with an interrupt code of "READ OPP".  This
+	means that the drive has been positioned at the end of the record,
+	the byte count register has been loaded with the length of the
+	record, and the CPU should initiate a "Read Opposite" transfer
+	in an attempt to read the record in the reverse direction.
+	
+	The DEC technical manual for the TM78 is not too clear on the
+	subject, but a direct communication with DEC reveals that the
+	proper sequence in this case is:
+	
+	(1) Load mtca with SER=1 (Suppress Error Repositioning) and the
+		drive unit number; all other fields should be 0.
+	(2) Load the MBA byte count register in the usual way
+	(3) Load the MBA virtual address register with the map register
+		pointer and physical byte offset for the *last* byte
+		in the buffer, unlike the usual case.
+	(4) Load the drive control register with the MT_READREV code
+	
+	The mt.c driver supplied with 4.[12]BSD has code to try to handle
+	this, but this code does not do step (1) or (3) properly.  It
+	fails to set the SER bit in mtca (probably a minor bug), but
+	it gets step (3) wrong because there is no way to do it right.
+	This is because the MASSBUS driver (mba.c) does not support
+	"backwards" DMA; i.e, there is an assumption built into the code
+	of mbasetup() that the buffer address is always the start of the
+	buffer.
+	
+	What actually causes a panic, though, is a little subtler.  The
+	drive returns the total length of the tape record, to be used
+	as the byte count for the Read Opposite.  However, if the
+	buffer supplied by the user is shorter than the tape record,
+	when the code in mt.c blindly sets the b_bcount field longer
+	that the size of the buffer it causes a panic (probably
+	"mba, zero entry" but I forget exactly which one) if the buffer
+	is near the end of the user's address space.  (I suspect there
+	may be other ways this code could create havoc.)
+
+	I'm not sure there is any reasonable way of doing the Read
+	Opposite, in the general case, since it might require the driver
+	to reposition the tape within a record if the user's buffer is
+	not large enough.
+
+Repeat-By:
+	This is hard to repeat, since it requires a tape that is bad
+	in a way that I don't entirely understand.  However, I have
+	found one tape that will reliably crash our 4.1 system.  The
+	tape is written with 8000 byte blocks; reading it with
+	
+	dd if=/dev/rmt4 of=/dev/null ibs=1600
+	
+	causes the panic, presumably because the driver tries to
+	Read Opposite 8000 bytes into a 1600 byte buffer.
+	
+	Examination of the mt.c code should suffice to convince one
+	that the bug exists.
+Fix:
+	This does not entirely fix the problem, but it does avoid
+	crashing the system.  The MTER_RDOPP is treated as if it were
+	a normal hard error, and the record is skipped.
+	
+	This diff is for the 4.2BSD driver; the changes are the same
+	for the 4.1BSD driver, but the line numbers are a little different.
+
+*** mt.c.old	Fri Aug 17 14:33:07 1984
+--- mt.c	Fri Aug 17 14:48:38 1984
+***************
+*** 323,328
+  		break;
+  
+  	case MTER_RDOPP:
+  		mi->mi_tab.b_errcnt = 2;	/* indicate "read opposite" */
+  		bp->b_resid = bp->b_bcount;	/* save it */
+  		bp->b_bcount = mtaddr->mtbc;	/* use this instead */
+
+--- 332,345 -----
+  		break;
+  
+  	case MTER_RDOPP:
++ 		printf(
++ 		    "mu%d: hard error bn%d MTER_RDOPP, bcount %x, mtbc %x\n",
++ 			MUUNIT(bp->b_dev), bp->b_blkno, bp->b_bcount,
++ 			mtaddr->mtbc);
++ 		bp->b_flags |= B_ERROR;
++ 		break;
++ #ifdef	notdef
++ 		/* This code causes a panic */
+  		mi->mi_tab.b_errcnt = 2;	/* indicate "read opposite" */
+  		bp->b_resid = bp->b_bcount;	/* save it */
+  		bp->b_bcount = mtaddr->mtbc;	/* use this instead */
+***************
+*** 327,332
+  		bp->b_resid = bp->b_bcount;	/* save it */
+  		bp->b_bcount = mtaddr->mtbc;	/* use this instead */
+  		return(MBD_RETRY);
+  
+  	case MTER_RETRY:
+  		mi->mi_tab.b_errcnt = 1;	/* indicate simple retry */
+
+--- 344,350 -----
+  		bp->b_resid = bp->b_bcount;	/* save it */
+  		bp->b_bcount = mtaddr->mtbc;	/* use this instead */
+  		return(MBD_RETRY);
++ #endif	notfdef
+  
+  	case MTER_RETRY:
+  		mi->mi_tab.b_errcnt = 1;	/* indicate simple retry */

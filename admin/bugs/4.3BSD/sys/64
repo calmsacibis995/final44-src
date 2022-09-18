@@ -1,0 +1,73 @@
+From: Ken Lalonde <kwlalonde%watmath.waterloo.edu@RELAY.CS.NET>
+Subject: fork may return non-unique pid
+Index: 	sys/kern_fork.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+Status: R
+
+Description:
+	When the range of free pids (mpid .. pidchecked) runs out,
+	newproc scans the proc table to determine if the current value
+	of mpid is unused.  If an existing process has that pid, mpid is
+	incremented and the search continues from that point in the list.
+
+	Problem is, one of the previously examined list entries may have a
+	pid equal to the new (incremented) mpid.  Newproc would miss
+	that, and the new process would get the same pid as an existing one.
+
+Repeat-By:
+	I haven't tried.  It may be that the above situation never
+	happens in practice, but it does appear to be possible.
+
+Fix:
+	If mpid is found in the proc table, restart the search from
+	scratch, as in 4.2.  This shouldn't affect performance as this
+	piece of code is executed rarely.  Note: the invariant
+	assumption that pids in the range (mpid..pidchecked) are unused
+	does not hold true in the for-loop below (because the final
+	pidchecked value is yet to be set), so the condition "mpid <
+	pidchecked" doesn't suffice to ensure the new value of mpid is
+	unique.
+
+*** kern_fork.c.old	Sat Nov  1 02:34:40 1986
+--- kern_fork.c	Sat Nov  1 02:54:44 1986
+***************
+*** 131,138
+  		for (; rpp != NULL; rpp = rpp->p_nxt) {
+  			if (rpp->p_pid == mpid || rpp->p_pgrp == mpid) {
+  				mpid++;
+! 				if (mpid >= pidchecked)
+! 					goto retry;
+  			}
+  			if (rpp->p_pid > mpid && pidchecked > rpp->p_pid)
+  				pidchecked = rpp->p_pid;
+
+--- 131,138 -----
+  		for (; rpp != NULL; rpp = rpp->p_nxt) {
+  			if (rpp->p_pid == mpid || rpp->p_pgrp == mpid) {
+  				mpid++;
+! 				pidchecked = 0;
+! 				goto retry;
+  			}
+  			if (rpp->p_pid > mpid && pidchecked > rpp->p_pid)
+  				pidchecked = rpp->p_pid;
+
+--
+Ken Lalonde
+U of Waterloo		kwlalonde@math.waterloo.edu
+			decvax!watmath!kwlalonde
+
+=========================================================
+Date: Sun, 2 Nov 86 21:44:57 est
+From: Ken Lalonde <kwlalonde%watmath.waterloo.edu@RELAY.CS.NET>
+Subject: Ignore bug report "fork may return non-unique pid"
+Index: 	sys/kern_fork.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+Status: R
+
+Description:
+	I see now that the situation I described in my previous
+	bug report can't happen.  The "fix" I provided is
+	harmless but unnecessary (and will slow things down a bit).
+	Sorry to bother you.
+
+

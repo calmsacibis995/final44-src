@@ -1,0 +1,169 @@
+Return-Path: <dgg@ATHENA.MIT.EDU>
+Date: Sun, 8 Sep 85 17:51:16 edt
+From: dgg@ATHENA.MIT.EDU
+Subject: "inline" produces broken code.
+
+Index:	sys/vax/inline/inline 4.3BSD
+
+Description:
+	There is a bug in the new "inline" program which showed up when I
+	was putting the Athena changes from 4.2 back into the 4.3 kernel.
+
+	As part of its function, inline looks through the output from
+	/lib/c2 for lines which look like this:  "calls	$0,_spl6"
+
+	There are other spl "calls" (spl0 - spl7) which are also replaced
+	by inline.  Some have more than zero ($0) arguments.
+
+	The problem stems from two features of the whole scheme, one in
+	/lib/c2 and the other in inline.
+
+	/lib/c2 notices when there is a register lying around with the
+	right constant in it and uses it to produce "calls	r11,_spl6"
+	or something like that, saving time in general, but screwing up
+	occasionally.  (See the example below.)
+
+	inline then looks explicitly for lines which begin "calls	$",
+	then matches a table containing strings like: "0,_spl6"
+
+	The major difficulties in this technique is that all the "spl?"
+	routines are bogus constructs offered as a service to kernel
+	hackers.  They are EXPECTED to be diked out by the inline routine,
+	and there is no flexibility to the calling sequence.
+
+	The only way to get around this is to keep the second pass of
+	the compiler (/lib/c2) from having a handy zero around at the
+	time it calls spl6.
+
+	By the way, the way this manifests itself is that the kernel
+	claims an unresolved reference to the spl6 routine, which shouldn't
+	be there anyway.
+
+	I found this by looking at the symbol tables of the object files
+	for spl6 and tracing back through the compile steps.
+
+	I could fix this for the VAX, but making the "doreplaceon" and
+	"expand" commands slightly more intelligent, but I can't fix it for
+	the MC68000.
+
+
+Repeat-By:
+
+	Compile the following Non-Working program:
+
+	Script started on Sat Sep  7 18:21:47 1985
+	mit-pollux# cat spl.c
+	test()
+	{
+	        register int s = 0;
+	        spl6();
+	}
+	mit-pollux# cc -S spl.c
+	mit-pollux# cat spl.s
+	LL0:
+	        .data
+	        .text
+	        .align  1
+	        .globl  _test
+	_test:
+	        .word   L12
+	        jbr     L14
+	L15:
+	        clrl    r11
+	        calls   $0,_spl6
+	        ret
+	        .set    L12,0x800
+	L14:
+	        jbr     L15
+	        .data
+	mit-pollux# /lib/c2 spl.s | tee xx
+	.data
+	.text
+	LL0:.align      1
+	.globl  _test
+	.set    L12,0x800
+	.data
+	.text
+	_test:.word     L12
+	clrl    r11
+	calls   r11,_spl6
+	ret
+
+	mit-pollux# /sys/vax/inline/inline xx
+	.data
+	.text
+	LL0:
+	.align  1
+	.globl  _test
+	.set    L12,0x800
+	.data
+	.text
+	_test:.word     L12
+	clrl    r11
+	calls   r11,_spl6
+	ret
+
+	mit-pollux# 
+	script done on Sat Sep  7 18:23:11 198
+
+	==============================================================
+	Working version:
+	Script started on Sat Sep  7 18:26:17 1985
+	mit-pollux# cat spl.c
+	test()
+	{
+	        int s = 0;
+	        spl6();
+	}
+	mit-pollux# cc -S spl.c
+	mit-pollux# cat spl.s
+	LL0:
+	        .data
+	        .text
+	        .align  1
+	        .globl  _test
+	_test:
+	        .word   L12
+	        jbr     L14
+	L15:
+	        clrl    -4(fp)
+	        calls   $0,_spl6
+	        ret
+	        .set    L12,0x0
+	L14:
+	        subl2   $4,sp
+	        jbr     L15
+	        .data
+	mit-pollux# /lib/c2 spl.s | tee xx
+	.data
+	.text
+	LL0:.align      1
+	.globl  _test
+	.set    L12,0x0
+	.data
+	.text
+	_test:.word     L12
+	subl2   $4,sp
+	clrl    -4(fp)
+	calls   $0,_spl6
+	ret
+
+	mit-pollux# /sys/vax/inline/inline xx
+	.data
+	.text
+	LL0:
+	.align  1
+	.globl  _test
+	.set    L12,0x0
+	.data
+	.text
+	_test:.word     L12
+	subl2   $4,sp
+	clrl    -4(fp)
+	        mfpr    $18,r0
+	        mtpr    $0x18,$18
+	ret
+
+	mit-pollux# 
+	script done on Sat Sep  7 18:27:16 1985
+

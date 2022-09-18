@@ -1,0 +1,74 @@
+From mark@labtam.labtam.oz.au  Wed Sep 23 05:04:59 1992
+Received: from ucbvax.Berkeley.EDU by vangogh.CS.Berkeley.EDU (5.113/2.7) id AA04446; Wed, 23 Sep 92 05:04:59 -0700
+Received: from munnari.OZ.AU by ucbvax.Berkeley.EDU (5.63/1.43)
+	id AA11855; Wed, 23 Sep 92 05:05:09 -0700
+Received: from labtam.labtam.oz by munnari.oz.au with SunIII (5.83--+1.3.1+0.50)
+	id AA10607; Wed, 23 Sep 1992 22:05:46 +1000 (from mark@labtam.labtam.oz.au)
+Received: from localhost by labtam.labtam.oz.au (5.64/1.13)
+	id AA07287; Wed, 23 Sep 92 22:05:01 +1000
+From: mark@labtam.labtam.oz.au (Mark Treacy)
+Message-Id: <9209231205.AA07287@labtam.labtam.oz.au>
+Date: Wed, 23 Sep 1992 22:05:00 +1000
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: tcp_input() chooses incorrect iss when connection in TIME-WAIT state.
+
+Index: sys net2
+
+Description:
+	Detailed description of the problem, suggestion, or complaint.
+
+	From RFC-1122, page 88
+            When a connection is closed actively, it MUST linger in
+            TIME-WAIT state for a time 2xMSL (Maximum Segment Lifetime).
+            However, it MAY accept a new SYN from the remote TCP to
+            reopen the connection directly from TIME-WAIT state, if it:
+
+            (1)  assigns its initial sequence number for the new
+                 connection to be larger than the largest sequence
+                 number it used on the previous connection incarnation,
+                 and
+	    ...
+	
+	The code that implements this assigns the initial sequence number
+	for the new connection to be larger than the largest sequence
+	number _the remote host_  used on the previous connection
+	incarnation. i.e. rcv_nxt is used instead of snd_nxt.
+
+
+	Additional Suggestion.
+	This code could be moved to before the segment is trimmed.
+	If rsh, for example, is used from a system using 4.2bsd
+	derived code the sequence number for the SYN will likely be
+	within the receive window of the old connection because
+	TCP_ISSINCR is only 128.  This will cause RST's to be sent
+	and rcmd(3) to backoff.
+
+Repeat-By:
+	Inspection of code.
+
+	Watch network traffic (e.g. tcpdump)
+	$ rsh host echo ; rsh host echo
+	Where host is 4.3bsd-tahoe, 4.3bsd-reno or BSD-NET2.
+
+Fix:
+
+------- tcp_input.c -------
+*** /tmp/da005.v	Thu Jan  1 10:00:00 1970
+--- tcp_input.c	Wed Sep 23 21:35:50 1992
+***************
+*** 691,697 ****
+  			if (tiflags & TH_SYN &&
+  			    tp->t_state == TCPS_TIME_WAIT &&
+  			    SEQ_GT(ti->ti_seq, tp->rcv_nxt)) {
+! 				iss = tp->rcv_nxt + TCP_ISSINCR;
+  				tp = tcp_close(tp);
+  				goto findpcb;
+  			}
+--- 691,697 ----
+  			if (tiflags & TH_SYN &&
+  			    tp->t_state == TCPS_TIME_WAIT &&
+  			    SEQ_GT(ti->ti_seq, tp->rcv_nxt)) {
+! 				iss = tp->snd_nxt + TCP_ISSINCR;
+  				tp = tcp_close(tp);
+  				goto findpcb;
+  			}

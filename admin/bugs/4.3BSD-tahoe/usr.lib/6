@@ -1,0 +1,394 @@
+From steve@eleazar.Dartmouth.EDU Sun Feb 12 11:45:53 1989
+Date: Sun, 12 Feb 89 14:44:16 -0500
+From: steve@eleazar.Dartmouth.EDU (Steve Campbell)
+To: bostic@monet.Berkeley.EDU
+Subject: sendmail bug found
+Index: usr.lib/sendmail/src 4.3BSD-tahoe
+
+Keith,
+
+You recall that at USENIX and in a subsequent mail note I mentioned a
+sendmail problem.  I believe I have found the problem and have a fix
+for it.  There is a second, less important bug, too.  This note is to
+run these fixes by you informally before I send them to 4bsd-bugs and
+post them.
+
+setevent bug
+
+The symptom of the major bug was that sendmail would sometimes die
+during queue runs, leaving a lockfile set on some message.  There
+were no errors in syslog and no core file.  The bug appeared in 5.59
+and 5.61.
+
+Running the queue manually finally showed that the problem was a
+longjmp botch.  Since setevent/clrevent/tick are the main users of
+longjmp, I ran more manual queue runs with -d5.5 set.  Here is the
+pertinent portion of such a run that ended with the botch.  I have
+added line numbers for reference.
+
+	Running AA28991
+	<info-prime%ais1@ecla.usc.edu>... Connecting to eclc.usc.edu (tcp)...
+1	setevent: intvl=300, for=602974135, func=bb48, arg=0, ev=689c0
+	tick: now=602973835
+2	setevent: intvl=1800, for=602975635, func=c9f0, arg=0, ev=689e0
+	tick: now=602973836
+3	clrevent: ev=689e0
+	tick: now=602973836
+	220-ECLC.USC.EDU SMTP Service 5.1(15)-5 at Wed 8 Feb 89 12:41:28-PST
+4	setevent: intvl=1800, for=602975636, func=c9f0, arg=0, ev=689e0
+	tick: now=602973837
+5	tick: now=602974136
+	>>> QUIT
+6	setevent: intvl=1800, for=602975936, func=c9f0, arg=0, ev=689c0
+	tick: now=602974137
+7	clrevent: ev=689c0
+	tick: now=602974149
+	<info-prime%ais1@ecla.usc.edu>... reply: read error
+	<info-prime%ais1@ecla.usc.edu>... Deferred: Bad file number
+	
+	...(Time passes.  In fact 25 minutes.)...
+	
+	Chris Bogart <bogartc@handel.cs.colostate.edu>... Connecting to handel.ColoState.EDU (tcp)...
+8	tick: now=602975636
+	longjmp botch
+
+Here's what happens line-by-line.
+
+1	Smtpinit in usersmtp.c calls setevent with a 5 minute timeout for
+	greeting wait.  It calls relay which calls sfgets.
+
+2	sfgets in util.c calls setevent with a 30 minute timeout for reads.
+3	The read is quick, and sfgets calls clrevent to clear the event set at 
+	line 2.
+
+4	The line read happens to be a continuation line, so reply calls
+	sfgets again.  Sfgets again sets a 30 minute timeout.
+
+5	Now the network goes to hell, and the next line is never received.
+	Five minutes after the event set in line 1, the timer goes off.
+	Sendmail gives up on the host and sends a QUIT.
+
+6,7	An event is set for a response to the QUIT, but the connection gets
+	closed down in 10 seconds.  Sendmail goes on to the next message.
+
+The crucial point is that the event set in line 4 has never been cleared.
+Since the queue is big and the network slow, sendmail is still running
+25 minutes later when, at line 8, that event goes off.  The functions
+involved have been called and returned many times, so when the function
+that tick calls does a longjmp, zap!
+
+The fix
+
+The nested calls to setevent, with the child (sfgets) setting a longer
+timeout than the parent (smtpinit), are the problem here.  My fix is
+to have smtpinit temporarily change the official ReadTimeout that 
+sfgets is going to use, rather than have smtpinit call setevent itself.
+While this is not the most elegant solution, it is simple and works.
+I have been running it on our hub for almost a week.  There have been
+no more orphan lockfiles (I was getting about 1 a day), and nothing
+else seems to have broken.  Here are the patches:
+
+
+*** /tmp/,RCSt1006607	Sun Feb 12 13:05:44 1989
+--- usersmtp.c	Thu Feb  9 22:02:22 1989
+***************
+*** 72,87 ****
+  **		creates connection and sends initial protocol.
+  */
+  
+- jmp_buf	CtxGreeting;
+- 
+  smtpinit(m, pvp)
+  	struct mailer *m;
+  	char **pvp;
+  {
+  	register int r;
+! 	EVENT *gte;
+  	char buf[MAXNAME];
+- 	extern greettimeout();
+  
+  	/*
+  	**  Open the connection to the mailer.
+--- 72,84 ----
+  **		creates connection and sends initial protocol.
+  */
+  
+  smtpinit(m, pvp)
+  	struct mailer *m;
+  	char **pvp;
+  {
+  	register int r;
+! 	time_t SavedReadTimeout;
+  	char buf[MAXNAME];
+  
+  	/*
+  	**  Open the connection to the mailer.
+***************
+*** 133,145 ****
+  	**	happen.
+  	*/
+  
+- 	if (setjmp(CtxGreeting) != 0)
+- 		goto tempfail;
+- 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	setproctitle("%s %s: %s", CurEnv->e_id, CurHostName, SmtpPhase);
+  	r = reply(m);
+! 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+--- 130,142 ----
+  	**	happen.
+  	*/
+  
+  	SmtpPhase = "greeting wait";
+  	setproctitle("%s %s: %s", CurEnv->e_id, CurHostName, SmtpPhase);
++ 	SavedReadTimeout = ReadTimeout;
++ 	if (ReadTimeout > 300)
++ 		ReadTimeout = 300;
+  	r = reply(m);
+! 	ReadTimeout = SavedReadTimeout;
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+***************
+*** 218,231 ****
+    unavailable:
+  	smtpquit(m);
+  	return (EX_UNAVAILABLE);
+- }
+- 
+- 
+- static
+- greettimeout()
+- {
+- 	/* timeout reading the greeting message */
+- 	longjmp(CtxGreeting, 1);
+  }
+  /*
+  **  SMTPRCPT -- designate recipient.
+--- 215,220 ----
+***end of diffs***
+
+
+
+
+
+"SMTP does not imply [IPC]" bug
+
+This is one I reported some time ago with 5.59.  It is still there in
+5.61.  It is admittedly obscure in that it won't affect many systems.
+Nonetheless, it affects some (obviously including me) and I think it is 
+a bug.
+
+Sendmail makes the assumption that any mailer that speaks SMTP, ie which
+has no $u in its argv, is an IPC mailer.  In particular it will call
+getmxrr for the "host" name.  But the assumption is wrong.  You can
+have (and we do) a mailer that is a program on the local host and speaks
+SMTP with sendmail.  Since this is a "local" mailer, ie its "l" flag is
+set, there is no host associated with it, ie there is no $@host in the
+ruleset zero resolution line for this mailer.  Thus "host" is null,
+getmxrr fails, and sendmail returns "host unknown" even though the
+message is correct and could be delivered.
+
+The fix
+
+The fix is trivial.  Have sendmail check for a null host name before
+calling getmxrr.  The patch is in deliver.c.  A minor efficiency gain
+is obtained by moving the expand() call to where it's needed.
+
+*** /tmp/,RCSt1006583	Sun Feb 12 13:04:50 1989
+--- deliver.c	Thu Feb  9 18:39:02 1989
+***************
+*** 379,389 ****
+  #ifdef SMTP
+  	if (clever)
+  	{
+- 		expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+  		rcode = EX_OK;
+  #ifdef NAMED_BIND
+! 		if (host[0] != '[')
+  		{
+  			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+  		}
+  		else
+--- 379,389 ----
+  #ifdef SMTP
+  	if (clever)
+  	{
+  		rcode = EX_OK;
+  #ifdef NAMED_BIND
+! 		if (host[0] && host[0] != '[')
+  		{
++ 			expand("\001w", buf, &buf[sizeof(buf) - 1], e);
+  			Nmx = getmxrr(host, MxHosts, buf, &rcode);
+  		}
+  		else
+
+
+If I don't hear from you, I will go ahead and post these (with a briefer
+description of the first one).  Thanks for your time.
+
+					Steve Campbell
+					Steve.Campbell@Dartmouth.EDU
+
+From Lennart_Lovstrand.EuroPARC@Xerox.COM Wed Dec 21 12:34:30 1988
+Received: from Xerox.COM by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA00894; Wed, 21 Dec 88 12:34:26 PST
+Received: from Riesling.ms by ArpaGateway.ms ; 21 DEC 88 12:28:23 PST
+Sender: "Lennart_Lovstrand.EuroPARC"@Xerox.COM
+Date: 21 Dec 88 12:25:42 PST (Wednesday)
+Subject: sendmail dumps core: problem & fix
+From: "Lennart_Lovstrand.EuroPARC"@Xerox.COM
+To: bostic@okeeffe.Berkeley.EDU
+Cc: "Lennart_Lovstrand.EuroPARC"@Xerox.COM
+Message-Id: <881221-122823-3057@Xerox>
+Status: RO
+
+We've had some rather nasty problems with Arisia.Xerox.COM's sendmail for a
+long time in which sendmail dumped core and queue files got stuck.  The
+problem is rather obvious when you see it in retrospect, but it sure made
+me tear my hair for some time.  Thought you'd be interested in any case.
+
+
+Symptoms:
+
+Sendmail's queue daemon dumps core and leaves locked queue files when
+delivering messages to large mailing lists.
+
+Arisia.Xerox.COM's sendmail has been dumping core about 3-5 times a week
+while running the common-loops mailing list queue.  A post mortem backtrace
+shows a bus error in or around sfgets() followed by garbage data on the
+stack.  Deleting the the lock files and restarting sendmail may or may not
+succeed in delivering the affected message depending on the phase of the
+moon.
+
+Diagnosis:
+
+The problem turns out to be that smtpinit() will enclose a call to reply(),
+which calls sfgets(), with its own, hardwired timeout of 5 minutes.
+Because timeouts are implemented using the non-dynamically scoped (ie. no
+unwind-protect a la Lisp) event mechanism of clock.c, this means that
+sfgets' general timeout of 30 minutes (say) still will remain after
+smtpinit's has fired and will then cause a spurious timeout 25 minutes
+later with a return to a non-existant stack frame.  However, just to
+complicate things, if we happen to be back in sfgets() when the old timeout
+fires, we may perceive this as a premature new timeout and return -1 but
+still leave the new real timeout to be confuse things x minutes later.
+
+Repeat-By:
+
+Set the global read timeout to 5m3s.  Run sendmail with -d5.6 -v and a
+recipient which should be on a host which will accept SMTP connections, but
+not send any responses.  Now watch sendmail timeout at exactly 5m after it
+opened the connection and then again 3s later while waiting in smtpquit.
+
+To stimulate a core dump, add a long list of recipients after the first and
+then let the remote host wait until it receives a QUIT before closing the
+connection.  With a bit of luck (sic), the second timeout will happen
+somewhere outside of sfgets and produce a corrupt stack state.
+
+Solution:
+
+Either remove the offending 5 minute timeout in smtpinit altogether since
+sfgets will perform the same service, albeit later, or implement it by
+temporarily resetting the value of ReadTimeout to 300 during the greet
+wait.
+
+Context diffs for both cases are included below.
+
+Cheers,
+--Lennart
+
+
+[Removing the greet timeout]
+
+*** usersmtp.c.old	Wed Dec 21 14:44:06 1988
+--- usersmtp.c	Wed Dec 21 20:17:05 1988
+***************
+*** 79,87 ****
+  	char **pvp;
+  {
+  	register int r;
+- 	EVENT *gte;
+  	char buf[MAXNAME];
+- 	extern greettimeout();
+  
+  	/*
+  	**  Open the connection to the mailer.
+--- 79,85 ----
+***************
+*** 135,146 ****
+  	**	happen.
+  	*/
+  
+- 	if (setjmp(CtxGreeting) != 0)
+- 		goto tempfail;
+- 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+- 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+--- 133,140 ----
+***************
+*** 219,231 ****
+  	return (EX_UNAVAILABLE);
+  }
+  
+- 
+- static
+- greettimeout()
+- {
+- 	/* timeout reading the greeting message */
+- 	longjmp(CtxGreeting, 1);
+- }
+  /*
+  **  SMTPRCPT -- designate recipient.
+  **
+--- 213,218 ----
+
+
+[Temporarily resetting ReadTimeout]
+
+*** usersmtp.c.old	Wed Dec 21 14:44:06 1988
+--- usersmtp.c	Wed Dec 21 14:42:21 1988
+***************
+*** 81,86 ****
+--- 81,87 ----
+  	register int r;
+  	EVENT *gte;
+  	char buf[MAXNAME];
++ 	int oldReadTimeout;
+  	extern greettimeout();
+  
+  	/*
+***************
+*** 135,146 ****
+  	**	happen.
+  	*/
+  
+! 	if (setjmp(CtxGreeting) != 0)
+! 		goto tempfail;
+! 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+! 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+--- 136,146 ----
+  	**	happen.
+  	*/
+  
+! 	oldReadTimeout = ReadTimeout;
+! 	ReadTimeout = 300;
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+! 	ReadTimeout = oldReadTimout;
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+

@@ -1,0 +1,83 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Fri, 6 Apr 84 20:23:46 pst
+Subject: Multiplying something by the constant 0 can cause f77 to crash
+Index: usr.bin/f77/src/f77pass1/expr.c 4.2BSD
+
+Description:
+	This bug is the same as the one reported by trq@astrovax.UUCP
+	with the subject 'problem with mixed-mode in f77'.  Basically
+	it randomly applies to f77 programs that have an expression in
+	which a value of a type other than INTEGER is multiplied by the
+	constant 0.  Admittedly few real programs explicitly multiply
+	by zero -- the main sources of examples are programs which have
+	PARAMETER variables that are set to zero.
+
+Repeat-By:
+	Put the following program in a file named constbug.f:
+
+	----------------------------------------------------------------
+		program constbug
+
+		integer iwrblk
+
+		iwrblk = 1 + 0 * 1.0
+		print *, iwrblk
+
+		stop
+		end
+	----------------------------------------------------------------
+
+	If you compile this program with the optimizer on, the compiler
+	says:
+
+	----------------------------------------------------------------
+	constbug.f:
+	   MAIN constbug:
+	Compiler error line 5 of constbug.f: Impossible type 0 in routine mkconv
+
+	compiler error.
+	----------------------------------------------------------------
+
+	If you compile the program with the optimizer off, it prints '0'.
+	(What you would expect it to print is '1'.)
+
+Fix:
+	What is happening is that f77 is stomping on its data
+	structures.  F77 wants to convert '0 * 1.0' to '0.0' when it
+	evaluates constant expressions.  The data structure for the '0'
+	is freed after the conversion to '0.0', but the compiler
+	doesn't pay attention to the new value and continues to use the
+	old data structure for the '0' instead.  Since the compiler is
+	free to reuse this space, it later seems to behave strangely
+	(in this case the '0' shares with the optimizer data structure
+	for the same statement it appears in!).  This is trivial to fix
+	-- the change is in function mkexpr() in expr.c:
+
+	----------------------------------------------------------------
+	RCS file: RCS/expr.c,v
+	retrieving revision 1.1
+	diff -c -r1.1 expr.c
+	*** /tmp/,RCSt1015888	Fri Apr  6 20:08:55 1984
+	--- expr.c	Fri Apr  6 19:10:53 1984
+	***************
+	*** 1601,1607
+				{
+				if(rp->constblock.const.ci == 0)
+					{
+	! 				mkconv(etype, rp);
+					goto retright;
+					}
+				if ((lp->tag == TEXPR) &&
+
+	--- 1601,1607 -----
+				{
+				if(rp->constblock.const.ci == 0)
+					{
+	! 				rp = mkconv(etype, rp);
+					goto retright;
+					}
+				if ((lp->tag == TEXPR) &&
+	----------------------------------------------------------------
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn

@@ -1,0 +1,73 @@
+Return-Path: <allegra!princeton!astro>
+Date: 6 Jun 83 10:21:49 PDT (Mon)
+From: allegra!princeton!astro
+Subject: paging bug with raw dma devices
+Index: sys 4.2BSD
+
+This is a note I have posted onto the net.  I am also mailing it here to make
+sure it is brought to your attention.  I have no idea if it also applies to
+more recent releases.  It took me about 3 weeks to finally track this thing
+down.
+------------------------------------------------------------------------
+
+<<FIX THIS BUG IF YOU DO LARGE TRANSFERS ON RAW DMA DEVICES!!!>>
+There is a paging routine bug in 4.1 BSD that affects the locking of memory
+for dma on Raw I/O devices.  This bug can cause a process to hang at priority
+-24 (PSWP+1).  The problem occurs when an attempt is made to lock a page that
+is in the process of being swapped out.  The call in mlock in pagin() will
+block if this is the case.  However anything can happen during this block.
+In particular some other process can have grabbed that page.  Pagein() really
+should start the processing of that page fault again from the beginning.
+
+Here are the fixes to sys/vmpage.c
+119,120c119,129
+< 				if (p->p_flag & SDLYU)
+< 					mlock(pte->pg_pfnum);
+---
+> 				if (p->p_flag & SDLYU) {
+> 	/* BUG FIX (WLS) */
+> 					c = &cmap[pgtocm(pte->pg_pfnum)];
+> 					if (c->c_lock) {
+> 						c->c_want = 1 ;
+> 						sleep( (caddr_t)c, PSWP+1);
+> 						goto restart;
+> 					}
+> 					c->c_lock = 1;
+> 	/* END BUG FIX (WLS) */
+> 				}
+150,151c159,169
+< 		if (p->p_flag & SDLYU)
+< 			mlock(pte->pg_pfnum);
+---
+> 		if (p->p_flag & SDLYU) {
+> 	/* BUG FIX (WLS) */
+> 			c = &cmap[pgtocm(pte->pg_pfnum)];
+> 			if (c->c_lock) {
+> 				c->c_want = 1 ;
+> 				sleep( (caddr_t)c, PSWP+1);
+> 				goto restart;
+> 			}
+> 			c->c_lock = 1;
+> 	/* END BUG FIX (WLS) */
+> 		}
+
+The comments in mlock() and munlock() (in vmmem.c) in our source say something
+to the effect "THIS ROUTINE SHOULD TAKE A CMAP STRUCTURE AS AN ARGUMENT".
+Personally, I think this would be a bad idea for mlock(), as I think it is
+impossible after a block to guarantee that a page still belongs to the process
+that requested the mlock().
+
+This bug tends to mainly show up on large transfers when a system is busy.
+It first turned up on our versatec.  It is my theory that many poor innocent
+devices have been falsely suspected of losing interrupts due to this bug.
+
+About a month and a half ago I first reported this bug.  Unfortunately the
+fix I reported then was erroneous.  Rather than an occasional hang that fix
+would cause a guaranteed hang whenever the block in pagein occured. I am very
+sorry about that.  The fix given above has been running for about two weeks
+without the hang re-occuring.
+					William L. Sebok
+					Princeton Univ. Observatory
+					Peyton Hall, Rm 129
+					Princeton, N.J. 08544
+					..!allegra!princeton!astro

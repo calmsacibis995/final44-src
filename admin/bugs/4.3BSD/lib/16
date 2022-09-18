@@ -1,0 +1,168 @@
+Date: Fri, 22 Aug 86 15:26:33 PDT
+From: jordan (Jordan Hayes)
+Subject: trouble with getnetent()
+Index: lib 4.3BSD
+
+I was trying to use this routine, and it kept giving me garbage. I tried
+to look at the source, but it was pretty obscure. It was goofing up the
+aliases bit. Example code follows (it just prints out the whole file):
+
+-----
+#include <stdio.h>
+#include <netdb.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+main()
+{
+	register char	**cp;
+	struct netent	*np;
+
+	setnetent(1);
+
+	while ((np = getnetent()) != (struct netent *)NULL) {
+		printf("name\t%s\n", np->n_name);
+		for (cp = np->n_aliases; cp && *cp && **cp; cp++)
+			printf("alias\t%s\n", *cp);
+		printf("addr\t%s\n\n", inet_ntoa(htonl(np->n_net)));
+	}
+}
+
+-----
+
+Sample output follows:
+
+-----
+name	Berkeley
+alias	ucb-net
+addr	0.0.128.32
+
+name	ucb-ether
+alias	csdiv-3mb-net
+addr	0.128.32.0
+
+[ okay, so far ]
+
+...
+
+name	xcf-net
+alias	128.32.138		<-- this is the first entry in the table
+addr	0.128.32.138		    without an alias and an ending comment
+
+...
+
+name	latimer
+alias	128.32.144		<-- this is the next one like that ...
+addr	0.128.32.144
+
+...
+
+-----
+
+and so on. Since I couldn't really follow what was going on in the code,
+I decided to re-write it. It seems more straightforward to me, although
+maybe this fragment isn't so obscure to some people:
+
+		if (q < &net_aliases[MAXALIASES - 1])
+			*q++ = cp;
+
+In any case, here's my code for it, if you want it.
+
+----- /usr/src/lib/libc/net/getnetent.c
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <ctype.h>
+#include <string.h>
+
+#define	MAXALIASES	35
+
+/* macro to skip over a field */
+#define	SKIP(c)	while(*c != ' ' && *c != '\t' && *c != '\0')\
+			c++
+
+/* macro to ignore leading white-space while moving to next field */
+#define	NEXT(c)	while(*c == ' ' || *c == '\t')\
+			c++
+
+static char		NETDB[] = "/etc/networks";
+static char		line[BUFSIZ], *net_aliases[MAXALIASES];
+static struct netent	net;
+static FILE		*netf = (FILE *)NULL;
+int			_net_stayopen;
+
+setnetent(f)
+	int f;
+{
+	if (netf == (FILE *)NULL)
+		netf = fopen(NETDB, "r");
+	else
+		rewind(netf);
+	_net_stayopen |= f;
+}
+
+endnetent()
+{
+	if (netf) {
+		(void) fclose(netf);
+		netf = (FILE *)NULL;
+	}
+	_net_stayopen = 0;
+}
+
+struct netent	*
+getnetent()
+{
+	register char	*p, *cp;
+	int		a_count = 0;
+
+	if (netf == (FILE *)NULL && (netf = fopen(NETDB, "r" )) == (FILE *)NULL)
+		return ((struct netent *)NULL);
+
+	for (;;) {
+		if ((p = fgets(line, sizeof(line), netf)) == (char *)NULL)
+			return((struct netent *)NULL);
+		if ((cp = index(line, '#')) != (char *)NULL)
+			*cp = '\0';
+		else
+			if ((cp = index(line, '\n')) != (char *)NULL)
+				*cp = '\0';
+		NEXT(p);
+		if (*p == '\0')
+			continue;
+		net.n_name = p;
+		SKIP(p);
+		if (*p == '\0')
+			continue;
+		*p++ = '\0';
+		NEXT(p);
+		if (*p == '\0')
+			continue;
+		cp = p;
+		SKIP(p);
+		if (*p != '\0')
+			*p++ = '\0';
+		net.n_net = inet_network(cp);
+		net.n_addrtype = AF_INET;
+		net.n_aliases = net_aliases;
+		while ((a_count < MAXALIASES) && (*p != '\0')) {
+			NEXT(p);
+			if (*p != '\0') {
+				net_aliases[a_count++] = p;
+				SKIP(p);
+				if (*p != '\0')
+					*p++ = '\0';
+			}
+		}
+		net_aliases[a_count] = (char *)NULL;
+
+		return (&net);
+	}
+}
+-----
+I suppose I should post it to a bug-list or something.
+
+/jordan

@@ -1,0 +1,148 @@
+From muller%sdcc7@sdcsvax.ucsd.edu Mon Aug 24 11:54:06 1987
+Date: Mon, 24 Aug 87 11:51:50 PDT
+From: muller%sdcc7@sdcsvax.ucsd.edu (Keith Muller)
+Subject: mktemp and mkstemp can fail on setuid and setgid programs
+Index: lib/libc/gen/mktemp.c 4.3BSD
+
+Description:
+	mktemp and mkstemp when used in programs that depend on
+	additional privileged for file creation by setuid/setgid 
+	(and real uid != effective uid and/or real gid != effective gid)
+	can get incorrect error returns or duplicate file names.
+	(On 4.3 as shipped, mktemp can return duplicate names, on
+	the version running on ucbvax it can fail completely returning
+	a (char *) 0)
+Repeat-By:
+	(On version 5.3 of mktemp as on ucbvax):
+	Make a directory in tmp called /tmp/test. Set the owner to
+	something like bin. Set the mode to be 755 on /tmp/test.
+	Make the following program setuid bin. Run the program
+	logged in as a user who can NOT create files in /tmp/test
+	without additional effective user privileged. Both mktemp
+	and mkstemp fail when in fact temporary files can be created.
+
+	main()
+	{
+		extern char *mktemp();
+	
+		if (getuid() == geteuid()) {
+			printf("uid == euid. run setuid to test\n");
+			exit(1);
+		}
+		if (mktemp("/tmp/test/fooXXXXXX") == (char *)0)
+			printf("mktemp failed\n");
+		else
+			printf("mktemp passed\n");
+		if (mkstemp("/tmp/test/bazXXXXXX") < 0)
+			printf("mkstemp failed\n");
+		else
+			printf("mkstemp passed\n");
+	}
+
+Fix:
+	The problem boils down to the use of access which only checks
+	access right of the real uid/gid. On generic 4.3, mktemp() incorrectly
+	uses access() to test the existence of the file. This does not
+	work when directory access is denied to the real user but is valid for
+	the effective uid and/of gid due to the setuid/setgid mode. In this
+	case the worse that could happen is that a duplicate file name
+	could be returned (as the access failed due to real user permission
+	on the directory, not due to the lack of existence of the temporary
+	file). mkstemp() worked on generic 4.3 as it did not use access() at
+	all.
+	On the version of mktemp and mkstemp that exist on ucbvax (sccsid
+	5.3 dated 4/10/87) the problem is much worse as both mktemp() and
+	mkstemp() use access() to check write permission on a directory
+	and both with return with a failure if the access() fails. On setuid
+	and setgid programs this is incorrect as the added permissions could
+	permit the temporary file to be created. However the point of the
+	access() calls is to prevent long delays if the target directory
+	is not writable (or does not have execute permissions) due to the
+	very large number of combinations tried for the temporary file names.
+	The fix is to use stat() and return values of errno instead of
+	access() so directories which do not have write and execute permission
+	can be quickly detected.
+
+	Keith Muller
+	muller@sdcsvax.ucsd.edu
+
+	The following diff corrects the 5.3 version of mktemp() (and mkstemp())
+
+diff -c mktemp.old mktemp.c
+*** mktemp.old	Mon Aug 24 11:19:16 1987
+--- mktemp.c	Sun Aug 23 11:08:49 1987
+***************
+*** 10,17 ****
+--- 10,19 ----
+  
+  #include <sys/types.h>
+  #include <sys/file.h>
++ #include <sys/stat.h>
+  #include <stdio.h>
+  #include <ctype.h>
++ #include <errno.h>
+  
+  #define	YES	1
+  #define	NO	0
+***************
+*** 39,44 ****
+--- 41,48 ----
+  	register char	*start, *trv;
+  	u_int	pid;
+  	char	savech;
++ 	struct stat	statbuf;
++ 	extern	int errno;
+  
+  	pid = getpid();
+  
+***************
+*** 58,75 ****
+  	if (*trv == '/') {
+  		savech = *++trv;
+  		*trv = '\0';
+! 		if (access(as, W_OK))
+  			return(NO);
+  		*trv = savech;
+  	}
+! 	else if (access(".", W_OK))
+  		return(NO);
+  
+  	for (;;) {
+! 		if (doopen
+! 		    && (*doopen = open(as, O_CREAT|O_EXCL|O_RDWR, 0600)) != -1
+! 		    || access(as, F_OK))
+! 			return(YES);
+  		/* tricky little algorithm for backward compatibility */
+  		for (trv = start;;) {
+  			if (!*trv)
+--- 62,91 ----
+  	if (*trv == '/') {
+  		savech = *++trv;
+  		*trv = '\0';
+! 		if ((stat(as, &statbuf) == -1) ||
+! 		    ((statbuf.st_mode&S_IFMT) != S_IFDIR)) {
+! 			*trv = savech;
+  			return(NO);
++ 		}
+  		*trv = savech;
+  	}
+! 	else if (stat(".", &statbuf) == -1)
+  		return(NO);
+  
+  	for (;;) {
+! 		if (doopen) {
+! 			if ((*doopen=open(as,O_CREAT|O_EXCL|O_RDWR,0600)) >= 0)
+! 				return(YES);
+! 			if (errno != EEXIST)
+! 				return(NO);
+! 		}
+! 		else if (stat(as, &statbuf) == -1) {
+! 			if (errno == ENOENT)
+! 				return(YES);
+! 			else
+! 				return(NO);
+! 		}
+! 		
+  		/* tricky little algorithm for backward compatibility */
+  		for (trv = start;;) {
+  			if (!*trv)

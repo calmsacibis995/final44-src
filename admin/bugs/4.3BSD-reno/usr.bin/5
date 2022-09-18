@@ -1,0 +1,80 @@
+From chet@odin.INS.CWRU.Edu  Fri Feb 21 11:33:34 1992
+Received: from ucbvax.Berkeley.EDU by okeeffe.CS.Berkeley.EDU (5.79/1.42)
+	id AA09772; Fri, 21 Feb 92 11:33:34 -0800
+Received: from odin.INS.CWRU.Edu by ucbvax.Berkeley.EDU (5.63/1.43)
+	id AA18211; Fri, 21 Feb 92 11:33:30 -0800
+Received:  by odin.INS.CWRU.Edu (5.65b+ida+/CWRU-1.5-ins)
+	id AA06349; Fri, 21 Feb 92 14:33:53 -0500 (from chet for 4bsd-bugs@BERKELEY.EDU)
+Message-Id: <9202211933.AA06349@odin.INS.CWRU.Edu>
+Date: Fri, 21 Feb 92 14:33:53 -0500
+From: Chet Ramey <chet@odin.INS.CWRU.Edu>
+Subject: 4.3-reno make references freed memory, dumps core
+Index: usr.bin 4.3BSD-reno
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+
+There is a bug in `make' as distributed with 4.3-reno, though it will
+not show up under ordinary use.  (I found and fixed it in pmake, from
+which the reno make is derived.)
+
+Repeat-By:
+
+The reno make has no `single-suffix' inference rules, as required by the
+Posix.2 make specification.  A rule with one suffix .X, e.g.
+
+	.c:
+		$(CC) $(CFLAGS) $(.IMPSRC) $(LOADLIBES) -o $(.TARGET)
+
+is the definition of how to build TARGET from TARGET.X.
+
+Adding a rule like the above to the reno make `sys.mk' master config
+file works.
+
+Problems arise when one uses a makefile that redefines all the suffix
+rules, e.g:
+
+	.SUFFIXES:
+	.SUFFIXES: .def .c .o
+
+(bash has such a makefile, for instance).  Make gets a bus error and dumps
+core.
+
+The bug is that make is referring to freed memory when referencing the
+`null' suffix internally.  The first single-suffix inference rule has given
+the NULL suffix `children' (it helps to refer to the source at this point).
+
+Make calls the function Suff_ClearSuffixes when the suffix list is to be
+cleared after the first .SUFFIXES: line above.  It kills the suffix list,
+reinitializes it, and reinitializes suffNull to point to emptySuff.
+
+The problem is that suffNull (and emptySuff -- the two are aliases) has
+children, as a result of the single suffix inference rule.  The children
+have been freed, but make thinks the pointers in the suffNull structure are
+still valid, and attempts to refer to them when processing the second
+.SUFFIXES line above.  A bus error often results, and make dumps core. 
+
+Fix:
+
+To fix, apply the following patch:
+
+*** suff.c.orig Fri Nov 15 14:32:39 1991
+--- suff.c      Fri Nov 15 14:37:29 1991
+***************
+*** 362,365 ****
+--- 362,373 ----
+      sNum = 0;
+      suffNull = emptySuff;
++     /*
++      * These pointers are probably pointing to freed memory, since we
++      * just destroyed the suffix list, so reinitialize them to empty
++      * lists. -- chet@ins.cwru.edu 11/8/91
++      */
++     suffNull->children = Lst_Init (FALSE);
++     suffNull->parents = Lst_Init (FALSE);
++     suffNull->searchPath = Lst_Init (FALSE);
+  }
+
+
+Chet Ramey
+chet@ins.cwru.edu

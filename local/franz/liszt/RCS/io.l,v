@@ -1,0 +1,1917 @@
+head     1.17;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.17
+date     87.12.15.17.03.20;  author sklower;  state Exp;
+branches ;
+next     1.16;
+
+1.16
+date     83.12.06.15.50.22;  author sklower;  state Exp;
+branches ;
+next     1.15;
+
+1.15
+date     83.09.06.21.47.47;  author layer;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     83.08.28.17.14.11;  author layer;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     83.08.22.22.58.32;  author layer;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     83.08.14.01.49.17;  author layer;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.08.12.02.48.22;  author layer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.08.04.01.41.36;  author layer;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.07.25.07.21.02;  author jkf;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.07.11.14.17.26;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.07.06.00.08.49;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.06.30.18.53.20;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.05.04.18.32.27;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.04.06.16.43.41;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.04.05.08.59.38;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.23.20.49.52;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.15.54;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@input/output handlers
+@
+
+
+1.17
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file io
+   "$Header: /b/users/housel/lisp/liszt/RCS/io.l,v 1.11 86/12/17 21:07:46 housel Exp $")
+
+;;; ---- 	i o				input output
+;;;
+;;;				-[Fri Sep  2 21:37:05 1983 by layer]-
+
+
+;--- d-prelude :: emit code common to beginning of all functions
+;
+(defun d-prelude nil
+   (let ((loada-op #+(or for-vax for-tahoe) 'movab #+for-68k 'lea)
+	 (sub2-op  #+(or for-vax for-tahoe) 'subl2 #+for-68k 'subl)
+	 (add2-op  #+(or for-vax for-tahoe) 'addl2 #+for-68k 'addl)
+	 (temp-reg #+(or for-vax for-tahoe) '#.fixnum-reg #+for-68k 'a5))
+       #+for-68k (setq g-stackspace (d-genlab) g-masklab (d-genlab))
+       (if g-flocal
+	   then #+for-tahoe (e-write2 '".word" '0x0)
+		(C-push '#.olbot-reg)
+		(e-write3 loada-op
+			  `(,(* -4 g-currentargs) #.np-reg) '#.olbot-reg)
+		(e-writel g-topsym)
+	   else #+(or for-vax for-tahoe) (e-write2 '".word" '0x5c0)
+		#+for-68k
+		(progn
+		    (e-write3 'link 'a6 (concat "#-" g-stackspace))
+		    (e-write2 'tstb '(-132 sp))
+		    (e-write3 'moveml `($ ,g-masklab)
+			      (concat "a6@@(-" g-stackspace ")"))
+		    (e-move '#.Nilatom '#.nil-reg))
+		(if fl-profile
+		    then (e-write3 loada-op 'mcnts
+				   #+(or for-vax for-tahoe) 'r0 #+for-68k 'a0)
+			 (e-quick-call 'mcount))
+		(e-write3 loada-op 'linker '#.bind-reg)
+		(if (eq g-ftype 'lexpr)
+		    then ; Here is the method:
+			 ;  We push the number of arguments, nargs,
+			 ; on the name stack twice, setting olbot-reg
+			 ; to point to the second one, so that the user
+			 ; has a copy that he can set, and we have
+			 ; one that we can use for address calcs.
+			 ;  So, the stack will look like this, after
+			 ; the setup:
+			 ;np    ->
+			 ;olbot -> nargs (II)
+			 ;      -> nargs (I)
+			 ;      -> (arg nargs)
+			 ;      -> (arg nargs-1)
+			 ;...
+			 ;      -> (arg 1)
+			 ;
+			 (if (null $global-reg$)
+			     then (e-move '#.np-sym '#.np-reg))
+			 (e-writel g-topsym)
+			 (e-move '#.np-reg temp-reg)
+			 (e-write3 sub2-op
+				   (if $global-reg$
+				       then '#.lbot-reg
+				       else '#.lbot-sym) temp-reg)
+			 (e-write3 add2-op (e-cvt '(fixnum 0)) temp-reg)
+			 (L-push temp-reg)
+			 (e-move '#.np-reg '#.olbot-reg)
+			 (L-push temp-reg)
+		    else ;   Set up old lbot register, base reg for variable
+			 ; references, and make sure the np points where
+			 ; it should since the caller might
+			 ; have given too few or too many args.
+			 (e-move
+				   (if $global-reg$
+				       then '#.lbot-reg
+				       else '#.lbot-sym)
+				   '#.olbot-reg)
+			 #+for-68k
+			 (e-write3 loada-op
+				   `(,(* 4 g-currentargs) #.olbot-reg)
+				   '#.np-reg)
+			 (e-writel g-topsym)))))
+
+;--- d-fini :: emit code  at end of function
+;
+(defun d-fini nil
+   (if g-flocal
+       then (C-pop '#.olbot-reg)
+	    (e-write1 #+for-vax 'rsb #+for-tahoe 'ret #+for-68k 'rts)
+       else #+for-68k
+	    (progn
+		(e-write3 'moveml (concat "a6@@(-" g-stackspace ")")
+			  `($ ,g-masklab))
+		(e-write2 'unlk 'a6))
+	    (e-return)))
+
+;--- d-bindtab :: emit binder table when all functions compiled
+;
+(defun d-bindtab nil
+  (setq g-skipcode nil)	  ; make sure this isnt ignored	
+  (e-writel "bind_org")
+  #+(or for-vax for-tahoe)
+  (progn
+      (e-write2 ".set linker_size," (length g-lits))
+      (e-write2 ".set trans_size," (length g-tran)))
+  #+for-68k
+  (progn
+      (e-write2 "linker_size = " (length g-lits))
+      (e-write2 "trans_size = " (length g-tran)))
+  (do ((ll (setq g-funcs (nreverse g-funcs)) (cdr ll)))
+      ((null ll))
+      (if (memq (caar ll) '(lambda nlambda macro eval))
+	  then (e-write2 '".long"
+			 (cdr (assoc (caar ll)
+				     '((lambda . 0) (nlambda . 1)
+				       (macro . 2) (eval . 99)))))
+	  else (comp-err " bad type in lit list " (car ll))))
+  
+  (e-write1 ".long -1")
+  (e-writel "lit_org")
+  (d-asciiout (nreverse g-lits))
+  (if g-tran then (d-asciiout (nreverse g-tran)))
+  (d-asciiout (mapcar '(lambda (x) (if (eq (car x) 'eval)
+				       then (cadr x)
+				       else (caddr x)))
+		      g-funcs))
+  (e-writel "lit_end"))
+
+;--- d-asciiout :: print a list of asciz strings
+;
+(defun d-asciiout (args)
+       (do ((lits args (cdr lits))
+	    (form))
+	   ((null lits))
+	   (setq form (explode (car lits))
+		 formsiz (length form))
+	   (do ((remsiz formsiz)
+		(curform form)
+		(thissiz))
+	       ((zerop remsiz))
+	       (if (greaterp remsiz 60) then (sfilewrite '".ascii \"")
+		   else (sfilewrite '".asciz \""))
+	       (setq thissiz (min 60 remsiz))
+	       (do ((count thissiz (1- count)))
+		   ((zerop count)
+		    (sfilewrite (concat '\" (ascii 10)))
+		    (setq remsiz (difference remsiz thissiz)))
+		   (if (eq '#.ch-newline (car curform))
+		       then (sfilewrite '\\012)
+		    else (if (or (eq '\\ (car curform))
+				 (eq '\" (car curform)))
+			     then (sfilewrite '\\))
+			 (sfilewrite (car curform)))
+		   (setq curform (cdr curform))))))
+
+;--- d-autorunhead
+;
+; Here is the C program to generate the assembly language:
+;	(after some cleaning up)
+;
+;main(argc,argv,arge)
+;register char *argv[];
+;register char **arge;
+;{
+;	*--argv = "-f";
+;	*--argv = "/usr/ucb/lisp";
+;	execve("/usr/ucb/lisp",argv,arge);
+;	exit(0);
+;}
+;
+(defun d-printautorun nil
+   (let ((readtable (makereadtable t))	; in raw readtable
+	 tport ar-file)
+      (setsyntax #/; 'vsplicing-macro 'zapline)
+      (setq ar-file (concat lisp-library-directory
+			    #+for-vax "/autorun/vax"
+			    #+for-tahoe "/autorun/tahoe"
+			    #+for-68k "/autorun/68k"))
+      (if (null (errset (setq tport (infile ar-file))))
+	 then (comp-err "Can't open autorun header file " ar-file))
+      (do ((x (read tport '<eof>) (read tport '<eof>)))
+	  ((eq '<eof> x) (close tport))
+	  (sfilewrite x))))
+
+(defun e-cvt (arg)
+   (if     (eq 'reg arg) then #+(or for-vax for-tahoe) 'r0 #+for-68k 'd0
+    elseif (eq 'areg arg) then #+(or for-vax for-tahoe) 'r0 #+for-68k 'a0
+    elseif (eq 'Nil arg) then #+(or for-vax for-tahoe) '($ 0)
+    			      #+for-68k '#.nil-reg
+    elseif (eq 'T arg)
+       then (if g-trueloc
+		thenret
+		else (setq g-trueloc (e-cvt (d-loclit t nil))))
+    elseif (eq 'stack arg) then '(+ #.np-reg)
+    elseif (eq 'unstack arg) then (progn #+for-tahoe (e-sub '($ 4) '#.np-reg)
+					 '(- #.np-reg))
+    elseif (or (atom arg) (symbolp arg)) then arg
+    elseif (dtpr arg)
+       then (caseq (car arg)
+		   (stack	`(,(* 4 (1- (cadr arg))) #.olbot-reg))
+		   (vstack	`(* ,(* 4 (1- (cadr arg))) #.olbot-reg))
+		   (bind	`(* ,(* 4 (1- (cadr arg))) #.bind-reg))
+		   (lbind	`(,(* 4 (1- (cadr arg))) #.bind-reg))
+		   (fixnum	`(\# ,(cadr arg)))
+		   (immed	`($ ,(cadr arg)))
+		   (racc	(cdr arg))
+		   (t		(comp-err " bad arg to e-cvt : "
+					  (or arg))))
+       else  (comp-warn "bad arg to e-cvt : " (or arg))))
+
+;--- e-uncvt :: inverse of e-cvt, used for making comments pretty
+;
+(defun e-uncvt (arg)
+   (if (atom arg)
+       then (if (eq 'Nil arg)
+		then nil
+		else arg)
+    elseif (eq 'stack (car arg))
+       then (do ((i g-loccnt)
+		 (ll g-locs))
+		((and (equal i (cadr arg)) (atom (car ll))) (car ll))
+		(if (atom (car ll))
+		    then (setq ll (cdr ll)
+			       i (1- i))
+		    else (setq ll (cdr ll))))
+    elseif (or (eq 'bind (car arg)) (eq 'lbind (car arg)))
+       then (do ((i g-litcnt (1- i))
+		 (ll g-lits (cdr ll)))
+		((equal i (cadr arg))
+		 (cond ((eq 'lbind (car arg))
+			(list 'quote (car ll)))
+		       (t (car ll)))))
+       else arg))
+
+;--- e-cvtas :: convert an EIADR to vax unix assembler fmt and print it
+;	- form : an EIADR form
+;
+#+(or for-vax for-tahoe)
+(defun e-cvtas (form)
+  (if (atom form)
+      then (sfilewrite form)
+      else (if (eq '* (car form))
+	       then (if (eq '\# (cadr form))
+			then (setq form `($ ,(caddr form)))
+			else (sfilewrite "*")
+			     (setq form (cdr form))))
+	   (if (numberp (car form))
+	       then (sfilewrite (car form))
+		    (sfilewrite "(")
+		    (sfilewrite (cadr form))
+		    (sfilewrite ")")
+		    (if (caddr form)
+			then (sfilewrite "[")
+			     (sfilewrite (caddr form))
+			     (sfilewrite "]"))
+	    elseif (eq '+ (car form))
+	       then (sfilewrite '"(")
+		    (sfilewrite (cadr form))
+		    (sfilewrite '")")
+		    #-for-tahoe (sfilewrite '"+")
+	    elseif (eq '- (car form))
+	       then #-for-tahoe (sfilewrite '"-")
+		    (sfilewrite '"(")
+		    (sfilewrite (cadr form))
+		    (sfilewrite '")")
+	    elseif (eq '\# (car form))	; 5120 is base of small fixnums
+	       then (sfilewrite (concat "$" (+ (* (cadr form) 4) 5120)))
+	    elseif (eq '$ (car form))
+	       then (sfilewrite '"$")
+		    (sfilewrite (cadr form)))))
+
+#+for-68k
+(defun e-cvtas (form)
+   (if (atom form)
+       then (sfilewrite form)
+       else (if (eq '* (car form))
+		then (if (eq '\# (cadr form))
+			 then (setq form `($ ,(caddr form)))))
+	    (if (numberp (car form))
+		then (sfilewrite (cadr form))
+		     (sfilewrite "@@")
+		     (if (not (zerop (car form)))
+			 then (sfilewrite "(")
+			      (sfilewrite (car form))
+			      (sfilewrite ")"))
+	    elseif (eq '% (car form))
+	       then (setq form (cdr form))
+		    (sfilewrite (cadr form))
+		    (sfilewrite "@@(")
+		    (sfilewrite (car form))
+		    (sfilewrite ",")
+		    (sfilewrite (caddr form))
+		    (sfilewrite ":L)")
+	     elseif (eq '+ (car form))
+		then (sfilewrite (cadr form))
+		     (sfilewrite '"@@+")
+	     elseif (eq '- (car form))
+		then (sfilewrite (cadr form))
+		     (sfilewrite '"@@-")
+	     elseif (eq '\# (car form))
+		then (sfilewrite (concat '#.Nilatom "+0x1400"
+					 (if (null (signp l (cadr form)))
+					     then "+" else "")
+					 (* (cadr form) 4)))
+	     elseif (eq '$ (car form))
+		then (sfilewrite '"#")
+		     (sfilewrite (cadr form))
+	       else (comp-err " bad arg to e-cvtas : " (or form)))))
+
+;--- e-postinc :: handle postincrement for the tahoe machine
+;
+
+#+for-tahoe
+(defun e-postinc (addr)
+   (if (and (dtpr addr) (eq (car addr) '+))
+       (e-add '($ 4) (cadr addr))))
+
+
+;--- e-docomment :: print any comment lines
+;
+(defun e-docomment nil
+  (if g-comments
+      then (do ((ll (nreverse g-comments) (cdr ll)))
+	       ((null ll))
+	       (sfilewrite "	")
+	       (sfilewrite #.comment-char)
+	       (do ((ll (exploden (car ll)) (cdr ll)))
+		   ((null ll))
+		   (tyo (car ll) vp-sfile)
+		   (cond ((eq #\newline (car ll))
+			  (sfilewrite #.comment-char))))
+	       (terpr vp-sfile))
+	   (setq g-comments nil)
+     else (terpr vp-sfile)))
+
+;--- e-goto :: emit code to jump to the location given
+;
+(defun e-goto (lbl)
+  (e-jump lbl))
+
+;--- e-gotonil :: emit code to jump if nil was last computed
+;
+(defun e-gotonil (lbl)
+  (e-write2 g-falseop lbl))
+
+;--- e-gotot :: emit code to jump if t was last computed
+(defun e-gotot (lbl)
+  (e-write2  g-trueop lbl))
+
+;--- e-label :: emit a label
+(defun e-label (lbl)
+  (setq g-skipcode nil)
+  (e-writel lbl))
+
+;--- e-pop :: pop the given number of args from the stack
+; g-locs is not! fixed
+;
+(defun e-pop (nargs)
+  (if (greaterp nargs 0)
+      then (e-dropnp nargs)))
+
+;--- e-pushnil :: push a given number of nils on the stack
+;
+#+for-vax
+(defun e-pushnil (nargs)
+   (do ((i nargs))
+       ((zerop i))
+       (if (>& i 1)
+	   then (e-write2 'clrq '#.np-plus)
+		(setq i (- i 2))
+	elseif (equal i 1)
+	   then (e-write2 'clrl '#.np-plus)
+		(setq i (1- i)))))
+
+#+for-tahoe
+(defun e-pushnil (nargs)
+  (do ((i nargs))
+      ((zerop i))
+      (e-write2 'clrl '#.np-plus)
+      (setq i (1- i))))
+
+#+for-68k
+(defun e-pushnil (nargs)
+  (do ((i nargs))
+      ((zerop i))
+      (L-push '#.nil-reg)
+      (setq i (1- i))))
+
+;--- e-setupbind :: setup for shallow binding
+;
+(defun e-setupbind nil
+  (e-move '#.bnp-sym '#.bnp-reg))
+
+;--- e-unsetupbind :: restore temp value of bnp to real loc
+;
+(defun e-unsetupbind nil
+  (e-move '#.bnp-reg '#.bnp-sym))
+
+;--- e-shallowbind :: shallow bind value of variable and initialize it
+;	- name : variable name
+;	- val : IADR value for variable
+;
+#+(or for-vax for-68k)
+(defun e-shallowbind (name val)
+  (let ((vloc (d-loclit name t)))
+       (e-move (e-cvt vloc) '(+ #.bnp-reg))	; store old val
+       (e-move (e-cvt `(lbind ,@@(cdr vloc)))
+		       '(+ #.bnp-reg))		; now name
+       (d-move val vloc)))		
+
+#+for-tahoe
+(defun e-shallowbind (name val)
+  (let ((vloc (d-loclit name t)))
+       (e-move (e-cvt vloc) '(0 #.bnp-reg))	; store old val
+       (e-add '($ 4) '#.bnp-reg)
+       (e-move (e-cvt `(lbind ,@@(cdr vloc)))
+		       '(0 #.bnp-reg))		; now name
+       (e-add '($ 4) '#.bnp-reg)
+       (d-move val vloc)))		
+
+;--- e-unshallowbind :: un shallow bind n variable from top of stack
+;
+#+(or for-vax for-tahoe)
+(defun e-unshallowbind (n)
+  (e-setupbind)		; set up binding register
+  (do ((i 1 (1+ i)))
+      ((greaterp i n))
+      (e-move `(,(* -8 i) #.bnp-reg) `(* ,(+ 4 (* -8 i)) #.bnp-reg)))
+  (e-sub3 `($ ,(* 8 n)) '#.bnp-reg '#.bnp-sym))
+
+#+for-68k
+(defun e-unshallowbind (n)
+  (makecomment "e-unshallowbind begin...")
+  (e-setupbind)		; set up binding register
+  (do ((i 1 (1+ i)))
+      ((greaterp i n))
+      (e-move `(,(* -8 i) #.bnp-reg) `(* ,(+ 4 (* -8 i)) #.bnp-reg)))
+  (e-move '#.bnp-reg '#.bnp-sym)
+  (e-sub `($ ,(* 8 n)) '#.bnp-sym)
+  (makecomment "...end e-unshallowbind"))
+
+;----------- very low level routines
+; all output to the assembler file goes through these routines.
+; They filter out obviously extraneous instructions as well as 
+; combine sequential drops of np.
+
+;--- e-dropnp :: unstack n values from np.
+; rather than output the instruction now, we just remember that it
+; must be done before any other instructions are done.  This will
+; enable us to catch sequential e-dropnp's
+;
+(defun e-dropnp (n)
+  (if (not g-skipcode)
+      then (setq g-dropnpcnt (+ n (if g-dropnpcnt thenret else 0)))))
+
+;--- em-checknpdrop :: check if we have a pending npdrop
+; and do it if so.
+;
+(defmacro em-checknpdrop nil
+   `(if g-dropnpcnt
+	then (let ((dr g-dropnpcnt))
+		 (setq g-dropnpcnt nil)
+		 (e-sub `($ ,(* dr 4)) '#.np-reg))))
+
+;--- em-checkskip :: check if we are skipping this code due to jump
+;
+(defmacro em-checkskip nil
+  '(if g-skipcode then (sfilewrite #.comment-char)))
+
+
+;--- e-jump :: jump to given label
+; and set g-skipcode so that all code following until the next label
+; will be skipped.
+;
+(defun e-jump (l)
+  (em-checknpdrop)
+  (e-write2 #+(or for-vax for-tahoe) 'jbr #+for-68k 'jra l)
+  (setq g-skipcode t))
+
+;--- e-return :: do return, and dont check for np drop
+;
+(defun e-return nil
+  (setq g-dropnpcnt nil)  ; we dont need to worry about nps
+  #+(or for-vax for-tahoe) (e-write1 'ret)
+  #+for-68k (progn  (e-write1 'rts)
+		    (sfilewrite
+		       (concat g-masklab " = " (d-makemask) '#.ch-newline))
+		    (sfilewrite
+		       (concat g-stackspace " = "
+			       (Cstackspace) '#.ch-newline))))
+
+;--- e-writel :: write out a label
+;
+(defun e-writel (label)
+  (setq g-skipcode nil)
+  (em-checknpdrop)
+  (sfilewrite label)
+  (sfilewrite ":")
+  (e-docomment))
+
+;--- e-write1 :: write out one litteral
+;
+(defun e-write1 (lit)
+  (em-checkskip)
+  (em-checknpdrop)
+  (sfilewrite "	")
+  (sfilewrite lit)
+  (e-docomment))
+
+;--- e-write2 :: write one one litteral, and one operand
+;
+#+(or for-vax for-tahoe)
+(defun e-write2 (lit frm)
+  (em-checkskip)
+  (em-checknpdrop)
+  (sfilewrite "	")
+  (sfilewrite lit)
+  (sfilewrite "	")
+  (e-cvtas frm)
+  (e-docomment)
+  #+for-tahoe (e-postinc frm))
+
+#+for-68k
+(defun e-write2 (lit frm)
+  (em-checkskip)
+  (em-checknpdrop)
+  (if (and (dtpr frm) (eq (car frm) '*))
+      then (e-move (cdr frm) 'a5)
+	   (sfilewrite "	")
+	   (sfilewrite lit)
+	   (sfilewrite '"	")
+	   (e-cvtas '(0 a5))
+      else (sfilewrite "	")
+	   (sfilewrite lit)
+	   (sfilewrite '"	")
+	   (e-cvtas frm))
+  (e-docomment))
+
+;--- e-write3 :: write one one litteral, and two operands
+;
+#+(or for-vax for-tahoe)
+(defun e-write3 (lit frm1 frm2)
+  (em-checkskip)
+  (em-checknpdrop)
+  (sfilewrite "	")
+  (sfilewrite lit)
+  (sfilewrite "	")
+  (e-cvtas frm1)
+  (sfilewrite ",")
+  (e-cvtas frm2)
+  (e-docomment)
+  #+for-tahoe (e-postinc frm1)
+  #+for-tahoe (e-postinc frm2))
+
+#+for-68k
+(defun e-write3 (lit frm1 frm2)
+   (em-checkskip)
+   (em-checknpdrop)
+   (if (and (dtpr frm1) (eq (car frm1) '*)
+	    (not (and (dtpr frm2) (eq (car frm2) '*))))
+       then (e-move (cdr frm1) 'a5)
+	    (sfilewrite "	")
+	    (sfilewrite lit)
+	    (sfilewrite '"	")
+	    (e-cvtas '(0 a5))
+	    (sfilewrite '",")
+	    (e-cvtas frm2)
+	    (e-docomment)
+    elseif (and (not (and (dtpr frm1) (eq (car frm1) '*)))
+		(dtpr frm2) (eq (car frm2) '*))
+       then (e-move (cdr frm2) 'a5)
+	    (sfilewrite "	")
+	    (sfilewrite lit)
+	    (sfilewrite '"	")
+	    (e-cvtas frm1)
+	    (sfilewrite '",")
+	    (e-cvtas '(0 a5))
+	    (e-docomment)
+    elseif (and (dtpr frm1) (eq (car frm1) '*)
+		(dtpr frm2) (eq (car frm2) '*))
+       then (d-regused 'd6)
+	    (e-move (cdr frm1) 'a5)
+	    (e-move '(0 a5) 'd6)
+	    (e-move (cdr frm2) 'a5)
+	    (sfilewrite "	")
+	    (sfilewrite lit)
+	    (sfilewrite '"	")
+	    (e-cvtas 'd6)
+	    (sfilewrite '",")
+	    (e-cvtas '(0 a5))
+	    (e-docomment)
+       else (sfilewrite "	")
+	    (sfilewrite lit)
+	    (sfilewrite '"	")
+	    (e-cvtas frm1)
+	    (sfilewrite '",")
+	    (e-cvtas frm2)
+	    (e-docomment)))
+
+;--- e-write4 :: write one one litteral, and three operands
+;
+#+(or for-vax for-tahoe)
+(defun e-write4 (lit frm1 frm2 frm3)
+  (em-checkskip)
+  (em-checknpdrop)
+  (sfilewrite "	")
+  (sfilewrite lit)
+  (sfilewrite "	")
+  (e-cvtas frm1)
+  (sfilewrite ",")
+  (e-cvtas frm2)
+  (sfilewrite ",")
+  (e-cvtas frm3)
+  (e-docomment)
+  #+for-tahoe (e-postinc frm1)
+  #+for-tahoe (e-postinc frm2)
+  #+for-tahoe (e-postinc frm3))
+
+
+;--- e-write5 :: write one one litteral, and four operands
+;
+#+(or for-vax for-tahoe)
+(defun e-write5 (lit frm1 frm2 frm3 frm4)
+  (em-checkskip)
+  (em-checknpdrop)
+  (sfilewrite "	")
+  (sfilewrite lit)
+  (sfilewrite "	")
+  (e-cvtas frm1)
+  (sfilewrite ",")
+  (e-cvtas frm2)
+  (sfilewrite ",")
+  (e-cvtas frm3)
+  (sfilewrite ",")
+  (e-cvtas frm4)
+  (e-docomment)
+  #+for-tahoe (e-postinc frm1)
+  #+for-tahoe (e-postinc frm2)
+  #+for-tahoe (e-postinc frm3)
+  #+for-tahoe (e-postinc frm4))
+
+;--- d-printdocstuff
+;
+; describe this version
+;
+(defun d-printdocstuff nil
+   (sfilewrite (concat ".data "
+		       #.comment-char
+		       " this is just for documentation "))
+   (terpr vp-sfile)
+   (sfilewrite (concat ".asciz \"@@(#)Compiled by " compiler-name
+                " on " (status ctime) '\"))
+   (terpr vp-sfile)
+   (do ((xx Liszt-file-names (cdr xx)))
+       ((null xx))
+       (sfilewrite (concat ".asciz \"" (car xx) '\"))
+       (terpr vp-sfile)))
+@
+
+
+1.16
+log
+@change variable mcounts to mcnts so there are no clashes in IBM name space
+@
+text
+@d3 1
+a3 1
+   "$Header: io.l,v 1.15 83/09/06 21:47:47 layer Exp $")
+d13 4
+a16 4
+   (let ((loada-op #+for-vax 'movab #+for-68k 'lea)
+	 (sub2-op #+for-vax 'subl2 #+for-68k 'subl)
+	 (add2-op #+for-vax 'addl2 #+for-68k 'addl)
+	 (temp-reg #+for-68k 'a5 #+for-vax '#.fixnum-reg))
+d19 2
+a20 1
+	   then (C-push '#.olbot-reg)
+d24 1
+a24 1
+	   else #+for-vax (e-write2 '".word" '0x5c0)
+d34 1
+a34 1
+				   #+for-vax 'r0 #+for-68k 'a0)
+d86 1
+a86 1
+	    (e-write1 #+for-vax 'rsb #+for-68k 'rts)
+d99 1
+a99 1
+  #+for-vax
+d174 1
+d183 4
+a186 3
+   (if     (eq 'reg arg) then #+for-vax 'r0 #+for-68k 'd0
+    elseif (eq 'areg arg) then #+for-vax 'r0 #+for-68k 'a0
+    elseif (eq 'Nil arg) then #+for-vax '($ 0) #+for-68k '#.nil-reg
+d192 2
+a193 1
+    elseif (eq 'unstack arg) then '(- #.np-reg)
+d235 1
+a235 1
+#+for-vax
+d256 2
+a257 1
+		    (sfilewrite '")+")
+d259 2
+a260 1
+	       then (sfilewrite '"-(")
+d307 9
+d372 7
+d400 1
+d408 10
+d420 1
+a420 1
+#+for-vax
+d474 1
+a474 1
+  (e-write2 #+for-vax 'jbr #+for-68k 'jra l)
+d481 1
+a481 1
+  #+for-vax (e-write1 'ret)
+d509 1
+a509 1
+#+for-vax
+d517 2
+a518 1
+  (e-docomment))
+d538 1
+a538 1
+#+for-vax
+d548 3
+a550 1
+  (e-docomment))
+d599 1
+a599 1
+#+for-vax
+d611 4
+a614 1
+  (e-docomment))
+d619 1
+a619 1
+#+for-vax
+d633 5
+a637 1
+  (e-docomment))
+@
+
+
+1.15
+log
+@bug in local function prelude and postlude
+@
+text
+@d3 1
+a3 1
+   "$Header: io.l,v 1.14 83/08/28 17:14:11 layer Exp $")
+d32 1
+a32 1
+		    then (e-write3 loada-op 'mcounts
+@
+
+
+1.14
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.13 83/08/22 22:58:32 layer Exp $")
+d7 1
+a7 1
+;;;				-[Mon Aug 22 22:03:03 1983 by layer]-
+a19 1
+		#+for-68k (C-push '#.np-reg)
+d84 1
+a84 2
+       then #+for-68k (C-pop '#.np-reg)
+	    (C-pop '#.olbot-reg)
+a342 1
+
+@
+
+
+1.13
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.12 83/08/14 01:49:17 layer Exp $")
+a11 1
+;.. d-dodef
+a82 1
+;.. d-dodef
+a96 1
+;.. liszt
+a128 1
+;.. d-bindtab
+a168 1
+;.. liszt
+a181 4
+;.. c-*throw, c-rplaca, c-rplacd, cc-cxxr, cc-oneminus, cc-oneplus
+;.. cc-typep, d-cmp, d-fixnumcode, d-fixop, d-move, d-movespec
+;.. d-pushframe, d-structgen, d-supercxr, d-superrplacx, d-tst
+;.. d-typecmplx, d-typesimp, e-cvt, e-shallowbind
+a207 1
+;.. d-move, d-movespec
+a232 1
+;.. e-write2, e-write3, e-write4, e-write5
+a304 1
+;.. e-write1, e-write2, e-write3, e-write4, e-write5, e-writel
+a321 4
+;.. c-cond, c-do, c-go, c-return, cc-and, cc-arg, cc-cxxr
+;.. cc-equal, cc-memq, cc-not, cc-oneminus, cc-oneplus, cc-or
+;.. cc-quote, cc-typep, d-dotailrecursion, d-invert, d-noninvert
+;.. d-supercxr
+a326 1
+;.. cc-equal, d-handlecc, d-invert, d-noninvert
+a330 1
+;.. cc-equal, d-handlecc, d-invert, d-noninvert
+a334 3
+;.. c-*catch, c-cond, c-do, c-errset, c-prog, cc-and, cc-arg
+;.. cc-memq, cc-not, cc-oneminus, cc-oneplus, cc-or, d-invert
+;.. d-noninvert
+a341 1
+;.. c-go, c-return, c-setarg
+a348 1
+;.. c-prog
+a368 1
+;.. d-bindlamb, d-bindprg, e-unshallowbind
+a373 1
+;.. d-bindlamb, d-bindprg
+a380 1
+;.. d-bindlamb, d-bindprg
+a389 1
+;.. c-go, c-return, d-unbind
+a418 1
+;.. cc-equal, d-unbind, e-pop
+a425 2
+;.. e-jump, e-write1, e-write2, e-write3, e-write4, e-write5
+;.. e-writel
+a433 1
+;.. e-write1, e-write2, e-write3, e-write4, e-write5
+a441 1
+;.. e-goto
+a448 1
+;.. d-fini
+a506 8
+;.. c-*catch, c-*throw, c-errset, c-setarg, cc-equal, cc-memq
+;.. cc-oneminus, cc-oneplus, cc-typep, d-bcdcall, d-calldirect
+;.. d-calltran, d-cmp, d-dotailrecursion, d-fini, d-fixnumbox
+;.. d-fixnumcode, d-fixop, d-move, d-movespec, d-popframe, d-prelude
+;.. d-pushframe, d-supercxr, d-superrplacx, d-typecmplx, d-typesimp
+;.. e-cmp, e-jump, e-move, e-setupbind, e-shallowbind, e-unsetupbind
+;.. e-unshallowbind, e-write1, e-write2, e-write3, e-write4
+;.. e-write5, e-writel
+a565 3
+;.. cc-oneminus, cc-oneplus, cc-typep, d-dotailrecursion, d-fixnumbox
+;.. d-fixnumcode, d-fixop, d-popframe, d-prelude, d-typecmplx
+;.. d-typesimp, e-unshallowbind
+a582 1
+;.. d-fixop
+a602 1
+;.. liszt
+@
+
+
+1.12
+log
+@minor mods
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.11 83/08/12 02:48:22 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sat Aug 13 17:33:08 1983 by layer]-
+d20 2
+a21 2
+	   then (e-move '#.olbot-reg '#.Cstack)
+		#+for-68k (e-move '#.np-reg '#.Cstack)
+d64 1
+a64 1
+			 (e-move temp-reg '#.np-plus)
+d66 1
+a66 1
+			 (e-move temp-reg '#.np-plus)
+d87 2
+a88 2
+       then #+for-68k (e-move '#.unCstack '#.np-reg)
+	    (e-move '#.unCstack '#.olbot-reg)
+d387 1
+a387 1
+      (e-move '#.nil-reg '#.np-plus)
+d423 1
+a423 1
+  (e-write4 'subl3 `($ ,(* 8 n)) '#.bnp-reg '#.bnp-sym))
+@
+
+
+1.11
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.10 83/08/04 01:41:36 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 22:34:10 1983 by layer]-
+d20 2
+a21 2
+	   then (e-write3 'movl '#.olbot-reg '#.Cstack)
+		#+for-68k (e-write3 'movl '#.np-reg '#.Cstack)
+d32 1
+a32 1
+		    (e-write3 'movl '#.Nilatom '#.nil-reg))
+d56 1
+a56 1
+			     then (e-write3 'movl '#.np-sym '#.np-reg))
+d58 1
+a58 1
+			 (e-write3 'movl '#.np-reg temp-reg)
+d64 3
+a66 3
+			 (e-write3 'movl temp-reg '#.np-plus)
+			 (e-write3 'movl '#.np-reg '#.olbot-reg)
+			 (e-write3 'movl temp-reg '#.np-plus)
+d71 1
+a71 1
+			 (e-write3 'movl
+d87 2
+a88 2
+       then #+for-68k (e-write3 'movl '#.unCstack '#.np-reg)
+	    (e-write3 'movl '#.unCstack '#.olbot-reg)
+d374 8
+a381 6
+  (do ((i nargs))
+      ((zerop i))
+      (if (greaterp i 1) then (e-write2  'clrq '#.np-plus)
+			      (setq i (- i 2))
+	elseif (equal i 1) then (e-write2 'clrl '#.np-plus)
+				(setq i (1- i)))))
+d387 1
+a387 1
+      (e-write3 'movl '#.nil-reg '#.np-plus)
+a389 7
+;--- e-tst :: test a value, arg is an EIADR
+;
+;.. cc-arg, cc-cxxr
+#+for-vax
+(defun e-tst (arg)
+  (e-write2 'tstl arg))
+
+d394 1
+a394 1
+  (e-write3 'movl '#.bnp-sym '#.bnp-reg))
+d400 1
+a400 1
+  (e-write3 'movl '#.bnp-reg '#.bnp-sym))
+d409 2
+a410 2
+       (e-write3 'movl (e-cvt vloc) '(+ #.bnp-reg))	; store old val
+       (e-write3 'movl (e-cvt `(lbind ,@@(cdr vloc)))
+d422 1
+a422 1
+      (e-write3 'movl `(,(* -8 i) #.bnp-reg) `(* ,(+ 4 (* -8 i)) #.bnp-reg)))
+d431 2
+a432 2
+      (e-write3 'movl `(,(* -8 i) #.bnp-reg) `(* ,(+ 4 (* -8 i)) #.bnp-reg)))
+  (e-write3 'movl '#.bnp-reg '#.bnp-sym)
+d527 1
+a527 1
+      then (e-write3 'movl (cdr frm) 'a5)
+d566 1
+a566 1
+       then (e-write3 'movl (cdr frm1) 'a5)
+d576 1
+a576 1
+       then (e-write3 'movl (cdr frm2) 'a5)
+d587 3
+a589 3
+	    (e-write3 'movl (cdr frm1) 'a5)
+	    (e-write3 'movl '(0 a5) 'd6)
+	    (e-write3 'movl (cdr frm2) 'a5)
+@
+
+
+1.10
+log
+@cleanup time
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.9 83/07/25 07:21:02 jkf Exp $")
+d7 1
+a7 1
+;;;				-[Wed Aug  3 17:10:22 1983 by layer]-
+a12 1
+#+for-vax
+d14 67
+a80 31
+  (If g-flocal
+      then (e-write3 'movl 'r10 '#.Cstack)	; (faster than pushl)
+	   (e-write3 'movab `(,(* -4 g-currentargs) r6) 'r10)
+	   (e-writel g-topsym)
+      else
+  	   (e-write2 '".word" '0x5c0)
+	   (If fl-profile
+	       then (e-write3 'movab 'mcounts 'r0)
+		    (e-write2 'jsb 'mcount))
+	   (e-write3 'movab 'linker '#.bind-reg)
+	   #+no-global-reg (e-setup-np-lbot)
+	   (If (eq g-ftype 'lexpr) 
+	       then (e-write4 'subl3
+			      '$4 '#.lbot-reg '#.Cstack);set up base for (arg)
+		    (e-writel g-topsym)
+		    (e-write3 'movl
+			      '#.np-reg
+			      '#.olbot-reg)	; will stack num of args
+		    (e-write4 'subl3
+			      '#.lbot-reg
+			      '#.np-reg 'r0)	; arg cnt again
+		    (e-write3 'movab
+			      '"0x1400(r0)"
+			      '#.np-plus)	; stack lispval
+		    (e-write3 'movl
+			      '(0 #.olbot-reg)
+			      '#.Cstack) ; also on runtime stk
+	       else ; set up old lbot register, base register for variable
+		    ; references
+		    (e-write3 'movl '#.lbot-reg '#.olbot-reg)
+		    (e-writel g-topsym))))
+a81 38
+#+for-68k
+(defun d-prelude nil
+   (If g-flocal
+       then (e-write3 'movl '#.olbot-reg '#.Cstack)
+	    (e-write3 'movl '#.np-reg '#.Cstack)
+	    (e-write3 'lea `(,(* -4 g-currentargs) #.np-reg) '#.olbot-reg)
+	    (e-writel g-topsym)
+       else (e-write3 'link 'a6 (concat "#-" (setq g-stackspace (d-genlab))))
+	    (e-write2 'tstb '(-132 sp))
+	    (e-write3 'moveml
+		      `($ ,(setq g-masklab (d-genlab)))
+		      (concat "a6@@(-" g-stackspace ")"))
+	    (e-write3 'movl '#.Nilatom '#.nil-reg)
+	    (If fl-profile
+		then (e-write3 'lea 'mcounts 'a0)
+		     (e-write2 'jbsr 'mcount))
+	    (e-write3 'lea 'linker '#.bind-reg)
+	    (If (eq g-ftype 'lexpr) 
+		then
+		     #+no-global-reg (e-write3 'movl '_np '#.np-reg)
+		     (e-writel g-topsym)
+		     (e-write3 'movl '#.np-reg 'a5)
+		     (e-write3 'subl '#.lbot-sym 'a5)    ; arg cnt again
+		     (e-write3 'addl (concat '#.Nilatom
+					     "+0x1400") 'a5); stack lispval
+		     (e-write3 'movl 'a5 '#.np-plus)
+		     (e-write3 'movl '#.np-reg '#.olbot-reg);stack # of args
+		     (e-write3 'movl 'a5 '#.np-plus) ;stack it twice
+		else
+		     ; set up old lbot register, base register for variable
+		     ; references
+		     (e-write3 'movl '#.lbot-sym '#.olbot-reg)
+		     ; make sure the np register points where it should since
+		     ; the caller might have given too few or too many args
+		     (e-write3 'lea `(,(* 4 g-currentargs) #.olbot-reg)
+			       '#.np-reg)
+		     (e-writel g-topsym))))
+
+d83 1
+a83 1
+
+a84 1
+#+for-vax
+d86 2
+a87 8
+  (If g-flocal then (e-write3 'movl '#.unCstack 'r10)
+		    (e-write1 'rsb)
+	       else (e-return)))
+
+#+for-68k
+(defun d-fini nil
+   (If g-flocal
+       then (e-write3 'movl '#.unCstack '#.np-reg)
+d89 6
+a94 4
+	    (e-write1 'rts)
+       else (e-write3 'moveml (concat "a6@@(-" g-stackspace ")")
+		      `($ ,g-masklab))
+	    (e-write2 'unlk 'a6)
+a99 1
+#+for-vax
+d103 8
+a110 2
+  (e-write2 ".set linker_size," (length g-lits))
+  (e-write2 ".set trans_size," (length g-tran))
+d113 5
+a117 6
+      (If (memq (caar ll) '(lambda nlambda macro eval))
+	  then (e-write2 '".long" (cdr (assoc (caar ll) 
+					      '((lambda . 0)
+						(nlambda . 1)
+						(macro . 2)
+						(eval . 99)))))
+a120 27
+  (e-write1 '"lit_org:")
+  (d-asciiout (nreverse g-lits))
+  (If g-tran then (d-asciiout (nreverse g-tran)))
+  (d-asciiout (mapcar '(lambda (x) (If (eq (car x) 'eval)
+				       then (cadr x)
+				       else (caddr x)))
+		      g-funcs))
+  
+  (e-write1 '"lit_end:"))
+
+#+for-68k
+(defun d-bindtab nil
+  (setq g-skipcode nil)	  ; make sure this isnt ignored	
+  (e-writel "bind_org")
+  (e-write2 "linker_size = " (length g-lits))
+  (e-write2 "trans_size = " (length g-tran))
+  (do ((ll (setq g-funcs (nreverse g-funcs)) (cdr ll)))
+      ((null ll))
+      (If (memq (caar ll) '(lambda nlambda macro eval))
+	  then (e-write2 '".long" (cdr (assoc (caar ll) 
+					      '((lambda . 0)
+						(nlambda . 1)
+						(macro . 2)
+						(eval . 99)))))
+	  else (comp-err " bad type in lit list " (car ll))))
+  
+  (e-write1 ".long -1")
+d123 2
+a124 2
+  (If g-tran then (d-asciiout (nreverse g-tran)))
+  (d-asciiout (mapcar '(lambda (x) (If (eq (car x) 'eval)
+a127 1
+  
+d143 1
+a143 1
+	       (If (greaterp remsiz 60) then (sfilewrite '".ascii \"")
+d150 1
+a150 1
+		   (If (eq '#.ch-newline (car curform))
+d152 1
+a152 1
+		    else (If (or (eq '\\ (car curform))
+d181 1
+a181 1
+      (If (null (errset (setq tport (infile ar-file))))
+a190 1
+#+for-vax
+d192 22
+a213 24
+  (If     (eq 'reg arg) then 'r0
+   elseif (eq 'Nil arg) then '$0
+   elseif (eq 'T arg) then (If g-trueloc thenret
+			       else (setq g-trueloc (e-cvt (d-loclit t nil))))
+   elseif (eq 'stack arg) then '(+ #.np-reg)
+   elseif (eq 'unstack arg) then '(- #.np-reg)
+   elseif (atom arg) then arg
+   elseif (dtpr arg) then (If     (eq 'stack (car arg))
+			      then `(,(* 4 (1- (cadr arg))) #.olbot-reg)
+			   elseif (eq 'vstack (car arg))
+			      then `(* ,(* 4 (1- (cadr arg))) #.olbot-reg)
+			   elseif (eq 'bind (car arg))
+			      then `(* ,(* 4 (1- (cadr arg))) #.bind-reg)
+			   elseif (eq 'lbind (car arg))
+			      then `( ,(* 4 (1- (cadr arg))) #.bind-reg)
+			   elseif (eq 'fixnum (car arg))
+			      then `(\# ,(cadr arg))
+			   elseif (eq 'immed (car arg))
+			      then `($ ,(cadr arg))
+			   elseif (eq 'racc (car arg))
+			      then (cdr arg)
+			   else (comp-err " bad arg to e-cvt : "
+					  (or arg)))
+     else  (comp-warn "bad arg to e-cvt : " (or arg))))
+a214 28
+#+for-68k
+(defun e-cvt (arg)
+  (If     (eq 'reg arg) then 'd0
+   elseif (eq 'areg arg) then 'a0
+   elseif (eq 'Nil arg) then '#.nil-reg
+   elseif (eq 'T arg) then (If g-trueloc thenret
+			       else (setq g-trueloc (e-cvt (d-loclit t nil))))
+   elseif (eq 'stack arg) then '(+ #.np-reg)
+   elseif (eq 'unstack arg) then '(- #.np-reg)
+   elseif (or (atom arg) (symbolp arg)) then arg
+   elseif (dtpr arg) then (If     (eq 'stack (car arg))
+			      then `(,(* 4 (1- (cadr arg))) #.olbot-reg)
+			   elseif (eq 'vstack (car arg))
+			      then `(* ,(* 4 (1- (cadr arg))) #.olbot-reg)
+			   elseif (eq 'bind (car arg))
+			      then `(* ,(* 4 (1- (cadr arg))) #.bind-reg)
+			   elseif (eq 'lbind (car arg))
+			      then `(,(* 4 (1- (cadr arg))) #.bind-reg)
+			   elseif (eq 'fixnum (car arg))
+			      then `(\# ,(cadr arg))
+			   elseif (eq 'immed (car arg))
+			      then `($ ,(cadr arg))
+			   elseif (eq 'racc (car arg))
+			      then (cdr arg)
+			   else (comp-err " bad arg to e-cvt : "
+					  (or arg)))
+   else  (comp-warn "bad arg to e-cvt : " (or arg))))
+
+d219 20
+a238 16
+  (If (atom arg) then (If (eq 'Nil arg) then nil
+			  else arg)
+   elseif (eq 'stack (car arg))
+	  then (do ((i g-loccnt)
+		    (ll g-locs))
+		   ((and (equal i (cadr arg)) (atom (car ll))) (car ll))
+		   (If (atom (car ll)) then (setq ll (cdr ll)
+						  i (1- i))
+					else (setq ll (cdr ll))))
+   elseif (or (eq 'bind (car arg)) (eq 'lbind (car arg)))
+	  then (do ((i g-litcnt (1- i))
+		    (ll g-lits (cdr ll)))
+		   ((equal i (cadr arg)) (cond ((eq 'lbind (car arg))
+						(list 'quote (car ll)))
+					       (t (car ll)))))
+   else arg))
+d246 1
+a246 1
+  (If (atom form)
+d248 27
+a274 26
+   else (If (eq '* (car form)) then (If (eq '\# (cadr form))
+					then (setq form `($ ,(caddr form)))
+					else (sfilewrite "*")
+					     (setq form (cdr form))))
+	(If (numberp (car form))
+	    then (sfilewrite (car form))
+		 (sfilewrite "(")
+		 (sfilewrite (cadr form))
+		 (sfilewrite ")")
+		 (If (caddr form)
+		     then (sfilewrite "[")
+			  (sfilewrite (caddr form))
+			  (sfilewrite "]"))
+	elseif (eq '+ (car form))
+	    then (sfilewrite '"(")
+		 (sfilewrite (cadr form))
+		 (sfilewrite '")+")
+	elseif (eq '- (car form))
+	    then (sfilewrite '"-(")
+		 (sfilewrite (cadr form))
+		 (sfilewrite '")")
+	elseif (eq '\# (car form))	; 5120 is base of small fixnums
+	    then (sfilewrite (concat "$" (+ (* (cadr form) 4) 5120)))
+	elseif (eq '$ (car form))
+	    then (sfilewrite '"$")
+		 (sfilewrite (cadr form)))))
+d278 1
+a278 1
+   (If (atom form)
+d280 2
+a281 2
+       else (If (eq '* (car form))
+		then (If (eq '\# (cadr form))
+d283 1
+a283 1
+	    (If (numberp (car form))
+d286 1
+a286 1
+		     (If (not (zerop (car form)))
+d290 8
+d304 1
+a304 1
+	     elseif (eq '\# (car form))	; 0x801400 is base of small fixnums
+d306 3
+a308 1
+					 "+" (* (cadr form) 4)))
+a313 6
+;--- e-cmp :: emit code to compare the two given args
+;	- arg1, arg2 : EIADRs
+;
+(defun e-cmp (arg1 arg2)
+  (e-write3 'cmpl arg1 arg2))
+
+d318 1
+a318 1
+  (If g-comments
+a359 8
+;--- e-move :: move value from one place to anther
+; this corresponds to d-move except the args are EIADRS
+;
+;.. c-rplaca, c-rplacd
+(defun e-move (from to)
+  (If (equal 0 from) then (e-write2 'clrl to)
+		     else (e-write3 'movl from to)))
+
+d365 1
+a365 1
+  (If (greaterp nargs 0)
+d376 1
+a376 1
+      (If (greaterp i 1) then (e-write2  'clrq '#.np-plus)
+d438 1
+a438 1
+  (d-sub `($ ,(* 8 n)) '#.bnp-sym)
+d440 1
+d453 2
+a454 2
+  (If (not g-skipcode)
+      then (setq g-dropnpcnt (+ n (If g-dropnpcnt thenret else 0)))))
+d462 4
+a465 6
+  `(If g-dropnpcnt then (let ((dr g-dropnpcnt))
+			     (setq g-dropnpcnt nil)
+			     #+for-vax (e-write3 'subl2
+						 `($ ,(* dr 4))
+						 '#.np-reg)
+			     #+for-68k (d-sub `($ ,(* dr 4)) '#.np-reg))))
+d471 1
+a471 1
+  '(If g-skipcode then (sfilewrite #.comment-char)))
+a496 1
+
+a498 1
+;.. cc-equal, d-bindtab, d-dodef, d-fixnumbox, d-prelude, e-label
+d503 1
+a503 1
+  (sfilewrite '":")
+a507 1
+;.. c-assembler-code, d-bindtab, d-fini, e-return, liszt
+d511 2
+a512 1
+  (sfilewrite (concat "	" lit))
+a516 5
+;.. c-*catch, c-*throw, c-cons, c-errset, c-get
+;.. c-internal-fixnum-box, c-list, cc-equal, cc-memq, cc-oneminus
+;.. cc-oneplus, d-bindtab, d-callbig, d-dodef, d-fixnumbox, d-move
+;.. d-prelude, d-pushframe, d-supercxr, d-tst, e-gotonil, e-gotot
+;.. e-jump, e-move, e-pushnil, e-tst
+d521 1
+d531 1
+a531 1
+  (If (and (dtpr frm) (eq (car frm) '*))
+d557 1
+d569 1
+a569 1
+   (If (and (dtpr frm1) (eq (car frm1) '*)
+d609 1
+d619 1
+d621 1
+a621 1
+  (sfilewrite '"	")
+d623 1
+a623 1
+  (sfilewrite '",")
+d625 1
+a625 1
+  (sfilewrite '",")
+d637 1
+d639 1
+a639 1
+  (sfilewrite '"	")
+d641 1
+a641 1
+  (sfilewrite '",")
+d643 1
+a643 1
+  (sfilewrite '",")
+d645 1
+a645 1
+  (sfilewrite '",")
+a647 2
+
+
+@
+
+
+1.9
+log
+@fix autorun bug
+@
+text
+@d2 2
+a3 1
+(Liszt-file io "$Header: io.l 1.8 83/07/11 14:17:26 layer Exp $")
+d7 1
+d16 1
+a16 1
+      then (e-write3 'movl 'r10 '"-(sp)")	; (faster than pushl)
+d28 1
+a28 1
+			      '$4 '#.Lbot-reg '"-(sp)"); set up base for (arg)
+d31 2
+a32 2
+			      '#.Np-reg
+			      '#.oLbot-reg)	; will stack num of args
+d34 2
+a35 2
+			      '#.Lbot-reg
+			      '#.Np-reg 'r0)	; arg cnt again
+d40 2
+a41 2
+			      '(0 #.oLbot-reg)
+			      '"-(sp)") ; also on runtime stk
+d44 1
+a44 1
+		    (e-write3 'movl '#.Lbot-reg '#.oLbot-reg)
+d50 3
+a52 3
+       then (e-write3 'movl '#.oLbot-reg '"sp@@-")
+	    (e-write3 'movl '#.Np-reg '"sp@@-")
+	    (e-write3 'lea `(,(* -4 g-currentargs) #.Np-reg) '#.oLbot-reg)
+d56 2
+a57 1
+	    (e-write3 'moveml `($ ,(setq g-masklab (d-genlab)))
+d66 1
+a66 1
+		     #+no-global-reg (e-write3 'movl '_np '#.Np-reg)
+d68 2
+a69 2
+		     (e-write3 'movl '#.Np-reg 'a5)
+		     (e-write3 'subl '#.Lbot-sym 'a5)    ; arg cnt again
+d73 1
+a73 1
+		     (e-write3 'movl '#.Np-reg '#.oLbot-reg);stack # of args
+d78 1
+a78 1
+		     (e-write3 'movl '#.Lbot-sym '#.oLbot-reg)
+d81 2
+a82 2
+		     (e-write3 'lea `(,(* 4 g-currentargs) #.oLbot-reg)
+			       '#.Np-reg)
+d90 1
+a90 1
+  (If g-flocal then (e-write3 'movl '"(sp)+" 'r10)
+d97 2
+a98 2
+       then (e-write3 'movl '"sp@@+" '#.Np-reg)
+	    (e-write3 'movl '"sp@@+" '#.oLbot-reg)
+d229 2
+a230 2
+   elseif (eq 'stack arg) then '(+ #.Np-reg)
+   elseif (eq 'unstack arg) then '(- #.Np-reg)
+d233 1
+a233 1
+			      then `(,(* 4 (1- (cadr arg))) #.oLbot-reg)
+d235 1
+a235 1
+			      then `(* ,(* 4 (1- (cadr arg))) #.oLbot-reg)
+d257 2
+a258 2
+   elseif (eq 'stack arg) then '(+ #.Np-reg)
+   elseif (eq 'unstack arg) then '(- #.Np-reg)
+d261 1
+a261 1
+			      then `(,(* 4 (1- (cadr arg))) #.oLbot-reg)
+d263 1
+a263 1
+			      then `(* ,(* 4 (1- (cadr arg))) #.oLbot-reg)
+d461 1
+a461 1
+  (e-write3 'movl '#.Bnp-val '#.bNp-reg))
+d467 1
+a467 1
+  (e-write3 'movl '#.bNp-reg '#.Bnp-val))
+d476 1
+a476 1
+       (e-write3 'movl (e-cvt vloc) '(+ #.bNp-reg))	; store old val
+d478 1
+a478 1
+		       '(+ #.bNp-reg))		; now name
+d489 2
+a490 2
+      (e-write3 'movl `(,(* -8 i) #.bNp-reg) `(* ,(+ 4 (* -8 i)) #.bNp-reg)))
+  (e-write4 'subl3 `($ ,(* 8 n)) '#.bNp-reg '#.Bnp-val))
+d498 3
+a500 3
+      (e-write3 'movl `(,(* -8 i) #.bNp-reg) `(* ,(+ 4 (* -8 i)) #.bNp-reg)))
+  (e-write3 'movl '#.bNp-reg '#.Bnp-val)
+  (d-sub `($ ,(* 8 n)) '#.Bnp-val)
+d527 2
+a528 2
+						 '#.Np-reg)
+			     #+for-68k (d-sub `($ ,(* dr 4)) '#.Np-reg))))
+d557 2
+a558 1
+		       (concat g-stackspace " = " (Cstackspace) '#.ch-newline))))
+@
+
+
+1.8
+log
+@move autorun files to a sub-dir
+in lisplib
+(lisplib/autorun/)
+@
+text
+@d2 1
+a2 1
+(Liszt-file io "$Header: io.l 1.7 83/07/06 00:08:49 layer Exp $")
+d204 11
+a214 9
+   (prog (tport ar-file)
+       (setq ar-file (concat lisp-library-directory
+			     #+for-vax "/autorun/vax"
+			     #+for-68k "/autorun/68k"))
+       (If (null (errset (setq tport (infile ar-file))))
+	   then (comp-err "Can't open autorun header file " ar-file))
+       (do ((x (read tport '<eof>) (read tport '<eof>)))
+	   ((equal '<eof> x) (close tport))
+	   (sfilewrite x))))
+@
+
+
+1.7
+log
+@put autorun headers in /usr/lib/lisp
+@
+text
+@d2 1
+a2 1
+(Liszt-file io "$Header: io.l 1.6 83/06/30 18:53:20 layer Exp $")
+d206 2
+a207 2
+			     #+for-vax "/autorun.vax"
+			     #+for-68k "/autorun.68k"))
+@
+
+
+1.6
+log
+@portable changes
+@
+text
+@d2 1
+a2 1
+(Liszt-file io "$Header: io.l.l 1.5 83/05/04 18:32:27 layer Exp $")
+a202 1
+#+for-vax
+d204 9
+a212 95
+  (sfilewrite
+".set	exit,1
+.word	0x0000
+subl2	$8,sp
+movl	8(sp),(sp)  #  argc
+movab	12(sp),r0
+movl	r0,4(sp)  #  argv
+QL1:
+tstl	(r0)+  #  null args term ?
+bneq	QL1
+cmpl	r0,*4(sp)  #  end of 'env' or 'argv' ?
+blss	QL2
+tstl	-(r0)  # envp's are in list
+QL2:
+movab	dr,8(sp)
+movab	ln,4(sp)
+movab	4(sp),r1
+movl	sp,r2
+pushl	r0	#stack environment
+pushl	r1
+pushab	ln
+calls	$3,_execve
+chmk	$exit
+ln:
+")
+(sfilewrite (concat ".asciz	\"" lisp-object-directory "/lisp\"
+dr:
+.asciz	\"-f\"
+.set	exece,59
+_execve:
+.word	0x0000
+chmk	$exece
+chmk	$exit
+ret
+")))
+
+#+sun-bsd
+(defun d-printautorun nil
+   (sfilewrite
+"start:movl	sp@@,d2
+lea	sp@@(4),a3
+movl	d2,d1
+asll	#2,d1
+lea	a3@@(4,d1:l),a4
+movl	#flag+0x8000,a3@@-
+movl	#lisp+0x8000,a3@@-
+movl	a3,sp
+pea	a4@@
+pea	a3@@
+movl	#lisp+0x8000,sp@@-
+jsr	execve
+execve: pea	0x3b:w
+trap	#0
+addw	#12,a7
+pea	0:w
+jsr	_exit
+_exit: pea	1:w
+trap	#0
+flag:	.asciz	\"-f\"
+lisp:	.asciz  \"/usr/ucb/lisp\"
+.even
+"))
+
+#+dual-v7
+(defun d-printautorun nil
+   (sfilewrite
+"OFFSET = 0x800000
+start:	movl	a7@@(4),a0
+clrl	a0@@(-4)
+movl	a7,a0
+subql	#0x8,a7
+movl	a0@@,a7@@
+addql	#0x4,a0
+movl	a0,a7@@(4)
+LL0:	tstl	a0@@+
+bnes	LL0
+movl	a7@@(4),a1
+cmpl	a1@@,a0
+blts	LL1
+subql	#0x4,a0
+LL1:	movl	a0,a7@@(8)
+movl	a0,a1
+movl	#OFFSET+file,a2
+movl	a2,sp@@(4)	| setup new argv[0]
+movl	a2,a0		| file to execute
+movl	#OFFSET+flag,a2
+movl	a2,sp@@(8)	| setup new argv[1]
+lea	sp@@(4),a2
+movl	a2,d1
+movw	#0x3B,d0
+trap	#0x0
+file:	.asciz	\"/usr/ucb/lisp\"
+flag:	.asciz	\"-f\"
+.even
+"))
+@
+
+
+1.5
+log
+@added sun autorun header
+@
+text
+@d2 1
+a2 1
+(Liszt-file io "$Header: io.l 1.4 83/04/06 16:43:41 layer Exp $")
+d23 1
+a23 1
+	   #+portable (e-setup-np-lbot)
+d63 1
+a63 1
+		     #+portable (e-write3 'movl '_np '#.Np-reg)
+@
+
+
+1.4
+log
+@change some compiler constants to syms instead of strings
+@
+text
+@d2 1
+a2 2
+(Liszt-file io
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.3 83/04/05 08:59:38 layer Exp $")
+d189 13
+d241 28
+a268 1
+#+for-68k
+@
+
+
+1.3
+log
+@68k autorun header handled like vax
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.2 83/03/23 20:49:52 layer Exp $")
+d67 1
+a67 1
+		     (e-write3 'subl #.Lbot-sym 'a5)    ; arg cnt again
+d570 1
+a570 1
+						 #.Np-reg)
+@
+
+
+1.2
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/io.l,v 1.1 83/01/26 12:15:54 jkf Exp $")
+d231 30
+a260 13
+   (prog (xport)
+       (If (null (*catch
+		     'Comp-error
+		     (If (null (errset (setq xport
+					     (infile autorun-file))))
+			 then (comp-err "error when opening file: "
+					autorun-file)
+			 else t)))
+	   then (return))
+       (do ((ll (read xport) (cdr ll)))
+	   ((null ll) (close xport))
+	   (sfilewriteln (car ll)))))
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header$")
+d12 1
+d24 1
+d26 19
+a44 17
+	     then 
+	       (e-write4 'subl3 '$4 '#.Lbot-reg '"-(sp)"); set up base for (arg)
+	       (e-writel g-topsym)
+	       (e-write3 'movl '#.Np-reg '#.oLbot-reg)	; will stack num of args
+	       (e-write4 'subl3 '#.Lbot-reg '#.Np-reg 'r0)	; arg cnt again
+	       (e-write3 'movab '"0x1400(r0)" '#.np-plus)	; stack lispval
+	       (e-write3 'movl '(0 #.oLbot-reg) '"-(sp)") ; also on runtime stk
+	     else
+	       ; set up old lbot register, base register for variable
+	       ; references
+	       (e-write3 'movl '#.Lbot-reg '#.oLbot-reg)
+	       ; make sure the np register points where it should since
+	       ; the caller might have given too few or too many args
+	       ;; don't do this because we will check # of args
+	       ;(e-write3 'movab `(,(* 4 g-currentargs) #.oLbot-reg) 
+	       ;		        '#.Np-reg)
+	       (e-writel g-topsym))))
+d46 37
+d86 1
+d92 10
+d106 1
+d133 27
+d180 1
+a180 1
+		   (If (eq ch-newline (car curform))
+d191 1
+d229 14
+d249 1
+d274 28
+a303 1
+
+d329 1
+d360 28
+d401 2
+a402 1
+	       (sfilewrite '"	#")
+d407 1
+a407 1
+			  (sfilewrite "#"))))
+d410 1
+a410 1
+      else (terpr vp-sfile)))
+d460 1
+d469 7
+d479 1
+d510 1
+d518 10
+d551 4
+a554 1
+			     (e-write3 'subl2 `($ ,(* dr 4)) '#.Np-reg))))
+d560 1
+a560 1
+  '(If g-skipcode then (sfilewrite "# ")))
+d570 1
+a570 1
+  (e-write2 'jbr l)
+d578 6
+a583 1
+  (e-write1 'ret))
+d602 1
+a602 1
+  (sfilewrite lit)
+d612 1
+d617 1
+a617 1
+  (sfilewrite '"	")
+d621 16
+d647 1
+d652 1
+a652 1
+  (sfilewrite '"	")
+d654 1
+a654 1
+  (sfilewrite '",")
+d658 44
+d707 1
+d724 1
+d747 3
+a749 1
+   (sfilewrite ".data  # this is just for documentation ")
+@

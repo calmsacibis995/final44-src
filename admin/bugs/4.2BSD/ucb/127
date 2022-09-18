@@ -1,0 +1,66 @@
+Return-Path: <sdcsvax!sdccsu3!madden@Nosc>
+From: sdcsvax!sdccsu3!madden@Nosc (Jim Madden)
+Date: Wed, 2 Nov 83 03:18:13 pst
+Subject: Vi mishandling of "p" on long lines
+Index: 	ucb/ex/ex_vops2.c 4.2BSD
+
+Description:
+	When asked to do a put of a partial line which causes a
+	wrapmargin overflow, vi will frequently mangle the new
+	text or other nearby parts of the file because of mis-guided
+	attempts to optimize the screen display.  Further, if
+	abbreviations defined by "abbr" commands appear in the new
+	text, they will be expanded during the put.  (This might
+	be regarded as feature.)
+Repeat-By:
+	The following short list of vi commands will cause the
+	problem if executed on an 80 column terminal:
+		vi NEWTESTFILE
+		:set wrapmargin 8
+		aa b c d e f g h\E^y$$pppp
+	
+	At the fourth p command, the inserted text will not be the
+	expected "a b c d e f g h" but will be truncated to "a b c d
+	e".  Successive p commands will cause other unexpected
+	results.
+Fix:
+	The problem is caused when the code for "p" and "P" in
+	ex_vmain.c changes the current command to "a" or "i" and
+	reprocesses it with vglobp pointing at the deletion buffer DEL
+	so that the captured text is processed as if it were being read
+	from the keyboard.  This includes wrapmargin processing, but
+	wrapmargin processing assumes that the text has arrived from
+	the keyboard and does not properly handle the vglobp pointer
+	that has been set up by the put code.
+
+	We've installed an adhoc patch which inhibits the bad behavior
+	but also effectively short circuits the optimization that was
+	intended in the first place.  A context diff of ex_vops2.c
+	follows:
+
+
+*** /tmp/,RCSt1011548	Wed Nov  2 02:19:25 1983
+--- ex_vops2.c	Wed Nov  2 02:14:23 1983
+***************
+*** 621,627
+  				gobbled = 1;
+  				continue;
+  			}
+! 			if (value(WRAPMARGIN) &&
+  				(outcol >= OCOLUMNS - value(WRAPMARGIN) ||
+  				 backsl && outcol==0) &&
+  				commch != 'r') {
+
+--- 631,642 -----
+  				gobbled = 1;
+  				continue;
+  			}
+! 			if (value(WRAPMARGIN) && !vglobp &&
+! 				/*
+! 				 * vglopb implies this is not really a keyboard
+! 				 * text insert.  This test avoids trying to
+! 				 * split lines at the wrapmargin for puts.
+! 				 */
+  				(outcol >= OCOLUMNS - value(WRAPMARGIN) ||
+  				 backsl && outcol==0) &&
+  				commch != 'r') {

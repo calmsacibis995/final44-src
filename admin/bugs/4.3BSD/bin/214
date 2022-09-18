@@ -1,0 +1,99 @@
+Path: seismo!uunet!mcvax!unido!ecrcvax!alan
+From: alan@ecrcvax.UUCP (Alan P. Sexton)
+Newsgroups: comp.unix.wizards,comp.bugs.4bsd
+Subject: patch to du to restrict to one file-system
+Index: bin/du 4.3BSD
+
+In article <294@mars.UUCP> rich@cfi.COM (Rich Baughman -CFI-) writes:
+>How many times have you frantically had to answer this question:
+>    "Who is using up all the #&$%@ space on this disk?!".
+>This happens to us all the time.  Does anyone know of the existence of a
+>program like 'du' that shows disk use by directory for a specific file system
+>(i.e., one that does not traverse mounted file systems)?
+
+I include a context diff to add a -d argument to du. With this arg
+du will report 0 size for any directory being used as a mount point
+and it will not traverse the mounted filesystem. The sources are for
+BSD4.[23] on a Vax. We've been running this for some years on our
+systems without problems.
+
+Note that any files you have in the mount point directory do not show
+up to du or ls even though they do take up real disk space which is reported
+by df. This can be a source of missing disk space (/tmp is particularly
+prone to this problem if you mount a separate file system on it: i.e.
+do some work in single user mode or with /tmp otherwise unmounted
+and forget to clear out the /tmp mount point before going multiuser. On going
+multiuser the /tmp filesystem is mounted over the /tmp mount point
+and you no longer see the files you used to have in /tmp).
+
+>BTW, we do not have a source license, so those
+>solutions are out.
+
+Sorry: maybe someone will include it as a standard feature in the next release.
+
+Warning: the line numbers may be different to your sources.
+
+*** du.c.orig	Fri Sep 23 10:11:38 1988
+--- du.c	Tue May 26 10:20:57 1987
+***************
+*** 1,6 ****
+--- 1,7 ----
+  #ifndef lint
+  static char *sccsid = "@(#)du.c	4.11 (Berkeley) 7/1/83";
+  #endif
++ #define ECRC
+  #include <stdio.h>
+  #include <sys/param.h>
+***************
+*** 10,15 ****
+--- 11,21 ----
+  char	path[BUFSIZ], name[BUFSIZ];
+  int	aflg;
+  int	sflg;
++ #ifdef ECRC
++ 	/* APS: added arg '-d' to restrict a search to one disk filesystem */
++ int	dflg; 
++ int	orig_dev = -1 ;
++ #endif
+  char	*dot = ".";
+***************
+*** 45,50 ****
+--- 51,64 ----
+  		argc--, argv++;
+  		goto again;
+  	}
++ #ifdef ECRC
++ 		/* APS: '-d' addition */
++ 	if (argc && !strcmp(*argv, "-d")) {
++ 		dflg++;
++ 		argc--, argv++;
++ 		goto again;
++ 	}
++ #endif
+  	if (argc == 0) {
+  		argv = &dot;
+  		argc = 1;
+***************
+*** 102,107 ****
+--- 116,135 ----
+  		*ebase0 = 0;
+  		return (0);
+  	}
++ #ifdef ECRC
++ 		/* APS: '-d' addition */
++ 	if (dflg)
++ 	{
++ 		if (orig_dev == -1)
++ 			orig_dev = stb.st_dev ;
++ 		else if (stb.st_dev != orig_dev)
++ 		{
++ 			if (sflg == 0)
++ 				printf("%ld\t%s\n", 0l, base);
++ 			return (0) ;
++ 		}
++ 	}
++ #endif
+  	if (stb.st_nlink > 1 && (stb.st_mode&S_IFMT) != S_IFDIR) {
+  		for (i = 0; i <= mlx; i++)
+  			if (ml[i].ino == stb.st_ino && ml[i].dev == stb.st_dev)
+

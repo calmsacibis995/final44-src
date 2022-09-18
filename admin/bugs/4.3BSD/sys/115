@@ -1,0 +1,90 @@
+Path: seismo!lll-lcc!pyramid!isieng!chris
+From: lll-lcc!pyramid!isieng!chris@seismo.css.gov
+Subject: miniroot file system corruption
+Index: sys 4.3BSD
+
+	There is a bug in BSD4.2 and BSD4.3 based kernels when running in the 
+miniroot which can cause corruption of the miniroot file system.  
+
+	When running in the miniroot "argdev", "rootdev" and "swdevt[0].sw_dev"
+all refer to the same device.  For swap operations transfers are offset by 
+MINIROOTSIZE in sys/vm_sw.c:swstrategy before doing any actual io (any 
+buffer or cmap <dev,bn> caching is relative to /dev/drum).  However, "argdev" 
+references are never offset by MINIROOTSIZE in sys/kern_exec.c. This causes a 
+<dev,bn> conflict in the buffer cache between data on "rootdev" and "argdev".
+This same problem exists on NFS/vnode based kernels with a <dev_vp,bn> conflict.
+
+	The fix which I have applied involves moving the definition of 
+MINIROOTSIZE from sys/vm_sw.c to machine/machparam.h and applying the following
+diff to sys/kern_exec.c.  For vnode based kernels use rootvp and argdev_vp for
+rootdev and argdev in the diff's below.
+
+*** kern_exec.c	Mon May  4 13:38:31 1987
+--- x	Mon May  4 13:40:07 1987
+***************
+*** 191,198
+  	nc = 0;
+  	cc = 0;
+  	uap = (struct execa *)u.u_ap;
+  	bno = rmalloc(argmap, (long)ctod(clrnd((int)btoc(NCARGS))));
+  	if (bno == 0) {
+  		swkill(u.u_procp, "exec: no swap space");
+  		goto bad;
+  	}
+
+--- 191,200 -----
+  	nc = 0;
+  	cc = 0;
+  	uap = (struct execa *)u.u_ap;
+  	bno = rmalloc(argmap, (long)ctod(clrnd((int)btoc(NCARGS))));
++ 	if (rootdev == argdev)
++ 		bno += MINIROOTSIZE;
+  	if (bno == 0) {
+  		swkill(u.u_procp, "exec: no swap space");
+  		goto bad;
+  	}
+***************
+*** 369,377
+  	}
+  bad:
+  	if (bp)
+  		brelse(bp);
+! 	if (bno)
+  		rmfree(argmap, (long)ctod(clrnd((int) btoc(NCARGS))), bno);
+  	if (ip)
+  		iput(ip);
+  }
+
+--- 371,381 -----
+  	}
+  bad:
+  	if (bp)
+  		brelse(bp);
+! 	if (bno) {
+! 		if (rootdev == argdev)
+! 			bno += MINIROOTSIZE;
+  		rmfree(argmap, (long)ctod(clrnd((int) btoc(NCARGS))), bno);
+  	}
+  	if (ip)
+  		iput(ip);
+***************
+*** 371,378
+  	if (bp)
+  		brelse(bp);
+  	if (bno)
+  		rmfree(argmap, (long)ctod(clrnd((int) btoc(NCARGS))), bno);
+  	if (ip)
+  		iput(ip);
+  }
+--- 375,383 -----
+  	if (bno) {
+  		if (rootdev == argdev)
+  			bno += MINIROOTSIZE;
+  		rmfree(argmap, (long)ctod(clrnd((int) btoc(NCARGS))), bno);
++ 	}
+  	if (ip)
+  		iput(ip);
+  }
+--
+Chris Horne       Integrated Solutions, 1140 Ringwood Court, San Jose, CA 95131
+

@@ -1,0 +1,60 @@
+Return-Path: <abe@purdue-asc.ARPA>
+Date: Fri, 10 May 85 17:08:24 est
+From: Vic Abell <abe@purdue-asc.ARPA>
+Subject: bad block handling in standalone hp driver
+Index: 	sys/stand/hp.c 4.2BSD
+
+Description:
+	When the standalone hp driver encounters a bad block in the middle
+	of a transfer, successfully recovers that block, and then continues
+	with the rest of the transfer, it modifies (unheralded), three values
+	in the iob structure supplied by the caller.
+Repeat-By:
+	Put a kernel across a bad block and try to boot it.  The operation
+	is restarted endlessly.
+Fix:
+	The problem has been fixed in revision 6.6 (sort of).  That fix
+	restores i_cc in the iob structure (most of the time, but not always).
+	The following diffs (< revision 6.5 versus local fix >) represent a
+	fix that restores all three values.
+
+138c138
+< 	int er1, er2, hprecal;
+---
+> 	int er1, er2, hprecal, rv;
+151c151
+< 	bytecnt = io->i_cc;
+---
+> 	bytecnt = rv = io->i_cc;
+171,172c171,174
+< 	if (mbastart(io, func) != 0)		/* start transfer */
+< 		return (-1);
+---
+> 	if (mbastart(io, func) != 0) {		/* start transfer */
+> 		rv = -1;
+> 		goto retrn;
+> 	}
+211c213,214
+< 		return (-1);
+---
+> 		rv = -1;
+> 		goto retrn;
+259c262
+< 		bytecnt = -1;
+---
+> 		rv = -1;
+301c304,305
+< 		return (-1);	
+---
+> 		rv = -1;
+> 		goto retrn;
+356c360,364
+< 	return (bytecnt);
+---
+> retrn:
+> 	io->i_bn = startblock;
+> 	io->i_cc = bytecnt;
+> 	io->i_ma = membase;
+> 	return (rv);
+
+Vic Abell, ...pur-ee!pucc-j!abe

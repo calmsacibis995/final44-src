@@ -1,0 +1,63 @@
+From laplante@ocgy.ubc.ca  Mon Oct 31 12:36:03 1988
+Date: 31 Oct 88  9:34 -0800
+From: Denis Laplante <laplante@ocgy.ubc.ca>
+To: <4bsd-bugs@ucbvax.Berkeley.EDU>
+Subject: odd-address bug in vax unibus tape drivers (4.2BSD) +FIX
+Return-Receipt-To: Denis Laplante <laplante@ocgy.ubc.ca>
+Index: sys/vaxuba/{tm,ts}.c 4.2BSD
+
+Description: 
+On ocgy.ubc.ca our VAX750 sometimes transfers the wrong bytes to/from raw tape.
+In our tests, the first byte was skipped over.  The problem does not appear
+if the buffer is forced to align on a 16-bit boundary.
+The two unibus interfaces we have are Emulex TC11 (imitating tm11)
+and Emulex TC13 (imitating ts11).
+
+Explanation:
+Both tmdgo() and tsdgo() call ubago(), which in turn calls ubasetup() 
+with flag=UBA_NEEDBDP .
+If address is odd and Buffered Data Path is to be used (normal on 750),
+Unibus map registers have bit UBAMR_BO set, causing transfers to VAX
+memory to be offset by one byte.  Unfortunately this byte offset is only
+needed for Unibus devices which don't tolerate odd addresses, such as 
+Emulex SC31 and (all?) other disks.  Emulex TC11 (tm11) and TC13 (ts11)
+handle odd addresses, and UBAMR_BO causes an extra 1-byte offset.
+
+Problem arises in connection with the following lines in ubasetup:
+	if (bdp && (o & 01))
+		temp |= UBAMR_BO;
+		
+A digression:  I don't understand why UBAMR_BO does not get set for drivers 
+which do not use buffered data path.  I suspect something wrong there, 
+particularily for VAX 730 where variable 'bdp' is always ==0 .
+
+Repeat-by:
+echo -n abcd | dd ibs=2 obs=4 skip=0 of=/dev/rmt0 ; od -c /dev/rmt0 
+		[correct output is:]
+2+0 records in
+1+0 records out
+0000000    a   b   c   d
+0000004
+
+echo -n abcd | dd ibs=1 obs=4 skip=0 of=/dev/rmt0 ; od -c /dev/rmt0 
+		[faulty output is:]
+4+0 records in
+1+0 records out
+0000000    b   c   d  \0
+0000004
+
+	Note that getting 'dd' to do a raw 'write' starting at an odd
+	address might require, on different versions, playing with the
+	obs or skip parameters.
+
+
+Fix:
+Clear low bit in Unibus address before loading register.  Tested OK here.
+
+** file sys/vaxuba/tm.c , routine tmdgo()
+<	addr->tmba = um->um_ubinfo;
+>	addr->tmba = um->um_ubinfo & (~1);
+
+** file sys/vaxuba/ts.c , routine tsdgo()
+<	i = um->um_ubinfo;
+>	i = um->um_ubinfo & (~1);

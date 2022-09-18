@@ -1,0 +1,48 @@
+Path: seismo!rutgers!mcnc!tas
+From: tas@mcnc.org (Tim Seaver)
+Newsgroups: comp.unix.wizards
+Subject: /etc/passwd locking problem under 4.3 bsd
+Index: lib/libc 4.3BSD
+
+There seems to be a major problem with the 4.3 BSD innovation
+of using shared locks on /etc/passwd (/etc/passwd.dir to be exact)
+in the getpw* library routines. The problem comes in two parts.
+First, the getpw* library routines can be suspended, leaving the shared
+locks in place indefinitely. I realize that any competent C programmer
+can hang an indefinite shared lock on /etc/passwd without those
+library routines, but the lack of signal blocking in the routines
+means that joe user can set such a lock by accident simply by
+suspending /usr/ucb/mail or /bin/csh (for example) at an inopportune
+moment. This has happened twice at MCNC in the past two months.
+(It can be pretty tough to track down and fix if you don't have mods
+to ps to allow printing of open file status for each process on the
+system...)
+
+But that only leaves a shared lock around on /etc/passwd, which
+shouldn't hurt much, right? Well, it turns out that /bin/passwd
+wants an exclusive lock on /etc/passwd(.dir), and doesn't bother
+to time out or use a non-blocking flock to get it. And it does
+take care to block signals before attempting the lock.  So you
+wind up with one or more hung /bin/passwd commands that can't
+be suspended or killed from the keyboard, leading to calls to
+the system admin and general confusion, not to mention that no
+one can change their password, login shell, or full name info
+until the offending process is resumed or killed, or the system
+is rebooted.
+
+So, I intend to block suspend signals in the getpw* routines
+while the shared lock is active, and in addition, I want to modify
+/bin/passwd to retry the exclusive lock a few times and give up
+with a reasonable message if it fails to get the lock. Has anyone
+run across and fixed this problem already? Should /bin/passwd be
+more forceful and ignore the shared lock if it seems to be held
+indefinitely? Is there a better way to handle all of this?
+
+Thanks for your input,
+
+	Tim Seaver
+	Systems Programmer
+	Microelectronics Center of North Carolina
+
+	tas@mcnc.org
+	mcnc!tas

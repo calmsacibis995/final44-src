@@ -1,0 +1,110 @@
+From layer@ucbarpa.Berkeley.EDU  Mon Jun 15 21:53:56 1987
+Date: Mon, 15 Jun 87 21:52:58 PDT
+From: layer@ucbarpa.berkeley.edu (Kevin Layer)
+Subject: bug in "adb"
+Index: bin/adb 4.3BSD
+
+The `emodd' instruction below is used in libm.a
+(/usr/src/usr.lib/libm/VAX/infnan.s) to generate the "reserved operand
+fault".  Well, when this program is run under `adb', `adb' dies a
+horrible death via an illegal instruction.   In fact, `adb' can't even
+print the instruction, without executing it.
+
+Needless to say, this makes debugging a little hard.
+
+    main()
+    {
+	    asm("emodd	$0,$0,$0x8000,r0,r0");
+    }
+
+Here is what happens:
+
+    ucbarpa% cc cat z.c
+    main()
+    {
+	asm("	emodd	$0,$0,$0x8000,r0,r0");
+    }
+    ucbarpa% cc z.c
+    ucbarpa% adb 
+    main+2:b
+    :r
+    a.out: running
+    breakpoint	_main+2:	brb	_main+1b
+    :s
+    a.out: running
+    stopped	at	_main+1b:	brb	_main+4
+    :s
+    a.out: running
+    Illegal instruction
+    ucbarpa% 
+
+
+-Kevin
+==============================================================
+Subject: addendum to previous "adb" bug report
+
+The problem is that the (F or D) float "0x8000" has a sign of 1 and
+exponent of 0, which is reserved, and adb (being ever so clever about
+the types of operands) trys to print it with printf("%f", ...).   I
+think the code is in adb.vax/print.c, and this needs to check for this
+special sign and exponent.
+
+	Kevin
+==============================================================
+From: layer@ucbarpa.berkeley.edu (Kevin Layer)
+Subject: fix for "reserved operand" bug in `adb'
+
+Enclosed are the diffs for /usr/src/bin/adb/adb.vax/opset.c.  It just
+checks that the F or D float doesn't have a sign of 1 and exponent of 0
+before doing the print... enjoy.
+
+	Kevin
+
+--------
+
+*** opset.orig.c	Mon May 27 18:09:08 1985
+--- opset.c	Tue Jun 16 12:32:15 1987
+***************
+*** 474,485 ****
+  
+  	valuep = snarf(nbytes);
+  	switch(A_TYPEXT(optype)){
+! 	case TYPF:	
+! 		printf("0f%f", valuep->num_num.numFf_float.Ff_value);
+! 		break;
+  	case TYPD:
+! 		printf("0d%f", valuep->num_num.numFd_float.Fd_value);
+! 		break;
+  	case TYPG:
+  		printf("0g::"); goto qprint;
+  	case TYPH:
+--- 474,501 ----
+  
+  	valuep = snarf(nbytes);
+  	switch(A_TYPEXT(optype)){
+! 	case TYPF:
+! 	    {
+! 		int low = valuep->num_num.numFf_float.Ff_ulong[0];
+! 		
+! 		if ((low & 0xff80) == 0x8000)
+! 		    printf("<reserved float operand>");
+! 		else {
+! 		    printf("0f%f", valuep->num_num.numFf_float.Ff_value);
+! 		}
+! 	    }
+! 	    break;
+  	case TYPD:
+! 	    {
+! 		int low = valuep->num_num.numFd_float.Fd_ulong[0];
+! 		
+! 		if ((low & 0xff80) == 0x8000)
+! 		    printf("<reserved float operand>");
+! 		else {
+! 		    printf("0d%f", valuep->num_num.numFd_float.Fd_value);
+! 		}
+! 	    }
+! 	    break;
+  	case TYPG:
+  		printf("0g::"); goto qprint;
+  	case TYPH:
+

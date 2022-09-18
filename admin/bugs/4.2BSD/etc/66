@@ -1,0 +1,774 @@
+Return-Path: <allegra!watmath!arwhite>
+Date: Fri, 17 Feb 84 02:05:06 est
+From: watmath!arwhite (Alex White)
+
+Subject: ps and pstat don't know about page tables for core dumps
+Index:	etc/pstat.c 4.2BSD
+
+Description:
+	ps -k vmunix.xx vmcore.xx
+	pstat -k vmunix.xx vmcore.xx
+	both blow up with garbage.
+Repeat-By:
+	Procedure to repeat the problem.
+Fix:
+	All accesses to the kernel if in a core dump must go thru the
+	kernel page tables.  Diffs follow for both ps and pstat
+
+*** ps.c	Fri Feb 17 01:59:54 1984
+--- /usr/distr/4.2/usr/src/bin/ps.c	Sun Sep 25 21:05:05 1983
+***************
+*** 46,57
+  #define	X_DMMIN		10
+  	{ "_dmmax" },
+  #define	X_DMMAX		11
+- 	{ "_u" },
+- #define	X_UAREA		12
+- 	{ "_Sysmap" },
+- #define	X_SYSMAP	13
+- 	{ "_Syssize" },
+- #define	X_SYSSIZE	14
+  	{ "" },
+  };
+  
+
+--- 46,51 -----
+  #define	X_DMMIN		10
+  	{ "_dmmax" },
+  #define	X_DMMAX		11
+  	{ "" },
+  };
+  
+***************
+*** 105,110
+  } user;
+  #define u	user.user
+  
+  int	chkpid;
+  int	aflg, cflg, eflg, gflg, kflg, lflg, rflg, sflg,
+  	uflg, vflg, xflg;
+
+--- 99,106 -----
+  } user;
+  #define u	user.user
+  
++ #define clear(x) 	((int)x & 0x7fffffff)
++ 
+  int	chkpid;
+  int	aflg, cflg, eflg, gflg, kflg, lflg, sflg,
+  	uflg, vflg, xflg;
+***************
+*** 106,112
+  #define u	user.user
+  
+  int	chkpid;
+! int	aflg, cflg, eflg, gflg, kflg, lflg, rflg, sflg,
+  	uflg, vflg, xflg;
+  char	*tptr;
+  char	*gettty(), *getcmd(), *getname(), *savestr(), *alloc(), *state();
+
+--- 102,108 -----
+  #define clear(x) 	((int)x & 0x7fffffff)
+  
+  int	chkpid;
+! int	aflg, cflg, eflg, gflg, kflg, lflg, sflg,
+  	uflg, vflg, xflg;
+  char	*tptr;
+  char	*gettty(), *getcmd(), *getname(), *savestr(), *alloc(), *state();
+***************
+*** 182,190
+  		case 'l':
+  			lflg++;
+  			break;
+- 		case 'r':
+- 			rflg++;
+- 			break;
+  		case 's':
+  			sflg++;
+  			break;
+
+--- 178,183 -----
+  		case 'l':
+  			lflg++;
+  			break;
+  		case 's':
+  			sflg++;
+  			break;
+***************
+*** 272,280
+  				     mproc->p_stat == SSTOP))
+  				continue;
+  			}
+- 			if (rflg && ! (mproc->p_stat == SRUN
+- 			    ||  mproc->p_pri < PZERO))
+- 				continue;
+  			save();
+  		}
+  	}
+
+--- 265,270 -----
+  				     mproc->p_stat == SSTOP))
+  				continue;
+  			}
+  			save();
+  		}
+  	}
+***************
+*** 323,337
+  	int off;
+  {
+  
+! 	/*
+! 	 *  If this is a dump, then the kernel isn't doing the page mapping
+! 	 *  for us.  Simulate it.
+! 	 */
+! 	if (kflg && (loc & 0x80000000) != 0) {
+! 		long v;
+! 		long addr;
+! 		struct pte pte;
+! 
+  		loc &= 0x7fffffff;
+  		v = btop(loc);
+  		if(v >= nl[X_SYSSIZE].n_value) {
+
+--- 313,319 -----
+  	int off;
+  {
+  
+! 	if (kflg)
+  		loc &= 0x7fffffff;
+  	(void) lseek(fd, (long)loc, off);
+  }
+***************
+*** 333,355
+  		struct pte pte;
+  
+  		loc &= 0x7fffffff;
+- 		v = btop(loc);
+- 		if(v >= nl[X_SYSSIZE].n_value) {
+- 			printf("address botch %x\n", loc);
+- 			return;
+- 		}
+- 		addr = (long)((struct pte *)nl[X_SYSMAP].n_value + v);
+- 		lseek(kmem, addr&0x7fffffff, 0);
+- 		if(read(kmem, (char *)&pte, sizeof(pte)) != sizeof(pte)) {
+- 			printf("Error reading kmem for pte at %x\n", addr);
+- 			return;
+- 		}
+- 		if (pte.pg_v == 0 && (pte.pg_fod || pte.pg_pfnum == 0)) {
+- 			printf("pte bad for %x\n", addr);
+- 			return;
+- 		}
+- 		loc = (long)ptob(pte.pg_pfnum) + (loc & PGOFSET);
+- 	}
+  	(void) lseek(fd, (long)loc, off);
+  }
+  
+
+--- 315,320 -----
+  
+  	if (kflg)
+  		loc &= 0x7fffffff;
+  	(void) lseek(fd, (long)loc, off);
+  }
+  
+***************
+*** 397,402
+  		fprintf(stderr, "%s: No namelist\n", nlistf);
+  		exit(1);
+  	}
+  	usrpt = (struct pte *)nl[X_USRPT].n_value;	/* don't clear!! */
+  	Usrptma = (struct pte *)nl[X_USRPTMA].n_value;
+  	klseek(kmem, (long)nl[X_NSWAP].n_value, 0);
+
+--- 362,370 -----
+  		fprintf(stderr, "%s: No namelist\n", nlistf);
+  		exit(1);
+  	}
++ 	if (kflg)
++ 		for (nlp = nl; nlp < &nl[sizeof (nl)/sizeof (nl[0])]; nlp++)
++ 			nlp->n_value = clear(nlp->n_value);
+  	usrpt = (struct pte *)nl[X_USRPT].n_value;	/* don't clear!! */
+  	Usrptma = (struct pte *)nl[X_USRPTMA].n_value;
+  	klseek(kmem, (long)nl[X_NSWAP].n_value, 0);
+***************
+*** 757,763
+  			    mproc->p_pid, swapf);
+  			return (0);
+  		}
+! 		pcbpf = mproc->p_swaddr;
+  		argaddr = 0;
+  		return (1);
+  	}
+
+--- 725,731 -----
+  			    mproc->p_pid, swapf);
+  			return (0);
+  		}
+! 		pcbpf = 0;
+  		argaddr = 0;
+  		return (1);
+  	}
+***************
+*** 761,766
+  		argaddr = 0;
+  		return (1);
+  	}
+  	pteaddr = &Usrptma[btokmx(mproc->p_p0br) + mproc->p_szpt - 1];
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+
+--- 729,736 -----
+  		argaddr = 0;
+  		return (1);
+  	}
++ 	if (kflg)
++ 		mproc->p_p0br = (struct pte *)clear(mproc->p_p0br);
+  	pteaddr = &Usrptma[btokmx(mproc->p_p0br) + mproc->p_szpt - 1];
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+***************
+*** 765,771
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+  		printf("ps: cant read indir pte to get u for pid %d from %s\n",
+! 		    mproc->p_pid, kmemf);
+  		return (0);
+  	}
+  	klseek(mem,
+
+--- 735,741 -----
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+  		printf("ps: cant read indir pte to get u for pid %d from %s\n",
+! 		    mproc->p_pid, swapf);
+  		return (0);
+  	}
+  	klseek(mem,
+***************
+*** 883,889
+  }
+  
+  char	*lhdr =
+! "      F UID   PID  PPID CP PRI NI ADDR  SZ  RSS WCHAN  STAT TT  TIME";
+  lpr(sp)
+  	struct savcom *sp;
+  {
+
+--- 853,859 -----
+  }
+  
+  char	*lhdr =
+! "      F UID   PID  PPID CP PRI NI ADDR  SZ  RSS WCHAN STAT TT  TIME";
+  lpr(sp)
+  	struct savcom *sp;
+  {
+***************
+*** 894,905
+  	    ap->a_flag, ap->a_uid,
+  	    ap->a_pid, lp->l_ppid, lp->l_cpu&0377, ap->a_pri-PZERO,
+  	    ap->a_nice-NZERO, lp->l_addr, pgtok(ap->a_size), pgtok(ap->a_rss));
+! 	
+! 	if(lp->l_wchan == (caddr_t)nl[X_UAREA].n_value)
+! 		printf("  pause");
+! 	else
+! 		printf(lp->l_wchan ? " %6x" : "       ",
+! 			(int)lp->l_wchan&~0x80000000);
+  	printf(" %4.4s ", state(ap));
+  	ptty(ap->a_tty);
+  	ptime(ap);
+
+--- 864,870 -----
+  	    ap->a_flag, ap->a_uid,
+  	    ap->a_pid, lp->l_ppid, lp->l_cpu&0377, ap->a_pri-PZERO,
+  	    ap->a_nice-NZERO, lp->l_addr, pgtok(ap->a_size), pgtok(ap->a_rss));
+! 	printf(lp->l_wchan ? " %5x" : "      ", (int)lp->l_wchan&0xfffff);
+  	printf(" %4.4s ", state(ap));
+  	ptty(ap->a_tty);
+  	ptime(ap);
+***************
+*** 1103,1109
+  	return (vp->v_swrss + (ap->a_xccount ? 0 : vp->v_txtswrss));
+  }
+  
+! #define	NMAX	16	/* sizeof loginname (should be sizeof (utmp.ut_name)) */
+  #define NUID	2048	/* must not be a multiple of 5 */
+  
+  struct nametable {
+
+--- 1068,1074 -----
+  	return (vp->v_swrss + (ap->a_xccount ? 0 : vp->v_txtswrss));
+  }
+  
+! #define	NMAX	8	/* sizeof loginname (should be sizeof (utmp.ut_name)) */
+  #define NUID	2048	/* must not be a multiple of 5 */
+  
+  struct nametable {
+*** pstat.c	Fri Feb 17 01:52:34 1984
+--- /usr/distr/4.2/usr/src/etc/pstat.c	Wed Nov  2 18:51:57 1983
+***************
+*** 74,83
+  	{ "_nswdev" },
+  #define	SSWDEVT	21
+  	{ "_swdevt" },
+- #define	X_SYSMAP 22
+- 	{ "_Sysmap" },
+- #define	X_SYSSIZE 23
+- 	{ "_Syssize" },
+  	{ "" }
+  };
+  
+
+--- 74,79 -----
+  	{ "_nswdev" },
+  #define	SSWDEVT	21
+  	{ "_swdevt" },
+  	{ "" }
+  };
+  
+***************
+*** 175,184
+  		printf("no namelist\n");
+  		exit(1);
+  	}
+- 	if (kflg && (nl[X_SYSMAP].n_value == 0 || nl[X_SYSSIZE].n_value == 0)) {
+- 		printf("No _Sysmap or _Syssize\n");
+- 		exit(1);
+- 	}
+  	allflags = filf | totflg | inof | prcf | txtf | ttyf | usrf | swpf;
+  	if (allflags == 0) {
+  		printf("pstat: one or more of -[aixptfsu] is required\n");
+
+--- 171,176 -----
+  		printf("no namelist\n");
+  		exit(1);
+  	}
+  	allflags = filf | totflg | inof | prcf | txtf | ttyf | usrf | swpf;
+  	if (allflags == 0) {
+  		printf("pstat: one or more of -[aixptfsu] is required\n");
+***************
+*** 216,222
+  	nin = 0;
+  	ninode = getw(nl[SNINODE].n_value);
+  	xinode = (struct inode *)calloc(ninode, sizeof (struct inode));
+! 	klseek(fc, (int)(ainode = (struct inode *)getw(nl[SINODE].n_value)), 0);
+  	read(fc, xinode, ninode * sizeof(struct inode));
+  	for (ip = xinode; ip < &xinode[ninode]; ip++)
+  		if (ip->i_count)
+
+--- 208,214 -----
+  	nin = 0;
+  	ninode = getw(nl[SNINODE].n_value);
+  	xinode = (struct inode *)calloc(ninode, sizeof (struct inode));
+! 	lseek(fc, (int)(ainode = (struct inode *)getw(nl[SINODE].n_value)), 0);
+  	read(fc, xinode, ninode * sizeof(struct inode));
+  	for (ip = xinode; ip < &xinode[ninode]; ip++)
+  		if (ip->i_count)
+***************
+*** 263,269
+  {
+  	int word;
+  
+! 	klseek(fc, loc, 0);
+  	read(fc, &word, sizeof (word));
+  	return (word);
+  }
+
+--- 255,263 -----
+  {
+  	int word;
+  
+! 	if (kflg)
+! 		loc &= 0x7fffffff;
+! 	lseek(fc, loc, 0);
+  	read(fc, &word, sizeof (word));
+  	if (kflg)
+  		word &= 0x7fffffff;
+***************
+*** 265,270
+  
+  	klseek(fc, loc, 0);
+  	read(fc, &word, sizeof (word));
+  	return (word);
+  }
+  
+
+--- 259,266 -----
+  		loc &= 0x7fffffff;
+  	lseek(fc, loc, 0);
+  	read(fc, &word, sizeof (word));
++ 	if (kflg)
++ 		word &= 0x7fffffff;
+  	return (word);
+  }
+  
+***************
+*** 286,292
+  	ntx = 0;
+  	ntext = getw(nl[SNTEXT].n_value);
+  	xtext = (struct text *)calloc(ntext, sizeof (struct text));
+! 	klseek(fc, (int)(atext = (struct text *)getw(nl[STEXT].n_value)), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+  	for (xp = xtext; xp < &xtext[ntext]; xp++)
+  		if (xp->x_iptr!=NULL)
+
+--- 282,288 -----
+  	ntx = 0;
+  	ntext = getw(nl[SNTEXT].n_value);
+  	xtext = (struct text *)calloc(ntext, sizeof (struct text));
+! 	lseek(fc, (int)(atext = (struct text *)getw(nl[STEXT].n_value)), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+  	for (xp = xtext; xp < &xtext[ntext]; xp++)
+  		if (xp->x_iptr!=NULL)
+***************
+*** 330,336
+  
+  	nproc = getw(nl[SNPROC].n_value);
+  	xproc = (struct proc *)calloc(nproc, sizeof (struct proc));
+! 	klseek(fc, (int)(aproc = (struct proc *)getw(nl[SPROC].n_value)), 0);
+  	read(fc, xproc, nproc * sizeof (struct proc));
+  	np = 0;
+  	for (pp=xproc; pp < &xproc[nproc]; pp++)
+
+--- 326,332 -----
+  
+  	nproc = getw(nl[SNPROC].n_value);
+  	xproc = (struct proc *)calloc(nproc, sizeof (struct proc));
+! 	lseek(fc, (int)(aproc = (struct proc *)getw(nl[SPROC].n_value)), 0);
+  	read(fc, xproc, nproc * sizeof (struct proc));
+  	np = 0;
+  	for (pp=xproc; pp < &xproc[nproc]; pp++)
+***************
+*** 359,365
+  		printf(" %6d", pp->p_pgrp);
+  		printf(" %6d", pp->p_pid);
+  		printf(" %6d", pp->p_ppid);
+! 		klseek(fc, (long)(Usrptma+btokmx(pp->p_addr)), 0);
+  		read(fc, &apte, sizeof(apte));
+  		printf(" %8x", ctob(apte.pg_pfnum+1) - sizeof(struct pte) * UPAGES);
+  		printf(" %4x", pp->p_rssize);
+
+--- 355,363 -----
+  		printf(" %6d", pp->p_pgrp);
+  		printf(" %6d", pp->p_pid);
+  		printf(" %6d", pp->p_ppid);
+! 		if (kflg)
+! 			pp->p_addr = (struct pte *)clear((int)pp->p_addr);
+! 		lseek(fc, (long)(Usrptma+btokmx(pp->p_addr)), 0);
+  		read(fc, &apte, sizeof(apte));
+  		printf(" %8x", ctob(apte.pg_pfnum+1) - sizeof(struct pte) * UPAGES);
+  		printf(" %4x", pp->p_rssize);
+***************
+*** 380,386
+  	register char *mesg;
+  
+  	printf("1 cons\n");
+! 	klseek(fc, (long)nl[SKL].n_value, 0);
+  	read(fc, dz_tty, sizeof(dz_tty[0]));
+  	mesg = " # RAW CAN OUT   MODE    ADDR   DEL COL  STATE     PGRP DISC\n";
+  	printf(mesg);
+
+--- 378,386 -----
+  	register char *mesg;
+  
+  	printf("1 cons\n");
+! 	if (kflg)
+! 		nl[SKL].n_value = clear(nl[SKL].n_value);
+! 	lseek(fc, (long)nl[SKL].n_value, 0);
+  	read(fc, dz_tty, sizeof(dz_tty[0]));
+  	mesg = " # RAW CAN OUT   MODE    ADDR   DEL COL  STATE   PGRP DISC\n";
+  	printf(mesg);
+***************
+*** 382,388
+  	printf("1 cons\n");
+  	klseek(fc, (long)nl[SKL].n_value, 0);
+  	read(fc, dz_tty, sizeof(dz_tty[0]));
+! 	mesg = " # RAW CAN OUT   MODE    ADDR   DEL COL  STATE     PGRP DISC\n";
+  	printf(mesg);
+  	ttyprt(&dz_tty[0], 0);
+  	if (nl[SNDZ].n_type == 0)
+
+--- 382,388 -----
+  		nl[SKL].n_value = clear(nl[SKL].n_value);
+  	lseek(fc, (long)nl[SKL].n_value, 0);
+  	read(fc, dz_tty, sizeof(dz_tty[0]));
+! 	mesg = " # RAW CAN OUT   MODE    ADDR   DEL COL  STATE   PGRP DISC\n";
+  	printf(mesg);
+  	ttyprt(&dz_tty[0], 0);
+  	if (nl[SNDZ].n_type == 0)
+***************
+*** 387,393
+  	ttyprt(&dz_tty[0], 0);
+  	if (nl[SNDZ].n_type == 0)
+  		goto dh;
+! 	klseek(fc, (long)nl[SNDZ].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dz lines\n", ndz);
+  	klseek(fc, (long)nl[SDZ].n_value, 0);
+
+--- 387,397 -----
+  	ttyprt(&dz_tty[0], 0);
+  	if (nl[SNDZ].n_type == 0)
+  		goto dh;
+! 	if (kflg) {
+! 		nl[SNDZ].n_value = clear(nl[SNDZ].n_value);
+! 		nl[SDZ].n_value = clear(nl[SDZ].n_value);
+! 	}
+! 	lseek(fc, (long)nl[SNDZ].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dz lines\n", ndz);
+  	lseek(fc, (long)nl[SDZ].n_value, 0);
+***************
+*** 390,396
+  	klseek(fc, (long)nl[SNDZ].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dz lines\n", ndz);
+! 	klseek(fc, (long)nl[SDZ].n_value, 0);
+  	read(fc, dz_tty, ndz * sizeof (struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[ndz]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+
+--- 394,400 -----
+  	lseek(fc, (long)nl[SNDZ].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dz lines\n", ndz);
+! 	lseek(fc, (long)nl[SDZ].n_value, 0);
+  	read(fc, dz_tty, ndz * sizeof (struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[ndz]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+***************
+*** 397,403
+  dh:
+  	if (nl[SNDH].n_type == 0)
+  		goto pty;
+! 	klseek(fc, (long)nl[SNDH].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dh lines\n", ndz);
+  	klseek(fc, (long)nl[SDH].n_value, 0);
+
+--- 401,411 -----
+  dh:
+  	if (nl[SNDH].n_type == 0)
+  		goto pty;
+! 	if (kflg) {
+! 		nl[SNDH].n_value = clear(nl[SNDH].n_value);
+! 		nl[SDH].n_value = clear(nl[SDH].n_value);
+! 	}
+! 	lseek(fc, (long)nl[SNDH].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dh lines\n", ndz);
+  	lseek(fc, (long)nl[SDH].n_value, 0);
+***************
+*** 400,406
+  	klseek(fc, (long)nl[SNDH].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dh lines\n", ndz);
+! 	klseek(fc, (long)nl[SDH].n_value, 0);
+  	read(fc, dz_tty, ndz * sizeof(struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[ndz]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+
+--- 408,414 -----
+  	lseek(fc, (long)nl[SNDH].n_value, 0);
+  	read(fc, &ndz, sizeof(ndz));
+  	printf("%d dh lines\n", ndz);
+! 	lseek(fc, (long)nl[SDH].n_value, 0);
+  	read(fc, dz_tty, ndz * sizeof(struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[ndz]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+***************
+*** 407,412
+  pty:
+  	if (nl[SPTY].n_type == 0)
+  		goto pty;
+  	printf("32 pty lines\n");
+  	klseek(fc, (long)nl[SPTY].n_value, 0);
+  	read(fc, dz_tty, 32*sizeof(struct tty));
+
+--- 415,423 -----
+  pty:
+  	if (nl[SPTY].n_type == 0)
+  		goto pty;
++ 	if (kflg) {
++ 		nl[SPTY].n_value = clear(nl[SPTY].n_value);
++ 	}
+  	printf("32 pty lines\n");
+  	lseek(fc, (long)nl[SPTY].n_value, 0);
+  	read(fc, dz_tty, 32*sizeof(struct tty));
+***************
+*** 408,414
+  	if (nl[SPTY].n_type == 0)
+  		goto pty;
+  	printf("32 pty lines\n");
+! 	klseek(fc, (long)nl[SPTY].n_value, 0);
+  	read(fc, dz_tty, 32*sizeof(struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[32]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+
+--- 419,425 -----
+  		nl[SPTY].n_value = clear(nl[SPTY].n_value);
+  	}
+  	printf("32 pty lines\n");
+! 	lseek(fc, (long)nl[SPTY].n_value, 0);
+  	read(fc, dz_tty, 32*sizeof(struct tty));
+  	for (tp = dz_tty; tp < &dz_tty[32]; tp++)
+  		ttyprt(tp, tp - dz_tty);
+***************
+*** 449,456
+  	putf(tp->t_state&TS_ASLEEP, 'A');
+  	putf(tp->t_state&TS_XCLUDE, 'X');
+  	putf(tp->t_state&TS_HUPCLS, 'H');
+- 	putf(tp->t_state&TS_TTSTOP, 'S');
+- 	putf(tp->t_state&TS_TBLOCK, 'Q');
+  	printf("%6d", tp->t_pgrp);
+  	switch (tp->t_line) {
+  
+
+--- 460,465 -----
+  	putf(tp->t_state&TS_ASLEEP, 'A');
+  	putf(tp->t_state&TS_XCLUDE, 'X');
+  	putf(tp->t_state&TS_HUPCLS, 'H');
+  	printf("%6d", tp->t_pgrp);
+  	switch (tp->t_line) {
+  
+***************
+*** 599,605
+  	nf = 0;
+  	nfile = getw(nl[SNFILE].n_value);
+  	xfile = (struct file *)calloc(nfile, sizeof (struct file));
+! 	klseek(fc, (int)(afile = (struct file *)getw(nl[SFIL].n_value)), 0);
+  	read(fc, xfile, nfile * sizeof (struct file));
+  	for (fp=xfile; fp < &xfile[nfile]; fp++)
+  		if (fp->f_count)
+
+--- 608,614 -----
+  	nf = 0;
+  	nfile = getw(nl[SNFILE].n_value);
+  	xfile = (struct file *)calloc(nfile, sizeof (struct file));
+! 	lseek(fc, (int)(afile = (struct file *)getw(nl[SFIL].n_value)), 0);
+  	read(fc, xfile, nfile * sizeof (struct file));
+  	for (fp=xfile; fp < &xfile[nfile]; fp++)
+  		if (fp->f_count)
+***************
+*** 660,666
+  	swapmap = (struct map *)calloc(nswapmap, sizeof (struct map));
+  	nswdev = getw(nl[SNSWDEV].n_value);
+  	swdevt = (struct swdevt *)calloc(nswdev, sizeof (struct swdevt));
+! 	klseek(fc, nl[SSWDEVT].n_value, L_SET);
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+  	klseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+
+--- 669,675 -----
+  	swapmap = (struct map *)calloc(nswapmap, sizeof (struct map));
+  	nswdev = getw(nl[SNSWDEV].n_value);
+  	swdevt = (struct swdevt *)calloc(nswdev, sizeof (struct swdevt));
+! 	lseek(fc, nl[SSWDEVT].n_value, L_SET);
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+  	lseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+***************
+*** 662,668
+  	swdevt = (struct swdevt *)calloc(nswdev, sizeof (struct swdevt));
+  	klseek(fc, nl[SSWDEVT].n_value, L_SET);
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+! 	klseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+  	klseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+
+--- 671,677 -----
+  	swdevt = (struct swdevt *)calloc(nswdev, sizeof (struct swdevt));
+  	lseek(fc, nl[SSWDEVT].n_value, L_SET);
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+! 	lseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+  	lseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+***************
+*** 664,670
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+  	klseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+! 	klseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+  	klseek(fc, getw(nl[SWAPMAP].n_value), 0);
+  	read(fc, swapmap, nswapmap * sizeof (struct map));
+
+--- 673,679 -----
+  	read(fc, swdevt, nswdev * sizeof (struct swdevt));
+  	lseek(fc, getw(nl[SPROC].n_value), 0);
+  	read(fc, proc, nproc * sizeof (struct proc));
+! 	lseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+  	lseek(fc, getw(nl[SWAPMAP].n_value), 0);
+  	read(fc, swapmap, nswapmap * sizeof (struct map));
+***************
+*** 666,672
+  	read(fc, proc, nproc * sizeof (struct proc));
+  	klseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+! 	klseek(fc, getw(nl[SWAPMAP].n_value), 0);
+  	read(fc, swapmap, nswapmap * sizeof (struct map));
+  	swapmap->m_name = "swap";
+  	swapmap->m_limit = (struct mapent *)&swapmap[nswapmap];
+
+--- 675,681 -----
+  	read(fc, proc, nproc * sizeof (struct proc));
+  	lseek(fc, getw(nl[STEXT].n_value), 0);
+  	read(fc, xtext, ntext * sizeof (struct text));
+! 	lseek(fc, getw(nl[SWAPMAP].n_value), 0);
+  	read(fc, swapmap, nswapmap * sizeof (struct map));
+  	swapmap->m_name = "swap";
+  	swapmap->m_limit = (struct mapent *)&swapmap[nswapmap];
+***************
+*** 932,974
+  	return;
+  badrmfree:
+  	printf("bad rmfree\n");
+- }
+- 
+- /*
+-  *  Stolen from ps asis.
+-  */
+- klseek(fd, loc, off)
+- int fd;
+- long loc;
+- int off;
+- {
+- 
+- 	/*
+- 	 *  If this is a dump, then the kernel isn't doing the page mapping
+- 	 *  for us.  Simulate it.
+- 	 */
+- 	if (kflg && (loc & 0x80000000) != 0) {
+- 		long v;
+- 		long addr;
+- 		struct pte pte;
+- 
+- 		loc &= 0x7fffffff;
+- 		v = btop(loc);
+- 		if(v >= nl[X_SYSSIZE].n_value) {
+- 			printf("address botch %x\n", loc);
+- 			return;
+- 		}
+- 		addr = (long)((struct pte *)nl[X_SYSMAP].n_value + v);
+- 		lseek(fd, addr&0x7fffffff, 0);
+- 		if(read(fd, (char *)&pte, sizeof(pte)) != sizeof(pte)) {
+- 			printf("Error reading kmem for pte at %x\n", addr);
+- 			return;
+- 		}
+- 		if (pte.pg_v == 0 && (pte.pg_fod || pte.pg_pfnum == 0)) {
+- 			printf("pte bad for %x\n", addr);
+- 			return;
+- 		}
+- 		loc = (long)ptob(pte.pg_pfnum) + (loc & PGOFSET);
+- 	}
+- 	(void) lseek(fd, (long)loc, off);
+  }
+
+--- 941,944 -----
+  	return;
+  badrmfree:
+  	printf("bad rmfree\n");
+  }

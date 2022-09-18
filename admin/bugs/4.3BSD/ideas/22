@@ -1,0 +1,405 @@
+From ksb@s.cc.purdue.edu  Sun Sep 18 20:11:31 1988
+From: ksb@s.cc.purdue.edu (Kevin Braunsdorf)
+To: Ideas <4bsd-ideas@ucbvax.Berkeley.EDU>
+Subject: a program to give shell level access to flock(2)
+Date: Sun, 18 Sep 88 22:09:20 -0500
+Index: ideas 4.3BSD
+
+
+What about this kinda tool: I'd be happy to fix it up a little.
+
+kayessbee
+
+#	This is a shell archive.
+#	Remove everything above and including the cut line.
+#	Then run the rest of the file through sh.
+#----cut here-----cut here-----cut here-----cut here----#
+#!/bin/sh
+# shar:	Shell Archiver
+#	Run the following text with /bin/sh to create:
+#	README
+#	Makefile
+#	flock.1l
+#	flock.c
+# This archive created: Sun Sep 18 18:25:41 1988
+# By:	Kevin Braunsdorf (Purdue UNIX Group)
+cat << \SHAR_EOF > README
+Flock applies or removes an advisory lock on the named file or file
+descriptor.  Advisory locks allow cooperating processes to perform
+consistent operations on files see flock(2).  This program is *very*
+useful on a Sequent machine; almost as useful on very fast uniprocessors.
+
+Here is a case where flock(1) is very useful: on a Sequent Balance
+series machine parallel make can be used to compile many files at the
+same time.  This doesn't work for programs that use xstr(1) because
+competing process using xstrings fail.  In the Makefile for vi one
+might use a flock on the Makefile to force (only) the xstr to be run
+sequentially:
+
+	.c.o:
+		${CC} -E ${CFLAGS} $*.c | \
+		flock Makefile sh -c "${XSTR} -c -; mv x.c $*.p.x"; \
+		sed '/rcsid\[\]/d' < $*.p.x > $*.p.c; \
+		${CC} ${CFLAGS} -c $*.p.c; \
+		mv $*.p.o $*.o; \
+		rm $*.p.x $*.p.c
+	  
+Which will start a few cpps in parallel and run only one xstr at a time,
+as soon as it can it will run the sed/cc/mv/rm allowing another process
+to begin using xstr.
+
+(I flock the Makefile by convention, because I know I always have one.)
+
+kayessbee (Kevin S Braunsdorf) ksb@j.cc.purdue.edu, pur-ee!ksb
+SHAR_EOF
+cat << \SHAR_EOF > Makefile
+# makefile for flock
+#			by Kevin S Braunsdorf, PUCC
+
+BIN=	${DESTDIR}$$HOME/bin
+
+I=/usr/include
+S=/usr/include/sys
+
+INCLUDE=
+DEBUG=	-O
+CDEFS=	-Dbsd
+CFLAGS= ${DEBUG} ${CDEFS} ${INCLUDE}
+
+HDR=	
+SRC=	flock.c
+OBJ=	flock.o
+SOURCE=	Makefile ${HDR} ${SRC}
+
+all: flock
+
+flock:
+	${CC} -o $@ ${CFLAGS} flock.c
+
+clean: FRC
+	rm -f Makefile.bak flock *.o a.out core errs tags
+
+depend: ${SRC} ${HDR} FRC
+	maketd -a ${CDEFS} ${INCLUDE} -b flock.c
+
+install: all FRC
+	install -c -s -m 751 -o binary -g system flock ${BIN}
+
+lint: ${HDR} ${SRC} FRC
+	lint -hnx ${CDEFS} ${INCLUDE} ${SRC}
+
+print: source FRC
+	lpr -J'flock source' ${SOURCE}
+
+source: ${SOURCE}
+
+spotless: clean
+	rcsclean ${SOURCE}
+
+tags: ${SRC} ${HDR}
+	ctags -t ${SRC} ${HDR}
+
+${SOURCE}:
+	co $@
+
+FRC:
+
+# DO NOT DELETE THIS LINE - maketd DEPENDS ON IT
+
+flock: $I/stdio.h $S/file.h $S/types.h $S/wait.h flock.c
+
+# *** Do not add anything here - It will go away. ***
+SHAR_EOF
+cat << \SHAR_EOF > flock.1l
+.\" $Id: flock.1l,v 1.2 88/09/18 18:10:56 ksb Exp $
+.\" by Kevin Braunsdorf
+.TH FLOCK 1L LOCAL
+.SH NAME
+flock - lock a file to synchronize command streams
+.SH SYNOPSIS
+\fBflock\fP [-\fBc\fP\fBh\fP\fBn\fP] [\-\fBEX\fP|\fBSH\fP|\fBUN\fP|\fBNB\fP] \fIfile\fP|\fIfd\fP [\fIcmd\fP]
+.SH DESCRIPTION
+Flock applies or removes an advisory lock on the named file or file descriptor.
+Advisory locks allow cooperating processes to perform consistent operations
+on files see \fIflock\fP(2).
+.PP
+The exit status from the \fBflock\fP command is the exit status of
+its child.  The default \fIcmd\fP is ``/bin/true'' so that by default
+\fBflock\fP will succeed.  \fBFlock\fP with exit nonzero if either
+\-\fBNB\fP (nonblocking) is specified and flock fails, or
+the specified \fIfile\fP (\fIfd\fP) cannot be (isn't) opened.
+.PP
+It \fBflock\fP has to open the file to get the lock it will not pass
+the created file descriptor to the child process.  (Said process might
+unlock the descriptor.)
+.SH OPTIONS
+.TP
+.BI \-c
+Create the lock file if it doesn't exist.
+.TP
+.BI \-h
+Give a brief help message.
+.TP
+.BI \-n
+Do not create the lock file if it doesn't exist.  This is the default.
+.TP
+.BI \-EX
+Set or reset the LOCK_EX bit in the arguments to \fIflock\fP(2).
+This is the default if no locking bits are given.
+.TP
+.BI \-NB
+Set or reset the LOCK_NB bit in the arguments to \fIflock\fP(2).
+.TP
+.BI \-SH
+Set or reset the LOCK_SH bit in the arguments to \fIflock\fP(2).
+.TP
+.BI \-UN
+Set or reset the LOCK_UN bit in the arguments to \fIflock\fP(2).
+This option is only useful when a file descriptor is given as the
+`file' on which to operate.
+.PP
+The option \-\fBEX\fP may be spelled \-\fBLOCK_EX\fP, likewise the other
+locking bits may be spelled more verbosely.
+.PP
+The locking bits may be inclusive or'ed together with a pipe (`|'), which
+must be quoted from the shell.
+.SH EXAMPLES
+.PP
+If a given daemon flocks its log file before each group of writes
+one might use:
+.sp 1
+	flock -EX 1 echo \*(lqsomething important\*(rq >>daemon.log
+.sp 1
+to avoid interlaminate writes to the log.
+.PP
+In a shell script:
+.sp 1
+	# stdout is a (possibly) shared file so we wait for it
+.br
+	flock -EX 1
+.br
+	# these have to be run under one lock
+.br
+	doit1 ; doit2; doit3
+.br
+	# end critical code, unlock the descriptor
+.br
+	flock -UN 1
+.sp 1
+To edit a shared file:
+.sp 1
+	flock share.c vi share.c
+.sp 1
+.SH BUGS
+.PP
+None known.
+.SH AUTHOR
+Kevin Braunsdorf
+.SH "SEE ALSO"
+flock(2), open(2), true(1)
+SHAR_EOF
+cat << \SHAR_EOF > flock.c
+/*
+ * flock a file and wait for a process to do something			(ksb)
+ *
+ * Copyright 1988, All Rights Reserved
+ *	Kevin S Braunsdorf
+ *	ksb@j.cc.purdue.edu, pur-ee!ksb
+ *	Math/Sci Building, Purdue Univ
+ *	West Lafayette, IN
+ *
+ *  `You may redistibute this code as long as you don't claim to have
+ *   written it. -- ksb'
+ *
+ * $Compile: ${cc-cc} ${DEBUG--C} ${SYS--Dbsd} %f -o %F
+ */
+#include <sys/types.h>
+#include <sys/file.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <stdio.h>
+
+#if defined(bsd)
+#define strchr	index
+#endif
+
+static char *progname =
+	"$Id: flock.c,v 1.7 88/09/18 18:20:45 ksb Exp $";
+
+static char acUsage[] =		/* this is the usage line for the user	*/
+	"%s: usage [-chn] [-EX|SH|UN|NB] file|fd [cmd]\n";
+static char *apcHelp[] = {	/* help text				*/
+	"c	create file, if nonexistant",
+	"h	print this help message",
+	"n	do not create file",
+	"EX	exclusive lock, default",
+	"NB	do not block for lock",
+	"SH	shared lock",
+	"UN	unlock",
+	(char *)0
+};
+
+typedef struct LKnode {		/* a cmd line option implies a lock bit	*/
+	char *pcflag;
+	int iflag;
+} LOCKKEY;
+
+static LOCKKEY aLKLocks[] = {	/* the list of the cmd lines we know	*/
+	{"LOCK_EX", LOCK_EX},
+	{"LOCK_SH", LOCK_SH},
+	{"LOCK_UN", LOCK_UN},
+	{"LOCK_NB", LOCK_NB},
+	{"EX", LOCK_EX},
+	{"SH", LOCK_SH},
+	{"UN", LOCK_UN},
+	{"NB", LOCK_NB},
+	{(char *)0, -1}
+};
+
+/*
+ * determine which flag the use wants to set/clear			(ksb)
+ */
+int
+Flag(pcCmd)
+char *pcCmd;
+{
+	register char *pcTry;
+	register LOCKKEY *pLK;
+	extern char *strchr();
+
+	for (pLK = aLKLocks; (char *)0 != (pcTry = pLK->pcflag); ++pLK) {
+		if (0 == strcmp(pcTry, pcCmd)) {
+			return pLK->iflag;
+		}
+	}
+	if ((char *)0 != (pcTry = strchr(pcCmd, '|'))) {
+		*pcTry++ = '\000';
+		return Flag(pcCmd)|Flag(pcTry);
+	}
+
+	fprintf(stderr, "%s: `%s' is not a flock key\n", progname, pcCmd);
+	exit(1);
+	/*NOTREACHED*/
+}
+
+/*
+ * is this character string all digits					(ksb)
+ */
+int
+isnumber(pc)
+char *pc;
+{
+	while (*pc) {
+		if (*pc < '0' || *pc > '9')
+			break;
+		++pc;
+	}
+	return *pc == '\000';
+}
+
+/*
+ * Get alock on the named file and execute the rest of our arguments	(ksb)
+ * while the lock is active, when this command exits exit with it's
+ * extit status.
+ */
+int
+main(argc, argv)
+int argc;
+char **argv;
+{
+	extern int atoi();
+	static char *apcTrue[] = {"true", (char *)0};
+	auto union wait wait_buf;
+	auto int fd, tClose, oFlags, fCreate = 0;
+	auto int iLock = -1;
+	auto char **ppcHelp;
+
+	progname = *argv++, --argc;
+
+	while (argc > 0 && '-' == argv[0][0]) {
+		switch (*++argv[0]) {
+		case '\000':
+			break;
+		case 'n':
+		case 'c':
+			fCreate = argv[0][0] == 'c';
+			argv[0][0] = '-';
+			continue;
+		case 'h':
+			fprintf(stdout, acUsage, progname);
+			for (ppcHelp = apcHelp; (char *)0 != *ppcHelp; ++ppcHelp) {
+				fprintf(stdout, "%s\n", *ppcHelp);
+			}
+			exit(0);
+		default:
+			if (-1 == iLock)
+				iLock = 0;
+			iLock ^= Flag(argv[0]);
+			break;
+		}
+		++argv, --argc;
+	}
+
+	if (-1 == iLock) {
+		iLock = LOCK_EX;
+	}
+
+	if (0 == argc) {
+		fprintf(stderr, acUsage, progname);
+		exit(1);
+	}
+
+	tClose = 1;
+	if (-1 == (fd = open(argv[0], O_RDONLY, 0600))) {
+		oFlags = 0 != fCreate ? O_CREAT|O_WRONLY|O_APPEND : O_WRONLY|O_APPEND;
+		if (-1 == (fd = open(argv[0], oFlags, 0666))) {
+			if (!isnumber(argv[0])) {
+				fprintf(stderr, "%s: open: ", progname);
+				perror(argv[0]);
+				exit(1);
+			}
+			fd = atoi(argv[0]);
+			if (-1 == fcntl(fd, F_GETFD, 0)) {
+				fprintf(stderr, "%s: %d: ", progname, fd);
+				perror("fcntl");
+				exit(1);
+			}
+			tClose = 0;
+		}
+	}
+	if (-1 == flock(fd, iLock)) {
+		fprintf(stderr, "%s: flock: ", progname);
+		perror(argv[0]);
+		exit(1);
+	}
+	++argv, --argc;
+
+	if (0 == argc) {
+		argv = apcTrue;
+	}
+	if (tClose != 0) {		/* save a fork */
+		switch (fork()) {
+		case 0:
+			close(fd);
+			break;
+		case -1:
+			fprintf(stderr, "%s: ", progname);
+			perror("fork");
+			exit(1);
+			/*NOTREACHED*/
+		default:
+			wait(& wait_buf);
+			/* exit will close fd for us */
+			exit((int) wait_buf.w_retcode);
+			/*NOTREACHED*/
+		}
+	}
+	execvp(argv[0], argv);
+	fprintf(stderr, "%s: ", progname);
+	perror(argv[0]);
+	exit(1);
+	/*NOTREACHED*/
+}
+SHAR_EOF
+#	End of shell archive
+exit 0

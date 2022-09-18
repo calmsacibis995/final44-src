@@ -1,0 +1,265 @@
+:
+: bootstrap installation for:
+:	cpp, nmake, mkcv, mkold, default.h, generic.h
+:
+:	cpio	make MAKE.cpio for porting
+:	tar	make MAKE.tar for porting
+:
+: this script exits on the first error and only
+: restarts from the beginning
+:
+ED=ed
+EDITOR=ed
+export ED EDITOR
+
+if	test ! -d include -a -d ../../../include
+then	O=`pwd`
+	cd ../../..
+	ROOT=`pwd`
+	cd $O
+else	ROOT=`pwd`
+fi
+export ROOT
+BIN=$ROOT/bin
+ETC=$ROOT/etc
+INCLUDE=$ROOT/include
+LIB=$ROOT/lib
+SRC=$ROOT/src
+:
+: set defaults
+:
+CPIO=
+TAR=
+:
+: check options
+:
+while	true
+do	case $1 in
+	cpio)	CPIO=`pwd`/MAKE.cpio ;;
+	tar)	TAR=`pwd`/MAKE.tar ;;
+	"")	break ;;
+	*)	echo "usage: $0 [ cpio ] [ tar ]" >&2; exit 1 ;;
+	esac
+	shift
+done
+if	test "$CPIO" != "" -a "$TAR" != ""
+then	echo "$0: cannot specify both cpio and tar" >&2; exit 1
+fi
+:
+: check for directories
+:
+for	i in $ETC $INCLUDE $SRC
+do	if	test ! -d $i
+	then	echo "$0: $i: directory not found" >&2; exit 1
+	fi
+done
+for	i in $BIN $LIB
+do	if	test ! -d $i
+	then	mkdir $i
+	fi
+done
+:
+: check for cpio or tar dump
+:
+if	test "$CPIO" != "" -o "$TAR" != ""
+then	cd $ROOT
+	ln src/cmd/make/MAKE .
+	FILES=`echo \
+		MAKE \
+		etc/mkdefault \
+		etc/mkgeneric \
+		include/directory.h \
+		include/hash.h \
+		include/values.h \
+		src/cmd/cpp/Makefile \
+		src/cmd/cpp/README \
+		src/cmd/cpp/*.[0-9chy] \
+		src/cmd/make/Makefile \
+		src/cmd/make/Makerules.mk \
+		src/cmd/make/README \
+		src/cmd/make/RELEASE \
+		src/cmd/make/HISTORY \
+		src/cmd/make/*.[0-9chy] \
+		src/cmd/make/examples/README \
+		src/cmd/make/examples/*.mk \
+		src/cmd/mkcv/Makefile \
+		src/cmd/mkcv/*.[0-9chy] \
+		src/cmd/mkcv/*.sh \
+		src/cmd/mkold/Makefile \
+		src/cmd/mkold/*.[0-9chy] \
+		src/cmd/mkold/*.sh \
+		src/lib/libx/Makefile \
+		src/lib/libx/dir/* \
+		src/lib/libx/hash/* \
+		src/lib/libx/misc/memcpy.c \
+		src/lib/libx/misc/memset.c \
+		src/lib/libx/misc/rindex.c \
+		src/lib/libx/misc/sgetl.c \
+		src/lib/libx/misc/sputl.c \
+		src/lib/libx/misc/strmatch.c`
+	if	test "$CPIO" != ""
+	then	echo $FILES | tr ' ' '\012' | cpio -ocv > $CPIO
+	else	tar cvf $TAR $FILES
+	fi
+	rm MAKE
+	exit 0
+fi
+:
+: get the current system parameters
+:
+. $ETC/mkdefault
+set -x
+:
+: make the machine dependent include files
+:
+$ETC/mkdefault $INCLUDE/default.h
+ln $INCLUDE/default.h $LIB
+$ETC/mkgeneric > $INCLUDE/generic.h
+:
+: check for some local includes
+:
+if	test -f /usr/include/values.h
+then	rm -f $INCLUDE/values.h
+fi
+:
+: compile libx.a
+:
+cd $SRC/lib/libx
+cc -O -I$INCLUDE -c hash/hash.c misc/strmatch.c
+if	test "$ARCHITECTURE" = vax
+then	O=
+else	O=-O
+fi
+cc $O -I$INCLUDE -c hash/chash*.c
+if	test "$RELEASE" = "apollo"
+then	cc -O -I$INCLUDE -c misc/sgetl.c misc/sputl.c misc/memcpy.c misc/memset.c
+	cc -O -I$INCLUDE -c dir/*.c
+	bind -b $LIB/libx.a *.o
+	chmod 755 $LIB/libx.a
+else	if	test "$MACHINE" = balance8000
+	then	: remove next line if "rindex(\"x\", 'x')" != 0
+		cc -O -I$INCLUDE -c misc/rindex.c
+	fi
+	if	test `ar t /lib/libc.a | grep -c '^s[gp][eu]tl\.o$'` -ne 2
+	then	cc -O -I$INCLUDE -c misc/sgetl.c misc/sputl.c
+	fi
+	if	test `ar t /lib/libc.a | grep -c '....dir\.o$'` -lt 6
+	then	cc -O -I$INCLUDE -c dir/*.c
+	fi
+	if	test `ar t /lib/libc.a | grep -c '^memcpy\.o$'` -ne 1
+	then	if	test `ar t /lib/libc.a | grep -c '^bcopy\.o$'` -ne 1
+		then	cc -O -I$INCLUDE -c misc/memcpy.c misc/memset.c
+		fi
+	fi
+	for i in /lib /usr/lib
+	do	if	test -f $i/libjobs.a
+		then	ar x $i/libjobs.a; break
+		fi
+	done
+	ar r $LIB/libx.a *.o
+	rm -f *.o
+	if	test -f /bin/ranlib -o -f /usr/bin/ranlib
+	then	ranlib $LIB/libx.a
+	fi
+fi
+:
+: the rest of the commands should return sane exit status
+:
+if	test "$RELEASE" != bsd
+then	set -ex
+fi
+:
+: compile cpp
+:
+cd $SRC/cmd/cpp
+cc -O -I$INCLUDE -c cppgen.c
+cc -o cppgen cppgen.o
+./cppgen -m > machdep.h
+./cppgen -t > table.c
+yacc -d cpy.y
+mv y.tab.h cpy.h
+mv y.tab.c cpy.c
+cc -O -I$INCLUDE -c cpp.c cpy.c malloc.c scan.c table.c
+rm -f cpy.c
+cc -o $LIB/cpp cpp.o cpy.o malloc.o scan.o table.o $LIB/libx.a 
+:
+: compile nmake
+:
+cd $SRC/cmd/make
+if	test -f /bin/ksh
+then	DEFS="-DDMAKESHELL=\"/bin/ksh\""
+elif	test -f /usr/local/bin/ksh
+then	DEFS="-DDMAKESHELL=\"/usr/local/bin/ksh\""
+elif	test -f /usr/lbin/ksh
+then	DEFS="-DDMAKESHELL=\"/usr/lbin/ksh\""
+else	case "$SHELL" in
+	*ksh*)	DEFS="-DDMAKESHELL=\"$SHELL\"" ;;
+	esac
+fi
+DEFS="$DEFS -DDMAKEPP=\"$LIB/cpp\" -DDMAKERULES=\"$LIB/Makerules.mo\""
+if	test "$RELEASE" != "apollo"
+then	if	test -f /bin/ranlib -o -f /usr/bin/ranlib
+	then	DEFS="$DEFS -DRANLIB"
+	fi
+fi
+yacc -d gram.y
+mv y.tab.h gram.h
+mv y.tab.c gram.c
+cc -O -I$INCLUDE $DEFS -c *.c
+rm -f gram.c
+cc -o $BIN/nmake *.o $LIB/libx.a 
+:
+: compile and install the builtin rules
+:
+$BIN/nmake -bcf Makerules.mk
+cp Makerules.mo $LIB
+rm -f Makerules.mo
+:
+: fix make readonly data and install
+:
+rm -f gram.o version.o
+$BIN/nmake -A install
+:
+: fix cpp readonly data and install
+:
+cd $SRC/cmd/cpp
+rm cpy.o table.o
+$BIN/nmake -A install
+:
+: compile and install mkcv
+:
+cd $SRC/cmd/mkcv
+$BIN/nmake install
+:
+: compile and install mkold
+:
+cd $SRC/cmd/mkold
+$BIN/nmake install
+:
+::: mail the installation message
+:::
+::set +e -x
+::if	test "`uname -n 2>/dev/null`" = ulysses
+::then	U=""
+::elif	test `uuname 2>/dev/null | grep -c '^ulysses$'` -gt 0
+::then	U=ulysses
+::elif	test `uuname 2>/dev/null | grep -c '^ihnp4$'` -gt 0
+::then	U=ihnp4!ulysses
+::else	U=""
+::fi
+::if	test "$U"
+::then	N=`(uname -n || hostname || cat /etc/whoami) 2>/dev/null`
+::	mail $U!make <<!
+::make `grep '@(#)' $SRC/cmd/make/version.c | sed 's/.*) \(.*\)\".*/\1/'` installed on `date` by $N!${USER:-${LOGNAME:-`who am i | sed 's/[ 	].*//'`}}
+::
+::	system		$SYSTEM
+::	release		$RELEASE
+::	version		$VERSION
+::	architecture	$ARCHITECTURE
+::	model		$MODEL
+::	machine		$MACHINE
+::!
+::fi
+:::
+::: finished
+:::

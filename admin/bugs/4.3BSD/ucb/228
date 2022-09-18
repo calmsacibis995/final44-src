@@ -1,0 +1,64 @@
+From chris@mimsy.umd.edu  Fri Jul 22 18:30:42 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.60/1.28)
+	id AA26555; Fri, 22 Jul 88 18:30:42 PDT
+Received: from mimsy.umd.edu by ucbvax.berkeley.edu (5.59/1.28)
+	id AA03354; Fri, 22 Jul 88 18:24:48 PDT
+Received: by mimsy.umd.edu (5.58/4.7)
+	id AA24135; Fri, 22 Jul 88 21:24:20 EDT
+Date: Fri, 22 Jul 88 21:24:20 EDT
+From: Chris Torek <chris@mimsy.umd.edu>
+Message-Id: <8807230124.AA24135@mimsy.umd.edu>
+To: helge%sdata.uucp@ifi.uio.no, info-pyramid@mimsy.umd.edu, jan@eik.II.UIB.NO
+Subject: Re:  Sun - Pyramid NFS problem: bug in ex/vi
+Cc: 4bsd-bugs@ucbvax.berkeley.edu, magne@eik.II.UIB.NO, petter@eik.II.UIB.NO,
+        sharil@eik.II.UIB.NO
+
+The problem is a bug in the 4.3BSD `vi' program: in ex.h, we have
+the declaration
+
+	var	char	genbuf[MAXBSIZE];
+
+while in ex_io.c we have the following:
+
+	if (fstat(io, &statb) < 0)
+		bsize = LBSIZE;
+	else {
+		bsize = statb.st_blksize;
+		if (bsize <= 0)
+			bsize = LBSIZE;
+	}
+	ignore(append(getfile, addr2));
+
+The routine getfile() reads text from descriptor `io' into the buffer
+`genbuf', asking for `bsize' bytes each time.  If the st_blksize is
+greater than the MAXBSIZE of the system on which vi was compiled, it
+reads past the end of the buffer `genbuf' and clobbers random variables.
+
+Index: ucb/ex/ex_io.c 4.3BSD Fix
+
+Description:
+	ex carelessly assumes that file block sizes are <= MAXBSIZE.
+
+Repeat-by:
+	Using NFS or equivalent, edit a file with a blocksize of 16KB
+	from a machine with a MAXBSIZE of 8KB.
+
+Fix:
+	change the code near the top of rop2() from
+
+		bsize = statb.st_blksize;
+		if (bsize <= 0)
+			bsize = LBSIZE;
+
+	to
+
+		bsize = statb.st_blksize;
+		if (bsize <= 0)
+			bsize = LBSIZE;
+		if (bsize > MAXBSIZE)
+			bsize = MAXBSIZE;
+
+	The second statement could be an `else if', but this protects
+	against configuration errors in ex_tune.h (making LBSIZE > MAXBSIZE).
+
+Chris

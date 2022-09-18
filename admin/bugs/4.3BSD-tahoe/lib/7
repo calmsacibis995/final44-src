@@ -1,0 +1,87 @@
+From ulysses!ggs@ucbvax.Berkeley.EDU  Thu Oct 22 09:36:07 1987
+From: ulysses!ggs@ucbvax.berkeley.edu
+To: ucbvax!okeeffe.berkeley.edu!tahoe-bugs
+Subject: Tahoe C compiler and optimizer condition code error
+Date: Thu, 22 Oct 87 11:46:47 EDT
+
+Index: lib/{ccom,c2} tahoe
+
+Description:
+	The tahoe C compiler does not get the semantics of some assignment
+	values correct.  When the source is a register and the destination
+	is a character the condition code is set by the register's
+	32-bit value.
+Repeat-By:
+
+	/*
+	Assuming that the tahoe has 8 bits per unsigned char, I think
+	the tahoe cc has a bug.  The following program computes the
+	number of bits in an unsigned char by shifting 1 left by 1
+	until a 0 results.  The program produces 8 on the vax and 68020.
+	Glenn
+	-----
+	*/
+	main()
+	{
+		unsigned char	uc;
+
+		long		size;
+
+		uc = 1;
+		size = 1;
+		while ((unsigned char)(uc <<= 1)) size++;
+		printf("#define CHAR_BIT	%d\n", size);
+	}
+
+	This generates the following code (unoptimized):
+
+		...
+		movzbl	-53(fp),r0
+		shll	$1,r0,r0
+		cvtlb	r0,-53(fp)
+		jeql	L17
+		...
+
+	If I change the expression to "while ((uc <<= 1), uc) size++;",
+	I get the following assembly:
+
+		...
+		movzbl	-53(fp),r0
+		shll	$1,r0,r0
+		cvtlb	r0,-53(fp)
+		tstb	-53(fp)
+		jeql	L17
+		...
+
+	This code is correct.  Unfortunately, the optimizer thinks it can
+	eliminate the test and "corrects" the code to the first version.
+----------------------------------------------------------
+From donn@cs.utah.edu Thu Jan 14 00:55:56 1988
+Date: Thu, 14 Jan 88 01:55:07 MST
+From: donn@cs.utah.edu (Donn Seeley)
+Subject: Re: Tahoe C compiler and optimizer condition code error [tahoe/lib/7]
+
+I fixed this just now in the new compiler on okeeffe.  The problem was
+that both the compiler and the peephole optimizer thought that code of
+the form
+
+	cvtlb	r0,-53(fp)
+	jneq	L205
+
+worked on the tahoe like it does on the vax -- that is, the condition
+codes on the vax are set according to the contents of the destination
+of the 'cvt' instruction, in this case -53(fp).  The tahoe cleverly
+ignores characteristics of the destination of a 'cvt' if the source is
+a register, so if r0 contains 256, the branch will (inappropriately) be
+taken.  If CCI was going to build a CISC, why couldn't they make its
+instruction set orthogonal?  Especially with an example like the vax
+architecture, which they stole from freely...  Too bad.  The fixes were
+fairly straightforward, but they involve code in pcc that has been
+radically altered since the tahoe BSD beta release, so I won't pass
+them on until the 'new' tahoe pcc alpha test, unless someone needs the
+code desperately.
+
+Blech,
+
+Donn
+

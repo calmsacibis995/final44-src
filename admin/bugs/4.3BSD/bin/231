@@ -1,0 +1,172 @@
+From arnold@EMORYU1.ARPA  Sat Aug  6 03:29:47 1988
+Date: Fri, 5 Aug 88 16:11:53 EDT
+From: "Arnold D. Robbins" <arnold@EMORYU1.ARPA>
+To: mtxinu!43nfs-bugs@EMORYU1.ARPA
+Subject: tar does not understand FIFO special files
+Subject: tar does not understand FIFO special files
+Index: bin/tar.c 4.3BSD
+#Index:	/usr/man/man5/tar.5 4.3BSD + NFS
+
+Description:
+	On systems which support System V 'fifo' special files (named
+	pipes), tar does not recognize such files.
+Repeat-By:
+	On a Mt. Xinu or SunOS 4.0 system, create a FIFO special file, via
+	mknod. Try to archive it with tar. Watch tar decide that it is
+	not a file.
+Fix:
+	Apply the following two fixes to the source and the tar(5) man
+	page respectively. Based on John Gilmore's pdtar, I have used a
+	linkflag of '6' for fifos; he was following the POSIX spec.
+	(Yes, I suppose I could switch to his version of tar.)
+
+	Your line numbers may vary. In particular, I have Guy Harris's
+	fix for not unlinking directories already installed.
+
+*** /tmp/,RCSt1016378	Fri Aug  5 15:57:34 1988
+--- tar.c	Fri Aug  5 12:29:41 1988
+***************
+*** 659,664 ****
+--- 659,714 ----
+  			putempty();
+  		break;
+  
++ #ifdef S_IFIFO
++ 	case S_IFIFO:
++ 		tomodes(&stbuf);
++ 		if (strlen(longname) >= NAMSIZ) {
++ 			fprintf(stderr, "tar: %s: file name too long\n",
++ 			    longname);
++ 			return;
++ 		}
++ 		strcpy(dblock.dbuf.name, longname);
++ 		if (stbuf.st_nlink > 1) {
++ 			struct linkbuf *lp;
++ 			int found = 0;
++ 
++ 			for (lp = ihead; lp != NULL; lp = lp->nextp)
++ 				if (lp->inum == stbuf.st_ino &&
++ 				    lp->devnum == stbuf.st_dev) {
++ 					found++;
++ 					break;
++ 				}
++ 			if (found) {
++ 				strcpy(dblock.dbuf.linkname, lp->pathname);
++ 				dblock.dbuf.linkflag = '1';
++ 				sprintf(dblock.dbuf.chksum, "%6o", checksum());
++ 				(void) writetape( (char *) &dblock);
++ 				if (vflag)
++ 					fprintf(vfile, "a %s link to %s\n",
++ 					    longname, lp->pathname);
++ 				lp->count--;
++ 				return;
++ 			}
++ 			lp = (struct linkbuf *) getmem(sizeof(*lp));
++ 			if (lp != NULL) {
++ 				lp->nextp = ihead;
++ 				ihead = lp;
++ 				lp->inum = stbuf.st_ino;
++ 				lp->devnum = stbuf.st_dev;
++ 				lp->count = stbuf.st_nlink - 1;
++ 				strcpy(lp->pathname, longname);
++ 			}
++ 		}
++ 		dblock.dbuf.linkname[i] = '\0';
++ 		dblock.dbuf.linkflag = '6';	/* from POSIX */
++ 		sprintf(dblock.dbuf.size, "%11lo", 0);
++ 		sprintf(dblock.dbuf.chksum, "%6o", checksum());
++ 		if (vflag)
++ 			fprintf (vfile, "a %s FIFO special file\n", longname);
++ 		(void) writetape((char *)&dblock);
++ 		break;
++ #endif
++ 
+  	default:
+  		fprintf(stderr, "tar: %s is not a file. Not dumped\n",
+  		    longname);
+***************
+*** 698,703 ****
+--- 748,774 ----
+  				dodirtimes(&dblock);
+  			continue;
+  		}
++ 		if (dblock.dbuf.linkflag == '6') {	/* FIFO */
++ 			/*
++ 			 * only unlink non directories or empty
++ 			 * directories
++ 			 */
++ 			if (rmdir(dblock.dbuf.name) < 0) {
++ 				if (errno == ENOTDIR)
++ 					unlink(dblock.dbuf.name);
++ 			}
++ 			if (mkfifo(dblock.dbuf.name, stbuf.st_mode&0xfff) < 0) {
++ 				fprintf (stderr, "tar: can't make FIFO %s: ",
++ 					dblock.dbuf.name);
++ 				perror ("");
++ 				continue;
++ 			}
++ 			chown(dblock.dbuf.name, stbuf.st_uid, stbuf.st_gid);
++ 			if (vflag)
++ 				fprintf (vfile, "x %s FIFO special file\n",
++ 					dblock.dbuf.name);
++ 			continue;
++ 		}
+  		if (dblock.dbuf.linkflag == '2') {	/* symlink */
+  			/*
+  			 * only unlink non directories or empty
+***************
+*** 1433,1436 ****
+--- 1504,1531 ----
+  		freemem = 0;
+  	}
+  	return (p);
++ }
++ 
++ /*
++  * mkfifo
++  *
++  * POSIX call to make a fifo.
++  * This should be either a library routine,
++  * or a system call.
++  *
++  * At some point in the future, will this be where
++  * UNIX domain sockets are made?
++  */
++ 
++ int
++ mkfifo (path, mode)
++ char *path;
++ int mode;
++ {
++ #ifdef S_IFIFO
++ 	return mknod (path, mode | S_IFIFO, 0);
++ #else
++ 	errno = EOPNOTSUPP;	/* XXX - for now */
++ 	return -1;
++ #endif
+  }
+
+
+*** /tmp/,RCSt1016434	Fri Aug  5 16:02:47 1988
+--- tar.5	Fri Aug  5 16:02:23 1988
+***************
+*** 112,118 ****
+  .IR Linkflag
+  is NULL if the file is ``normal'' or a special file, ASCII `1'
+  if it is an hard link, and ASCII `2'
+! if it is a symbolic link.  The name linked-to, if any, is in
+  .IR linkname,
+  with a trailing null.
+  Unused fields of the header are binary zeros (and are included in the
+--- 112,121 ----
+  .IR Linkflag
+  is NULL if the file is ``normal'' or a special file, ASCII `1'
+  if it is an hard link, and ASCII `2'
+! if it is a symbolic link.
+! .I Linkflag
+! will be an ASCII `6' if the file is a FIFO special file.
+! The name linked-to, if any, is in
+  .IR linkname,
+  with a trailing null.
+  Unused fields of the header are binary zeros (and are included in the
+

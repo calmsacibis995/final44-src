@@ -1,0 +1,46 @@
+From watmath!onfcanim!dave@uunet.uu.net  Wed Mar  2 21:39:50 1988
+Date: Wed, 2 Mar 88 20:19:59 EST
+From: watmath!onfcanim!dave@uunet.uu.net (Dave Martindale)
+Subject: Autoconf bug causes controller to be configured twice
+Index: sys/vax/autoconf.c 4.3BSD
+
+Description:
+	The loop that configures UBA mass-storage controllers does not
+	mark the chunk of UBA space occupied by the controller as "in use".
+	This can result in the same physical piece of hardware being
+	configured twice, as two different controllers.
+
+Repeat-By:
+	Install two TS-11's (or any other tape or disk controller) on
+	the Unibus, with controller 0 at the standard address.  Have
+	controller 1 fail.  Reboot the system.  The autoconf code will
+	correctly configure controller 0, then try controller 1.
+	The driver's probe routine fails, so the autoconf code then
+	tries the list of standard addresses compiled into the driver.
+	It probes controller 0 again, succeeds, and installs a new
+	interrupt vector over top of the old one.
+
+	Try using a driver on controller 0.  The interrupt appears to
+	come from controller 1, and the process is hung until the next boot.
+	Attempts to access drives on controller 1 successfully use the
+	drive with the same drive number on controller 0.
+
+Fix:
+	The "ualloc" array is supposed to keep track of already-configured
+	controllers, to prevent the above from happening.  The loop which
+	deals with UBA devices sets it, the loop for controllers doesn't.
+	Add the following code:
+
+*** /tmp/,RCSt1000158	Wed Mar  2 20:06:07 1988
+--- autoconf.c	Wed Mar  2 19:45:02 1988
+***************
+*** 686,691 ****
+--- 686,693 ----
+  			continue;
+  		}
+  		printf("vec %o, ipl %x\n", cvec, br);
++ 		while (--i >= 0)
++ 			ualloc[ubaoff(addr+i)] = 1;
+  		um->um_alive = 1;
+  		um->um_ubanum = numuba;
+  		um->um_hd = &uba_hd[numuba];

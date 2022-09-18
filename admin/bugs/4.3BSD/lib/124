@@ -1,0 +1,166 @@
+Date: Tue, 26 Apr 88 01:12:02 EDT
+From: Chris Torek <chris@mimsy.umd.edu>
+Subject: two fixes for /lib/c2
+Index: lib/c2/c2.vax/c21.c 4.3BSD Fix
+
+	[N.B.: the file is in lib/c2/c21.c in `plain' 4.3BSD]
+
+Description:
+	Here are two fixes for c2.  The first is in the code that
+	takes care of address computation folding of the form
+
+		ashl	$2,r0,r0	# actually anything in r0..r5
+		movab	_x[r0],<dst>	# as long as it matches
+
+	which becomes
+
+		moval	_x[r0],<dst>
+
+	where whoever wrote this forgot to clear pf->pop after
+	changing pf->subop.  The code works if the original
+	expression is of the form
+
+		ashl	$2,rN,r0	# where rN!=r0
+		movab	_x[r0],<dst>
+
+	because here MOVA pop field is cleared earlier, when
+	the operation is changed to
+	
+		moval	_x[rN],<dst>
+
+	In addition, in the incorrect case, c2 calls bflow with a
+	deleted node; whether this in fact causes trouble is uncertain,
+	but it is clearly wrong.
+
+	The second bug is rather more dangerous, as the code it
+	affects is more common, being generated for some bitfield
+	tests.  Code of the form
+
+		extv	<bit>,$1,<src>,rN
+		tstl	rN
+		jeql	<lab>
+
+	is smashed down to the simple
+
+		jbc	<bit>,<src>,<lab>
+
+	In this case bmove() calls bflow() with the deleted EXTV
+	node; often bflow() decides it can do something about that
+	node, and in the process it manages to delete the preceding
+	node or two and reinsert the deleted TST node.
+
+Repeat-By:
+	Run /lib/c2 over the following input.
+
+		.globl	_foo
+	_foo:
+		.word	0
+		movl	4(ap),r11
+		movl	8(ap),r10
+		movl	r10,r0
+		ashl	$2,r0,r0
+		movab	_x[r0],r0
+		clrb	(r0)
+		movl	(r11)[r10],r0
+		extzv	$16,$1,r0,r1
+		tstl	r1
+		jneq	L2
+		clrl	r0
+		ret
+	L2:
+		mnegl	$1,r0
+		ret
+
+	It should produce the following lines:
+
+		movl	r10,r0
+		moval	_x[r0],r0
+		clrb	(r0)
+		movl	(r11)[r10],r0
+		jbs	$16,r0,L2
+		clrl	r0
+
+	Instead it produces
+
+		movl	r10,r0
+		movab	_x[r0],r0	# wrong type!
+		clrb	(r0)
+		tstl	r1		# movl deleted, tstl left in!
+		jbs	$16,r0,L2
+		clrl	r0
+		ret
+
+Fix:
+	Your line numbers will vary.  You may also have one or
+	two more assignments to `pop's: leave those in.  Only the
+	four added lines are true fixes; the others merely simplify.
+
+RCS file: RCS/c21.c,v
+retrieving revision 1.5
+diff -c2 -r1.5 c21.c
+*** /tmp/,RCSt1016618	Tue Apr 26 00:48:02 1988
+--- c21.c	Tue Apr 26 00:47:53 1988
+***************
+*** 205,209 ****
+  		register int	shfrom, shto;
+  		long	shcnt;
+- 		char	*regfrom;
+  
+  		splitrand(p);
+--- 205,208 ----
+***************
+*** 210,215 ****
+  		if (regs[RT1][0] != '$') goto std;
+  		if ((shcnt = getnum(&regs[RT1][1])) < 1 || shcnt > 3) goto std;
+! 		if ((shfrom = isreg(regs[RT2])) >= 0)
+! 			regfrom = copy(regs[RT2]);
+  		if ((shto = isreg(regs[RT3])) >= 0 && shto<NUSE)
+  		{
+--- 209,213 ----
+  		if (regs[RT1][0] != '$') goto std;
+  		if ((shcnt = getnum(&regs[RT1][1])) < 1 || shcnt > 3) goto std;
+! 		shfrom = isreg(regs[RT2]);
+  		if ((shto = isreg(regs[RT3])) >= 0 && shto<NUSE)
+  		{
+***************
+*** 235,245 ****
+  			{
+  				delnode(p);
+  				if (shfrom != shto)
+  				{
+! 					uses[shto] = NULL; splitrand(pf);
+  					cp2=regs[RT1]; while (*cp2++!='[');
+! 					cp1=regfrom; while (*cp2++= *cp1++);
+! 					*--cp2 = ']';
+! 					*++cp2 = '\0';
+  					newcode(pf);
+  				}
+--- 233,242 ----
+  			{
+  				delnode(p);
++ 				p = pf;
+  				if (shfrom != shto)
+  				{
+! 					uses[shto] = NULL;
+  					cp2=regs[RT1]; while (*cp2++!='[');
+! 					(void) sprintf(cp2, "%d]", shfrom);
+  					newcode(pf);
+  				}
+***************
+*** 259,262 ****
+--- 256,260 ----
+  			case 3:	pf->subop = QUAD; break;
+  			}
++ 			pf->pop = 0;
+  			redunm++; nsaddr++; nchange++;
+  			goto std;
+***************
+*** 317,320 ****
+--- 315,320 ----
+  			pn->code = p->code; pn->pop = NULL;
+  			uses[extreg] = NULL;
++ 			p = pn;
++ 			break;
+  		}
+  		else
+

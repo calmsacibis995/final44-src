@@ -1,0 +1,874 @@
+Return-Path: <sun!gorodish!guy>
+Date: Mon, 15 Jul 85 14:29:07 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: "rain" and "worms" don't understand "termcap" delays
+Index: 	games/rain.c 4.2BSD (probably 4.3BSD also)
+
+Description:
+	"rain" and "worms" use "fputs" to output "termcap" strings.  This
+	is strictly a Bozo No-No, as those strings may have delays
+	at the beginning.  If, for example, you run either program on a
+	VT100 with the standard termcap, it leaves little "5"s all over
+	the screen.
+Repeat-By:
+	Run it on a VT100 with the standard "termcap" string.
+Fix:
+	Your line numbers may differ.
+
+	Also note that these fixes enable "rain" and "worms" to run on
+	USG (System III, System V) systems with "termcap" or "terminfo",
+	fixes "rain" to work on terminals which aren't 80 by 24, and
+	fixes "worms" to put "ti" when entered and "te" when exited.
+
+	#define constants control which system it's built for.  #define USG
+	for System III or System V-based systems; #define BSD for 4.xBSD-based
+	systems; don't define either one for systems based on any other system,
+	like V7.  Xenix 3.0, for instance, is System III-based, so #define USG.
+
+	Here's how to fix "rain.c":
+
+*** rain.c.orig	Mon Jul 15 14:13:55 1985
+--- rain.c	Mon Jul 15 14:16:47 1985
+***************
+*** 3,7
+  
+  #include <stdio.h>
+  #include <sgtty.h>
+  #include <signal.h>
+  /* rain 11/3/1980 EPS/CITHEP */
+
+--- 3,10 -----
+  
+  #include <stdio.h>
++ #ifdef USG
++ #include <termio.h>
++ #else
+  #include <sgtty.h>
+  #endif
+  #include <signal.h>
+***************
+*** 3,8
+  
+  #include <stdio.h>
+  #include <sgtty.h>
+  #include <signal.h>
+  /* rain 11/3/1980 EPS/CITHEP */
+  /* cc rain.c -o rain -O -ltermlib */
+
+--- 6,12 -----
+  #include <termio.h>
+  #else
+  #include <sgtty.h>
++ #endif
+  #include <signal.h>
+  /* rain 11/3/1980 EPS/CITHEP */
+  /* cc rain.c -o rain -O -ltermlib */
+***************
+*** 6,16
+  #include <signal.h>
+  /* rain 11/3/1980 EPS/CITHEP */
+  /* cc rain.c -o rain -O -ltermlib */
+! #define cursor(col,row) tputs(tgoto(CM,col,row),1,outc)
+! outc(c)
+! {
+! 	putchar(c);
+! }
+  extern char *UP;
+  extern short ospeed;
+  struct sgttyb old_tty;
+
+--- 10,16 -----
+  #include <signal.h>
+  /* rain 11/3/1980 EPS/CITHEP */
+  /* cc rain.c -o rain -O -ltermlib */
+! #define cursor(col,row) tputs(tgoto(CM,col,row),1,fputchar)
+  extern char *UP;
+  extern short ospeed;
+  #ifdef USG
+***************
+*** 13,18
+  }
+  extern char *UP;
+  extern short ospeed;
+  struct sgttyb old_tty;
+  char *LL, *TE, *TI;
+  main(argc,argv)
+
+--- 13,21 -----
+  #define cursor(col,row) tputs(tgoto(CM,col,row),1,fputchar)
+  extern char *UP;
+  extern short ospeed;
++ #ifdef USG
++ struct termio old_tty;
++ #else
+  struct sgttyb old_tty;
+  #endif
+  char *LL, *TE, *TI;
+***************
+*** 14,19
+  extern char *UP;
+  extern short ospeed;
+  struct sgttyb old_tty;
+  char *LL, *TE, *TI;
+  main(argc,argv)
+  int argc;
+
+--- 17,23 -----
+  struct termio old_tty;
+  #else
+  struct sgttyb old_tty;
++ #endif
+  char *LL, *TE, *TI;
+  main(argc,argv)
+  int argc;
+***************
+*** 28,33
+      register int x, y, j;
+      static int xpos[5], ypos[5];
+      register char *CM, *BC, *DN, *ND;
+      char *tcp;
+      register char *term;
+      char tcb[100];
+
+--- 32,38 -----
+      register int x, y, j;
+      static int xpos[5], ypos[5];
+      register char *CM, *BC, *DN, *ND;
++     int CO, LI;
+      char *tcp;
+      register char *term;
+      char tcb[100];
+***************
+*** 31,36
+      char *tcp;
+      register char *term;
+      char tcb[100];
+      struct sgttyb sg;
+      setbuf(stdout,malloc(BUFSIZ));
+      if (!(term=getenv("TERM"))) {
+
+--- 36,44 -----
+      char *tcp;
+      register char *term;
+      char tcb[100];
++ #ifdef USG
++     struct termio sg;
++ #else
+      struct sgttyb sg;
+  #endif
+      float cols, lines;
+***************
+*** 32,37
+      register char *term;
+      char tcb[100];
+      struct sgttyb sg;
+      setbuf(stdout,malloc(BUFSIZ));
+      if (!(term=getenv("TERM"))) {
+  	fprintf(stderr,"%s: TERM: parameter not set\n",*argv);
+
+--- 40,48 -----
+      struct termio sg;
+  #else
+      struct sgttyb sg;
++ #endif
++     float cols, lines;
++ 
+      setbuf(stdout,malloc(BUFSIZ));
+      if (!(term=getenv("TERM"))) {
+  	fprintf(stderr,"%s: TERM: parameter not set\n",*argv);
+***************
+*** 49,54
+      if (!(BC=tgetstr("bc",&tcp))) BC="\b";
+      if (!(DN=tgetstr("dn",&tcp))) DN="\n";
+      if (!(ND=tgetstr("nd",&tcp))) ND=" ";
+      TE=tgetstr("te",&tcp);
+      TI=tgetstr("ti",&tcp);
+      UP=tgetstr("up",&tcp);
+
+--- 60,71 -----
+      if (!(BC=tgetstr("bc",&tcp))) BC="\b";
+      if (!(DN=tgetstr("dn",&tcp))) DN="\n";
+      if (!(ND=tgetstr("nd",&tcp))) ND=" ";
++     if ((CO = tgetnum("co")) == -1)
++ 	CO = 80; 
++     if ((LI = tgetnum("li")) == -1)
++ 	LI = 24; 
++     cols = CO - 4;
++     lines = LI - 4;
+      TE=tgetstr("te",&tcp);
+      TI=tgetstr("ti",&tcp);
+      UP=tgetstr("up",&tcp);
+***************
+*** 53,58
+      TI=tgetstr("ti",&tcp);
+      UP=tgetstr("up",&tcp);
+      if (!(LL=tgetstr("ll",&tcp))) strcpy(LL=malloc(10),tgoto(CM,0,23));
+      gtty(1, &sg);
+      ospeed=sg.sg_ospeed;
+      for (j=SIGHUP;j<=SIGTERM;j++)
+
+--- 70,79 -----
+      TI=tgetstr("ti",&tcp);
+      UP=tgetstr("up",&tcp);
+      if (!(LL=tgetstr("ll",&tcp))) strcpy(LL=malloc(10),tgoto(CM,0,23));
++ #ifdef USG
++     ioctl(1, TCGETA, &sg);
++     ospeed=sg.c_cflag&CBAUD;
++ #else
+      gtty(1, &sg);
+      ospeed=sg.sg_ospeed;
+  #endif
+***************
+*** 55,60
+      if (!(LL=tgetstr("ll",&tcp))) strcpy(LL=malloc(10),tgoto(CM,0,23));
+      gtty(1, &sg);
+      ospeed=sg.sg_ospeed;
+      for (j=SIGHUP;j<=SIGTERM;j++)
+  	if (signal(j,SIG_IGN)!=SIG_IGN) signal(j,onsig);
+      gtty(1, &old_tty);	/* save tty bits for exit */
+
+--- 76,82 -----
+  #else
+      gtty(1, &sg);
+      ospeed=sg.sg_ospeed;
++ #endif
+      for (j=SIGHUP;j<=SIGTERM;j++)
+  	if (signal(j,SIG_IGN)!=SIG_IGN) signal(j,onsig);
+  #ifdef USG
+***************
+*** 57,62
+      ospeed=sg.sg_ospeed;
+      for (j=SIGHUP;j<=SIGTERM;j++)
+  	if (signal(j,SIG_IGN)!=SIG_IGN) signal(j,onsig);
+      gtty(1, &old_tty);	/* save tty bits for exit */
+      gtty(1, &sg);
+      sg.sg_flags&=~(CRMOD|ECHO);
+
+--- 79,92 -----
+  #endif
+      for (j=SIGHUP;j<=SIGTERM;j++)
+  	if (signal(j,SIG_IGN)!=SIG_IGN) signal(j,onsig);
++ #ifdef USG
++     ioctl(1, TCGETA, &old_tty);	/* save tty bits for exit */
++     ioctl(1, TCGETA, &sg);
++     sg.c_iflag&=~ICRNL;
++     sg.c_oflag&=~ONLCR;
++     sg.c_lflag&=~ECHO;
++     ioctl(1, TCSETAW, &sg);
++ #else
+      gtty(1, &old_tty);	/* save tty bits for exit */
+      gtty(1, &sg);
+      sg.sg_flags&=~(CRMOD|ECHO);
+***************
+*** 61,67
+      gtty(1, &sg);
+      sg.sg_flags&=~(CRMOD|ECHO);
+      stty(1, &sg);
+!     if (TI) fputs(TI,stdout);
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      fflush(stdout);
+      for (j=5;--j>=0;) {
+
+--- 91,98 -----
+      gtty(1, &sg);
+      sg.sg_flags&=~(CRMOD|ECHO);
+      stty(1, &sg);
+! #endif
+!     if (TI) tputs(TI,1,fputchar);
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      fflush(stdout);
+      for (j=5;--j>=0;) {
+***************
+*** 65,72
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      fflush(stdout);
+      for (j=5;--j>=0;) {
+! 	xpos[j]=(int)(76.*ranf())+2;
+! 	ypos[j]=(int)(20.*ranf())+2;
+      }
+      for (j=0;;) {
+  	x=(int)(76.*ranf())+2;
+
+--- 96,103 -----
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      fflush(stdout);
+      for (j=5;--j>=0;) {
+! 	xpos[j]=(int)(cols*ranf())+2;
+! 	ypos[j]=(int)(lines*ranf())+2;
+      }
+      for (j=0;;) {
+  	x=(int)(cols*ranf())+2;
+***************
+*** 69,76
+  	ypos[j]=(int)(20.*ranf())+2;
+      }
+      for (j=0;;) {
+! 	x=(int)(76.*ranf())+2;
+! 	y=(int)(20.*ranf())+2;
+  	cursor(x,y); fputchar('.');
+  	cursor(xpos[j],ypos[j]); fputchar('o');
+  	if (j==0) j=4; else --j;
+
+--- 100,107 -----
+  	ypos[j]=(int)(lines*ranf())+2;
+      }
+      for (j=0;;) {
+! 	x=(int)(cols*ranf())+2;
+! 	y=(int)(lines*ranf())+2;
+  	cursor(x,y); fputchar('.');
+  	cursor(xpos[j],ypos[j]); fputchar('o');
+  	if (j==0) j=4; else --j;
+***************
+*** 78,84
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-1);
+  	fputchar('-');
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputs("|.|",stdout);
+  	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputchar('-');
+
+--- 109,115 -----
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-1);
+  	fputchar('-');
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputs("|.|",stdout);
+  	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputchar('-');
+***************
+*** 80,86
+  	fputchar('-');
+  	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputs("|.|",stdout);
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar('-');
+
+--- 111,117 -----
+  	fputchar('-');
+  	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputs("|.|",stdout);
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar('-');
+***************
+*** 84,90
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar('-');
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputs("/ \\",stdout);
+  	cursor(xpos[j]-2,ypos[j]);
+  	fputs("| O |",stdout);
+
+--- 115,121 -----
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar('-');
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputs("/ \\",stdout);
+  	cursor(xpos[j]-2,ypos[j]);
+  	fputs("| O |",stdout);
+***************
+*** 90,96
+  	fputs("| O |",stdout);
+  	cursor(xpos[j]-1,ypos[j]+1);
+  	fputs("\\ /",stdout);
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar(' ');
+
+--- 121,127 -----
+  	fputs("| O |",stdout);
+  	cursor(xpos[j]-1,ypos[j]+1);
+  	fputs("\\ /",stdout);
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar(' ');
+***************
+*** 94,101
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar(' ');
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+! 	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+  	cursor(xpos[j]-2,ypos[j]);
+  	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+  	fputs(ND,stdout); fputchar(' ');
+
+--- 125,132 -----
+  	fputchar('-');
+  	if (j==0) j=4; else --j;
+  	cursor(xpos[j],ypos[j]-2); fputchar(' ');
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+! 	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+  	cursor(xpos[j]-2,ypos[j]);
+  	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+  	tputs(ND,1,fputchar); fputchar(' ');
+***************
+*** 97,104
+  	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+  	cursor(xpos[j]-2,ypos[j]);
+! 	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+! 	fputs(ND,stdout); fputchar(' ');
+  	cursor(xpos[j]-1,ypos[j]+1);
+  	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+  	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+
+--- 128,135 -----
+  	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+  	cursor(xpos[j]-2,ypos[j]);
+! 	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+! 	tputs(ND,1,fputchar); fputchar(' ');
+  	cursor(xpos[j]-1,ypos[j]+1);
+  	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+  	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+***************
+*** 100,107
+  	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+  	fputs(ND,stdout); fputchar(' ');
+  	cursor(xpos[j]-1,ypos[j]+1);
+! 	fputchar(' '); fputs(ND,stdout); fputchar(' ');
+! 	fputs(DN,stdout); fputs(BC,stdout); fputs(BC,stdout);
+  	fputchar(' ');
+  	xpos[j]=x; ypos[j]=y;
+  	fflush(stdout);
+
+--- 131,138 -----
+  	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+  	tputs(ND,1,fputchar); fputchar(' ');
+  	cursor(xpos[j]-1,ypos[j]+1);
+! 	fputchar(' '); tputs(ND,1,fputchar); fputchar(' ');
+! 	tputs(DN,1,fputchar); tputs(BC,1,fputchar); tputs(BC,1,fputchar);
+  	fputchar(' ');
+  	xpos[j]=x; ypos[j]=y;
+  	fflush(stdout);
+***************
+*** 110,115
+  onsig(n)
+  int n;
+  {
+      struct sgttyb sg;
+      fputs(LL, stdout);
+      if (TE) fputs(TE, stdout);
+
+--- 141,149 -----
+  onsig(n)
+  int n;
+  {
++ #ifdef USG
++     struct termio sg;
++ #else
+      struct sgttyb sg;
+  #endif
+      tputs(LL, 1, fputchar);
+***************
+*** 111,118
+  int n;
+  {
+      struct sgttyb sg;
+!     fputs(LL, stdout);
+!     if (TE) fputs(TE, stdout);
+      fflush(stdout);
+      stty(1, &old_tty);
+      kill(getpid(),n);
+
+--- 145,153 -----
+      struct termio sg;
+  #else
+      struct sgttyb sg;
+! #endif
+!     tputs(LL, 1, fputchar);
+!     if (TE) tputs(TE, 1, fputchar);
+      fflush(stdout);
+  #ifdef USG
+      ioctl(1, TCSETAW, &old_tty);
+***************
+*** 114,119
+      fputs(LL, stdout);
+      if (TE) fputs(TE, stdout);
+      fflush(stdout);
+      stty(1, &old_tty);
+      kill(getpid(),n);
+      _exit(0);
+
+--- 149,157 -----
+      tputs(LL, 1, fputchar);
+      if (TE) tputs(TE, 1, fputchar);
+      fflush(stdout);
++ #ifdef USG
++     ioctl(1, TCSETAW, &old_tty);
++ #else
+      stty(1, &old_tty);
+  #endif
+      kill(getpid(),n);
+***************
+*** 115,120
+      if (TE) fputs(TE, stdout);
+      fflush(stdout);
+      stty(1, &old_tty);
+      kill(getpid(),n);
+      _exit(0);
+  }
+
+--- 153,159 -----
+      ioctl(1, TCSETAW, &old_tty);
+  #else
+      stty(1, &old_tty);
++ #endif
+      kill(getpid(),n);
+      _exit(0);
+  }
+***************
+*** 124,128
+      putchar(c);
+  }
+  float ranf() {
+      return((float)rand()/2147483647.);
+  }
+
+--- 163,169 -----
+      putchar(c);
+  }
+  float ranf() {
++ #ifdef BSD
+      return((float)rand()/2147483647.);
+  #else
+      return((float)rand()/32767.);
+***************
+*** 125,128
+  }
+  float ranf() {
+      return((float)rand()/2147483647.);
+  }
+
+--- 165,171 -----
+  float ranf() {
+  #ifdef BSD
+      return((float)rand()/2147483647.);
++ #else
++     return((float)rand()/32767.);
++ #endif
+  }
+
+	And here's how to fix "worms.c":
+
+*** worms.c.orig	Mon Jul 15 14:21:39 1985
+--- worms.c	Mon Jul 15 14:23:12 1985
+***************
+*** 19,24
+  
+  */
+  #include <stdio.h>
+  #include <sgtty.h>
+  #define cursor(col,row) tputs(tgoto(CM,col,row),1,outc)
+  outc(c)
+
+--- 19,27 -----
+  
+  */
+  #include <stdio.h>
++ #ifdef USG
++ #include <termio.h>
++ #else
+  #include <sgtty.h>
+  #endif
+  #include <signal.h>
+***************
+*** 20,30
+  */
+  #include <stdio.h>
+  #include <sgtty.h>
+! #define cursor(col,row) tputs(tgoto(CM,col,row),1,outc)
+! outc(c)
+! {
+! 	putchar(c);
+! }
+  extern char *UP;
+  extern short ospeed;
+  int Wrap;
+
+--- 23,31 -----
+  #include <termio.h>
+  #else
+  #include <sgtty.h>
+! #endif
+! #include <signal.h>
+! #define cursor(col,row) tputs(tgoto(CM,col,row),1,fputchar)
+  extern char *UP;
+  extern short ospeed;
+  int Wrap;
+***************
+*** 128,133
+      { 0, { 0, 0, 0 } },
+      { 0, { 0, 0, 0 } }
+  };
+  main(argc,argv)
+  int argc;
+  char *argv[];
+
+--- 129,135 -----
+      { 0, { 0, 0, 0 } },
+      { 0, { 0, 0, 0 } }
+  };
++ char *TE;
+  main(argc,argv)
+  int argc;
+  char *argv[];
+***************
+*** 136,141
+      char *malloc();
+      char *getenv();
+      char *tgetstr(), *tgoto();
+      float ranf();
+      register int x, y;
+      register int n;
+
+--- 138,144 -----
+      char *malloc();
+      char *getenv();
+      char *tgetstr(), *tgoto();
++     int quit();
+      float ranf();
+      register int x, y;
+      register int n;
+***************
+*** 148,153
+      char *tcp;
+      register char *term;
+      char tcb[100];
+      struct sgttyb sg;
+      setbuf(stdout,malloc(BUFSIZ));
+      for (x=1;x<argc;x++) {
+
+--- 151,159 -----
+      char *tcp;
+      register char *term;
+      char tcb[100];
++ #ifdef USG
++     struct termio sg;
++ #else
+      struct sgttyb sg;
+  #endif
+      setbuf(stdout,malloc(BUFSIZ));
+***************
+*** 149,154
+      register char *term;
+      char tcb[100];
+      struct sgttyb sg;
+      setbuf(stdout,malloc(BUFSIZ));
+      for (x=1;x<argc;x++) {
+  	register char *p;
+
+--- 155,161 -----
+      struct termio sg;
+  #else
+      struct sgttyb sg;
++ #endif
+      setbuf(stdout,malloc(BUFSIZ));
+      for (x=1;x<argc;x++) {
+  	register char *p;
+***************
+*** 209,214
+      if ((LI=tgetnum("li"))<=0) LI=24;
+      bottom=LI-1;
+      SR=tgetstr("sr",&tcp);
+      UP=tgetstr("up",&tcp);
+      gtty(fileno(stdout),&sg);
+      ospeed=sg.sg_ospeed;
+
+--- 216,222 -----
+      if ((LI=tgetnum("li"))<=0) LI=24;
+      bottom=LI-1;
+      SR=tgetstr("sr",&tcp);
++     TE=tgetstr("te",&tcp);
+      UP=tgetstr("up",&tcp);
+  #ifdef USG
+      ioctl(fileno(stdout),TCGETA,&sg);
+***************
+*** 210,215
+      bottom=LI-1;
+      SR=tgetstr("sr",&tcp);
+      UP=tgetstr("up",&tcp);
+      gtty(fileno(stdout),&sg);
+      ospeed=sg.sg_ospeed;
+      Wrap=tgetflag("am");
+
+--- 218,227 -----
+      SR=tgetstr("sr",&tcp);
+      TE=tgetstr("te",&tcp);
+      UP=tgetstr("up",&tcp);
++ #ifdef USG
++     ioctl(fileno(stdout),TCGETA,&sg);
++     ospeed=sg.c_cflag&CBAUD;
++ #else
+      gtty(fileno(stdout),&sg);
+      ospeed=sg.sg_ospeed;
+  #endif
+***************
+*** 212,217
+      UP=tgetstr("up",&tcp);
+      gtty(fileno(stdout),&sg);
+      ospeed=sg.sg_ospeed;
+      Wrap=tgetflag("am");
+      ip=(short *)malloc(LI*CO*sizeof (short));
+      for (n=0;n<LI;) {
+
+--- 224,230 -----
+  #else
+      gtty(fileno(stdout),&sg);
+      ospeed=sg.sg_ospeed;
++ #endif
+      Wrap=tgetflag("am");
+      ip=(short *)malloc(LI*CO*sizeof (short));
+      for (n=0;n<LI;) {
+***************
+*** 234,239
+  	w->ypos=ip;
+  	for (y=length;--y>=0;) *ip++ = -1;
+      }
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      if (field) {
+  	register char *p;
+
+--- 247,254 -----
+  	w->ypos=ip;
+  	for (y=length;--y>=0;) *ip++ = -1;
+      }
++     signal(SIGINT, quit);
++     tputs(tgetstr("ti",&tcp),1,fputchar);
+      tputs(tgetstr("cl",&tcp),1,fputchar);
+      if (field) {
+  	register char *p;
+***************
+*** 254,260
+  		}
+  		y= *p++; if (!*p) p=field;
+  		putchar(*p);
+! 		if (BC) fputs(BC,stdout);
+  		else cursor(last-1,bottom);
+  		fputs(IM,stdout);
+  		if (IC) tputs(IC,1,fputchar);
+
+--- 269,275 -----
+  		}
+  		y= *p++; if (!*p) p=field;
+  		putchar(*p);
+! 		if (BC) tputs(BC,1,fputchar);
+  		else cursor(last-1,bottom);
+  		tputs(IM,1,fputchar);
+  		if (IC) tputs(IC,1,fputchar);
+***************
+*** 256,262
+  		putchar(*p);
+  		if (BC) fputs(BC,stdout);
+  		else cursor(last-1,bottom);
+! 		fputs(IM,stdout);
+  		if (IC) tputs(IC,1,fputchar);
+  		putchar(y);
+  		if (IP) tputs(IP,1,fputchar);
+
+--- 271,277 -----
+  		putchar(*p);
+  		if (BC) tputs(BC,1,fputchar);
+  		else cursor(last-1,bottom);
+! 		tputs(IM,1,fputchar);
+  		if (IC) tputs(IC,1,fputchar);
+  		putchar(y);
+  		if (IP) tputs(IP,1,fputchar);
+***************
+*** 260,266
+  		if (IC) tputs(IC,1,fputchar);
+  		putchar(y);
+  		if (IP) tputs(IP,1,fputchar);
+! 		fputs(EI,stdout);
+  	    }
+  	    else if (SR||AL) {
+  		if (HO) fputs(HO,stdout);
+
+--- 275,281 -----
+  		if (IC) tputs(IC,1,fputchar);
+  		putchar(y);
+  		if (IP) tputs(IP,1,fputchar);
+! 		tputs(EI,1,fputchar);
+  	    }
+  	    else if (SR||AL) {
+  		if (HO) tputs(HO,1,fputchar);
+***************
+*** 263,269
+  		fputs(EI,stdout);
+  	    }
+  	    else if (SR||AL) {
+! 		if (HO) fputs(HO,stdout);
+  		else cursor(0,0);
+  		if (SR) tputs(SR,1,fputchar);
+  		else tputs(AL,LI,fputchar);
+
+--- 278,284 -----
+  		tputs(EI,1,fputchar);
+  	    }
+  	    else if (SR||AL) {
+! 		if (HO) tputs(HO,1,fputchar);
+  		else cursor(0,0);
+  		if (SR) tputs(SR,1,fputchar);
+  		else tputs(AL,LI,fputchar);
+***************
+*** 320,325
+  	fflush(stdout);
+      }
+  }
+  fputchar(c)
+  char c;
+  {
+
+--- 335,346 -----
+  	fflush(stdout);
+      }
+  }
++ quit()
++ {
++     signal(SIGINT, SIG_IGN);
++     tputs(TE,1,fputchar);
++     exit(0);
++ }
+  fputchar(c)
+  char c;
+  {
+***************
+*** 326,330
+      putchar(c);
+  }
+  float ranf() {
+      return((float)rand()/2147483647.);
+  }
+
+--- 347,353 -----
+      putchar(c);
+  }
+  float ranf() {
++ #ifdef BSD
+      return((float)rand()/2147483647.);
+  #else
+      return((float)rand()/32767.);
+***************
+*** 327,330
+  }
+  float ranf() {
+      return((float)rand()/2147483647.);
+  }
+
+--- 349,355 -----
+  float ranf() {
+  #ifdef BSD
+      return((float)rand()/2147483647.);
++ #else
++     return((float)rand()/32767.);
++ #endif
+  }

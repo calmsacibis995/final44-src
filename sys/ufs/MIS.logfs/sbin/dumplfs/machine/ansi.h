@@ -1,0 +1,1 @@
+/home/attic/bsd/usr/src/sys/hp300/include/ansi.h

@@ -1,0 +1,2433 @@
+From sdcrdcf!grand!eggert@cs.ucla.edu  Sun Mar 22 21:51:54 1987
+From: Paul Eggert <sdcrdcf!grand!eggert@cs.ucla.edu>
+Date: Fri, 20 Mar 87 17:09:56 PST
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: diff fixes (part 1 of 2)
+Index: bin/diff 4.3BSD
+
+[This message was prompted by Keith Bostic's announcement of the newsgroup
+comp.bugs.4bsd.ucb-fixes.  I apologize if it doesn't use the proper bug report
+form; I don't know what the form is.  Please acknowledge.  Thanks.]
+
+Author: Paul Eggert
+Address: ucbvax!ucla-cs!sdcrdcf!eggert, sdcrdcf!eggert@locus.ucla.edu
+
+Below you'll find bug fixes and speedups for 4.3BSD's 'diff' program.
+Here are some programs I ran to discover the ratio of this diff's
+speed versus 4.3's.  The speedup factor is the ratio of the sum of the user
+and system times, measured on a Sun-3/160.
+
+speedup
+factor
+  2.0	cat /etc/termcap >/tmp/termcap;	time diff /etc/termcap /tmp/termcap
+  1.5	echo abc >>/tmp/termcap;	time diff /etc/termcap /tmp/termcap
+  1.7	producing the context diff listing below
+ 39.1	mkdir e; (cd d; find . -print | cpio -pdlmu ../e); time diff -r d e
+	In this last benchmark, d is a directory tree with 735 files (including 
+	31 directories) containing 4 Mbytes total.
+
+On identical files, this diff is about five times faster than Sun's cmp.
+
+Performance improvements:
+	Recursive diffs do not fork/exec; instead, recursion is used.
+	Fewer but smarter calls to malloc/realloc (this helps even more on
+		older systems with slow memory allocators).
+	Input files are not closed and then reopened; merely rewound.
+	Hard links are reported the same without comparing their contents.
+
+Fixes:
+	Exit status is now more reliable.
+	Botches due to unexpectedly null pointers have been fixed.
+	A warning message is now printed for a missing newline at end of file.
+	Some lint removal.
+
+Enhancements:
+	A new '-q' flag suppresses the "Common subdirectories" message.
+	When comparing directories, contained symbolic links' contents are
+		compared, not the files they point to.  This is more useful
+		and prevents infinite loops.
+	The test for binary files is more portable.
+
+Here are the changes from the 4.3BSD sources, suitable as input to Larry Wall's
+"patch" program.  This version has been tested on both Suns (Sun UNIX 3.2) and
+IBM PCs (Xenix 5.0; replace "-R" by "-i -Dindex=strrchr" in the makefile).
+
+diff -c ../diff4.3/Makefile ./Makefile
+*** ../diff4.3/Makefile	Tue Jan 27 10:08:16 1987
+--- ./Makefile	Fri Mar 20 15:54:26 1987
+***************
+*** 1,9 ****
+  #	@(#)Makefile	4.1	2/9/83
+  #
+- DIFF=	/bin/diff
+  DIFFH=	/usr/lib/diffh
+  PR=	/bin/pr
+! CFLAGS=	-O -DDIFF='"${DIFF}"' -DDIFFH='"${DIFFH}"' -DPR='"${PR}"'
+  DESTDIR=
+  
+  SRCS=	diff.c diffdir.c diffreg.c
+--- 1,8 ----
+  #	@(#)Makefile	4.1	2/9/83
+  #
+  DIFFH=	/usr/lib/diffh
+  PR=	/bin/pr
+! CFLAGS=	-O -R -DDIFFH='"${DIFFH}"' -DPR='"${PR}"'
+  DESTDIR=
+  
+  SRCS=	diff.c diffdir.c diffreg.c
+***************
+*** 16,22 ****
+  	cc ${CFLAGS} -o diff ${OBJS} ${LDFLAGS}
+  
+  diffh: diffh.o
+! 	cc -o diffh diffh.o ${LDFLAGS}
+  
+  clean:
+  	rm -f diff diffh ${OBJS} diffh.o
+--- 15,21 ----
+  	cc ${CFLAGS} -o diff ${OBJS} ${LDFLAGS}
+  
+  diffh: diffh.o
+! 	cc ${CFLAGS} -o diffh diffh.o ${LDFLAGS}
+  
+  clean:
+  	rm -f diff diffh ${OBJS} diffh.o
+diff -c ../diff4.3/diff.c ./diff.c
+*** ../diff4.3/diff.c	Tue Jan 27 10:08:13 1987
+--- ./diff.c	Tue Mar  3 18:28:57 1987
+***************
+*** 1,4 ****
+--- 1,6 ----
++ #ifndef lint
+  static	char sccsid[] = "@(#)diff.c 4.6 4/3/86";
++ #endif
+  
+  #include "diff.h"
+  /*
+***************
+*** 5,11 ****
+   * diff - driver and subroutines
+   */
+  
+- char	diff[] = DIFF;
+  char	diffh[] = DIFFH;
+  char	pr[] = PR;
+  
+--- 7,12 ----
+***************
+*** 16,22 ****
+  	register char *argp;
+  
+  	ifdef1 = "FILE1"; ifdef2 = "FILE2";
+- 	status = 2;
+  	diffargv = argv;
+  	argc--, argv++;
+  	while (argc > 2 && argv[0][0] == '-') {
+--- 17,22 ----
+***************
+*** 98,103 ****
+--- 98,106 ----
+  			start = argp;
+  			*--argp = 0;		/* don't pass it on */
+  			continue;
++ 		case 'q':
++ 			qflag++;
++ 			continue;
+  		case 'r':
+  			rflag++;
+  			continue;
+***************
+*** 117,149 ****
+  		fprintf(stderr, "diff: two filename arguments required\n");
+  		done();
+  	}
+- 	file1 = argv[0];
+- 	file2 = argv[1];
+  	if (hflag && opt) {
+  		fprintf(stderr,
+  		    "diff: -h doesn't support -e, -f, -n, -c, or -I\n");
+  		done();
+  	}
+  	if (!strcmp(file1, "-"))
+  		stb1.st_mode = S_IFREG;
+! 	else if (stat(file1, &stb1) < 0) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(file1);
+! 		done();
+! 	}
+  	if (!strcmp(file2, "-"))
+  		stb2.st_mode = S_IFREG;
+! 	else if (stat(file2, &stb2) < 0) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(file2);
+! 		done();
+! 	}
+  	if ((stb1.st_mode & S_IFMT) == S_IFDIR &&
+  	    (stb2.st_mode & S_IFMT) == S_IFDIR) {
+! 		diffdir(argv);
+  	} else
+  		diffreg();
+! 	done();
+  }
+  
+  char *
+--- 120,147 ----
+  		fprintf(stderr, "diff: two filename arguments required\n");
+  		done();
+  	}
+  	if (hflag && opt) {
+  		fprintf(stderr,
+  		    "diff: -h doesn't support -e, -f, -n, -c, or -I\n");
+  		done();
+  	}
++ 	fileargs = argv;
+  	if (!strcmp(file1, "-"))
+  		stb1.st_mode = S_IFREG;
+! 	else
+! 		fstat(fileno(input[0] = tfopen(file1,"r")), &stb1);
+  	if (!strcmp(file2, "-"))
+  		stb2.st_mode = S_IFREG;
+! 	else
+! 		fstat(fileno(input[1] = tfopen(file2,"r")), &stb2);
+  	if ((stb1.st_mode & S_IFMT) == S_IFDIR &&
+  	    (stb2.st_mode & S_IFMT) == S_IFDIR) {
+! 		fclose(input[0]);	/* too bad: fclose, then opendir */
+! 		fclose(input[1]);
+! 		diffdir(setfile(&file1), setfile(&file2));
+  	} else
+  		diffreg();
+! 	done_ok();
+  }
+  
+  char *
+***************
+*** 150,163 ****
+  savestr(cp)
+  	register char *cp;
+  {
+! 	register char *dp = malloc(strlen(cp)+1);
+! 
+! 	if (dp == 0) {
+! 		fprintf(stderr, "diff: ran out of memory\n");
+! 		done();
+! 	}
+! 	strcpy(dp, cp);
+! 	return (dp);
+  }
+  
+  min(a,b)
+--- 148,154 ----
+  savestr(cp)
+  	register char *cp;
+  {
+! 	return strcpy(talloc((unsigned)strlen(cp)+1), cp);
+  }
+  
+  min(a,b)
+***************
+*** 174,204 ****
+  	return (a > b ? a : b);
+  }
+  
+  done()
+  {
+! 	if (tempfile)
+  		unlink(tempfile);
+! 	exit(status);
+  }
+  
+  char *
+  talloc(n)
+  {
+  	register char *p;
+  
+! 	if ((p = malloc((unsigned)n)) != NULL)
+! 		return(p);
+! 	noroom();
+  }
+  
+  char *
+  ralloc(p,n)
+  char *p;
+  {
+  	register char *q;
+  	char *realloc();
+  
+! 	if ((q = realloc(p, (unsigned)n)) == NULL)
+  		noroom();
+  	return(q);
+  }
+--- 165,219 ----
+  	return (a > b ? a : b);
+  }
+  
++ perr(s)
++ 	char *s;
++ {
++ 	fflush(stdout);
++ 	fprintf(stderr, "diff: ");
++ 	perror(s);
++ 	status = 2;
++ }
++ 
++ perr_done(s)
++ 	char *s;
++ {
++ 	perr(s);
++ 	done();
++ }
++ 
+  done()
+  {
+! 	status = 2;
+! 	done_ok();
+! }
+! 
+! done_ok()
+! {
+! 	if (tempfile[0])
+  		unlink(tempfile);
+! 	exit(2<(unsigned)status ? 2 : status);
+  }
+  
+  char *
+  talloc(n)
++ unsigned n;
+  {
+  	register char *p;
+  
+! 	if ((p = malloc(n)) == NULL)
+! 		noroom();
+! 	return(p);
+  }
+  
+  char *
+  ralloc(p,n)
+  char *p;
++ unsigned n;
+  {
+  	register char *q;
+  	char *realloc();
+  
+! 	if ((q = realloc(p, n)) == NULL)
+  		noroom();
+  	return(q);
+  }
+***************
+*** 205,210 ****
+  
+  noroom()
+  {
+! 	fprintf(stderr, "diff: files too big, try -h\n");
+! 	done();
+  }
+--- 220,224 ----
+  
+  noroom()
+  {
+! 	perr_done("files too big, try -h");
+  }
+diff -c ../diff4.3/diff.h ./diff.h
+*** ../diff4.3/diff.h	Tue Jan 27 10:08:13 1987
+--- ./diff.h	Tue Mar  3 18:29:00 1987
+***************
+*** 38,43 ****
+--- 38,44 ----
+   * Options on hierarchical diffs.
+   */
+  int	lflag;			/* long output format with header */
++ int	qflag;			/* don't announce directories */
+  int	rflag;			/* recursively trace directories */
+  int	sflag;			/* announce files which are same */
+  char	*start;			/* do file only if name >= this */
+***************
+*** 61,85 ****
+   */
+  int	status;
+  int	anychange;
+! char	*tempfile;		/* used when comparing against std input */
+  
+  /*
+   * Variables for diffdir.
+   */
+  char	**diffargv;		/* option list to pass to recursive diffs */
+  
+  /*
+   * Input file names.
+   * With diffdir, file1 and file2 are allocated BUFSIZ space,
+!  * and padded with a '/', and then efile0 and efile1 point after
+   * the '/'.
+   */
+! char	*file1, *file2, *efile1, *efile2;
+  struct	stat stb1, stb2;
+  
+  char	*malloc(), *talloc(), *ralloc();
+! char	*savestr(), *splice(), *splicen();
+! char	*mktemp(), *copytemp(), *rindex();
+  int	done();
+  
+! extern	char diffh[], diff[], pr[];
+--- 62,93 ----
+   */
+  int	status;
+  int	anychange;
+! extern char tempfile[];		/* used when comparing against std input */
+  
+  /*
+   * Variables for diffdir.
+   */
+  char	**diffargv;		/* option list to pass to recursive diffs */
++ char	**fileargs;		/* file arguments at the end of diffargv */
+  
+  /*
+   * Input file names.
+   * With diffdir, file1 and file2 are allocated BUFSIZ space,
+!  * and padded with a '/', and then efile1 and efile2 point after
+   * the '/'.
+   */
+! #define file1 fileargs[0]
+! #define file2 fileargs[1]
+  struct	stat stb1, stb2;
++ extern FILE	*input[2];
+  
+  char	*malloc(), *talloc(), *ralloc();
+! char	*savestr(), *splice();
+! char	*setfile();
+! char	*ctime(), *mktemp(), *rindex(), *sprintf(), *strcat(), *strcpy();
+! FILE	*copytemp(), *tfopen();
+! long	lseek();
+! int	perr(), perr_done();
+  int	done();
+  
+! extern	char diffh[], pr[];
+diff -c ../diff4.3/diffdir.c ./diffdir.c
+*** ../diff4.3/diffdir.c	Tue Jan 27 10:08:15 1987
+--- ./diffdir.c	Tue Mar  3 18:29:05 1987
+***************
+*** 1,6 ****
+! static	char *sccsid = "@(#)diffdir.c	4.9 (Berkeley) 8/28/84";
+  
+  #include "diff.h"
+  /*
+   * diff - directory comparison
+   */
+--- 1,9 ----
+! #ifndef lint
+! static	char sccsid[] = "@(#)diffdir.c	4.9 (Berkeley) 8/28/84";
+! #endif
+  
+  #include "diff.h"
++ #include <fcntl.h>
+  /*
+   * diff - directory comparison
+   */
+***************
+*** 10,35 ****
+  #define	SAME	2		/* Both places and same */
+  #define	DIFFER	4		/* Both places and different */
+  #define	DIRECT	8		/* Directory */
+  
+  struct dir {
+! 	u_long	d_ino;
+! 	short	d_reclen;
+! 	short	d_namlen;
+! 	char	*d_entry;
+  };
+  
+! struct	dir *setupdir();
+  int	header;
+  char	title[2*BUFSIZ], *etitle;
+  
+! diffdir(argv)
+! 	char **argv;
+! {
+! 	register struct dir *d1, *d2;
+! 	struct dir *dir1, *dir2;
+! 	register int i;
+! 	int cmp;
+  
+  	if (opt == D_IFDEF) {
+  		fprintf(stderr, "diff: can't specify -I with directories\n");
+  		done();
+--- 13,43 ----
+  #define	SAME	2		/* Both places and same */
+  #define	DIFFER	4		/* Both places and different */
+  #define	DIRECT	8		/* Directory */
++ #define SAMEFS	16		/* On same filesystem */
++ #define SZSHFT	5	/* Number of flag bits */
+  
++ /* minimum on-disk directory entry size */
++ #ifdef S_IFLNK
++ #	define MINENTSIZ (sizeof(struct direct) - MAXNAMLEN + 1)
++ #else
++ #	define MINENTSIZ (sizeof(ino_t) + 14)
++ #	define lstat stat
++ #endif
++ 
+  struct dir {
+! 	ino_t	d_ino;
+! 	char	d_entry[1];	/* actual size given by null terminator */
+  };
+  
+! struct	dir **setupdir();
+  int	header;
+  char	title[2*BUFSIZ], *etitle;
+  
+! #define align(a,b) (((a) + (b)-1)/(b) * (b))
+  
++ diffdir(efile1, efile2)
++ 	char *efile1, *efile2;
++ {
+  	if (opt == D_IFDEF) {
+  		fprintf(stderr, "diff: can't specify -I with directories\n");
+  		done();
+***************
+*** 37,43 ****
+  	if (opt == D_EDIT && (sflag || lflag))
+  		fprintf(stderr,
+  		    "diff: warning: shouldn't give -s or -l with -e\n");
+! 	title[0] = 0;
+  	strcpy(title, "diff ");
+  	for (i = 1; diffargv[i+2]; i++) {
+  		if (!strcmp(diffargv[i], "-"))
+--- 45,76 ----
+  	if (opt == D_EDIT && (sflag || lflag))
+  		fprintf(stderr,
+  		    "diff: warning: shouldn't give -s or -l with -e\n");
+! 	diffd(efile1, efile2,
+! 		stb1.st_dev == stb2.st_dev,
+! 		stb1.st_size + stb2.st_size);
+! }
+! 
+! diffd(efile1, efile2, sameFilesystem, dirsSize)
+! 	char *efile1, *efile2;
+! 	off_t dirsSize;
+! {
+! 	register struct dir **d1, **d2;
+! 	struct dir **dir1, **dir2;
+! 	register int i;
+! 	/*
+! 	 * Layout of storage (in increasing memory order)
+! 	 *	storage:	struct dirs for dir1
+! 	 *			struct dirs for dir2
+! 	 *	dirStorage:	unused area
+! 	 *	dir2:		struct dir* s for dir2
+! 	 *			(struct dir *)0
+! 	 *	dir1:		struct dir* s for dir1
+! 	 *			(struct dir *)0
+! 	 */
+! 	char *storage;
+! 	unsigned storage_size;
+! 	struct dir *dirStorage;
+! 
+  	strcpy(title, "diff ");
+  	for (i = 1; diffargv[i+2]; i++) {
+  		if (!strcmp(diffargv[i], "-"))
+***************
+*** 47,142 ****
+  	}
+  	for (etitle = title; *etitle; etitle++)
+  		;
+! 	setfile(&file1, &efile1, file1);
+! 	setfile(&file2, &efile2, file2);
+! 	argv[0] = file1;
+! 	argv[1] = file2;
+! 	dir1 = setupdir(file1);
+! 	dir2 = setupdir(file2);
+  	d1 = dir1; d2 = dir2;
+! 	while (d1->d_entry != 0 || d2->d_entry != 0) {
+! 		if (d1->d_entry && useless(d1->d_entry)) {
+  			d1++;
+- 			continue;
+- 		}
+- 		if (d2->d_entry && useless(d2->d_entry)) {
+  			d2++;
+- 			continue;
+  		}
+- 		if (d1->d_entry == 0)
+- 			cmp = 1;
+- 		else if (d2->d_entry == 0)
+- 			cmp = -1;
+- 		else
+- 			cmp = strcmp(d1->d_entry, d2->d_entry);
+- 		if (cmp < 0) {
+- 			if (lflag)
+- 				d1->d_flags |= ONLY;
+- 			else if (opt == 0 || opt == 2)
+- 				only(d1, 1);
+- 			d1++;
+- 		} else if (cmp == 0) {
+- 			compare(d1);
+- 			d1++;
+- 			d2++;
+- 		} else {
+- 			if (lflag)
+- 				d2->d_flags |= ONLY;
+- 			else if (opt == 0 || opt == 2)
+- 				only(d2, 2);
+- 			d2++;
+- 		}
+- 	}
+  	if (lflag) {
+! 		scanpr(dir1, ONLY, "Only in %.*s", file1, efile1, 0, 0);
+! 		scanpr(dir2, ONLY, "Only in %.*s", file2, efile2, 0, 0);
+! 		scanpr(dir1, SAME, "Common identical files in %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+  		scanpr(dir1, DIFFER, "Binary files which differ in %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+! 		scanpr(dir1, DIRECT, "Common subdirectories of %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+  	}
+  	if (rflag) {
+  		if (header && lflag)
+  			printf("\f");
+! 		for (d1 = dir1; d1->d_entry; d1++)  {
+! 			if ((d1->d_flags & DIRECT) == 0)
+  				continue;
+! 			strcpy(efile1, d1->d_entry);
+! 			strcpy(efile2, d1->d_entry);
+! 			calldiff(0);
+  		}
+  	}
+  }
+  
+! setfile(fpp, epp, file)
+! 	char **fpp, **epp;
+! 	char *file;
+  {
+! 	register char *cp;
+! 
+! 	*fpp = malloc(BUFSIZ);
+! 	if (*fpp == 0) {
+! 		fprintf(stderr, "diff: ran out of memory\n");
+! 		exit(1);
+! 	}
+! 	strcpy(*fpp, file);
+! 	for (cp = *fpp; *cp; cp++)
+  		continue;
+! 	*cp++ = '/';
+! 	*epp = cp;
+  }
+  
+! scanpr(dp, test, title, file1, efile1, file2, efile2)
+! 	register struct dir *dp;
+  	int test;
+! 	char *title, *file1, *efile1, *file2, *efile2;
+  {
+  	int titled = 0;
+  
+! 	for (; dp->d_entry; dp++) {
+! 		if ((dp->d_flags & test) == 0)
+  			continue;
+  		if (titled == 0) {
+  			if (header == 0)
+--- 80,177 ----
+  	}
+  	for (etitle = title; *etitle; etitle++)
+  		;
+! 
+! 	/* Allocate enough storage to represent the whole directory. */
+! 	storage_size = (unsigned)dirsSize;
+! 	storage_size =
+! 	    align(
+! 				storage_size
+! 			+	storage_size/MINENTSIZ * sizeof(struct dir *)
+! 		,	sizeof(struct dir *));
+! 	if (storage_size < dirsSize)
+! 		noroom();  /* arithmetic overflow */
+! 	storage = talloc(storage_size);
+! 	dirStorage = (struct dir *)storage;
+! 
+! 	if (	!(dir1 = setupdir(file1, &dirStorage,
+! 				  (struct dir **)(storage + storage_size)))
+! 	    ||	!(dir2 = setupdir(file2, &dirStorage, dir1)))
+! 		goto freturn;
+  	d1 = dir1; d2 = dir2;
+! 	for (;;)
+! 		if (!*d1)
+! 			if (!*d2)
+! 				break;
+! 			else
+! 				only(*d2++, file2, efile2);
+! 		else if (!*d2  ||  (i = entcmp(d1,d2)) < 0)
+! 			only(*d1++, file1, efile1);
+! 		else if (0 < i)
+! 			only(*d2++, file2, efile2);
+! 		else {
+! 			strcpy(efile1, (*d1)->d_entry);
+! 			strcpy(efile2, (*d1)->d_entry);
+! 			if (sameFilesystem && (*d1)->d_ino==(*d2)->d_ino)
+! 				reportsame(*d1);
+! 			else
+! 				compare(*d1);
+  			d1++;
+  			d2++;
+  		}
+  	if (lflag) {
+! 		scanpr(dir1, ONLY, "Only in %.*s", file1, efile1, (char *)0, (char *)0);
+! 		scanpr(dir2, ONLY, "Only in %.*s", file2, efile2, (char *)0, (char *)0);
+! 		if (sflag)
+! 		  scanpr(dir1, SAME, "Common identical files in %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+  		scanpr(dir1, DIFFER, "Binary files which differ in %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+! 		if (!qflag)
+! 		  scanpr(dir1, DIRECT, "Common subdirectories of %.*s and %.*s",
+  		    file1, efile1, file2, efile2);
+  	}
+  	if (rflag) {
++ 		start = NULL;
+  		if (header && lflag)
+  			printf("\f");
+! 		for (d1 = dir1; *d1; d1++)  {
+! 			if (((*d1)->d_flags & DIRECT) == 0)
+  				continue;
+! 			sprintf(efile1, "%s/", (*d1)->d_entry);
+! 			sprintf(efile2, "%s/", (*d1)->d_entry);
+! 			diffd(
+! 				efile1 + strlen(efile1),
+! 				efile2 + strlen(efile2),
+! 				(*d1)->d_flags & SAMEFS,
+! 				(off_t)((*d1)->d_flags >> SZSHFT));
+  		}
+  	}
++ freturn:
++ 	free(storage);
+  }
+  
+! char *
+! setfile(fpp)
+! 	char **fpp;
+  {
+! 	register char *cp = talloc(BUFSIZ);
+! 	strcpy(cp, *fpp);
+! 	*fpp = cp;
+! 	while (*cp++)
+  		continue;
+! 	cp[-1] = '/';
+! 	return cp;
+  }
+  
+! scanpr(dp, test, titl, fil1, efil1, fil2, efil2)
+! 	register struct dir **dp;
+  	int test;
+! 	char *titl, *fil1, *efil1, *fil2, *efil2;
+  {
+  	int titled = 0;
+  
+! 	for (; *dp; dp++) {
+! 		if (((*dp)->d_flags & test) == 0)
+  			continue;
+  		if (titled == 0) {
+  			if (header == 0)
+***************
+*** 143,400 ****
+  				header = 1;
+  			else
+  				printf("\n");
+! 			printf(title,
+! 			    efile1 - file1 - 1, file1,
+! 			    efile2 - file2 - 1, file2);
+  			printf(":\n");
+  			titled = 1;
+  		}
+! 		printf("\t%s\n", dp->d_entry);
+  	}
+  }
+  
+! only(dp, which)
+  	struct dir *dp;
+! 	int which;
+  {
+! 	char *file = which == 1 ? file1 : file2;
+! 	char *efile = which == 1 ? efile1 : efile2;
+! 
+! 	printf("Only in %.*s: %s\n", efile - file - 1, file, dp->d_entry);
+  }
+  
+  int	entcmp();
+  
+! struct dir *
+! setupdir(cp)
+  	char *cp;
+  {
+! 	register struct dir *dp = 0, *ep;
+  	register struct direct *rp;
+! 	register int nitems, n;
+! 	DIR *dirp;
+  
+  	dirp = opendir(cp);
+  	if (dirp == NULL) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(cp);
+! 		done();
+  	}
+! 	nitems = 0;
+! 	dp = (struct dir *)malloc(sizeof (struct dir));
+! 	if (dp == 0) {
+! 		fprintf(stderr, "diff: ran out of memory\n");
+! 		done();
+! 	}
+  	while (rp = readdir(dirp)) {
+! 		ep = &dp[nitems++];
+! 		ep->d_reclen = rp->d_reclen;
+! 		ep->d_namlen = rp->d_namlen;
+! 		ep->d_entry = 0;
+! 		ep->d_flags = 0;
+! 		if (ep->d_namlen > 0) {
+! 			ep->d_entry = malloc(ep->d_namlen + 1);
+! 			if (ep->d_entry == 0) {
+! 				fprintf(stderr, "diff: out of memory\n");
+! 				done();
+! 			}
+! 			strcpy(ep->d_entry, rp->d_name);
+  		}
+- 		dp = (struct dir *)realloc((char *)dp,
+- 			(nitems + 1) * sizeof (struct dir));
+- 		if (dp == 0) {
+- 			fprintf(stderr, "diff: ran out of memory\n");
+- 			done();
+- 		}
+  	}
+- 	dp[nitems].d_entry = 0;		/* delimiter */
+  	closedir(dirp);
+! 	qsort(dp, nitems, sizeof (struct dir), entcmp);
+  	return (dp);
+  }
+  
+  entcmp(d1, d2)
+! 	struct dir *d1, *d2;
+  {
+! 	return (strcmp(d1->d_entry, d2->d_entry));
+  }
+  
+  compare(dp)
+  	register struct dir *dp;
+  {
+! 	register int i, j;
+! 	int f1, f2, fmt1, fmt2;
+! 	struct stat stb1, stb2;
+! 	int flag = 0;
+! 	char buf1[BUFSIZ], buf2[BUFSIZ];
+  
+! 	strcpy(efile1, dp->d_entry);
+! 	strcpy(efile2, dp->d_entry);
+! 	f1 = open(file1, 0);
+! 	if (f1 < 0) {
+! 		perror(file1);
+  		return;
+  	}
+! 	f2 = open(file2, 0);
+! 	if (f2 < 0) {
+! 		perror(file2);
+  		close(f1);
+  		return;
+  	}
+! 	fstat(f1, &stb1); fstat(f2, &stb2);
+! 	fmt1 = stb1.st_mode & S_IFMT;
+! 	fmt2 = stb2.st_mode & S_IFMT;
+! 	if (fmt1 != S_IFREG || fmt2 != S_IFREG) {
+! 		if (fmt1 == fmt2) {
+! 			if (fmt1 != S_IFDIR && stb1.st_rdev == stb2.st_rdev)
+! 				goto same;
+! 			if (fmt1 == S_IFDIR) {
+! 				dp->d_flags = DIRECT;
+! 				if (lflag || opt == D_EDIT)
+! 					goto closem;
+! 				printf("Common subdirectories: %s and %s\n",
+! 				    file1, file2);
+! 				goto closem;
+! 			}
+! 		}
+! 		goto notsame;
+! 	}
+! 	if (stb1.st_size != stb2.st_size)
+! 		goto notsame;
+! 	for (;;) {
+! 		i = read(f1, buf1, BUFSIZ);
+! 		j = read(f2, buf2, BUFSIZ);
+! 		if (i < 0 || j < 0 || i != j)
+! 			goto notsame;
+! 		if (i == 0 && j == 0)
+! 			goto same;
+! 		for (j = 0; j < i; j++)
+! 			if (buf1[j] != buf2[j])
+! 				goto notsame;
+! 	}
+! same:
+! 	if (sflag == 0)
+! 		goto closem;
+! 	if (lflag)
+! 		dp->d_flags = SAME;
+! 	else
+! 		printf("Files %s and %s are identical\n", file1, file2);
+! 	goto closem;
+! notsame:
+! 	if (!ascii(f1) || !ascii(f2)) {
+! 		if (lflag)
+! 			dp->d_flags |= DIFFER;
+! 		else if (opt == D_NORMAL || opt == D_CONTEXT)
+  			printf("Binary files %s and %s differ\n",
+  			    file1, file2);
+! 		goto closem;
+! 	}
+! 	close(f1); close(f2);
+! 	anychange = 1;
+! 	if (lflag)
+! 		calldiff(title);
+! 	else {
+  		if (opt == D_EDIT) {
+  			printf("ed - %s << '-*-END-*-'\n", dp->d_entry);
+- 			calldiff(0);
+  		} else {
+  			printf("%s%s %s\n", title, file1, file2);
+- 			calldiff(0);
+  		}
+  		if (opt == D_EDIT)
+  			printf("w\nq\n-*-END-*-\n");
+  	}
+  	return;
+! closem:
+! 	close(f1); close(f2);
+  }
+  
+- char	*prargs[] = { "pr", "-h", 0, "-f", 0, 0 };
+  
+! calldiff(wantpr)
+! 	char *wantpr;
+  {
+! 	int pid, status, status2, pv[2];
+  
+! 	prargs[2] = wantpr;
+! 	fflush(stdout);
+! 	if (wantpr) {
+! 		sprintf(etitle, "%s %s", file1, file2);
+! 		pipe(pv);
+! 		pid = fork();
+! 		if (pid == -1) {
+! 			fprintf(stderr, "No more processes");
+! 			done();
+! 		}
+! 		if (pid == 0) {
+! 			close(0);
+! 			dup(pv[0]);
+  			close(pv[0]);
+  			close(pv[1]);
+! 			execv(pr+4, prargs);
+! 			execv(pr, prargs);
+! 			perror(pr);
+! 			done();
+  		}
+  	}
+! 	pid = fork();
+! 	if (pid == -1) {
+! 		fprintf(stderr, "diff: No more processes\n");
+! 		done();
+! 	}
+! 	if (pid == 0) {
+! 		if (wantpr) {
+! 			close(1);
+! 			dup(pv[1]);
+! 			close(pv[0]);
+! 			close(pv[1]);
+! 		}
+! 		execv(diff+4, diffargv);
+! 		execv(diff, diffargv);
+! 		perror(diff);
+! 		done();
+! 	}
+! 	if (wantpr) {
+! 		close(pv[0]);
+! 		close(pv[1]);
+! 	}
+! 	while (wait(&status) != pid)
+  		continue;
+! 	while (wait(&status2) != -1)
+! 		continue;
+! /*
+! 	if ((status >> 8) >= 2)
+! 		done();
+! */
+  }
+  
+- #include <a.out.h>
+- 
+- ascii(f)
+- 	int f;
+- {
+- 	char buf[BUFSIZ];
+- 	register int cnt;
+- 	register char *cp;
+- 
+- 	lseek(f, (long)0, 0);
+- 	cnt = read(f, buf, BUFSIZ);
+- 	if (cnt >= sizeof (struct exec)) {
+- 		struct exec hdr;
+- 		hdr = *(struct exec *)buf;
+- 		if (!N_BADMAG(hdr))
+- 			return (0);
+- 	}
+- 	cp = buf;
+- 	while (--cnt >= 0)
+- 		if (*cp++ & 0200)
+- 			return (0);
+- 	return (1);
+- }
+- 
+- /*
+-  * THIS IS CRUDE.
+-  */
+  useless(cp)
+  register char *cp;
+  {
+--- 178,406 ----
+  				header = 1;
+  			else
+  				printf("\n");
+! 			printf(titl,
+! 			    efil1 - fil1 - 1, fil1,
+! 			    efil2 - fil2 - 1, fil2);
+  			printf(":\n");
+  			titled = 1;
+  		}
+! 		printf("\t%s\n", (*dp)->d_entry);
+  	}
+  }
+  
+! only(dp, file, efile)
+  	struct dir *dp;
+! 	char *file, *efile;
+  {
+! 	dp->d_flags = ONLY;
+! 	status |= 1;
+! 	if (!lflag  &&  (opt == D_NORMAL || opt == D_CONTEXT))
+! 		printf("Only in %.*s: %s\n", efile-file-1, file, dp->d_entry);
+  }
+  
+  int	entcmp();
+  
+! struct dir **
+! setupdir(cp, aDirStorage, dirvec)
+  	char *cp;
++ 	struct dir **aDirStorage;
++ 	struct dir **dirvec;
+  {
+! 	register struct dir **dp;
+  	register struct direct *rp;
+! 	register char *cp1, *cp2;
+! 	register DIR *dirp;
+  
+  	dirp = opendir(cp);
+  	if (dirp == NULL) {
+! 		perr(cp);
+! 		return NULL;
+  	}
+! 	dp = dirvec;
+! 	cp1 = (char *)*aDirStorage;
+! 	*--dp = 0;	/* delimiter */
+  	while (rp = readdir(dirp)) {
+! 		if (rp->d_namlen  &&  !useless(cp2 = rp->d_name)) {
+! #			define dp1 ((struct dir *)cp1)
+! 			*--dp = dp1;
+! 			dp1->d_ino = rp->d_ino;
+! 			cp1 = dp1->d_entry;
+! #			undef dp1
+! 			while ((*cp1++ = *cp2++))
+! 				continue;
+! 			/* Align cp1 for a struct dir. */
+! 			cp1 = (char *)*dp +
+! 			    align((unsigned)(cp1 - (char *)*dp), sizeof(ino_t));
+  		}
+  	}
+  	closedir(dirp);
+! 	qsort((char *)dp, dirvec-dp-1, sizeof(struct dir *), entcmp);
+! 	*aDirStorage = (struct dir *)cp1;
+  	return (dp);
+  }
+  
+  entcmp(d1, d2)
+! 	struct dir **d1, **d2;
+  {
+! 	register char *p1 = (*d1)->d_entry, *p2 = (*d2)->d_entry;
+! 
+! 	do {
+! 		if (!*p2)
+! 			return *p1;
+! 	} while (*p1++ == *p2++);
+! 	return *--p1 - *--p2;
+  }
+  
++ reportsame(d)
++ 	struct dir *d;
++ {
++ 	d->d_flags = SAME;
++ 	if (!lflag && sflag)
++ 		printf("Files %s and %s are identical\n", file1, file2);
++ }
++ 
+  compare(dp)
+  	register struct dir *dp;
+  {
+! 	register int f1, f2;
+  
+! 	dp->d_flags = 0;
+! 	if (lstat(file1, &stb1) < 0)
+! 		goto perr1;
+! 	if (lstat(file2, &stb2) < 0)
+! 		goto perr2;
+! 	f1 = stb1.st_mode & S_IFMT;
+! 	f2 = stb2.st_mode & S_IFMT;
+! 	if (f1 != S_IFREG || f2 != S_IFREG) {
+! 	    dp->d_flags = DIFFER;
+! 	    if (f1 == f2)
+! 		switch (f1) {
+! 		    case S_IFDIR:
+! 			dp->d_flags = DIRECT +
+! 				((stb1.st_size+stb2.st_size) << SZSHFT);
+! 			if (stb1.st_dev == stb2.st_dev)
+! 				dp->d_flags |= SAMEFS;
+! 			if (dp->d_flags>>SZSHFT != stb1.st_size+stb2.st_size)
+! 				noroom();
+! 			if (opt != D_EDIT  &&  !lflag  &&  !qflag)
+! 			    printf("Common subdirectories: %s and %s\n",
+! 				file1, file2);
+! 			return;
+! #ifdef S_IFLNK
+! 		    case S_IFLNK:
+! 		      {
+! 			char l1[MAXNAMLEN], l2[MAXNAMLEN];
+! 			if ((f1 = readlink(file1,l1,MAXNAMLEN)) < 0)
+! 				goto perr1;
+! 			if ((f2 = readlink(file2,l2,MAXNAMLEN)) < 0)
+! 				goto perr2;
+! 			if (f1 == f2  &&  !strncmp(l1,l2,f1))
+! 				reportsame(dp);
+! 			else {
+! 				if (!lflag)
+! 				    printf("Symbolic links %s -> %.*s and %s -> %.*s differ\n",
+! 					   file1, f1, l1, file2, f2, l2);
+! 				status |= 1;
+! 			}
+! 			return;
+! 		      }
+! #endif
+! 		    default:
+! 			if (stb1.st_rdev == stb2.st_rdev) {
+! 				reportsame(dp);
+! 				return;
+! 			}
+! 		}
+! 	    if (!lflag)
+! 		    printf("Special files %s and %s differ\n", file1,file2);
+! 	    status |= 1;
+! 	    return;
+! 	}
+! 	if (stb1.st_ino == stb2.st_ino  &&  stb1.st_dev == stb2.st_dev) {
+! 		reportsame(dp);
+  		return;
+  	}
+! 	if ((f1 = open(file1, 0)) < 0)
+! 		goto perr1;
+! 	if ((f2 = open(file2, 0)) < 0) {
+  		close(f1);
++ 		goto perr2;
++ 	}
++ 	if (eqfile(f1, f2)) {
++ 		reportsame(dp);
++ 		close(f1); close(f2);
+  		return;
+  	}
+! 	dp->d_flags = DIFFER;
+! 	if (!(input[0] = fdopen(f1,"r")) || !(input[1] = fdopen(f2,"r")))
+! 		noroom();
+! 	if (!asciifile(input[0]) || !asciifile(input[1])) {
+! 		if (!lflag  &&  (opt == D_NORMAL || opt == D_CONTEXT))
+  			printf("Binary files %s and %s differ\n",
+  			    file1, file2);
+! 	} else if (lflag) {
+! 		if (!diff_l())
+! 			perr_done(pr);
+! 	} else {
+  		if (opt == D_EDIT) {
+  			printf("ed - %s << '-*-END-*-'\n", dp->d_entry);
+  		} else {
+  			printf("%s%s %s\n", title, file1, file2);
+  		}
++ 		diffile();
+  		if (opt == D_EDIT)
+  			printf("w\nq\n-*-END-*-\n");
+  	}
++ 	fclose(input[0]); fclose(input[1]);
+  	return;
+! perr1:
+! 	perr(file1);
+! 	return;
+! perr2:
+! 	perr(file2);
+! 	return;
+  }
+  
+  
+! diff_l()
+  {
+! 	int pid, prstatus, pv[2], in, out, dupout;
+  
+! 	in = fileno(stdin);
+! 	out = fileno(stdout);
+! 	sprintf(etitle, "%s %s", file1, file2);
+! 	if (fflush(stdout) == EOF  ||  pipe(pv) < 0)
+! 		return 0;
+! 	if (!(pid = fork())) {
+! 		close(in);
+! 		if (fcntl(pv[0], F_DUPFD, in) == in) {
+  			close(pv[0]);
+  			close(pv[1]);
+! 			execl(pr, pr, "-h", title, "-f", (char *)0);
+  		}
+  	}
+! 	if (	pid <= 0
+! 	    ||	(dupout = fcntl(out, F_DUPFD, 0)) < 0
+! 	    ||	close(out) < 0
+! 	    ||	fcntl(pv[1], F_DUPFD, out) != out
+! 	)
+! 		return 0;
+! 	close(pv[0]);
+! 	close(pv[1]);
+! 	diffreg();
+! 	if (	fflush(stdout) == EOF
+! 	    ||	close(out) < 0
+! 	    ||	fcntl(dupout, F_DUPFD, out) != out
+! 	    ||	close(dupout) < 0
+! 	)
+! 		return 0;
+! 	while (wait(&prstatus) != pid)
+  		continue;
+! 	if (prstatus != 0)
+! 		return 0;
+! 	return 1;
+  }
+  
+  useless(cp)
+  register char *cp;
+  {
+diff -c ../diff4.3/diffreg.c ./diffreg.c
+*** ../diff4.3/diffreg.c	Tue Jan 27 10:08:14 1987
+--- ./diffreg.c	Tue Mar  3 18:29:11 1987
+***************
+*** 1,4 ****
+--- 1,6 ----
++ #ifndef lint
+  static	char sccsid[] = "@(#)diffreg.c 4.16 3/29/86";
++ #endif
+  
+  #include "diff.h"
+  /*
+***************
+*** 74,87 ****
+  FILE	*fopen();
+  
+  struct cand {
+  	int	x;
+- 	int	y;
+  	int	pred;
+! } cand;
+  struct line {
+  	int	serial;
+  	int	value;
+! } *file[2], line;
+  int	len[2];
+  struct	line *sfile[2];	/* shortened by pruning common prefix and suffix */
+  int	slen[2];
+--- 76,89 ----
+  FILE	*fopen();
+  
+  struct cand {
++ 	int	y;	/* this field first for speed in search() */
+  	int	x;
+  	int	pred;
+! };
+  struct line {
+  	int	serial;
+  	int	value;
+! } *file[2];
+  int	len[2];
+  struct	line *sfile[2];	/* shortened by pruning common prefix and suffix */
+  int	slen[2];
+***************
+*** 90,100 ****
+  int	*member;	/* will be overlaid on file[1] */
+  int	*klist;		/* will be overlaid on file[0] after class */
+  struct	cand *clist;	/* merely a free storage pot for candidates */
+! int	clen = 0;
+  int	*J;		/* will be overlaid on class */
+  long	*ixold;		/* will be overlaid on klist */
+  long	*ixnew;		/* will be overlaid on file[1] */
+  char	*chrtran;	/* translation table for case-folding */
+  
+  /* chrtran points to one of 2 translation tables:
+   *	cup2low if folding upper to lower case
+--- 92,105 ----
+  int	*member;	/* will be overlaid on file[1] */
+  int	*klist;		/* will be overlaid on file[0] after class */
+  struct	cand *clist;	/* merely a free storage pot for candidates */
+! int	clen;
+  int	*J;		/* will be overlaid on class */
+  long	*ixold;		/* will be overlaid on klist */
+  long	*ixnew;		/* will be overlaid on file[1] */
+  char	*chrtran;	/* translation table for case-folding */
++ /* Clump sizes for memory allocation; must be powers of two. */
++ #define FILE_CLUMP (1<<8)
++ #define CLIST_CLUMP (1<<8)
+  
+  /* chrtran points to one of 2 translation tables:
+   *	cup2low if folding upper to lower case
+***************
+*** 140,233 ****
+  
+  diffreg()
+  {
+- 	register int i, j;
+- 	FILE *f1, *f2;
+- 	char buf1[BUFSIZ], buf2[BUFSIZ];
+- 
+- 	if (hflag) {
+- 		diffargv[0] = "diffh";
+- 		execv(diffh, diffargv);
+- 		fprintf(stderr, "diff: ");
+- 		perror(diffh);
+- 		done();
+- 	}
+- 	chrtran = (iflag? cup2low : clow2low);
+  	if ((stb1.st_mode & S_IFMT) == S_IFDIR) {
+  		file1 = splice(file1, file2);
+! 		if (stat(file1, &stb1) < 0) {
+! 			fprintf(stderr, "diff: ");
+! 			perror(file1);
+! 			done();
+! 		}
+  	} else if ((stb2.st_mode & S_IFMT) == S_IFDIR) {
+  		file2 = splice(file2, file1);
+! 		if (stat(file2, &stb2) < 0) {
+! 			fprintf(stderr, "diff: ");
+! 			perror(file2);
+! 			done();
+! 		}
+  	} else if (!strcmp(file1, "-")) {
+  		if (!strcmp(file2, "-")) {
+  			fprintf(stderr, "diff: can't specify - -\n");
+  			done();
+  		}
+! 		file1 = copytemp();
+! 		if (stat(file1, &stb1) < 0) {
+! 			fprintf(stderr, "diff: ");
+! 			perror(file1);
+! 			done();
+! 		}
+  	} else if (!strcmp(file2, "-")) {
+! 		file2 = copytemp();
+! 		if (stat(file2, &stb2) < 0) {
+! 			fprintf(stderr, "diff: ");
+! 			perror(file2);
+! 			done();
+! 		}
+  	}
+! 	if ((f1 = fopen(file1, "r")) == NULL) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(file1);
+! 		done();
+  	}
+! 	if ((f2 = fopen(file2, "r")) == NULL) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(file2);
+! 		fclose(f1);
+! 		done();
+! 	}
+! 	if (stb1.st_size != stb2.st_size)
+! 		goto notsame;
+! 	for (;;) {
+! 		i = fread(buf1, 1, BUFSIZ, f1);
+! 		j = fread(buf2, 1, BUFSIZ, f2);
+! 		if (i < 0 || j < 0 || i != j)
+! 			goto notsame;
+! 		if (i == 0 && j == 0) {
+! 			fclose(f1);
+! 			fclose(f2);
+! 			status = 0;		/* files don't differ */
+! 			goto same;
+  		}
+! 		for (j = 0; j < i; j++)
+! 			if (buf1[j] != buf2[j])
+! 				goto notsame;
+  	}
+! notsame:
+! 	/*
+! 	 *	Files certainly differ at this point; set status accordingly
+! 	 */
+! 	status = 1;
+! 	if (!asciifile(f1) || !asciifile(f2)) {
+! 		printf("Binary files %s and %s differ\n", file1, file2);
+! 		fclose(f1);
+! 		fclose(f2);
+! 		done();
+! 	}
+! 	prepare(0, f1);
+! 	prepare(1, f2);
+! 	fclose(f1);
+! 	fclose(f2);
+  	prune();
+  	sort(sfile[0],slen[0]);
+  	sort(sfile[1],slen[1]);
+--- 145,248 ----
+  
+  diffreg()
+  {
+  	if ((stb1.st_mode & S_IFMT) == S_IFDIR) {
+  		file1 = splice(file1, file2);
+! 		fclose(input[0]);
+! 		input[0] = tfopen(file1, "r");
+! 		fstat(fileno(input[0]), &stb1);
+  	} else if ((stb2.st_mode & S_IFMT) == S_IFDIR) {
+  		file2 = splice(file2, file1);
+! 		fclose(input[1]);
+! 		input[1] = tfopen(file2, "r");
+! 		fstat(fileno(input[1]), &stb2);
+  	} else if (!strcmp(file1, "-")) {
+  		if (!strcmp(file2, "-")) {
+  			fprintf(stderr, "diff: can't specify - -\n");
+  			done();
+  		}
+! 		fclose(input[0]);
+! 		input[0] = copytemp();
+! 		fstat(fileno(input[0]), &stb1);
+  	} else if (!strcmp(file2, "-")) {
+! 		fclose(input[1]);
+! 		input[1] = copytemp();
+! 		fstat(fileno(input[1]), &stb2);
+  	}
+! 	if (eqfile(fileno(input[0]), fileno(input[1]))) {
+! 		if (opt == D_CONTEXT)
+! 			printf("No differences encountered\n");
+! 	} else if (!asciifile(input[0]) || !asciifile(input[1]))
+! 		printf("Binary files %s and %s differ\n", file1, file2);
+! 	else
+! 		diffile();
+! }
+! 
+! eqfile(f1, f2)
+! 	int f1, f2;
+! {
+! 	register int i;
+! 
+! 	/* Speedup: if possible, compare longs, not chars. */
+! 	union {
+! 		char c[BUFSIZ+1];
+! 		long l[BUFSIZ/sizeof(long) + 1];
+! 	} buf1, buf2;
+! 
+! 	if (stb1.st_size == stb2.st_size) {
+! 		buf1.l[BUFSIZ/sizeof(long)] = 0;
+! 		buf2.l[BUFSIZ/sizeof(long)] = 1;
+! 		while ( 0 <= (i = read(f1, buf1.c, BUFSIZ))
+! 		    &&	i == read(f2, buf2.c, BUFSIZ)
+! 		)
+! 			if (i == BUFSIZ  &&  BUFSIZ%sizeof(long) == 0) {
+! 				register long *p1=buf1.l, *p2=buf2.l;
+! 				while (*p1++ == *p2++)
+! 					;
+! 				if (p1 != buf1.l + 1 + BUFSIZ/sizeof(long))
+! 					break;
+! 			} else if (i == 0)
+! 				return 1;
+! 			else {
+! 				register char *p1=buf1.c, *p2=buf2.c;
+! 				p1[i] = 0;
+! 				p2[i] = 1;
+! 				while (*p1++ == *p2++)
+! 					;
+! 				if (p1 != buf1.c + 1 + i)
+! 					break;
+! 			}
+! 		lseek(f1, 0L, 0);
+! 		lseek(f2, 0L, 0);
+  	}
+! 	status |= 1;
+! 	return 0;
+! }
+! 
+! diffile()
+! {
+! 	int i;
+! 
+! 	if (hflag) {
+! 		int pid, diffhstatus;
+! 		fflush(stdout);
+! 		if (!(pid = fork())) {
+! 			diffargv[0] = "diffh";
+! 			fclose(input[0]);
+! 			fclose(input[1]);
+! 			execv(diffh, diffargv);
+  		}
+! 		if (pid <= 0)
+! 			perr_done(diffh);
+! 		while (wait(&diffhstatus) != pid)
+! 			continue;
+! 		status |= diffhstatus>>8 & 0377;
+! 		return;
+  	}
+! 	chrtran = iflag ? cup2low : clow2low;
+! 	clen = 0;
+! 	anychange = 0;
+! 	prepare(0, input[0]);
+! 	prepare(1, input[1]);
+  	prune();
+  	sort(sfile[0],slen[0]);
+  	sort(sfile[1],slen[1]);
+***************
+*** 241,247 ****
+  	class = (int *)ralloc((char *)class,(slen[0]+2)*sizeof(int));
+  
+  	klist = (int *)talloc((slen[0]+2)*sizeof(int));
+! 	clist = (struct cand *)talloc(sizeof(cand));
+  	i = stone(class, slen[0], member, klist);
+  	free((char *)member);
+  	free((char *)class);
+--- 256,262 ----
+  	class = (int *)ralloc((char *)class,(slen[0]+2)*sizeof(int));
+  
+  	klist = (int *)talloc((slen[0]+2)*sizeof(int));
+! 	clist = (struct cand *)talloc(CLIST_CLUMP*sizeof(struct cand));
+  	i = stone(class, slen[0], member, klist);
+  	free((char *)member);
+  	free((char *)class);
+***************
+*** 251,308 ****
+  	free((char *)clist);
+  	free((char *)klist);
+  
+! 	ixold = (long *)talloc((len[0]+2)*sizeof(long));
+! 	ixnew = (long *)talloc((len[1]+2)*sizeof(long));
+  	check();
+  	output();
+! 	status = anychange;
+! same:
+! 	if (opt == D_CONTEXT && anychange == 0)
+! 		printf("No differences encountered\n");
+! 	done();
+  }
+  
+! char *
+  copytemp()
+  {
+  	char buf[BUFSIZ];
+! 	register int i, f;
+  
+  	signal(SIGHUP,done);
+  	signal(SIGINT,done);
+  	signal(SIGPIPE,done);
+  	signal(SIGTERM,done);
+! 	tempfile = mktemp("/tmp/dXXXXX");
+! 	f = creat(tempfile,0600);
+! 	if (f < 0) {
+! 		fprintf(stderr, "diff: ");
+! 		perror(tempfile);
+! 		done();
+! 	}
+  	while ((i = read(0,buf,BUFSIZ)) > 0)
+! 		if (write(f,buf,i) != i) {
+! 			fprintf(stderr, "diff: ");
+! 			perror(tempfile);
+! 			done();
+! 		}
+! 	close(f);
+! 	return (tempfile);
+  }
+  
+  char *
+! splice(dir, file)
+! 	char *dir, *file;
+  {
+  	char *tail;
+  	char buf[BUFSIZ];
+  
+! 	if (!strcmp(file, "-")) {
+  		fprintf(stderr, "diff: can't specify - with other arg directory\n");
+  		done();
+  	}
+! 	tail = rindex(file, '/');
+  	if (tail == 0)
+! 		tail = file;
+  	else
+  		tail++;
+  	sprintf(buf, "%s/%s", dir, tail);
+--- 266,326 ----
+  	free((char *)clist);
+  	free((char *)klist);
+  
+! 	ixold = (long *)talloc((len[0]+len[1]+4)*sizeof(long));
+! 	ixnew = ixold + len[0] + 2;
+  	check();
+  	output();
+! 	free((char *)J);
+! 	free((char *)ixold);
+! 	status |= anychange;
+  }
+  
+! FILE *
+! tfopen(fil, mode)
+! 	char *fil, *mode;
+! {
+! 	FILE *f;
+! 	if (!(f = fopen(fil, mode)))
+! 		perr_done(fil);
+! 	return (f);
+! }
+! 
+! char tempfile[13];
+! 
+! FILE *
+  copytemp()
+  {
+  	char buf[BUFSIZ];
+! 	register int i;
+! 	register FILE *f;
+  
+  	signal(SIGHUP,done);
+  	signal(SIGINT,done);
+  	signal(SIGPIPE,done);
+  	signal(SIGTERM,done);
+! 	umask(077);
+! 	f = tfopen(mktemp(strcpy(tempfile, "/tmp/dXXXXXX")), "w+");
+  	while ((i = read(0,buf,BUFSIZ)) > 0)
+! 		if (fwrite(buf,sizeof(*buf),i,f) != i)
+! 			perr_done(tempfile);
+! 	rewind(f);
+! 	return (f);
+  }
+  
+  char *
+! splice(dir, fil)
+! 	char *dir, *fil;
+  {
+  	char *tail;
+  	char buf[BUFSIZ];
+  
+! 	if (!strcmp(fil, "-")) {
+  		fprintf(stderr, "diff: can't specify - with other arg directory\n");
+  		done();
+  	}
+! 	tail = rindex(fil, '/');
+  	if (tail == 0)
+! 		tail = fil;
+  	else
+  		tail++;
+  	sprintf(buf, "%s/%s", dir, tail);
+***************
+*** 316,329 ****
+  	register struct line *p;
+  	register j,h;
+  
+! 	fseek(fd, (long)0, 0);
+! 	p = (struct line *)talloc(3*sizeof(line));
+  	for(j=0; h=readhash(fd);) {
+! 		p = (struct line *)ralloc((char *)p,(++j+3)*sizeof(line));
+  		p[j].value = h;
+  	}
+  	len[i] = j;
+! 	file[i] = p;
+  }
+  
+  prune()
+--- 334,349 ----
+  	register struct line *p;
+  	register j,h;
+  
+! 	p = (struct line *)talloc(FILE_CLUMP*sizeof(struct line));
+  	for(j=0; h=readhash(fd);) {
+! 		if ((++j & FILE_CLUMP-1) == 0)
+! 			p = (struct line *)ralloc((char *)p,
+! 				(j+FILE_CLUMP)*sizeof(struct line));
+  		p[j].value = h;
+  	}
+  	len[i] = j;
+! 	file[i] = (struct line *)ralloc((char *)p, (j+3)*sizeof(struct line));
+! 	rewind(fd);
+  }
+  
+  prune()
+***************
+*** 371,385 ****
+  	c[j] = -1;
+  }
+  
+! stone(a,n,b,c)
+! int *a;
+! int *b;
+! register int *c;
+  {
+  	register int i, k,y;
+! 	int j, l;
+! 	int oldc, tc;
+! 	int oldl;
+  	k = 0;
+  	c[0] = newcand(0,0,0);
+  	for(i=1; i<=n; i++) {
+--- 391,406 ----
+  	c[j] = -1;
+  }
+  
+! stone(A,n,B,C)
+! int *A;
+! int *B;
+! int *C;
+  {
+  	register int i, k,y;
+! 	register int *c = C;
+! 	register int j, l, oldl;
+! 	register int *a = A, *b = B;
+! 	register int oldc, tc;
+  	k = 0;
+  	c[0] = newcand(0,0,0);
+  	for(i=1; i<=n; i++) {
+***************
+*** 415,421 ****
+  newcand(x,y,pred)
+  {
+  	register struct cand *q;
+! 	clist = (struct cand *)ralloc((char *)clist,++clen*sizeof(cand));
+  	q = clist + clen -1;
+  	q->x = x;
+  	q->y = y;
+--- 436,445 ----
+  newcand(x,y,pred)
+  {
+  	register struct cand *q;
+! 
+! 	if ((++clen & CLIST_CLUMP-1) == 0)
+! 		clist = (struct cand *)ralloc((char *)clist,
+! 				(clen+CLIST_CLUMP)*sizeof(struct cand));
+  	q = clist + clen -1;
+  	q->x = x;
+  	q->y = y;
+***************
+*** 423,442 ****
+  	return(clen-1);
+  }
+  
+! search(c, k, y)
+! int *c;
+  {
+! 	register int i, j, l;
+! 	int t;
+! 	if(clist[c[k]].y<y)	/*quick look for typical case*/
+! 		return(k+1);
+  	i = 0;
+! 	j = k+1;
+! 	while (1) {
+! 		l = i + j;
+! 		if ((l >>= 1) <= i) 
+! 			break;
+! 		t = clist[c[l]].y;
+  		if(t > y)
+  			j = l;
+  		else if(t < y)
+--- 447,464 ----
+  	return(clen-1);
+  }
+  
+! search(C, k, Y)
+! int *C;
+  {
+! 	register int l, i, j=k, t;
+! 	register int y=Y;
+! 	register int *c = C;
+! 	register struct cand *cl = clist;
+! 	if (cl[c[j++]].y < y)	/*quick look for typical case*/
+! 		return j;
+  	i = 0;
+! 	while (i < (l = (i+j)>>1)) {
+! 		t = cl[c[l]].y;
+  		if(t > y)
+  			j = l;
+  		else if(t < y)
+***************
+*** 466,501 ****
+  
+  check()
+  {
+! 	register int i, j;
+! 	int jackpot;
+! 	long ctold, ctnew;
+  	register int c,d;
+  
+- 	if ((input[0] = fopen(file1,"r")) == NULL) {
+- 		perror(file1);
+- 		done();
+- 	}
+- 	if ((input[1] = fopen(file2,"r")) == NULL) {
+- 		perror(file2);
+- 		done();
+- 	}
+  	j = 1;
+  	ixold[0] = ixnew[0] = 0;
+- 	jackpot = 0;
+  	ctold = ctnew = 0;
+  	for(i=1;i<=len[0];i++) {
+  		if(J[i]==0) {
+! 			ixold[i] = ctold += skipline(0);
+  			continue;
+  		}
+  		while(j<J[i]) {
+! 			ixnew[j] = ctnew += skipline(1);
+  			j++;
+  		}
+  		if(bflag || wflag || iflag) {
+  			for(;;) {
+! 				c = getc(input[0]);
+! 				d = getc(input[1]);
+  				ctold++;
+  				ctnew++;
+  				if(bflag && isspace(c) && isspace(d)) {
+--- 488,515 ----
+  
+  check()
+  {
+! 	register FILE *input0 = input[0], *input1 = input[1];
+  	register int c,d;
++ 	register int i, j;
++ 	/* int jackpot = 0; */
++ 	register long ctold, ctnew;
+  
+  	j = 1;
+  	ixold[0] = ixnew[0] = 0;
+  	ctold = ctnew = 0;
+  	for(i=1;i<=len[0];i++) {
+  		if(J[i]==0) {
+! 			ixold[i] = ctold += skipline(input0);
+  			continue;
+  		}
+  		while(j<J[i]) {
+! 			ixnew[j] = ctnew += skipline(input1);
+  			j++;
+  		}
+  		if(bflag || wflag || iflag) {
+  			for(;;) {
+! 				c = getc(input0);
+! 				d = getc(input1);
+  				ctold++;
+  				ctnew++;
+  				if(bflag && isspace(c) && isspace(d)) {
+***************
+*** 503,531 ****
+  						if(c=='\n')
+  							break;
+  						ctold++;
+! 					} while(isspace(c=getc(input[0])));
+  					do {
+  						if(d=='\n')
+  							break;
+  						ctnew++;
+! 					} while(isspace(d=getc(input[1])));
+  				} else if ( wflag ) {
+  					while( isspace(c) && c!='\n' ) {
+! 						c=getc(input[0]);
+  						ctold++;
+  					}
+  					while( isspace(d) && d!='\n' ) {
+! 						d=getc(input[1]);
+  						ctnew++;
+  					}
+  				}
+  				if(chrtran[c] != chrtran[d]) {
+! 					jackpot++;
+  					J[i] = 0;
+  					if(c!='\n')
+! 						ctold += skipline(0);
+  					if(d!='\n')
+! 						ctnew += skipline(1);
+  					break;
+  				}
+  				if(c=='\n')
+--- 517,545 ----
+  						if(c=='\n')
+  							break;
+  						ctold++;
+! 					} while(isspace(c=getc(input0)));
+  					do {
+  						if(d=='\n')
+  							break;
+  						ctnew++;
+! 					} while(isspace(d=getc(input1)));
+  				} else if ( wflag ) {
+  					while( isspace(c) && c!='\n' ) {
+! 						c=getc(input0);
+  						ctold++;
+  					}
+  					while( isspace(d) && d!='\n' ) {
+! 						d=getc(input1);
+  						ctnew++;
+  					}
+  				}
+  				if(chrtran[c] != chrtran[d]) {
+! 					/* jackpot++; */
+  					J[i] = 0;
+  					if(c!='\n')
+! 						ctold += skipline(input0);
+  					if(d!='\n')
+! 						ctnew += skipline(input1);
+  					break;
+  				}
+  				if(c=='\n')
+***************
+*** 535,547 ****
+  			for(;;) {
+  				ctold++;
+  				ctnew++;
+! 				if((c=getc(input[0])) != (d=getc(input[1]))) {
+  					/* jackpot++; */
+  					J[i] = 0;
+  					if(c!='\n')
+! 						ctold += skipline(0);
+  					if(d!='\n')
+! 						ctnew += skipline(1);
+  					break;
+  				}
+  				if(c=='\n')
+--- 549,561 ----
+  			for(;;) {
+  				ctold++;
+  				ctnew++;
+! 				if((c=getc(input0)) != (d=getc(input1))) {
+  					/* jackpot++; */
+  					J[i] = 0;
+  					if(c!='\n')
+! 						ctold += skipline(input0);
+  					if(d!='\n')
+! 						ctnew += skipline(input1);
+  					break;
+  				}
+  				if(c=='\n')
+***************
+*** 553,562 ****
+  		j++;
+  	}
+  	for(;j<=len[1];j++) {
+! 		ixnew[j] = ctnew += skipline(1);
+  	}
+! 	fclose(input[0]);
+! 	fclose(input[1]);
+  /*
+  	if(jackpot)
+  		fprintf(stderr, "jackpot\n");
+--- 567,576 ----
+  		j++;
+  	}
+  	for(;j<=len[1];j++) {
+! 		ixnew[j] = ctnew += skipline(input1);
+  	}
+! 	rewind(input0);
+! 	rewind(input1);
+  /*
+  	if(jackpot)
+  		fprintf(stderr, "jackpot\n");
+***************
+*** 566,582 ****
+  sort(a,n)	/*shellsort CACM #201*/
+  struct line *a;
+  {
+! 	struct line w;
+! 	register int j,m;
+! 	struct line *ai;
+! 	register struct line *aim;
+! 	int k;
+  
+  	if (n == 0)
+  		return;
+! 	for(j=1;j<=n;j*= 2)
+! 		m = 2*j - 1;
+! 	for(m/=2;m!=0;m/=2) {
+  		k = n-m;
+  		for(j=1;j<=k;j++) {
+  			for(ai = &a[j]; ai > a; ai -= m) {
+--- 580,594 ----
+  sort(a,n)	/*shellsort CACM #201*/
+  struct line *a;
+  {
+! 	register struct line *aim, *ai;
+! 	register int t, m, j, k;
+  
+  	if (n == 0)
+  		return;
+! 	for (m=1; (m<<=1)<=n; )
+! 		;
+! 	--m;
+! 	while ((m>>=1)) {
+  		k = n-m;
+  		for(j=1;j<=k;j++) {
+  			for(ai = &a[j]; ai > a; ai -= m) {
+***************
+*** 583,598 ****
+  				aim = &ai[m];
+  				if(aim < ai)
+  					break;	/*wraparound*/
+! 				if(aim->value > ai[0].value ||
+! 				   aim->value == ai[0].value &&
+  				   aim->serial > ai[0].serial)
+  					break;
+- 				w.value = ai[0].value;
+  				ai[0].value = aim->value;
+! 				aim->value = w.value;
+! 				w.serial = ai[0].serial;
+  				ai[0].serial = aim->serial;
+! 				aim->serial = w.serial;
+  			}
+  		}
+  	}
+--- 595,610 ----
+  				aim = &ai[m];
+  				if(aim < ai)
+  					break;	/*wraparound*/
+! 				t = ai[0].value;
+! 				if(aim->value > t ||
+! 				   aim->value == t &&
+  				   aim->serial > ai[0].serial)
+  					break;
+  				ai[0].value = aim->value;
+! 				aim->value = t;
+! 				t = ai[0].serial;
+  				ai[0].serial = aim->serial;
+! 				aim->serial = t;
+  			}
+  		}
+  	}
+***************
+*** 613,624 ****
+  }
+  
+  skipline(f)
+  {
+  	register i, c;
+  
+! 	for(i=1;(c=getc(input[f]))!='\n';i++)
+  		if (c < 0)
+! 			return(i);
+  	return(i);
+  }
+  
+--- 625,637 ----
+  }
+  
+  skipline(f)
++ register FILE *f;
+  {
+  	register i, c;
+  
+! 	for(i=1; (c=getc(f))!='\n'; i++)
+  		if (c < 0)
+! 			break;
+  	return(i);
+  }
+  
+***************
+*** 627,634 ****
+  	int m;
+  	register int i0, i1, j1;
+  	int j0;
+! 	input[0] = fopen(file1,"r");
+! 	input[1] = fopen(file2,"r");
+  	m = len[0];
+  	J[0] = 0;
+  	J[m+1] = len[1]+1;
+--- 640,646 ----
+  	int m;
+  	register int i0, i1, j1;
+  	int j0;
+! 	register FILE *in, *out;
+  	m = len[0];
+  	J[0] = 0;
+  	J[m+1] = len[1]+1;
+***************
+*** 652,663 ****
+  	if(m==0)
+  		change(1,0,1,len[1]);
+  	if (opt==D_IFDEF) {
+  		for (;;) {
+  #define	c i0
+! 			c = getc(input[0]);
+  			if (c < 0)
+  				return;
+! 			putchar(c);
+  		}
+  #undef c
+  	}
+--- 664,677 ----
+  	if(m==0)
+  		change(1,0,1,len[1]);
+  	if (opt==D_IFDEF) {
++ 		in = input[0];
++ 		out = stdout;
+  		for (;;) {
+  #define	c i0
+! 			c = getc(in);
+  			if (c < 0)
+  				return;
+! 			putc(c, out);
+  		}
+  #undef c
+  	}
+***************
+*** 691,700 ****
+  */
+  change(a,b,c,d)
+  {
+- 	int ch;
+- 	int lowa,upb,lowc,upd;
+- 	struct stat stbuf;
+- 
+  	if (opt != D_IFDEF && a>b && c>d)
+  		return;
+  	if (anychange == 0) {
+--- 705,710 ----
+***************
+*** 701,723 ****
+  		anychange = 1;
+  		if(opt == D_CONTEXT) {
+  			printf("*** %s	", file1);
+- 			stat(file1, &stbuf);
+  			printf("%s--- %s	",
+! 			    ctime(&stbuf.st_mtime), file2);
+! 			stat(file2, &stbuf);
+! 			printf("%s", ctime(&stbuf.st_mtime));
+  
+! 			context_vec_start = (struct context_vec *) 
+! 						malloc(MAX_CONTEXT *
+  						   sizeof(struct context_vec));
+  			context_vec_end = context_vec_start + MAX_CONTEXT;
+  			context_vec_ptr = context_vec_start - 1;
+  		}
+  	}
+- 	if (a <= b && c <= d)
+- 		ch = 'c';
+- 	else
+- 		ch = (a <= b) ? 'd' : 'a';
+  	if(opt == D_CONTEXT) {
+  		/*
+  		 * if this new change is within 'context' lines of
+--- 711,728 ----
+  		anychange = 1;
+  		if(opt == D_CONTEXT) {
+  			printf("*** %s	", file1);
+  			printf("%s--- %s	",
+! 			    ctime(&stb1.st_mtime), file2);
+! 			printf("%s", ctime(&stb2.st_mtime));
+  
+! 			if (!context_vec_start)
+! 				context_vec_start = (struct context_vec *) 
+! 						talloc(MAX_CONTEXT *
+  						   sizeof(struct context_vec));
+  			context_vec_end = context_vec_start + MAX_CONTEXT;
+  			context_vec_ptr = context_vec_start - 1;
+  		}
+  	}
+  	if(opt == D_CONTEXT) {
+  		/*
+  		 * if this new change is within 'context' lines of
+***************
+*** 774,780 ****
+  	if ((opt ==D_EDIT || opt == D_REVERSE) && c<=d)
+  		prints(".\n");
+  	if (inifdef) {
+! 		fprintf(stdout, "#endif %s\n", endifname);
+  		inifdef = 0;
+  	}
+  }
+--- 779,785 ----
+  	if ((opt ==D_EDIT || opt == D_REVERSE) && c<=d)
+  		prints(".\n");
+  	if (inifdef) {
+! 		printf("#endif %s\n", endifname);
+  		inifdef = 0;
+  	}
+  }
+***************
+*** 790,802 ****
+  
+  fetch(f,a,b,lb,s,oldfile)
+  long *f;
+! FILE *lb;
+  char *s;
+  {
+! 	register int i, j;
+  	register int c;
+  	register int col;
+! 	register int nc;
+  	int oneflag = (*ifdef1!='\0') != (*ifdef2!='\0');
+  
+  	/*
+--- 795,808 ----
+  
+  fetch(f,a,b,lb,s,oldfile)
+  long *f;
+! register FILE *lb;
+  char *s;
+  {
+! 	register int i;
+  	register int c;
+  	register int col;
+! 	register long nc;
+! 	register FILE *out = stdout;
+  	int oneflag = (*ifdef1!='\0') != (*ifdef2!='\0');
+  
+  	/*
+***************
+*** 807,832 ****
+  		long curpos = ftell(lb);
+  		/* print through if append (a>b), else to (nb: 0 vs 1 orig) */
+  		nc = f[a>b? b : a-1 ] - curpos;
+! 		for (i = 0; i < nc; i++)
+! 			putchar(getc(lb));
+  	}
+  	if (a > b)
+  		return;
+  	if (opt == D_IFDEF) {
+  		if (inifdef)
+! 			fprintf(stdout, "#else %s%s\n", oneflag && oldfile==1 ? "!" : "", ifdef2);
+  		else {
+  			if (oneflag) {
+  				/* There was only one ifdef given */
+  				endifname = ifdef2;
+  				if (oldfile)
+! 					fprintf(stdout, "#ifndef %s\n", endifname);
+  				else
+! 					fprintf(stdout, "#ifdef %s\n", endifname);
+  			}
+  			else {
+  				endifname = oldfile ? ifdef1 : ifdef2;
+! 				fprintf(stdout, "#ifdef %s\n", endifname);
+  			}
+  		}
+  		inifdef = 1+oldfile;
+--- 813,838 ----
+  		long curpos = ftell(lb);
+  		/* print through if append (a>b), else to (nb: 0 vs 1 orig) */
+  		nc = f[a>b? b : a-1 ] - curpos;
+! 		while (0 <= --nc)
+! 			putc(getc(lb), out);
+  	}
+  	if (a > b)
+  		return;
+  	if (opt == D_IFDEF) {
+  		if (inifdef)
+! 			printf("#else %s%s\n", oneflag && oldfile==1 ? "!" : "", ifdef2);
+  		else {
+  			if (oneflag) {
+  				/* There was only one ifdef given */
+  				endifname = ifdef2;
+  				if (oldfile)
+! 					printf("#ifndef %s\n", endifname);
+  				else
+! 					printf("#ifdef %s\n", endifname);
+  			}
+  			else {
+  				endifname = oldfile ? ifdef1 : ifdef2;
+! 				printf("#ifdef %s\n", endifname);
+  			}
+  		}
+  		inifdef = 1+oldfile;
+***************
+*** 836,851 ****
+  		fseek(lb,f[i-1],0);
+  		nc = f[i]-f[i-1];
+  		if (opt != D_IFDEF)
+! 			prints(s);
+  		col = 0;
+! 		for(j=0;j<nc;j++) {
+  			c = getc(lb);
+  			if (c == '\t' && tflag)
+  				do
+! 					putchar(' ');
+  				while (++col & 7);
+  			else {
+! 				putchar(c);
+  				col++;
+  			}
+  		}
+--- 842,857 ----
+  		fseek(lb,f[i-1],0);
+  		nc = f[i]-f[i-1];
+  		if (opt != D_IFDEF)
+! 			fputs(s, out);
+  		col = 0;
+! 		while (0 <= --nc) {
+  			c = getc(lb);
+  			if (c == '\t' && tflag)
+  				do
+! 					putc(' ', out);
+  				while (++col & 7);
+  			else {
+! 				putc(c, out);
+  				col++;
+  			}
+  		}
+***************
+*** 852,858 ****
+  	}
+  
+  	if (inifdef && !wantelses) {
+! 		fprintf(stdout, "#endif %s\n", endifname);
+  		inifdef = 0;
+  	}
+  }
+--- 858,864 ----
+  	}
+  
+  	if (inifdef && !wantelses) {
+! 		printf("#endif %s\n", endifname);
+  		inifdef = 0;
+  	}
+  }
+***************
+*** 870,878 ****
+  readhash(f)
+  register FILE *f;
+  {
+- 	register long sum;
+  	register unsigned shift;
+  	register t;
+  	register space;
+  
+  	sum = 1;
+--- 876,884 ----
+  readhash(f)
+  register FILE *f;
+  {
+  	register unsigned shift;
+  	register t;
++ 	register long sum;
+  	register space;
+  
+  	sum = 1;
+***************
+*** 880,887 ****
+  	if(!bflag && !wflag) {
+  		if(iflag)
+  			for(shift=0;(t=getc(f))!='\n';shift+=7) {
+! 				if(t==-1)
+! 					return(0);
+  				sum += (long)chrtran[t] << (shift
+  #ifdef POW2
+  				    &= HALFLONG - 1);
+--- 886,893 ----
+  	if(!bflag && !wflag) {
+  		if(iflag)
+  			for(shift=0;(t=getc(f))!='\n';shift+=7) {
+! 				if (t < 0)
+! 					goto end_of_file;
+  				sum += (long)chrtran[t] << (shift
+  #ifdef POW2
+  				    &= HALFLONG - 1);
+***************
+*** 891,898 ****
+  			}
+  		else
+  			for(shift=0;(t=getc(f))!='\n';shift+=7) {
+! 				if(t==-1)
+! 					return(0);
+  				sum += (long)t << (shift
+  #ifdef POW2
+  				    &= HALFLONG - 1);
+--- 897,904 ----
+  			}
+  		else
+  			for(shift=0;(t=getc(f))!='\n';shift+=7) {
+! 				if (t < 0)
+! 					goto end_of_file;
+  				sum += (long)t << (shift
+  #ifdef POW2
+  				    &= HALFLONG - 1);
+***************
+*** 903,913 ****
+  	} else {
+  		for(shift=0;;) {
+  			switch(t=getc(f)) {
+! 			case -1:
+! 				return(0);
+  			case '\t':
+  			case ' ':
+! 				space++;
+  				continue;
+  			default:
+  				if(space && !wflag) {
+--- 909,919 ----
+  	} else {
+  		for(shift=0;;) {
+  			switch(t=getc(f)) {
+! 			case EOF:
+! 				goto end_of_file;
+  			case '\t':
+  			case ' ':
+! 				space = 1;
+  				continue;
+  			default:
+  				if(space && !wflag) {
+***************
+*** 930,939 ****
+  	}
+  	sum = low(sum) + high(sum);
+  	return((short)low(sum) + (short)high(sum));
+  }
+  
+- #include <a.out.h>
+- 
+  asciifile(f)
+  	FILE *f;
+  {
+--- 936,951 ----
+  	}
+  	sum = low(sum) + high(sum);
+  	return((short)low(sum) + (short)high(sum));
++ end_of_file:
++ 	if (sum != 1) {
++ 		fflush(stdout);
++ 		fprintf(stderr, "diff: missing newline at end of file %s (partial line ignored)\n",
++ 			f==input[0] ? file1 : file2);
++ 		status = 2;
++ 	}
++ 	return 0;
+  }
+  
+  asciifile(f)
+  	FILE *f;
+  {
+***************
+*** 941,958 ****
+  	register int cnt;
+  	register char *cp;
+  
+- 	fseek(f, (long)0, 0);
+  	cnt = fread(buf, 1, BUFSIZ, f);
+- 	if (cnt >= sizeof (struct exec)) {
+- 		struct exec hdr;
+- 		hdr = *(struct exec *)buf;
+- 		if (!N_BADMAG(hdr))
+- 			return (0);
+- 	}
+  	cp = buf;
+  	while (--cnt >= 0)
+! 		if (*cp++ & 0200)
+  			return (0);
+  	return (1);
+  }
+  
+--- 953,964 ----
+  	register int cnt;
+  	register char *cp;
+  
+  	cnt = fread(buf, 1, BUFSIZ, f);
+  	cp = buf;
+  	while (--cnt >= 0)
+! 		if (!isascii(*cp) || !*cp++)
+  			return (0);
++ 	rewind(f);
+  	return (1);
+  }
+  

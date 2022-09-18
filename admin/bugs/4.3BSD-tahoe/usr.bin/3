@@ -1,0 +1,83 @@
+From serge@okeeffe.Berkeley.EDU  Mon Aug 22 18:21:55 1988
+Date: Mon, 22 Aug 88 18:21:08 PDT
+From: serge@okeeffe.Berkeley.EDU (serge)
+Subject: dc can't print numbers in base 2 or 3
+Index: usr.bin/dc/dc.c 4.3BSD-tahoe
+
+Description:
+	Dc gets a floating exception when trying to print numbers
+	in base 2 or 3.
+Repeat-By:
+	% echo 2o1p | dc
+	% echo 3o1p | dc
+
+============================================================================
+
+Date: Thu, 25 Aug 88 03:51:55 MDT
+From: donn@cs.utah.edu (Donn Seeley)
+Subject: Re: dc can't print numbers in base 2 or 3 [4.3BSD-tahoe/usr.bin/3]
+
+	Dc gets a floating exception when trying to print numbers in
+	base 2 or 3.
+
+This was a compiler problem, of course...  Specifically, it's a problem
+in c2 since dc works properly if compiled without -O.  The following
+little sample program to print the log base 2 of an integer argument
+will print one less than the actual log if compiled with -O:
+
+	main(argc, argv)
+		int argc;
+		char **argv;
+	{
+		int n;
+		register int i = 31;
+
+		if (argc != 2)
+			exit(1);
+		n = atoi(argv[1]);
+		while ((n = n << 1) > 0)
+			--i;
+		printf("%d\n", --i);
+		exit(0);
+	}
+
+This is due to another little architecture nit that can nail you if you
+expect the Tahoe to act like a VAX.  Although the discussion of PSL
+bits in the Tahoe architecture manual looks remarkably like the same
+discussion in the VAX architecture manual, there's one crucial
+difference:
+
+VAX:	...  [The N bit] is set by instructions in which the result
+	stored is negative, and cleared by instructions in which the
+	result stored is positive or zero.  For those instructions
+	which affect N according to a stored result, N reflects the
+	actual result, even if the sign of the result is algebraically
+	incorrect as a result of overflow.
+
+Tahoe:	Instructions that store a negative result set this bit.  When a
+	subsequent result is positive or zero, then the system clears
+	the N bit.
+
+Notice the emphasis in the VAX version on the 'actual result' rather
+than the 'algebraic' result -- when two positive numbers are added and
+overflow occurs, on the VAX both the V (overflow) and N (negative) PSL
+bits get set.   On the Tahoe, only the V bit is set...  What does this
+have to do with shifts?  Well, the optimizer replaces a left shift by
+one with an add...  (Note that left shifts on the Tahoe never produce
+an overflow, unlike shifts on the VAX -- another nit!)
+
+I hacked the optimizer so that it will look one or two instructions
+ahead for a conditional branch, and skip the shll $1,a,a => addl a,a
+optimization if the test checks the N bit.  I haven't installed the
+new optimizer, although I did run some regressions with it (they went
+just fine).
+
+Note that ANSI C says that overflow conditions on arithmetic have
+undefined side effects, so a programmer who manually 'optimizes' left
+shifts by one into adds loses on overflow; but I believe the shift
+'overflow' behavior is required to work.
+
+Tricky,
+
+Donn
+

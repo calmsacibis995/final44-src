@@ -1,0 +1,44 @@
+From chris@gyre.umd.edu  Fri Oct 30 00:05:16 1987
+Date: Fri, 30 Oct 87 03:02:24 EST
+From: Chris Torek <chris@gyre.umd.edu>
+Subject: ts11 driver and any other with same structure cannot write >63K
+
+Index: sys/vaxuba/ts.c 4.3BSD Fix
+
+Description:
+	Any device driver modelled after the TS11 driver will not
+	be able to write more than physio's `mincount' (63K) bytes
+	as a single write.  This is not a problem for 1600bpi drives
+	attached to TS11-style controllers, since no one in his right
+	mind would write such a large blocks, but for the new VHS
+	tape drives, it might make sense (as with SCSI tapes, the
+	controller internally breaks things up into smaller blocks).
+
+	This happens because tsphys() sets sc_blkno and sc_nxrec
+	according to btodb(uio->uio_offset); the driver then compares
+	fsbtodb(bp->b_blkno) with these.  Since physio breaks up large
+	operations (as it has to on a Unibus), the first 63KB chunk has
+	the right b_blkno, but the next one has b_blkno == sc_blkno +
+	fsbtobdb(btodb(63*1024)), while sc_blkno has only been advanced
+	by 1 and, more importantly, sc_nxrec is unchanged.  Hence
+	the test in tsstart() to watch for writing past EOF succeeds
+	and the I/O is rejected in midstream with ENXIO.
+
+Repeat-by:
+	Put a tape on a ts11 and run
+
+		dd if=something_big of=/dev/rmt8 bs=2x63k
+
+	and note the `No such device or address' error.
+
+Fix:
+	Set sc_nxrec and sc_blkno in tsstart() if the I/O is raw and
+	b_errcnt==0.  (Currently raw==&rtsbuf[tsunit]; this should be
+	b_flags&B_RAW so that the ts driver can use the generic raw I/O
+	code [kre has a copy] since tsphys() becomes a no-op [its error
+	checking is unnecessary]).
+
+	I will send you the new ts.c when it is tested.  (First I need
+	to find a tape with a soft spot!  I suppose I can manufacture
+	artificial errors in the driver.)  It has Rick's changes in it
+	too, but revised.

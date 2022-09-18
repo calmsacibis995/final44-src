@@ -1,0 +1,49 @@
+From alan@cunixc.cc.columbia.edu
+Path: ucbvax!decwrl!purdue!iuvax!rutgers!columbia!cunixc!alan
+From: alan@cunixc.cc.columbia.edu (Alan Crosswell)
+Subject: VJ TCP gets zero divide panic (maxseg option value not sanity-checked)
+Subject: Re: What happens when someone says they want a TCP MSS=0?
+Index: sys/netinet/tcp_timer.c 4.3BSD-tahoe
+
+Description:
+	Our Ultrix 2.0 system which we have merged Van Jacobsen TCP into
+	panics with an integer divide by zero arithmetic fault in tcp_timer.c
+	where (struct tcpcb) t_maxseg is used as a divisor.  This only
+	occurs rarely and is apparently tickled by a SunOS 4.0 bug which
+	causes it to occasionally present a max seg of zero.  SunOS 4.0
+	apparently suffers from this same bug (3 Suns and a Vax all got
+	zero divide panics around the same time last night:-).  This also
+	has been tickled by MIT PCIP before.
+Repeat-By:
+	Run SunOS 4.0 in conjunction with VJ TCP hosts and wait for a
+	retransmission timeout on your LAN.  Cisco terminal servers on
+	the same LAN (interacting with the Suns) will occassionally
+	log an error message like the following to indicate that bad segsizes
+	are being presented:
+		TCP: bad segsize option 0 from 128.59.40.141
+		Process= "IP Input", pid= 4, level=0
+	May also be occasionally repeated using PCIP FTP and doing a large
+	number of transfers using mget or mput.
+Fix:
+	In tcp_input.c, add a sanity check for maxseg <= 0 (less than 0
+	because PCIP was sending negative maxseg due to some signed
+	vs. unsigned bug; equal 0 to prevent zero divide)
+
+		case TCPOPT_MAXSEG:
+			if (optlen != 4)
+				continue;
+			if (!(ti->ti_flags & TH_SYN))
+				continue;
+			tp->t_maxseg = *(u_short *)(cp + 2);
+			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
+			if (tp->t_maxseg <= 0) {
+				printf("tcp_input: t_maxseg <= 0 (src %x)\n",
+				       ti->ti_src);
+				tp->t_maxseg = tcp_mss(tp);
+			} else
+				tp->t_maxseg = MIN(tp->t_maxseg, tcp_mss(tp));
+			break;
+		}
+	}
+	(void) m_free(om);
+}

@@ -1,0 +1,176 @@
+Return-Path: <cu-arpa.bill@Cornell.ARPA>
+Date: Mon, 17 Dec 84 13:27:42 est
+From: cu-arpa.bill@Cornell.ARPA (William A. Nesheim)
+To: 4bsd-bugs@BERKELEY, bill@CORNELL.ARPA, gvax.net-unix-wizards@Cornell.ARPA
+Subject: bug in IP broadcast packet recognition
+Subject: IP sometimes doesn't recognize broadcast packets 
+Index:	sys/netinet/ip_input.c 4.2BSD
+
+Description:
+	ip_input does not recognize broadcast IP datagrams for addresses
+	other than the first interface on a machine.  This breaks rwho,
+	and any other programs which depend on UDP broadcasts.
+
+Repeat-By:
+	get a machine with 2 or more ethernet (or other broadcast) net
+	interfaces, and run rwhod on it.  You will only see information
+	from the 1st ethernet on the system, NOT from the second.
+
+Fix:
+	In ip_input(), a "quick test" for an address match of the
+	incoming packet and the first interface is done, testing
+	for both the full address, and the broadcast address, if the
+	interface is marked as a broadcast interface.  This works
+	for packets with the address of the FIRST interface as their
+	destination, but if the dest. is the broadcast address of 
+	any other interface, the test in if_ifwithaddr() fails, and
+	the packet is handed to ip_forward(), which drops it.
+
+	I replaced the test of the "first" interface with a quick
+	trip through ALL the interfaces, and eliminated the call to
+	if_ifwithaddr(), as its return value was never used anyway.
+
+	A diff of sys/netinet/ip_input.c follows.
+	The line numbers are undoubtedly not what you expect.
+
+
+RCS file: RCS/ip_input.c,v
+retrieving revision 1.4
+diff -c -r1.4 ip_input.c
+*** /tmp/,RCSt1000175	Mon Dec 17 13:18:09 1984
+--- ip_input.c	Mon Dec 17 13:11:49 1984
+***************
+*** 1,4
+! /* $Header: ip_input.c,v 1.4 84/10/12 12:08:33 bill Exp $ */
+  /*	ip_input.c	6.3	84/05/25	*/
+  
+  #include "../h/param.h"
+
+--- 1,4 -----
+! /* $Header: ip_input.c,v 1.5 84/12/17 13:10:41 bill Exp $ */
+  /*	ip_input.c	6.3	84/05/25	*/
+  
+  #include "../h/param.h"
+***************
+*** 146,153
+  		goto next;
+  
+  	/*
+! 	 * Fast check on the first internet
+! 	 * interface in the list.
+  	 */
+  	if (ifinet) {
+  		struct sockaddr_in *sin;
+
+--- 146,152 -----
+  		goto next;
+  
+  	/*
+! 	 *  check for our address
+  	 */
+  	{
+  	register struct sockaddr_in *sin;
+***************
+*** 149,156
+  	 * Fast check on the first internet
+  	 * interface in the list.
+  	 */
+! 	if (ifinet) {
+! 		struct sockaddr_in *sin;
+  
+  		sin = (struct sockaddr_in *)&ifinet->if_addr;
+  		if (sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+
+--- 148,156 -----
+  	/*
+  	 *  check for our address
+  	 */
+! 	{
+! 	register struct sockaddr_in *sin;
+! 	register struct ifnet *ifp;
+  
+  	for(ifp = ifnet; ifp; ifp = ifp->if_next) {
+  		if (ifp->if_addr.sa_family != AF_INET)
+***************
+*** 152,158
+  	if (ifinet) {
+  		struct sockaddr_in *sin;
+  
+! 		sin = (struct sockaddr_in *)&ifinet->if_addr;
+  		if (sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  		sin = (struct sockaddr_in *)&ifinet->if_broadaddr;
+
+--- 152,161 -----
+  	register struct sockaddr_in *sin;
+  	register struct ifnet *ifp;
+  
+! 	for(ifp = ifnet; ifp; ifp = ifp->if_next) {
+! 		if (ifp->if_addr.sa_family != AF_INET)
+! 			continue;
+! 		sin = (struct sockaddr_in *)&ifp->if_addr;
+  		if (sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  		sin = (struct sockaddr_in *)&ifp->if_broadaddr;
+***************
+*** 155,162
+  		sin = (struct sockaddr_in *)&ifinet->if_addr;
+  		if (sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+! 		sin = (struct sockaddr_in *)&ifinet->if_broadaddr;
+! 		if ((ifinet->if_flags & IFF_BROADCAST) &&
+  		    sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  	}
+
+--- 158,165 -----
+  		sin = (struct sockaddr_in *)&ifp->if_addr;
+  		if (sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+! 		sin = (struct sockaddr_in *)&ifp->if_broadaddr;
+! 		if ((ifp->if_flags & IFF_BROADCAST) &&
+  		    sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  	}
+***************
+*** 160,165
+  		    sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  	}
+  /* BEGIN GROT */
+  #include "nd.h"
+  #if NND > 0
+
+--- 163,170 -----
+  		    sin->sin_addr.s_addr == ip->ip_dst.s_addr)
+  			goto ours;
+  	}
++ 	/* not for us at this point */
++ 	}
+  /* BEGIN GROT */
+  #include "nd.h"
+  #if NND > 0
+***************
+*** 174,184
+  		goto ours;
+  #endif
+  /* END GROT */
+! 	ipaddr.sin_addr = ip->ip_dst;
+! 	if (if_ifwithaddr((struct sockaddr *)&ipaddr) == 0) {
+! 		ip_forward(ip);
+! 		goto next;
+! 	}
+  
+  ours:
+  	/*
+
+--- 179,187 -----
+  		goto ours;
+  #endif
+  /* END GROT */
+! 
+! 	ip_forward(ip);
+! 	goto next;
+  
+  ours:
+  	/*

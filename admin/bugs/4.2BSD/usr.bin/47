@@ -1,0 +1,93 @@
+Return-Path: <decwrl!qubix!msc>
+Date: Sat, 30 Jun 84 14:20:09 pdt
+From: decwrl!qubix!msc (Mark Callow)
+Subject: excessive dialup failures in uucp
+Index: usr.bin/uucp/conn.c 4.2BSD Fix
+
+Description:
+	When a single invocation of uucico encounters a bad dialup all
+	subsequent dialup attempts will fail due to errno 5 (EIO) being
+	returned when uucico tries to read the result code from the
+	autodialer.
+
+	This bug almost certainly affects 4.1BSD and any system with
+	Berkeley job control (e.g., Unisoft v7).
+
+Repeat-By:
+	Put some extra code in condevs.c to check for errors returned
+	from the read(2) call to get the result of the dialup attempt
+	from the modem.  Make it log those errors in the log file.  Here
+	is what I added for the Hayes dialer.
+
+		if (read(dh, &result, 1) != 1){
+			sprintf( command, "Can't read HSM result: errno = %d",
+					errno );
+			DEBUG(1, "%s\n", command);
+			logent(command, "FAILED");
+			result = -1;
+		}
+
+	Set up crontab so that cron will run uucico.  This is important.
+	The bug does not show up if uucico is run by hand.
+	
+	Find a site whose name is early in the alphabet and who has a
+	perenially busy phone (e.g., amd70).  Set up some uucp traffic to
+	that site and several others.  Watch the uucp log file.  Eventually
+	you will see the above errors being logged.
+
+Fix:
+	This fix is thanks to Bill Shannon (sun!shannon).
+
+	The problem is caused by the job control hacks in the tty driver.
+	When uucico is started by cron there is no controlling tty.  The
+	first tty the process opens therefore gets the honour of being the
+	controlling tty.  This will be the dialer.  This tty is put in a
+	process group with the PID (I think) of the uucico process.  This
+	is the same process group as is given to the uucico process (in it's
+	u structure).
+
+	When the first dialup failure happens the dialer is closed and then
+	reopened for the next site in the list.  On opening it again, the
+	dialer is put in process group 0.  This causes a test in ttread,
+	which is intended to catch background processes trying to read
+	from the tty, to fail and return EIO.
+
+	The fix is simply to set the process group of the dialer to the
+	uucico process group.  I put the fix in fixline() in conn.c so
+	that one size would fit all (dialers that is).  Here is a diff -c
+	of the change.  Line numbers are probably slightly off due to
+	other changes.
+
+	RCS file: RCS/conn.c,v
+	retrieving revision 1.2
+	diff -c -r1.2 conn.c
+	*** /tmp/,RCSt1016811	Thu Jun 28 12:30:16 1984
+	--- conn.c	Thu Jun 28 12:08:23 1984
+	***************
+	*** 415,420
+		ret = ioctl(tty, TCSETA, &ttbuf);
+	  #endif
+	  #ifndef	SYSIII
+		ioctl(tty, TIOCGETP, &ttbuf);
+		ttbuf.sg_flags = (ANYP|RAW);
+		ttbuf.sg_ispeed = ttbuf.sg_ospeed = speed;
+
+	--- 415,432 -----
+		ret = ioctl(tty, TCSETA, &ttbuf);
+	  #endif
+	  #ifndef	SYSIII
+	+ #ifdef TIOCSPGRP
+	+ 	/*
+	+ 	 * Ugh!  Have to avoid the job control stuff in tty.c in 4.xBSD.
+	+ 	 * If the dialer is closed and reopened after a failure in a single
+	+ 	 * invocation of uucico, the process group is wrong so ttread returns
+	+ 	 * EIO.  This is to fix up that problem. -- qubix!msc
+	+ 	 */
+	+ 	{
+	+ 	int pgrp = getpgrp(0);
+	+ 	ioctl(tty, TIOCSPGRP, &pgrp);
+	+ 	}
+	+ #endif
+		ioctl(tty, TIOCGETP, &ttbuf);
+		ttbuf.sg_flags = (ANYP|RAW);
+		ttbuf.sg_ispeed = ttbuf.sg_ospeed = speed;

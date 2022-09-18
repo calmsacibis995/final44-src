@@ -1,0 +1,58 @@
+Return-Path: <jrs@Purdue.ARPA>
+Date: Wed, 8 Aug 84 10:52:24 est
+From: Jeff Schwab <jrs@Purdue.ARPA>
+Subject: Corrected fix for if_uba.c handling of cases when hlen is 0
+Index: 	sys/vaxif/if_uba.c 4.2BSD
+
+Description:
+	It has been pointed out to me (in a most embarrassing fashion)
+	that my previous fixes for handling uba allocation when then
+	local network hlen is 0 where not complete.  I ended up treating
+	the disease rather than the problem.  The corrected fix requires
+	the same changes to if_ubainit() as before, but the change to
+	if_rubaget() should be replaced by a more proper fix to the
+	mr assignment in if_ubaalloc().
+Repeat-By:
+	The pcl-11 is such a device.  If you raise the mtu on the
+	device from the default 1006 to anything greater than
+	1024, your network will be unusable.
+Fix:
+	The following diff's fix the extraneous page allocations and
+	and assignment problems.  The diffs to if_ubainit() previously
+	suggested are included here for completeness sake.
+
+---- if_ubainit() ------
+  	register caddr_t cp;
+  	int i, ncl;
+  
++ #ifdef	PUCC
++ 	ncl = clrnd(nmr + (hlen? CLSIZE: 0)) / CLSIZE;
++ #else	PUCC
+  	ncl = clrnd(nmr + CLSIZE) / CLSIZE;
++ #endif	PUCC
+  	if (ifu->ifu_r.ifrw_addr)
++ #ifdef	PUCC
++ 		cp = ifu->ifu_r.ifrw_addr - (hlen? (CLBYTES - hlen): 0);
++ #else	PUCC
+  		cp = ifu->ifu_r.ifrw_addr - (CLBYTES - hlen);
++ #endif	PUCC
+  	else {
+  		cp = m_clalloc(2 * ncl, MPG_SPACE);
+  		if (cp == 0)
+  			return (0);
++ #ifdef	PUCC
++ 		ifu->ifu_r.ifrw_addr = cp + (hlen? (CLBYTES - hlen): 0);
++ #else	PUCC
+  		ifu->ifu_r.ifrw_addr = cp + CLBYTES - hlen;
++ #endif	PUCC
+  		ifu->ifu_w.ifrw_addr = ifu->ifu_r.ifrw_addr + ncl * CLBYTES;
+----- if_ubaalloc() -----
+  	ifrw->ifrw_info = info;
+  	ifrw->ifrw_bdp = UBAI_BDP(info);
+  	ifrw->ifrw_proto = UBAMR_MRV | (UBAI_BDP(info) << UBAMR_DPSHIFT);
++ #ifdef	PUCC
++ 	ifrw->ifrw_mr = &ifu->ifu_uba->uba_map[UBAI_MR(info) + (ifu->ifu_hlen? 1: 0)];
++ #else
+  	ifrw->ifrw_mr = &ifu->ifu_uba->uba_map[UBAI_MR(info) + 1];
++ #endif
+  	return (1);

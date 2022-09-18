@@ -1,0 +1,58 @@
+From munnari!yabbie.oz.au!rcodi@uunet.UU.NET  Wed May 11 11:43:41 1988
+Date: Wed, 11 May 88 19:28:57 EST
+From: munnari!yabbie.rmit.oz.au!rcodi@uunet.UU.NET (Ian Donaldson)
+Subject: getgrnam(3) bug
+Index: lib/libc/gen/getgrnam.c 4.3BSD
+
+Description:
+	getgrnam(3) fails to read 2nd and subsequent lines of a
+	multi-line group specification.
+
+Repeat-By:
+	Add 2 lines to /etc/group like this:
+
+		testgroup:*:1234:somebodyelse
+		testgroup:*:1234:myself
+
+	then re-login as "myself" and then try to:
+
+		chgrp testgroup anything
+
+	where "anything" is any file or directory that you own.
+	You will be greeted by something like this:
+
+		chgrp: You are not a member of the "testgroup" group.
+
+	...but upon doing a groups(1) command it is evident that you are
+	in fact a member of the group.
+
+	ie: initgroups(3) used by /bin/login reads the entire group file
+	    and looks for all entries, but getgrnam(3) only looks for
+	    the first line.
+Fix:
+	Pretty obvious.  Fix getgrnam(3) to scan the entire group file,
+	and include all groups in the list.
+
+	As for chgrp(1) however, the code that calls getgrnam(3) should
+	probably be deleted entirely, since this is primarily an
+	artifact of the days when chgrp(1) was a setuid root program,
+	and needed to check that you were in a group before actually
+	using chown(2) to change the file.  The kernel chown(2) function
+	will do the checking for non-root callers in 4.3bsd.  Having
+	this extra call to getgrnam(3) serves nothing but to provide
+	a more explicit reason for failure than errno can give.
+
+Workaround:
+	none, if you have as many people in a group that your favourite editor
+	won't let fit onto a single line; or if the line exceeds BUFSIZ (1024)
+	characters, or if the number of members of a group on a single
+	line exceeds 200 (see getgrent.c)
+
+	Maybe some use of malloc(3) and realloc(3) within getgrent(3) is needed
+	here...
+
+Also-present-on:
+	SunOS 3.3 (4.2bsd-ish)
+	Vax 4.3bsd
+
+Ian D

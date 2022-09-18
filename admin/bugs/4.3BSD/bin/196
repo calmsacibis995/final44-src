@@ -1,0 +1,105 @@
+Path: seismo!uunet!lll-winken!lll-tis!mordor!sri-spam!ames!pasteur!ucbvax!ucsfcgl!cca.ucsf.edu!rk9005
+From: rk9005@cca.ucsf.edu (Roland McGrath)
+Newsgroups: comp.bugs.4bsd
+Subject: csh history bug
+Index: bin/csh 4.3BSD
+#Index: 4.3 BSD and Sun 3.2 (and greater, probably), csh
+     I have repeated this on 4.3 BSD Vaxen and Sun Unix 3.2 Sun 3/50s.
+
+Repeat-by:
+	$ csh -f
+	% set history=5000
+	% echo foo
+	foo
+	% ^foo^bar
+	echo bar
+	bar
+	% history
+	     1  set history=5000
+	     2  echo foo
+	 -1000  echo bar     3  echo bar
+	     4  history
+	%
+
+    Any large value for `history' will do it.  I have been unable to find
+the exact threshold, but anything larger than 2000 will always work, I think.
+I guess most people don't set history to a big number, so they haven't
+noticed it.  This will also happen using `!!:s/foo/bar' or '!2:s/foo/bar',
+as well as with the trailing ^ or / appended.
+
+Aside: Can anyone with source access tell me what type is used for the
+value of `history', so I can make it 32767 or (2^31) - 1, or whatever?
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Path: seismo!uunet!lll-winken!lll-lcc!ames!umd5!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: csh history bug
+In article <1245@ucsfcca.ucsf.edu> rk9005@cca.ucsf.edu (Roland McGrath) writes:
+-Repeat-by:
+-	$ csh -f
+-	% set history=5000
+-	% echo foo
+-	foo
+-	% ^foo^bar
+-	echo bar
+-	bar
+-	% history
+-	     1  set history=5000
+-	     2  echo foo
+-	 -1000  echo bar     3  echo bar
+-	     4  history
+-	%
+-
+-    Any large value for `history' will do it.  I have been unable to find
+-the exact threshold, but anything larger than 2000 will always work, I think.
+
+Not quite.  Anything more than 1000+next_event+2 suffices.  (I.e.,
+if this is the very first command, 1004 is enough.)
+
+The history number `-1000' should give a large hint.  If you look
+in /usr/src/bin/csh/sh.lex.c you will find where csh enters substitution
+events as number -1000.  The idea is that since
+
+-most people don't set history to a big number,
+
+the negative event will be discarded from the history list since
+it occurred over 1000 commands ago.
+
+-Aside: Can anyone with source access tell me what type is used for the
+-value of `history', so I can make it 32767 or (2^31) - 1, or whatever?
+
+`int', of course.  The variable itself is a string, but it is converted
+to an integer whenever needed (once per command!).
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7163)
+Domain:	chris@mimsy.umd.edu	Path:	uunet!mimsy!chris
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Path: seismo!uunet!convex!strike
+From: strike@convex.UUCP (Professor Fate)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: csh history bug
+Summary: fix
+I have fixed this bug.
+
+Csh uses the value "-1000" to mark internal, temporary history events
+created during substitutions. When history is very large as in "set
+history=2000", the set of events to keep is much larger and subsequent
+history processing will include the temporary events.
+
+These temporary events are usually thrown away after each command because
+csh asks: if (history counter - event number) > history value, then toss
+this event. If history value  ~ 2000, and event number = -1000 ( ==>
+temporary), you can see why the shell would choose to keep the temp event.
+
+To apply the fix, change the last return statement in function dosub() in
+file sh.lex.c to return -32767 instead of -1000. This will allow history
+to be set to ~32767 (Big!) without errors.
+
+M
+-- 
+Finally then, I will read you your rights... You have the right to remain 
+silent. You are warned that anything you say can and will be taken down and 
+used as evidence against you.  Listen to this. Run.
+					-The Clash "Know Your Rights"

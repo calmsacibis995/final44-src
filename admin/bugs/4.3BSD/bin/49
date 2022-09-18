@@ -1,0 +1,863 @@
+From guy@sun.com  Tue Jan 27 13:16:09 1987
+Date: Tue, 27 Jan 87 13:08:32 PST
+From: guy@sun.com (Guy Harris)
+Subject: Some miscellanous "ps" fixes and improvements
+Index: bin/ps.c 4.3BSD
+
+Description:
+	1) "ps" doesn't understand that zombie processes, lacking U areas
+	   as they do, don't have controlling terminals.
+
+	2) "ps" also doesn't understand that u.u_ttyd can either be zero
+	   because a process has no controlling terminal or because the
+	   dev_t of the controlling terminal happens to be major device
+	   0, minor device 0; since "/dev/console" is usually 0/0, this
+	   means that processes attached to the console get mixed in with
+	   unattched processes.
+
+	3) Printing the name of the closest symbol less than or equal to
+	   the value of the wait channel isn't always the right thing to
+	   do; processes in a "sigpause" are waiting on (caddr_t)&u, but
+	   unless you happen to know that already seeing "u" in the WCHAN
+	   field doesn't tell you very much.
+
+	4) A flag to restrict the output to "running" processes (runnable
+	   processes, or processes in short-term waits) might be useful;
+	   the suggestion and the code implementing this came from Rick
+	   Adams at the Center for Seismic Studies.
+
+	5) It might be useful to print the time a process started in at
+	   least one of the formats; again, this suggestion and the code
+	   implementing this (printing the start date/time in the "u" format)
+	   came from Rick Adams.
+
+	6) Some of the error messages could use a little cleaning up.
+
+	7) A couple of variables were unused.
+
+	8) The manual page could use a little cleaning up; the changes here
+	   if added, should also be documented.
+Repeat-By:
+	1) Notice that you occasionally "ps" claim that processes that you
+	   never had anything to do with are attached to your terminal.
+
+	2) Notice that on a "ps ax", a few processes attached to "co" show
+	   up in the middle of the big block of processes attached to no
+	   terminal on occasion (namely if their PIDs are less than that
+	   of a process with no terminal).
+Fix:
+*** /arch/4.3/usr/src/bin/ps.c	Thu May  8 12:49:00 1986
+--- ./ps.c	Tue Jan 27 12:36:53 1987
+***************
+*** 91,96 ****
+--- 91,98 ----
+  #define X_CMAP		27
+  	"_buffers",
+  #define X_BUFFERS	28
++ 	"_boottime",
++ #define X_BOOTTIME	29
+  	""
+  };
+  
+***************
+*** 117,122 ****
+--- 119,125 ----
+  	dev_t	a_ttyd;
+  	time_t	a_cpu;
+  	size_t	a_maxrss;
++ 	struct timeval a_start;
+  };
+  
+  char	*lhdr;
+***************
+*** 143,148 ****
+--- 146,153 ----
+  struct	proc proc[NPROC];		/* a few, for less syscalls */
+  struct	proc *mproc;
+  struct	text *text;
++ struct	timeval	boottime;
++ time_t	now;
+  
+  union {
+  	struct	user user;
+***************
+*** 157,163 ****
+  #endif
+  
+  int	chkpid = -1;
+! int	aflg, cflg, eflg, gflg, kflg, lflg, nflg, sflg,
+  	uflg, vflg, xflg, Uflg;
+  int	nchans;				/* total # of wait channels */
+  char	*tptr;
+--- 162,168 ----
+  #endif
+  
+  int	chkpid = -1;
+! int	aflg, cflg, eflg, gflg, kflg, lflg, nflg, rflg, sflg,
+  	uflg, vflg, xflg, Uflg;
+  int	nchans;				/* total # of wait channels */
+  char	*tptr;
+***************
+*** 224,229 ****
+--- 229,249 ----
+  	"calimit",
+  	NULL
+  };
++ /*
++  * names listed here get mapped -- this is because only a guru will
++  * necessarily know that something waiting on "selwait" is waiting
++  * for a select to finish
++  */
++ struct wchan_map {
++ 	char	*map_from;
++ 	char	*map_to;
++ } wchan_map_list[] = {
++ 	{ "proc", "child" },
++ 	{ "u", "pause" },
++ 	{ "selwait", "select" },
++ 	{ "mbutl", "socket" },
++ 	{ NULL, NULL },
++ };
+  
+  int	npr;
+  
+***************
+*** 289,294 ****
+--- 309,317 ----
+  		case 'n':
+  			nflg++;
+  			break;
++ 		case 'r':
++ 			rflg++;
++ 			break;
+  		case 's':
+  			sflg++;
+  			break;
+***************
+*** 338,347 ****
+--- 361,373 ----
+  	openfiles(argc, argv);
+  	getkvars(argc, argv);
+  	uid = getuid();
++ 	(void) time(&now);
+  	printhdr();
+  	procp = getw(nl[X_PROC].n_value);
+  	nproc = getw(nl[X_NPROC].n_value);
+  	savcom = (struct savcom *)calloc((unsigned) nproc, sizeof (*savcom));
++ 	klseek(kmem, (long)nl[X_BOOTTIME].n_value, 0);
++ 	read(kmem, &boottime, sizeof (boottime));
+  	for (i=0; i<nproc; i += NPROC) {
+  		klseek(kmem, (long)procp, 0);
+  		j = nproc - i;
+***************
+*** 374,379 ****
+--- 400,408 ----
+  				     mproc->p_stat == SSTOP))
+  				continue;
+  			}
++ 			if (rflg && !(mproc->p_stat == SRUN
++ 				|| mproc->p_pri < PZERO))
++ 				continue;
+  			save();
+  		}
+  	}
+***************
+*** 413,419 ****
+  
+  	klseek(kmem, (long)loc, 0);
+  	if (read(kmem, (char *)&word, sizeof (word)) != sizeof (word))
+! 		printf("error reading kmem at %x\n", loc);
+  	return (word);
+  }
+  
+--- 442,448 ----
+  
+  	klseek(kmem, (long)loc, 0);
+  	if (read(kmem, (char *)&word, sizeof (word)) != sizeof (word))
+! 		printf("error reading %s at %x\n", kmemf, loc);
+  	return (word);
+  }
+  
+***************
+*** 444,449 ****
+--- 473,479 ----
+  	setgid(getgid());
+  	setuid(getuid());
+  	if ((fp = fopen(psdb, "w")) == NULL) {
++ 		fprintf(stderr, "ps: ");
+  		perror(psdb);
+  		exit(1);
+  	} else
+***************
+*** 482,487 ****
+--- 512,518 ----
+  	if ((fp = fopen(psdb, "r")) == NULL) {
+  		if (errno == ENOENT)
+  			return (0);
++ 		fprintf(stderr, "ps: ");
+  		perror(psdb);
+  		exit(1);
+  	}
+***************
+*** 539,544 ****
+--- 570,576 ----
+  		kmemf = argc > 2 ? argv[2] : "/vmcore";
+  	kmem = open(kmemf, 0);
+  	if (kmem < 0) {
++ 		fprintf(stderr, "ps: ");
+  		perror(kmemf);
+  		exit(1);
+  	}
+***************
+*** 549,554 ****
+--- 581,587 ----
+  		memf = "/dev/mem";
+  		mem = open(memf, 0);
+  		if (mem < 0) {
++ 			fprintf(stderr, "ps: ");
+  			perror(memf);
+  			exit(1);
+  		}
+***************
+*** 557,562 ****
+--- 590,596 ----
+  		swapf = argc>3 ? argv[3]: "/dev/drum";
+  		swap = open(swapf, 0);
+  		if (swap < 0) {
++ 			fprintf(stderr, "ps: ");
+  			perror(swapf);
+  			exit(1);
+  		}
+***************
+*** 588,594 ****
+  	}
+  
+  	if (nl[0].n_type == 0) {
+! 		fprintf(stderr, "%s: No namelist\n", nlistf);
+  		exit(1);
+  	}
+  	if (kflg) {
+--- 622,628 ----
+  	}
+  
+  	if (nl[0].n_type == 0) {
+! 		fprintf(stderr, "ps: %s: No namelist\n", nlistf);
+  		exit(1);
+  	}
+  	if (kflg) {
+***************
+*** 599,605 ****
+  		Sysmap = (struct pte *)
+  			calloc((unsigned) Syssize, sizeof (struct pte));
+  		if (Sysmap == NULL) {
+! 			fprintf(stderr, "Out of space for Sysmap\n");
+  			exit(1);
+  		}
+  		addr = (long) nl[X_SYSMAP].n_value;
+--- 633,639 ----
+  		Sysmap = (struct pte *)
+  			calloc((unsigned) Syssize, sizeof (struct pte));
+  		if (Sysmap == NULL) {
+! 			fprintf(stderr, "ps: Out of space for Sysmap\n");
+  			exit(1);
+  		}
+  		addr = (long) nl[X_SYSMAP].n_value;
+***************
+*** 636,642 ****
+  		text = (struct text *)
+  			calloc((unsigned) ntext, sizeof (struct text));
+  		if (text == 0) {
+! 			fprintf(stderr, "no room for text table\n");
+  			exit(1);
+  		}
+  		atext = (struct text *)getw(nl[X_TEXT].n_value);
+--- 670,676 ----
+  		text = (struct text *)
+  			calloc((unsigned) ntext, sizeof (struct text));
+  		if (text == 0) {
+! 			fprintf(stderr, "ps: no room for text table\n");
+  			exit(1);
+  		}
+  		atext = (struct text *)getw(nl[X_TEXT].n_value);
+***************
+*** 743,754 ****
+  	struct lttys *lt;
+  
+  	if (chdir("/dev") < 0) {
+! 		perror("/dev");
+  		exit(1);
+  	}
+  	dialbase = -1;
+  	if ((df = opendir(".")) == NULL) {
+! 		fprintf(stderr, "Can't open . in /dev\n");
+  		exit(1);
+  	}
+  	while ((dbuf = readdir(df)) != NULL) 
+--- 777,789 ----
+  	struct lttys *lt;
+  
+  	if (chdir("/dev") < 0) {
+! 		perror("ps: /dev");
+  		exit(1);
+  	}
+  	dialbase = -1;
+  	if ((df = opendir(".")) == NULL) {
+! 		fprintf(stderr, "ps: ");
+! 		perror("Can't open . in /dev");
+  		exit(1);
+  	}
+  	while ((dbuf = readdir(df)) != NULL) 
+***************
+*** 907,914 ****
+  	struct stat stb;
+  	int x;
+  
+! 	if (u.u_ttyp == 0)
+  		return("?");
+  	x = u.u_ttyd & 017;
+  	for (dp = &allttys[cand[x]]; dp != &allttys[-1];
+  	     dp = &allttys[dp->cand]) {
+--- 942,951 ----
+  	struct stat stb;
+  	int x;
+  
+! 	if (u.u_ttyp == 0) {
+! 		u.u_ttyd = -1;
+  		return("?");
++ 	}
+  	x = u.u_ttyd & 017;
+  	for (dp = &allttys[cand[x]]; dp != &allttys[-1];
+  	     dp = &allttys[dp->cand]) {
+***************
+*** 950,964 ****
+  	register struct text *xp;
+  	char *ttyp, *cmdp;
+  
+! 	if (mproc->p_stat != SZOMB && getu() == 0)
+! 		return;
+! 	ttyp = gettty();
+  	if (xflg == 0 && ttyp[0] == '?' || tptr && strncmp(tptr, ttyp, 2))
+  		return;
+  	sp = &savcom[npr];
+  	cmdp = getcmd();
+- 	if (cmdp == 0)
+- 		return;
+  	sp->ap = ap = (struct asav *)calloc(1, sizeof (struct asav));
+  	sp->ap->a_cmdp = cmdp;
+  #define e(a,b) ap->a = mproc->b
+--- 987,1002 ----
+  	register struct text *xp;
+  	char *ttyp, *cmdp;
+  
+! 	if (mproc->p_stat != SZOMB) {
+! 		if (getu() == 0)
+! 			return;
+! 		ttyp = gettty();
+! 	} else
+! 		ttyp = "?";	/* zombies are not attached to terminals */
+  	if (xflg == 0 && ttyp[0] == '?' || tptr && strncmp(tptr, ttyp, 2))
+  		return;
+  	sp = &savcom[npr];
+  	cmdp = getcmd();
+  	sp->ap = ap = (struct asav *)calloc(1, sizeof (struct asav));
+  	sp->ap->a_cmdp = cmdp;
+  #define e(a,b) ap->a = mproc->b
+***************
+*** 1070,1076 ****
+  			return (0);
+  		(void) lseek(swap, (long)dtob(mproc->p_swaddr), 0);
+  		if (read(swap, (char *)&user.user, size) != size) {
+! 			fprintf(stderr, "ps: cant read u for pid %d from %s\n",
+  			    mproc->p_pid, swapf);
+  			return (0);
+  		}
+--- 1108,1114 ----
+  			return (0);
+  		(void) lseek(swap, (long)dtob(mproc->p_swaddr), 0);
+  		if (read(swap, (char *)&user.user, size) != size) {
+! 			fprintf(stderr, "ps: can't read u for pid %d from %s\n",
+  			    mproc->p_pid, swapf);
+  			return (0);
+  		}
+***************
+*** 1081,1087 ****
+  	pteaddr = &Usrptmap[btokmx(mproc->p_p0br) + mproc->p_szpt - 1];
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+! 		printf("ps: cant read indir pte to get u for pid %d from %s\n",
+  		    mproc->p_pid, kmemf);
+  		return (0);
+  	}
+--- 1119,1125 ----
+  	pteaddr = &Usrptmap[btokmx(mproc->p_p0br) + mproc->p_szpt - 1];
+  	klseek(kmem, (long)pteaddr, 0);
+  	if (read(kmem, (char *)&apte, sizeof(apte)) != sizeof(apte)) {
+! 		printf("ps: can't read indir pte to get u for pid %d from %s\n",
+  		    mproc->p_pid, kmemf);
+  		return (0);
+  	}
+***************
+*** 1089,1095 ****
+  	    (long)ctob(apte.pg_pfnum+1) - (UPAGES+CLSIZE) * sizeof (struct pte),
+  		0);
+  	if (read(mem, (char *)arguutl, sizeof(arguutl)) != sizeof(arguutl)) {
+! 		printf("ps: cant read page table for u of pid %d from %s\n",
+  		    mproc->p_pid, memf);
+  		return (0);
+  	}
+--- 1127,1133 ----
+  	    (long)ctob(apte.pg_pfnum+1) - (UPAGES+CLSIZE) * sizeof (struct pte),
+  		0);
+  	if (read(mem, (char *)arguutl, sizeof(arguutl)) != sizeof(arguutl)) {
+! 		printf("ps: can't read page table for u of pid %d from %s\n",
+  		    mproc->p_pid, memf);
+  		return (0);
+  	}
+***************
+*** 1103,1109 ****
+  		i = ncl * CLSIZE;
+  		lseek(mem, (long)ctob(arguutl[CLSIZE+i].pg_pfnum), 0);
+  		if (read(mem, user.upages[i], CLSIZE*NBPG) != CLSIZE*NBPG) {
+! 			printf("ps: cant read page %d of u of pid %d from %s\n",
+  			    arguutl[CLSIZE+i].pg_pfnum, mproc->p_pid, memf);
+  			return(0);
+  		}
+--- 1141,1147 ----
+  		i = ncl * CLSIZE;
+  		lseek(mem, (long)ctob(arguutl[CLSIZE+i].pg_pfnum), 0);
+  		if (read(mem, user.upages[i], CLSIZE*NBPG) != CLSIZE*NBPG) {
+! 			printf("ps: can't read page %d of u of pid %d from %s\n",
+  			    arguutl[CLSIZE+i].pg_pfnum, mproc->p_pid, memf);
+  			return(0);
+  		}
+***************
+*** 1233,1243 ****
+  }
+  
+  char	*uhdr =
+! "%s   PID %%CPU %%MEM   SZ  RSS TT STAT  TIME";
+  upr(sp)
+  	struct savcom *sp;
+  {
+  	register struct asav *ap = sp->ap;
+  	int vmsize, rmsize;
+  
+  	vmsize = pgtok((ap->a_size + ap->a_tsiz));
+--- 1271,1282 ----
+  }
+  
+  char	*uhdr =
+! "%s   PID %%CPU %%MEM   SZ  RSS TT STAT START  TIME";
+  upr(sp)
+  	struct savcom *sp;
+  {
+  	register struct asav *ap = sp->ap;
++ 	char *cp;
+  	int vmsize, rmsize;
+  
+  	vmsize = pgtok((ap->a_size + ap->a_tsiz));
+***************
+*** 1253,1258 ****
+--- 1292,1304 ----
+  	putchar(' ');
+  	ptty(ap->a_tty);
+  	printf(" %4.4s", state(ap));
++ 	if (ap->a_start.tv_sec == 0)
++ 		ap->a_start = boottime;
++ 	cp = ctime(&ap->a_start.tv_sec);
++ 	if ((now - ap->a_start.tv_sec) > 60*60*24)
++ 		printf("%.7s", cp+3);
++ 	else
++ 		printf("%.6s ", cp+10);
+  	ptime(ap);
+  }
+  
+***************
+*** 1488,1504 ****
+  	newloc = loc & ~0xc0000000;
+  	p = btop(newloc);
+  	if ((loc & 0xc0000000) == 0) {
+! 		fprintf(stderr, "Vtophys: translating non-kernel address\n");
+  		return((off_t) -1);
+  	}
+  	if (p >= Syssize) {
+! 		fprintf(stderr, "Vtophys: page out of bound (%d>=%d)\n",
+  			p, Syssize);
+  		return((off_t) -1);
+  	}
+  	if (Sysmap[p].pg_v == 0
+  	&& (Sysmap[p].pg_fod || Sysmap[p].pg_pfnum == 0)) {
+! 		fprintf(stderr, "Vtophys: page not valid\n");
+  		return((off_t) -1);
+  	}
+  	loc = (long) (ptob(Sysmap[p].pg_pfnum) + (loc & PGOFSET));
+--- 1534,1550 ----
+  	newloc = loc & ~0xc0000000;
+  	p = btop(newloc);
+  	if ((loc & 0xc0000000) == 0) {
+! 		fprintf(stderr, "ps: Vtophys: translating non-kernel address\n");
+  		return((off_t) -1);
+  	}
+  	if (p >= Syssize) {
+! 		fprintf(stderr, "ps: Vtophys: page out of bound (%d>=%d)\n",
+  			p, Syssize);
+  		return((off_t) -1);
+  	}
+  	if (Sysmap[p].pg_v == 0
+  	&& (Sysmap[p].pg_fod || Sysmap[p].pg_pfnum == 0)) {
+! 		fprintf(stderr, "ps: Vtophys: page not valid\n");
+  		return((off_t) -1);
+  	}
+  	loc = (long) (ptob(Sysmap[p].pg_pfnum) + (loc & PGOFSET));
+***************
+*** 1540,1546 ****
+  	struct nlist *list;
+  {
+  	register struct nlist *p, *q;
+- 	register char *s1, *s2;
+  	register n, m;
+  	int maxlen, nreq;
+  	FILE *f;
+--- 1586,1591 ----
+***************
+*** 1605,1612 ****
+  			if (!nflg)
+  				addchan(&nambuf[1], (caddr_t) q->n_value);
+  			for (p = list; p->n_un.n_name && p->n_un.n_name[0]; p++) {
+- 				s1 = p->n_un.n_name;
+- 				s2 = nambuf;
+  				if (strcmp(p->n_un.n_name, nambuf) == 0) {
+  					p->n_value = q->n_value;
+  					p->n_type = q->n_type;
+--- 1650,1655 ----
+***************
+*** 1634,1639 ****
+--- 1677,1683 ----
+  	static int left = 0;
+  	register struct wchan *wp;
+  	register char **p;
++ 	register struct wchan_map *mp;
+  
+  	for (p = wchan_stop_list; *p; p++) {
+  		if (**p != *name)	/* quick check first */
+***************
+*** 1640,1645 ****
+--- 1684,1695 ----
+  			continue;
+  		if (strncmp(name, *p, WNAMESIZ) == 0)
+  			return;		/* if found, don't add */
++ 	}
++ 	for (mp = wchan_map_list; mp->map_from; mp++) {
++ 		if (*(mp->map_from) != *name)	/* quick check first */
++ 			continue;
++ 		if (strncmp(name, mp->map_from, WNAMESIZ) == 0)
++ 			name = mp->map_to;	/* if found, remap */
+  	}
+  	if (left == 0) {
+  		if (wchanhd) {
+
+*** /arch/4.3/usr/man/man1/ps.1	Mon May 12 08:52:58 1986
+--- ./ps.1	Tue Jan 27 13:03:00 1987
+***************
+*** 11,29 ****
+  .SH SYNOPSIS
+  .B ps
+  [
+! .B acegklnstuvwxU#
+  ]
+  .SH DESCRIPTION
+  .I Ps
+  prints information about processes.
+! Normally, only your processes are candidates to be printed by
+! .I ps;
+! specifying
+  .B a
+  causes other users' processes to be candidates to be printed;
+  specifying
+  .B x
+! includes processes without control terminals in the candidate pool.
+  .PP
+  All output formats include, for each process, the process id PID,
+  control terminal of the process TT, cpu time used by the process TIME
+--- 11,34 ----
+  .SH SYNOPSIS
+  .B ps
+  [
+! .B aCcegklnsStuvwxU#
+  ]
+  .SH DESCRIPTION
+  .I Ps
+  prints information about processes.
+! Normally, only processes that are running with your effective user ID and
+! that have controlling terminals are printed.
+! Specifying
+  .B a
+  causes other users' processes to be candidates to be printed;
+  specifying
+  .B x
+! includes processes without controlling terminals in the candidate pool.
+! Specifying
+! .B r
+! restricts the list of processes printed to ``running'' processes; i.e.,
+! runnable processes and processes in page wait or in disk (or other short
+! term) waits.
+  .PP
+  All output formats include, for each process, the process id PID,
+  control terminal of the process TT, cpu time used by the process TIME
+***************
+*** 36,43 ****
+  P for processes in page wait,
+  D for those in disk (or other short term) waits,
+  S for those sleeping for less than about 20 seconds,
+! and I for idle (sleeping longer than about 20 seconds)
+! processes.
+  The second letter indicates whether a process is swapped out,
+  showing W if it is, or a blank if it is loaded (in-core);
+  a process which has specified a soft limit on memory requirements
+--- 41,50 ----
+  P for processes in page wait,
+  D for those in disk (or other short term) waits,
+  S for those sleeping for less than about 20 seconds,
+! I for idle processes (those sleeping longer than about 20 seconds),
+! and Z for ``zombie'' processes (those that have terminated and are
+! waiting for their parent process to do a
+! .IR wait (2)).
+  The second letter indicates whether a process is swapped out,
+  showing W if it is, or a blank if it is loaded (in-core);
+  a process which has specified a soft limit on memory requirements
+***************
+*** 60,74 ****
+  Here are the options:
+  .TP 5
+  .B a
+! asks for information about all processes with terminals (ordinarily
+  only one's own processes are displayed).
+  .TP 5
+  .B c
+! prints the command name, as stored internally in the system for purposes
+  of accounting, rather than the command arguments, which are kept
+  in the process' address space.  This is more reliable, if less informative,
+  since the process is free to destroy the latter information.
+  .TP 5
+  .B e
+  Asks for the environment to be printed as well as the arguments to the command.
+  .TP 5
+--- 67,84 ----
+  Here are the options:
+  .TP 5
+  .B a
+! Asks for information about all processes with terminals (ordinarily
+  only one's own processes are displayed).
+  .TP 5
+  .B c
+! Prints the command name, as stored internally in the system for purposes
+  of accounting, rather than the command arguments, which are kept
+  in the process' address space.  This is more reliable, if less informative,
+  since the process is free to destroy the latter information.
+  .TP 5
++ .B C
++ Displays raw CPU time in the %CPU field instead of the decaying average.
++ .TP 5
+  .B e
+  Asks for the environment to be printed as well as the arguments to the command.
+  .TP 5
+***************
+*** 83,96 ****
+  .TP 5
+  .B k
+  causes the file
+! .I /vmcore
+! is used in place of
+! .IR /dev/kmem " and " /dev/mem.
+  This is used for
+  postmortem system debugging.
+  .TP 5
+  .B l
+! asks for a long listing, with fields PPID, CP, PRI, NI, ADDR, SIZE, RSS and
+  WCHAN as described below.
+  .TP 5
+  .B n
+--- 93,106 ----
+  .TP 5
+  .B k
+  causes the file
+! .B /vmcore
+! to be used in place of
+! .BR /dev/kmem " and " /dev/mem .
+  This is used for
+  postmortem system debugging.
+  .TP 5
+  .B l
+! Asks for a long listing, with fields PPID, CP, PRI, NI, ADDR, SIZE, RSS and
+  WCHAN as described below.
+  .TP 5
+  .B n
+***************
+*** 99,112 ****
+  symbolically, or, in a user listing, the USER field is replaced by a
+  UID field.
+  .TP 5
+  .B s
+  Adds the size SSIZ of the kernel stack of each process (for use by system
+  maintainers) to the basic output format.
+  .TP 5
+  \fBt\fIx\fR
+  restricts output to processes whose controlling tty is \fIx\fR
+  (which should be specified as printed by
+! .I ps,
+  e.g.
+  .I t3
+  for tty3,
+--- 109,129 ----
+  symbolically, or, in a user listing, the USER field is replaced by a
+  UID field.
+  .TP 5
++ .B r
++ Restricts output to ``running'' processes.
++ .TP 5
+  .B s
+  Adds the size SSIZ of the kernel stack of each process (for use by system
+  maintainers) to the basic output format.
+  .TP 5
++ .B S
++ Display accumulated CPU time used by this process and all of its reaped 
++ children.
++ .TP 5
+  \fBt\fIx\fR
+  restricts output to processes whose controlling tty is \fIx\fR
+  (which should be specified as printed by
+! .IR ps ,
+  e.g.
+  .I t3
+  for tty3,
+***************
+*** 123,129 ****
+  .TP 5
+  .B u
+  A user oriented output is produced.
+! This includes fields USER, %CPU, NICE, SIZE, and RSS as described below.
+  .TP 5
+  .B v
+  A version of the output containing virtual memory statistics is output.
+--- 140,146 ----
+  .TP 5
+  .B u
+  A user oriented output is produced.
+! This includes fields USER, %CPU, %MEM, SIZE, RSS, and START as described below.
+  .TP 5
+  .B v
+  A version of the output containing virtual memory statistics is output.
+***************
+*** 131,146 ****
+  and %MEM, described below.
+  .TP 5
+  .B w
+! Use a wide output format (132 columns rather than 80); if repeated,
+! e.g. ww, use arbitrarily wide output.
+  This information is used to decide how much of long commands to print.
+  .TP 5
+  .B x
+! asks even about processes with no terminal.
+  .TP
+  .B U
+! causes ps to update a private database where is keeps system
+! information.  Thus ``ps U'' should be included in the /etc/rc file.
+  .TP 5
+  .B #
+  A process number may be given,
+--- 148,169 ----
+  and %MEM, described below.
+  .TP 5
+  .B w
+! Use a wide output format (132 columns rather than 80); if repeated, 
+! e.g.
+! .BR ww ,
+! use arbitrarily wide output.
+  This information is used to decide how much of long commands to print.
+  .TP 5
+  .B x
+! Asks even about processes with no controlling terminal.
+  .TP
+  .B U
+! Causes
+! .I ps
+! to update a private database where is keeps system
+! information.  Thus ``ps U'' should be included in the
+! .B /etc/rc
+! file.
+  .TP 5
+  .B #
+  A process number may be given,
+***************
+*** 151,157 ****
+  .PP
+  A second argument is taken 
+  to be the file containing the system's
+! namelist.  Otherwise, /vmunix is used.
+  A third argument tells
+  .I ps
+  where to look for
+--- 174,182 ----
+  .PP
+  A second argument is taken 
+  to be the file containing the system's
+! namelist.  Otherwise,
+! .B /vmunix
+! is used.
+  A third argument tells
+  .I ps
+  where to look for
+***************
+*** 158,167 ****
+  .I core
+  if the
+  .B k
+! option is given, instead of /vmcore.
+  If a fourth argument is given, it
+  is taken to be the name of a swap file to use instead of
+! the default /dev/drum.
+  .PP
+  Fields which are not common to all output formats:
+  .PD 0
+--- 183,194 ----
+  .I core
+  if the
+  .B k
+! option is given, instead of
+! .BR /vmcore .
+  If a fourth argument is given, it
+  is taken to be the name of a swap file to use instead of
+! the default
+! .BR /dev/drum .
+  .PP
+  Fields which are not common to all output formats:
+  .PD 0
+***************
+*** 194,200 ****
+  .IP SL 10
+  sleep time of the process (seconds blocked)
+  .IP PAGEIN 10
+! number of disk i/o's resulting from references by the process
+  to pages not loaded in core.
+  .IP UID 10
+  numerical user-id of process owner
+--- 221,227 ----
+  .IP SL 10
+  sleep time of the process (seconds blocked)
+  .IP PAGEIN 10
+! number of disk I/O's resulting from references by the process
+  to pages not loaded in core.
+  .IP UID 10
+  numerical user-id of process owner
+***************
+*** 204,209 ****
+--- 231,239 ----
+  short-term cpu utilization factor (used in scheduling)
+  .IP PRI 10
+  process priority (non-positive when in non-interruptible wait)
++ .IP START 10
++ time the process was created if that was today, or the date it was
++ created if that was before today
+  .IP ADDR 10
+  swap address of the process
+  .IP WCHAN 10

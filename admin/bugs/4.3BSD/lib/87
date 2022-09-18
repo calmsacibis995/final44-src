@@ -1,0 +1,104 @@
+From sun!elxsi!marduk!gww@ucbvax.Berkeley.EDU  Fri Sep  4 14:16:18 1987
+Return-Path: <marduk!gww>
+Date: Fri, 4 Sep 87 14:13:46 PDT
+From: sun!elxsi!marduk!gww@ucbvax.Berkeley.EDU (Gary Winiger)
+Subject: Unbuffered iob's can conflict with longjmp +Half Fix
+Index: lib/libc/stdio/fprintf.c 4.3BSD
+> Index: usr.bin/uucp/cico.c 4.3BSD +Fix
+
+Description:
+	Unbuffered iob's, in this case stderr, can conflict with longjmp.
+	The 4.3 optimization of fprintf(3) changes unbuffered iob's to buffered,
+	allocates a line buffer on the stack, calls _doprnt(), then resets the
+	iob to be unbuffered.
+	If a process gets a signal during the window when the iob has been
+	set to buffered and then longjmps, the iob is left pointing to an
+	invalid area on the stack.  Subsequently more procedures may be called
+	that cause this invalid area to be used when this happens and fprintf
+	is called again for this iob, it will see it as buffered and just
+	call _doprnt().  The buffer pointers are no longer valid, and can
+	cause strange results, in particular, NULL pointer dereferences.
+Repeat-By:
+	Run cico with debugging on at a high level with the output coming
+	to a slow device like your terminal.  Be lucky enough to get an alarm
+	that causes a longjmp.  The next fprintf(stderr) is likely to take
+	a nose dive.
+Fix:
+	I don't offer any fix to fprintf(3) because I agree with the desirabilty
+	of the optimization.  I offer the following advice:  DON'T USE 
+	UNBUFFERED FILES WITH FPRINTF IF YOU ALSO CATCH SIGNALS AND LONGJMP!
+
+	The attached code solves this problem at Elxsi for UUCP/cico.
+
+Gary..
+{ucbvax!sun,lll-lcc!lll-tis,amdahl!altos86,bridge2}!elxsi!gww
+--------- cut --------- snip --------- :.,$w diff -------------
+*** /tmp/,RCSt1000796	Wed Jul  1 15:16:51 1987
+--- /tmp/,RCSt2000796	Wed Jul  1 15:16:55 1987
+***************
+*** 1,11 ****
+  /*
+   * $Log:	cico.c,v $
+   * Revision 1.1  87/06/23  16:57:59  gww
+   * Initial revision
+   * 
+   */
+  #ifndef lint
+! static char *ERcsId = "$Header: cico.c,v 1.1 87/06/23 16:57:59 gww Exp $ ENIX BSD";
+  static char sccsid[] = "@(#)cico.c	5.14 (Berkeley) 4/14/86";
+  #endif
+  
+--- 1,20 ----
+  /*
+   * $Log:	cico.c,v $
++  * Revision 1.2  87/07/01  15:02:11  gww
++  * Make stderr line buffered.  It probably should be anyway, but it is possible
++  * to be outputing a debugging line, get an alarm and longjmp to in the middle
++  * of the fprintf(stderr,... thus leaving the _iob[stderr] with bogus pointers
++  * into the stack and the line buffered flag set (due to 4.3 fprintf
++  * optimization of unbuffered _iob's), a subsequent fprintf(stderr, ... could
++  * blow up with a NULL pointer reference if intervening calls wrote over where
++  * the line buffer had been allocated on the stack.
++  * 
+   * Revision 1.1  87/06/23  16:57:59  gww
+   * Initial revision
+   * 
+   */
+  #ifndef lint
+! static char *ERcsId = "$Header: cico.c,v 1.2 87/07/01 15:02:11 gww Exp $ ENIX BSD";
+  static char sccsid[] = "@(#)cico.c	5.14 (Berkeley) 4/14/86";
+  #endif
+  
+***************
+*** 120,126 ****
+  	uucpname(Myname);
+  	ASSERT(ret == 0, "BAD UID", CNULL, ret);
+  
+! 	setbuf (stderr, CNULL);
+  
+  	rflags[0] = '\0';
+  	umask(WFMASK);
+--- 129,135 ----
+  	uucpname(Myname);
+  	ASSERT(ret == 0, "BAD UID", CNULL, ret);
+  
+! 	setlinebuf(stderr);
+  
+  	rflags[0] = '\0';
+  	umask(WFMASK);
+***************
+*** 870,876 ****
+  		assert("FAILED RMTDEBUG FILE OPEN:", buf, errno);
+  		cleanup(1);
+  	}
+! 	setbuf(stderr, CNULL);
+  	auditopen = 1;
+  }
+  
+--- 879,885 ----
+  		assert("FAILED RMTDEBUG FILE OPEN:", buf, errno);
+  		cleanup(1);
+  	}
+! 	setlinebuf(stderr);
+  	auditopen = 1;
+  }

@@ -1,0 +1,235 @@
+<!--
+$Id: gated.html,v 1.3 1994/03/16 21:39:03 jch Exp $
+
+%(Copyright.header)
+>
+<html>
+<head>
+<title>GateD Manual Page</title>
+</head>
+<body>
+<h1>GATED 8 "$Date: 1994/03/16 21:39:03 $ UTC" %#(RELEASE) "Cornell GateDaemon Project"</h1>
+<h2>NAME</h2>
+<strong>gated</strong> - gateway routing daemon
+<h2>SYNOPSIS</h2>
+<strong>gated</strong>
+[ <strong>-c</strong> ]
+[ <strong>-C</strong> ]
+[ <strong>-n</strong> ]
+[ <strong>-N</strong> ]
+[ <strong>-t</strong> <var>trace_options</var> ]
+[ <strong>-f</strong> <var>config_file</var> ]
+[ <var>trace_file</var> ]
+<h2>DESCRIPTION</h2>
+
+<strong>GateD</strong> is a routing daemon that handles multiple
+routing protocols and replaces <cite>routed (8)</cite> and <cite>egpup
+(8)</cite>.
+
+<strong>GateD</strong> currently handles the RIP, BGP, EGP, HELLO, and
+OSPF routing protocols.  The <strong>gated</strong> process can be
+configured to perform all routing protocols or any subset of them.
+
+<p>The command-line options are:
+
+<dl compact>
+<dt> <strong>-c</strong>
+<dd> Specifies that the configuration file will be parsed for syntax
+     errors and then <strong>gated</strong> will exit, if there were
+     no errors, <strong>gated</strong> will leave a dump file in
+     <em>/usr/tmp/gated_dump</em>. <strong>Gated</strong> does not need to
+     be run as the super user to use the <strong>-c</strong> option but it may not be
+     possible to read the kernel forwarding table and interface
+     configuration if not run as super user.  The <strong>-c</strong> option implies
+     <code>-tgeneral</code>.  All <code>traceoption</code> clauses
+     in the configuration file will be ignored.
+
+<dt> <strong>-C</strong>
+<dd> Specifies that the configuration file will just be parsed for syntax
+     errors. <strong>gated</strong> will exit with a status 1 if there
+     were any errors and 0 if there were not. <strong>Gated</strong>
+     does not need to be run as the super user to use the <strong>-C</strong> option
+     but it may not be possible to read the kernel forwarding table and
+     interface configuration if not run as super user.
+
+<dt> <strong>-n</strong>
+<dd> Specifies that <strong>gated</strong> will not modify the kernel
+     forwarding table.  This is used for testing <strong>gated</strong>
+     configurations with actual routing data. 
+
+<dt> <strong>-N</strong>
+<dd> Specifies that <strong>gated</strong> will not daemonize.
+     Normally, if tracing to stderr is not specified
+     <strong>gated</strong> will daemonize if the parent process ID is
+     not 1.  This allows the use of an <em>/etc/inittab</em>-like method of
+     invoking <strong>gated</strong> that does not have a PID of 1.
+
+<dt> <strong>-t</strong> <var>trace_options</var>
+<dd> Specifies a comma separated list of trace options to be enabled
+     on startup. If no flags are specified, <em>general</em> is
+     assumed.  No space is allowed between this option and it's
+     arguments. 
+     <p>
+     This option must be used to trace events that take place
+     before the config file is parsed, such as determining the
+     interface configuration and reading routes from the kernel.
+     <p>
+     See the <cite><a href="../config_guide/config.html">GateD Configuration
+     Guide</a></cite> for valid trace options and a more detailed
+     explaination of tracing.
+
+<dt> <strong>-f</strong> <var>config_file</var>
+<dd> Use an alternate config file. By default, <strong>gated</strong>
+     uses <em>/etc/gated.conf</em>.
+     <p>
+     If a trace file is specified on the command line, or no
+     trace flags are specified on the command line,
+     <strong>gated</strong> detaches from the terminal and runs in the
+     background.  If trace flags are specified without specifying a
+     trace file, <strong>gated</strong> assumes that tracing is
+     desired to stderr and remains in the foreground.
+</dl>
+
+<h2>SIGNAL PROCESSING</h2>
+The following signals may be used to control <strong>gated</strong>:
+
+<dl>     
+<dt> <strong>SIGHUP</strong>
+<dd> Re-read configuration.
+     <p>
+     A SIGHUP causes <strong>gated</strong> to reread the
+     configuration file. <strong>Gated</strong> first performs a
+     clean-up of all allocated policy structures.  All BGP and EGP
+     peers are flagged for deletion and the configuration file is
+     re-parsed.
+     <p>
+     If the re-parse is successful, any BGP and EGP peers that are
+     no longer in the configuration are shut down, and new peers are
+     started. <strong>Gated</strong> attempts to determine if changes
+     to existing peers require a shutdown and restart.  OSPF is not
+     capable of reconfiguring, it is shutdown and restarted during a
+     reconfiguration.  This may have an adverse impact on the routing
+     system.
+     <p>
+     It should also be possible to enable/disable any protocol
+     without restarting <strong>gated</strong>.
+
+<dt> <strong>SIGINT</strong>
+<dd> Snap-shot of current state.
+     <p>
+     The current state of all <strong>gated</strong> tasks,
+     timers, protocols and tables are written to
+     <em>/usr/tmp/gated_dump</em>.
+     <p>
+     On systems supporting <code>fork()</code>, this is done by forking a
+     subprocess to dump the table information so as not to impact
+     <strong>gated</strong>'s routing functions.  On systems where
+     memory management does not support copy-on-write, <code>fork()</code> will cause
+     the <strong>gated</strong> address space to be duplicated; this
+     may be cause a noticeable impact on the system.  On system not
+     supporting <code>fork()</code>, the main process immediately processes the
+     dump, which may impact <strong>gated</strong>'s routing
+     functions.
+
+<dt> <strong>SIGTERM</strong>
+<dd> Graceful shutdown.
+     <p>
+     On receipt of a <strong>SIGTERM</strong>, <strong>gated</strong> attempts a
+     graceful shutdown.  All tasks and protocols are asked to
+     shutdown.  Most will terminate immediately, the exception being
+     EGP peers which wait for confirmation. It may be necessary to
+     repeat the <strong>SIGTERM</strong> once or twice if it this process takes too
+     long.
+     <p>
+     All protocol routes are removed from the kernel forwarding
+     table on receipt of a <strong>SIGTERM</strong>. Interface routes, routes with
+     <code>RTF_STATIC</code> set (from the route command where supported) and
+     static routes specifying <code>retain</code> will remain.  To terminate
+     <strong>gated</strong> with the exterior routes intact, use
+     <strong>SIGKILL</strong>.
+
+<dt> <strong>SIGUSR1</strong>
+<dd> Toggle tracing.
+     <p>
+     On receipt of a <strong>SIGUSR1</strong>, <strong>gated</strong>
+     will close
+     the trace file.  A subsequent SIGUSR1 will cause it to be
+     reopened.  This will allow the file to be moved regularly.
+     <p>
+     It is not possible to use <strong>SIGUSR1</strong> if a trace file has not
+     been specified, or tracing is being performed to stderr.
+     
+<dt> <strong>SIGUSR2</strong>
+<dd> Check for interface changes.
+     <p>
+     On receipt of a <strong>SIGUSR2</strong>, <strong>gated</strong>
+     will rescan the kernel interface list looking for changes.
+
+</dl>
+
+<h2>FILES</h2>
+
+Many of default filenames listed below contain the string %s, which is
+replaced by the name with which gated is invoked.  Normally this is
+<em>gated</em>, but if invoked as <em>gated-test</em>,
+<em>gated</em> will by default look for
+<code>/etc/gated-test.conf</code>.  These paths may all be changed at
+compilation time.
+
+<dl>
+<dt> /usr/tmp/gated_dump
+<dd> Where <strong>gated</strong> writes status information.  The
+     default is <code>/usr/tmp/%s_dump</code>.  Another common path is
+     <code>/var/tmp/%s_dump</code>.
+
+<dt> /etc/gated.conf
+<dd> Where <strong>gated</strong> looks for it's configuration file.
+     The default is <code>/etc/%s.conf</code>.
+
+<dt> /etc/gated.pid
+<dd> Where <strong>gated</strong> writes it's process id (PID).  The
+     defalt is <code>/etc/%s.pid</code>, but
+     <code>/var/run/%s.pid</code> is common.
+
+</dl>
+<h2>AUTHORS</h2>
+<address>
+Mark Fedor &lt;fedor@psi.com&gt;
+<br>
+Jeffrey C Honig &lt;jch@gated.cornell.edu&gt;
+<br>
+Rob Coltun &lt;rcoltun@ni.umd.edu&gt;
+<br>
+Dennis Ferguson &lt;dennis@ans.net&gt;
+</address>
+<h2>SEE ALSO</h2>
+<cite>arp (8)</cite>,
+<cite><a href="gdc.html">gdc (8)</a></cite>,
+<cite>fork (2)</cite>,
+<cite>ifconfig (8)</cite>,
+<cite>netstat (8)</cite>,
+<cite><a href="ospf_monitor.html">ospf_monitor (8)</a></cite>,
+<cite><a href="ripquery.html">ripquery (8)</a></cite>,
+<cite>routed (8)</cite>,
+<cite>route (8)</cite>
+<br>
+<cite><a href="../main.html">GateD Documentation</a></cite>
+<br>
+<cite><a href="../config_guide/config.html">GateD Configuration Guide</a></cite>
+<h2>COPYRIGHT INFORMATION</h2>
+<a href="../copyright.html">
+%(Copyright_short)
+</a>
+<p>
+<a href="../copyright-ospf.html">
+%(Copyright_short.OSPF)
+</a>
+<p>
+<a href="../copyright-isis.html">
+%(Copyright_short.ISIS)
+</a>
+</body>
+</html>
+<!--
+%(Copyright)
+>

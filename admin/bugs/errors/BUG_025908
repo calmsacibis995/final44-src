@@ -1,0 +1,184 @@
+From bigbug  Sat Apr  8 13:21:06 1995
+Received: from hofmann.CS.Berkeley.EDU (hofmann.CS.Berkeley.EDU [128.32.34.35]) by vangogh.CS.Berkeley.EDU (8.7.Alpha.6a/8.6.9.Beta0) with ESMTP id NAA25899 for <bugs@vangogh.cs.Berkeley.EDU>; Sat, 8 Apr 1995 13:21:05 -0700 (PDT)
+Received: from mitchell.cit.cornell.edu (MITCHELL.CIT.CORNELL.EDU [132.236.200.25]) by hofmann.CS.Berkeley.EDU (8.6.10/8.6.6.Beta11) with ESMTP id NAA20913 for <4bsd-bugs@cs.berkeley.edu>; Sat, 8 Apr 1995 13:21:20 -0700
+Received: from mitchell.cit.cornell.edu (MITCHELL.CIT.CORNELL.EDU [132.236.200.25]) by mitchell.cit.cornell.edu (8.6.12/8.6.9) with ESMTP id QAA17567 for <4bsd-bugs@cs.berkeley.edu>; Sat, 8 Apr 1995 16:21:18 -0400
+Message-Id: <199504082021.QAA17567@mitchell.cit.cornell.edu>
+To: 4bsd-bugs@cs.berkeley.edu
+Subject: rdist: lost connection
+Index: usr.bin 4.4BSD-Lite
+X-Mailier: MH-E [version 4.1+] MH [version 6.8.1]
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Date: Sat, 08 Apr 1995 16:21:17 -0400
+From: Jeffrey C Honig <jch@nr-tech.cit.cornell.edu>
+
+Description:
+	rdist gets ``rdist: lost connection'' under certain conditions.
+
+I think it only occurs in -v mode, but I'm not positive (I knew a few
+hours ago, but the code isn't straightforward).  In recvf() in server
+mode, a close(f) is done when f has not been initialized.  When it
+happens to be zero, the connection to the client side is closed. 
+ 
+The  fix is to init f (to -1) and only close it when it is not -1. 
+
+Also included are a few fixes where rdist references memory it has
+just freed, a fix to prevent generating debug output when in server
+mode (it will be misinterpreted by the client), and a fix to properly
+print certain error messages (all on one line instead of one character
+per line.
+
+Release:
+	All releases after this patch was applied to
+	/usr/src/usr.bin/rdist/server.c. 
+
+	D 5.16 91/11/08 11:31:56 bostic 39 38
+	rdist chown/chgrp security problem; bug report net2/usr.bin/2
+
+Repeat-By:
+	Usually happens when I try to update all of / and /usr between
+	two BSDI systems.  Hard to pin down.
+
+Fix:
+
+*** 1.1	1995/04/06 20:33:52
+--- docmd.c	1995/04/08 18:26:12
+***************
+*** 180,188 ****
+  		if (sc->sc_type == NOTIFY)
+  			notify(tempfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
+  		(void) unlink(tempfile);
+! 		for (; ihead != NULL; ihead = ihead->nextp) {
+! 			free(ihead);
+  			if ((opts & IGNLNKS) || ihead->count == 0)
+  				continue;
+  			log(lfp, "%s: Warning: missing links\n",
+--- 180,189 ----
+  		if (sc->sc_type == NOTIFY)
+  			notify(tempfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
++ 		register struct linkbuf *ihp;
++ 
+  		(void) unlink(tempfile);
+! 		for (; (ihp = ihead) != NULL; ihead = ihp->nextp, free(ihp)) {
+  			if ((opts & IGNLNKS) || ihead->count == 0)
+  				continue;
+  			log(lfp, "%s: Warning: missing links\n",
+***************
+*** 269,279 ****
+  			return(1);
+  		error("connection failed: version numbers don't match (local %d, remote %d)\n", VERSION, n);
+  	} else {
+  		error("connection failed: version numbers don't match\n");
+! 		error("got unexpected input:");
+  		do {
+! 			error("%c", *cp);
+! 		} while (*cp != '\n' && read(rem, cp, 1) == 1);
+  	}
+  	closeconn();
+  	return(0);
+--- 270,289 ----
+  			return(1);
+  		error("connection failed: version numbers don't match (local %d, remote %d)\n", VERSION, n);
+  	} else {
++ 		char ebuf[BUFSIZ];
++ 
+  		error("connection failed: version numbers don't match\n");
+! 
+! 		*ebuf = *cp;
+! 		cp = ebuf + 1;
+  		do {
+! 			if (read(rem, cp, 1) != 1)
+! 				break;
+! 		} while (*cp++ != '\n' && cp < &ebuf[BUFSIZ]);
+! 		*--cp = '\0';
+! 		if (*ebuf) {
+! 			error("got unexpected input: %s\n", ebuf);
+! 		}
+  	}
+  	closeconn();
+  	return(0);
+*** 1.1	1995/04/06 20:31:05
+--- gram.y	1995/04/06 20:31:45
+***************
+*** 372,382 ****
+  	struct subcmd *subcmds;
+  {
+  	register struct cmd *c, *prev, *nc;
+! 	register struct namelist *h;
+  
+  	files = expand(files, E_VARS|E_SHELL);
+  	hosts = expand(hosts, E_ALL);
+! 	for (h = hosts; h != NULL; free(h), h = h->n_next) {
+  		/*
+  		 * Search command list for an update to the same host.
+  		 */
+--- 372,382 ----
+  	struct subcmd *subcmds;
+  {
+  	register struct cmd *c, *prev, *nc;
+! 	register struct namelist *h, *h1;
+  
+  	files = expand(files, E_VARS|E_SHELL);
+  	hosts = expand(hosts, E_ALL);
+! 	for (h = hosts; h != NULL; h1 = h->n_next, free(h), h = h1) {
+  		/*
+  		 * Search command list for an update to the same host.
+  		 */
+*** 1.1	1995/04/06 20:17:28
+--- server.c	1995/04/08 14:44:52
+***************
+*** 693,699 ****
+  	int type;
+  {
+  	register char *cp;
+! 	int f, mode, opts, wrerr, olderrno;
+  	off_t i, size;
+  	time_t mtime;
+  	struct stat stb;
+--- 693,699 ----
+  	int type;
+  {
+  	register char *cp;
+! 	int f = -1, mode, opts, wrerr, olderrno;
+  	off_t i, size;
+  	time_t mtime;
+  	struct stat stb;
+***************
+*** 917,923 ****
+  		note("%s: utimes failed %s: %s\n", host, new, strerror(errno));
+  
+  	if (fchog(f, new, owner, group, mode) < 0) {
+! badnew2:	(void) close(f);
+  		(void) unlink(new);
+  		return;
+  	}
+--- 917,925 ----
+  		note("%s: utimes failed %s: %s\n", host, new, strerror(errno));
+  
+  	if (fchog(f, new, owner, group, mode) < 0) {
+! badnew2:
+! 	        if (f >= 0)
+! 		    (void) close(f);
+  		(void) unlink(new);
+  		return;
+  	}
+***************
+*** 1498,1504 ****
+  	char *cp, *s;
+  	char resp[BUFSIZ];
+  
+! 	if (debug)
+  		printf("response()\n");
+  
+  	cp = s = resp;
+--- 1500,1506 ----
+  	char *cp, *s;
+  	char resp[BUFSIZ];
+  
+! 	if (debug && !iamremote)
+  		printf("response()\n");
+  
+  	cp = s = resp;
+

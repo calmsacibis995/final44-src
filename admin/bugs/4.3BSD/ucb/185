@@ -1,0 +1,108 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 10:59:25 1988
+Date: Mon, 18 Apr 88 13:12:05 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 sysline fails to exit when appropriate (with fix)
+#Index: ucb/sysline/sysline.c MORE/bsd 4.3 Fix
+Index: ucb/sysline/sysline.c 4.3BSD
+
+Description:
+	The MORE/bsd 4.3 "sysline" command may fail to exit when appropriate.
+
+Repeat-By:
+	Log in on a terminal that can be used by sysline.
+	Type in the command
+		sysline
+	and verify that sysline is running.  Then type in the command
+		login yourself
+	and type in your password when prompted.  Finally, do a
+		ps -t??
+	with the question marks above replaced with the ps-style two-letter-name
+	for your terminal.  Note that the "sysline" command from your previous
+	session is still running.
+
+Fix:
+	Here are context diffs for sysline.c as received from Mt. Xinu and
+	as corrected.
+
+*** old/sysline.c	Sat Nov 29 19:36:18 1986
+--- new/sysline.c	Sat Nov 29 19:36:26 1986
+***************
+*** 1,3 ****
+--- 1,8 ----
++ #ifndef ASWAS
++ #ifdef OBJECTID
++ static char	sccsid[] = "@(#)sysline.c	1.2";
++ #endif /* !OBJECTID */
++ #endif /* !ASWAS */
+  /*
+   * Copyright (c) 1980 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 244,249 ****
+--- 249,257 ----
+  short uid;
+  double loadavg = 0.0;		/* current load average */
+  int users = 0;
++ #ifndef ASWAS
++ static time_t	starttime;
++ #endif /* !ASWAS */
+  
+  char *getenv();
+  char *ttyname();
+***************
+*** 263,268 ****
+--- 271,279 ----
+  	extern char _sobuf[];
+  	extern char *index();
+  
++ #ifndef ASWAS
++ 	(void) time(&starttime);
++ #endif /* !ASWAS */
+  	setbuf(stdout, _sobuf);
+  
+  #ifdef HOSTNAME
+***************
+*** 448,453 ****
+--- 459,465 ----
+  
+  isloggedin()
+  {
++ #ifdef ASWAS
+  	/*
+  	 * you can tell if a person has logged out if the owner of
+  	 * the tty has changed
+***************
+*** 455,460 ****
+--- 467,496 ----
+  	struct stat statbuf;
+  
+  	return fstat(2, &statbuf) == 0 && statbuf.st_uid == uid;
++ #else /* !ASWAS */
++ 	/*
++ 	** The above fails if you log back in on the terminal or if you're root.
++ 	** Sending signal zero to the parent process fails if a "login" is
++ 	** done in the parent process.
++ 	*/
++ 	static int	slot = -1;
++ 	struct utmp	u;
++ 
++ 	if (slot < 0 && (slot = ttyslot()) < 0) {
++ 		(void) fprintf(stderr, "sysline: Can't find tty slot.\n");
++ 		exit(1);
++ 	}
++ 	if (ut < 0 && (ut = open("/etc/utmp", 0)) < 0) {
++ 		(void) fprintf(stderr, "sysline: Can't open utmp.\n");
++ 		exit(1);
++ 	}
++ 	(void) lseek(ut, (long) slot * sizeof u, 0);
++ 	if (read(ut, (char *) &u, sizeof u) != sizeof u) {
++ 		(void) fprintf(stderr, "sysline: Can't read utmp.\n");
++ 		exit(1);
++ 	}
++ 	return u.ut_time <= starttime;
++ #endif /* !ASWAS */
+  }
+  
+  readnamelist()
+
+

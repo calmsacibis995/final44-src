@@ -1,0 +1,84 @@
+Return-Path: <munnari!kre@seismo.CSS.GOV>
+From: Robert Elz <munnari!kre@seismo.CSS.GOV>
+Date: Sat, 5 Oct 85 16:12:48 EST
+Subject: closing tty lines is broken if line discipline was OTTYDISC
+Index: 	sys/tty.c 4.3BSD
+
+Description:
+	The tty code in general is very confused about just what
+	a "close" is.  The linesw "close" routine is supposed to
+	do whatever is necessary to gracefully terminate the
+	line discipline.  For NTTYDISC that's fine, it waits
+	for output to drain, flushed input (ttywflush()) and
+	sets the line discipline back to 0.  This is a function
+	of half of the code in ttyclose().  But the close routine
+	for OTTYDISC is nulldev(), which naturally does nothing
+	at all.  The device driver close routines close the line
+	discipline, then drop carrier to the modem, then call
+	ttyclose() which performs its alternate function (noting
+	that it was called on a tty with a 0 line discipline)
+	and waits for output to drain (on a line where the modem
+	has already closed down!) flushes input, and clears the
+	tty state.
+
+	This is all bogus.  
+
+Repeat-By:
+	In your login shell (on a line connected to a modem,
+	or equivalent device that will go away when carrier is
+	dropped - Gandalf port switches are good for this) do ...
+
+	stty old; exec /bin/echo "goodbye cruel world.....................!"
+
+	and notice that not all of the output appears.  The number of
+	characters missed is a function of line speed, system load,
+	whether you had corn-flakes for breakfast, and probably a
+	dozen other factors.  You may need to increase the number
+	of "." characters, but there's no point going beyond the
+	high water mark for your line speed (in fact, doing that
+	can confuse things).
+
+	If you're lazy, or don't want to log out, its obvious from
+	inspection.
+
+Fix:
+	There are two fixes, an editorially easy one, and a better one,
+	both are essentially the same, only the names are changed...
+
+	Easy:
+		In sys/tty_conf.c change the "close" line discipline
+		linesw entry for all tty type line disciplines
+		from "ttyclose" (or nulldev for OTTYDISC) to "ttylclose".
+
+		Create function ttylclose() in sys/tty.c
+
+		ttylclose(tp)
+			register struct tty *tp;
+		{
+			ttywflush(tp);
+			tp->t_line = 0;
+		}
+
+		Change ttyclose() in sys/tty.c (now called only from
+		drivers at final closedown) to be
+
+		ttyclose(tp)
+			register struct tty *tp;
+		{
+			ttyflush(tp, FREAD|FWRITE);
+			tp->t_pgrp = 0;
+			tp->t_state = 0;
+		}
+
+	Harder fix:
+		The same as above, except rename ttyclose() to
+		ttycleanup() and then ttylclose() to ttyclose().
+		These are more descriptive names for the functions
+		actually performed, but require editing each of
+		the tty hardware driver files (dz.c, dh.c, dmf.c, ...)
+		What's worse, if someone somewhere has their own
+		private tty driver (kl.c ??) and doesn't notice the
+		change, it will pass undetected (no undefined symbols,
+		etc) but fail to function correctly.  (Eg: if someone
+		were to forget to include vax/cons.c in the list
+		of hardware drivers to be fixed).

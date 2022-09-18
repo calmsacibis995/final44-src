@@ -1,0 +1,94 @@
+Return-Path: <root.Oregon-Grad@Rand-Relay>
+Date: 4 Nov 83 08:01:59 PST (Fri)
+From: root.Oregon-Grad@Rand-Relay
+Return-Path: <root.Oregon-Grad@Rand-Relay>
+Subject: "C" object-code improver /lib/c2 bug
+
+Index:  lib/c2/c21.c  4.1BSD
+
+Description:
+        The C object-code improver /lib/c2 for VAXes generates
+	incorrect code for source of the type:
+
+	    int i;
+	    double x;
+	    i = ((int) x) & 03777;
+        
+        The conditions for creating the erroneous code are that a
+        double (or float) is converted to int, then and'd with a mask
+        (03777 in this case) which must be a power of 2 minus 1; i.e.,
+        in binary, contiguous 1's starting at bit 0 (LSB).
+
+        /lib/c2 replaces this correct code:
+
+	    cvtdl   _x,r0
+	    bicl2   $-2048,r0
+	    movl    r0,_i
+
+        with this incorrect code:
+
+	    extzv   $0,$11,_x,_i
+
+	The optimization, which would be correct for int x, is to
+	replace the bic with extraction of bits when the mask meets the
+	conditions mentioned above.  However, the incorrect code
+	apparently ignores the fact that _x and r0 in the cvtdl
+	instruction are not the same.
+
+Repeat-By:
+        At the end of this report are the source files, delimited by
+	"=======", for the examples below.  Compile and run the C source
+	as shown below; it will print out incorrect numerical results
+	when compiled with the -O flag.
+
+        Correct results without -O flag:
+
+            % cc maskbug.c
+            % a.out
+            32.000000 == 32
+
+        Incorrect results with -O flag:
+
+            % cc -O maskbug.c
+            % a.out
+            32.000000 == 768
+
+        For a simplified demonstration, the three lines of correct
+	assembler code shown above may be filtered through /lib/c2:
+
+            % /lib/c2 maskcode.s
+	    extzv   $0,$11,_x,_i
+
+        Results are the same with the 4.1, 4.1c, and 4.2 versions of
+        /lib/c2.
+
+	The c2 code involved is in the file /usr/src/lib/c2/c21.c, in
+	the routines bflow(), bicopt(), and bixprep().
+
+
+        Bruce Jerrick
+        Oregon Graduate Center
+	(503) 645-1121 ex. 355
+        CSNet:  bruce@Oregon-Grad
+        UUCP:   ...teklabs!ogcvax!bruce
+
+=========== maskbug.c =============
+/* This gives incorrect value of i when compiled with -O .
+   Problem exists on VAX 4.1, 4.1c and 4.2 .
+ */
+
+double  x = 32.0;       /* or float */
+int     i;
+
+main()
+{
+    i = ((int) x) & 03777;
+    printf("%f == %d\n", x, i);
+}
+===================================
+
+=========== maskcode.s ============
+cvtdl   _x,r0
+bicl2   $-2048,r0
+movl    r0,_i
+===================================

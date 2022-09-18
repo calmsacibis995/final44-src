@@ -1,0 +1,186 @@
+Path: seismo!gatech!mit-eddie!uw-beaver!uw-june!uw-entropy!rag
+From: rag@entropy.ms.washington.edu (David Ragozin)
+Newsgroups: sci.math.symbolic,comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: bug in bc and dc division and sqrt
+Summary: bc and dc division,sqrt unreliable. arctan on BSD always wrong with fix
+
+Several notes about bc (dc) bugs.
+A) A simplified version of someones earlier sqrt bug program also shows
+   the division problem, with integer arithmetic:
+
+	a=10^18-10^12+1      #(12 can be replaced by 9 through 15)
+	b=a*a
+	b/a
+	a
+	sqrt(b)
+
+    All three displayed numbers should be equal, but are not. First
+    two should be equal even with scale=0 as the division should be
+    exact. Failure of third to be correct could be attributed to
+    scale problems, but see B) below.
+
+B)  Since sqrt is computed using newton's method, it involves divisions,
+    so can be expected to fail if division fails.  Now for the
+    "strange" part: If you prefix the previous program with 
+
+	scale=2n+1   (i.e. any odd integer)
+    a-sqrt(b) computes as 0, while if 
+
+	scale=2n  (even scale)
+
+    then  sqrt(b) computes as different from a!
+
+    (b/a computes as unequal to a no matter what scale is set.)
+
+C) Above results hold on Vax11/750,785's under BSD4.3 and on 
+   3b2/400 under SysVRel3 and ATT UNIX PC under 3.5.
+
+D) A TOTALLY different (trivial) bug occurs on all machines using
+   /usr/lib/lib.b distributed by BSD labelled 4.1, dated 83/04/02.
+   The code for a(x) (arctan of x) is missing braces, causing it
+   to return pi/4 (up to 51 digits) independent of actual value of x.
+   (This bug does not occur in the lib.b distributed with Sys V).
+   A correct version of the offending lines:
+
+	if(x==1) { 
+		if(scale<52) {
+return(.7853981633974483096156608458198757210492923498437764/1) }}
+
+   simply adds the two sets of braces.
+
+Unfortunately, until the division bug is fixed, all bc library
+computations and sqrt's are suspect.  Does anyone know of a
+domain of correct operation?
+
+David Ragozin, Department of Mathematics, GN-50,
+University of Washington, Seattle, WA. 98195. (206-543-1148)
+
+rag@uw.ms.entropy.edu or
+...!uw-beaver!uw-entropy!rag
+
+============================================================================
+
+Path: seismo!mcvax!unido!gmdzi!woetzel
+From: woetzel@gmdzi.UUCP (Gerd Woetzel)
+Newsgroups: sci.math.symbolic,comp.bugs.4bsd,comp.bugs.sys5
+Subject: Re: bug in bc and dc division and sqrt (and fix, hopefully)
+Index: usr.bin/{bc,dc} 4.3BSD
+
+The division errors of bc(1) are caused by the dc(1) command, which is used
+indirectly by bc. Here are two fixes to dc.c made by Heinrich Schueth
+(schue%gmdzi@unido.UUCP). The first one addresses an error in
+the scale computation (line 60ff), the second is a correction to the
+divide algorithm (line 665ff). Please send only credits to Heinrich, and
+no flames to me. After the following diffs you'll find a little
+shell script to test your implementation of bc/dc.
+
+*** dc.c.OLD    Tue May  5 13:27:28 1987
+--- dc.c        Tue May  5 14:13:14 1987
+***************
+*** 60,67
+			binop('*');
+			p = pop();
+			sunputc(p);
+!                       savk = sk1+sk2;
+!                       if(savk>k && savk>sk1 && savk>sk2){
+				sk = sk1;
+				if(sk<sk2)sk = sk2;
+				if(sk<k)sk = k;
+
+--- 60,67 -----
+			binop('*');
+			p = pop();
+			sunputc(p);
+!                       savk = n = sk1+sk2;
+!                       if(n>k && n>sk1 && n>sk2){
+				sk = sk1;
+				if(sk<sk2)sk = sk2;
+				if(sk<k)sk = k;
+***************
+*** 65,71
+				sk = sk1;
+				if(sk<sk2)sk = sk2;
+				if(sk<k)sk = k;
+!                               p = removc(p,savk-sk);
+				savk = sk;
+			}
+			sputc(p,savk);
+
+--- 65,71 -----
+				sk = sk1;
+				if(sk<sk2)sk = sk2;
+				if(sk<k)sk = k;
+!                               p = removc(p,n-sk);
+				savk = sk;
+			}
+			sputc(p,savk);
+***************
+*** 655,661
+		sbackc(p);
+		salterc(p,dig);
+		sbackc(p);
+!               if(--offset >= 0)divd->wt--;
+	}
+	if(divcarry != 0){
+		salterc(p,dig-1);
+
+--- 655,668 -----
+		sbackc(p);
+		salterc(p,dig);
+		sbackc(p);
+!               if(--offset >= 0){
+!                       if(d > 0){
+!                       sbackc(divd);
+!                       dd=sbackc(divd);
+!                       salterc(divd,dd+100);
+!                       }
+!                       divd->wt--;
+!               }
+	}
+	if(divcarry != 0){
+		salterc(p,dig-1);
+
+----------------- Test script --- Cut here  -------------------
+# Error in division. Found by schue%gmdzi@unido.UUCP (Heinrich Schueth)
+# Fixed in dc.c line 665ff (see diffs above)"
+echo "Test 1 (division): Result of expression is"
+bc <<ENDSCRIPT1
+    scale=0
+    a=2799912455811601
+    b=99990001
+    (a/b)*b + (a%b) - a
+ENDSCRIPT1
+echo "Result should be"
+echo "0"
+echo ""
+
+# Errors found by ronald@kulcs.UUCP (Ronald Cools)
+# Same fix
+echo "Test 2 (division): Results of divisions are"
+bc <<ENDSCRIPT2
+    scale=45
+    a=999.999000000000000000000167001
+    1/a
+    10/a
+    100/a
+    1000/a
+    10000/a
+ENDSCRIPT2
+echo "Results should be"
+echo ".001000001000001000001000000832999665998498997"
+echo ".010000010000010000010000008329996659984989973"
+echo "0.100000100000100000100000083299966599849899733"
+echo "1.000001000001000001000000832999665998498997331"
+echo "10.000010000010000010000008329996659984989973319"
+echo ""
+
+# Error at computation of scale. Found by Heinrich Schueth"
+# Fix in dc.c line 60ff (see diffs above)"
+echo "Test 3 (scale): Result of multiplication is"
+bc <<ENDSCRIPT3
+    scale=64
+    a=1/9
+    a*a
+ENDSCRIPT3
+echo "Result should be"
+echo ".0123456790123456790123456790123456790123456790123456790123456790"

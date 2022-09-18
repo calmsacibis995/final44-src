@@ -1,0 +1,56 @@
+Return-Path: <dpk@BRL-VGR.ARPA>
+Date:     Wed, 14 Nov 84 1:28:22 EST
+From: dpk@BRL-VGR.ARPA
+Subject:  brl-vgr Bug Report
+Sender: dpk@BRL-VGR.ARPA
+Subject: netstat is grossly inefficient for stupid reason
+Index:	ucb/netstat/inet.c 4.2BSD Fix
+
+Description:
+	In inet.c:inetname(), netstat stupidly checks for the
+	special case of INADDR_ANY (a non-host) only after a linear
+	search through the entire host table.  What is worse,
+	it will search the ENTIRE table for every INADDR_ANY socket,
+	looking for the non-existent entry.
+
+Repeat-By:
+	Run "netstat -a" and watch how slow it is.  To be more
+	graphic, start up a bunch of processes which hang an accept()
+	on INTERNET sockets (say 50 or 100), and make sure your host
+	table has several hundred entries (like the ARPA host table).
+	Your netstat -a will take FOREVER to complete.
+
+Fix:
+	This fix is trivial and will make netstat go MUCH MUCH faster,
+	over an order of magnitude faster on our system for a netstat -a.
+	I have included a diff listing, although the line number will be
+	off by a constant due to a header we stuck on the file (~8 lines).
+	Basically, move the check for INADDR_ANY before the search
+	through the host table which you KNOW will fail.
+	This is a reposting since it did not make it to Berkeley or
+	onto the Bug List from MT. XINU.  This fix is EASY.
+
+diff inet.c.old inet.c
+4c4
+<  * $Revision: 1.2 $
+---
+>  * $Revision: 1.3 $
+6a7,9
+>  * Revision 1.3  84/07/04  01:09:36  dpk
+>  * Moved check for INADDR_ANY in inetname for efficiency
+>  * 
+12c15
+< static char RCSid[] = "@(#)$Header: inet.c,v 1.2 84/07/04 01:07:20 dpk BRL $";
+---
+> static char RCSid[] = "@(#)$Header: inet.c,v 1.3 84/07/04 01:09:36 dpk BRL $";
+312a316,319
+> 	if (in.s_addr == INADDR_ANY) {	/* A quick check for the easy case */
+> 		strcpy(line, "*");
+> 		return (line);
+> 	}
+329,331c336
+< 	if (in.s_addr == INADDR_ANY)
+< 		strcpy(line, "*");
+< 	else if (cp)
+---
+> 	if (cp)

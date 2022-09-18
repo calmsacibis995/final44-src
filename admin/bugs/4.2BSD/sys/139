@@ -1,0 +1,54 @@
+Return-Path: <mogul@Gregorio>
+Date: Wed, 21 Nov 84 14:01:20 pst
+From: Jeff Mogul <mogul@Gregorio>
+Subject: bug in if_en.c makes ifinet point to wrong interface (Vax)
+Index: 	sys/vaxif/if_en.c 4.2BSD Fix
+
+Description:
+	The pointer ifinet is used in ip_input.c to check incoming
+	packets quickly, if possible.  However, on a machine whose only
+	interface is a 3Mbit (experimental) EtherNet, ifinet is set
+	to point to the loopback pseudo-interface, not the ethernet.
+	This slows down incoming packet handling ... slightly, but
+	why not get it right?
+Repeat-By:
+	Boot a system with a 3Mbit interface and no others.
+	% adb /vmunix /dev/kmem
+	ifinet/X
+	_ifinet
+	_ifinet:	8003a1f0
+	8003a1f0/X
+	_loif
+	_loif:		800346b0
+
+	Note that ifinet points to the loopback device, not the ethernet.
+Fix:
+	Unlike the 10Mbit drivers (if_il.c, if_ec.c, if_de.c), if_en.c
+	doesn't set the if_addr.sa_family field in the attach routine,
+	but only in the ensetaddr routine.  Since ensetaddr is not called
+	until /etc/rc, and ifinet is set when ip_init() is called from
+	domaininit(), called from main(), the family is set too late
+	to make ifinet meaningful.
+	
+	Following the example of if_il.c et al., I changed enattach() in
+	if_en.c to set the address family.  This makes things work.
+
+*** if_en.c.old	Wed Nov 21 13:22:03 1984
+--- if_en.c	Wed Nov 21 13:46:22 1984
+***************
+*** 149,154
+  #ifdef	IPSUBNET
+  	es->es_if.if_ipsubnwidth = 0;
+  #endif	IPSUBNET
+  	es->es_if.if_init = eninit;
+  	es->es_if.if_output = enoutput;
+  	es->es_if.if_ioctl = enioctl;
+
+--- 149,155 -----
+  #ifdef	IPSUBNET
+  	es->es_if.if_ipsubnwidth = 0;
+  #endif	IPSUBNET
++ 	es->es_if.if_addr.sa_family = AF_INET;
+  	es->es_if.if_init = eninit;
+  	es->es_if.if_output = enoutput;
+  	es->es_if.if_ioctl = enioctl;

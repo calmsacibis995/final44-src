@@ -1,0 +1,84 @@
+From @emory.arpa:arnold@EMORYU1.ARPA  Tue Jul 21 14:11:56 1987
+Date: Tue, 21 Jul 87 16:55:22 EDT
+From: "Arnold D. Robbins" <arnold@EMORYU1.ARPA>
+Subject: /usr/ucb/systat does not allow access to subsystem commands
+Index: ucb/systat/cmds.c 4.3BSD
+
+Description:
+	The command() routine never reaches the piece of code that checks
+	if a command should be passed to the currently running "subsystem"
+	of systat, e.g. iostat or vmstat. Any valid command for such a
+	subsystem produces an ambiguous error command.
+Repeat-By:
+	Run systat, give it the "iostat" command, and then the "numbers"
+	command. Watch it complain.
+Fix:
+	Apply the following patch:
+
+*** /tmp/,RCSt1011662	Tue Jul 21 16:45:33 1987
+--- cmds.c	Tue Jul 21 16:43:53 1987
+***************
+*** 88,94 ****
+          }
+  	p = lookup(cmd);
+  	if (p == (struct cmdtab *)-1) {
+! 		error("%s: Ambiguous command.", cmd);
+  		goto done;
+  	}
+          if (p) {
+--- 88,99 ----
+          }
+  	p = lookup(cmd);
+  	if (p == (struct cmdtab *)-1) {
+! 		if (curcmd->c_cmd == 0)
+! 			error("%s: Ambiguous command.", cmd);
+! 		else if ((*curcmd->c_cmd)(cmd, cp) == 0)
+! 			error("%s: Unknown command.", cmd);
+! 		/* else
+! 			all ok */
+  		goto done;
+  	}
+          if (p) {
+***************
+*** 118,125 ****
+                  status();
+  		goto done;
+          }
+- 	if (curcmd->c_cmd == 0 || !(*curcmd->c_cmd)(cmd, cp))
+- 		error("%s: Unknown command.", cmd);
+  done:
+  	sigsetmask(omask);
+  }
+--- 123,128 ----
+==============================================================
+Path: seismo!gatech!bloom-beacon!husc6!mit-eddie!ll-xn!ames!ptsfa!ihnp4!inuxc!iuvax!pur-ee!newton.physics.purdue.edu!wwc
+From: wwc@newton.physics.purdue.edu (William W. Carlson)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: /usr/ucb/systat does not allow access to subsystem commands
+
+A better fix is in the lookup() function (return of 0 means not found,
+return of -1 means ambiguous):
+
+Bill Carlson
+wwc@newton.physics.purdue.edu
+..!ihnp4!pur-ee!wwc
+
+*** cmds.c.old	Thu Jul 23 10:46:13 1987
+--- cmds.c	Thu Jul 23 08:31:05 1987
+***************
+*** 123,129
+  	longest = 0;
+  	nmatches = 0;
+! 	found = (struct cmdtab *)-1;
+  	for (c = cmdtab; p = c->c_name; c++) {
+  		for (q = name; *q == *p++; q++)
+  			if (*q == 0)		/* exact match? */
+
+--- 123,129 -----
+  	longest = 0;
+  	nmatches = 0;
+! 	found = (struct cmdtab *)0;
+  	for (c = cmdtab; p = c->c_name; c++) {
+  		for (q = name; *q == *p++; q++)
+  			if (*q == 0)		/* exact match? */
+

@@ -1,0 +1,279 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Fri, 8 Jun 84 19:10:23 pdt
+To: sdcsvax!ucbvax!4bsd-bugs
+Subject: Autoconfigure doesn't find overlapping disk/tape controllers
+Index: sys/vax/autoconf.c 4.2BSD
+
+Description:
+	When the system is running through autoconfiguration, it can
+	miss the fact that two mass storage devices are claimed to be
+	at the same CSR.  Moreover the system does not complain if the
+	register set of one controller overlaps with another.
+
+Repeat-By:
+	We had the following lines in our config file:
+
+	----------------------------------------------------------------
+	controller	sc0	at uba0 csr 0176700		vector upintr
+	disk		up0	at sc0 drive 0
+	disk		up1	at sc0 drive 1
+	controller	sc1	at uba0 csr 0176600		vector upintr
+	disk		up2	at sc1 drive 0
+	disk		up3	at sc1 drive 6
+	controller	sc2	at uba0 csr 0176500		vector upintr
+	disk		up4	at sc2 drive 0
+	disk		up5	at sc2 drive 1
+	----------------------------------------------------------------
+
+	Only sc0 was actually in the system.  The default CSR address
+	for the 'up' driver is 0176700.  The result was that the system
+	did the following when booted:
+
+	----------------------------------------------------------------
+	...
+	sc0 at uba0 csr 176700 vec 254, ipl 15
+	up0 at sc0 slave 0
+	sc1 at uba0 csr 176700 didn't interrupt
+	sc2 at uba0 csr 176700 didn't interrupt
+	...
+	----------------------------------------------------------------
+
+	Two things happened here: for sc1 and sc2, the stated CSR was
+	not active, so the system tried the default CSR; and the system
+	did not realize that the default CSR was already taken.
+
+Fix:
+	I have two gripes with the autoconfigure code.  I don't want
+	the system to check the 'default address' if the specified CSR
+	is not present; and the system should not attempt to locate a
+	device in a place in the Unibus I/O page where another device
+	has already found.  (The 'default address' can still be used by
+	specifying an address of 0 in the config file.) The following
+	changes to unifind() in autoconfigure.c make the first behavior
+	a compile-time option, and fix the second.  Only the part that
+	turns off checking for default addresses has been tested, but
+	it all compiles and runs okay.
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1021690	Fri Jun  8 15:46:41 1984
+	--- autoconf.c	Tue Jun  5 17:21:46 1984
+	***************
+	*** 386,392
+		u_short *reg, *ap, addr;
+		struct uba_hd *uhp;
+		struct uba_driver *udp;
+	! 	int i, (**ivec)(), haveubasr;
+		caddr_t ualloc, zmemall();
+		extern int catcher[256];
+	  
+
+	--- 386,392 -----
+		u_short *reg, *ap, addr;
+		struct uba_hd *uhp;
+		struct uba_driver *udp;
+	! 	int i, warned, (**ivec)(), haveubasr;
+		caddr_t ualloc, zmemall();
+		extern int catcher[256];
+	  
+	***************
+	*** 478,484
+			 * at that address, try all the standard addresses
+			 * in the driver til we find it
+			 */
+	! 	    for (ap = udp->ud_addr; addr || (addr = *ap++); addr = 0) {
+	  
+			if (ualloc[ubaoff(addr)])
+				continue;
+
+	--- 478,495 -----
+			 * at that address, try all the standard addresses
+			 * in the driver til we find it.
+			 */
+	! #ifdef	STANDARDAUTOCONF
+	! 		ap = udp->ud_addr;
+	! #else	STANDARDAUTOCONF
+	! 		/*
+	! 		 * Only check for standard devices if addr is zero.
+	! 		 */
+	! 		if (addr)
+	! 			ap = &addr;
+	! 		else
+	! 			ap = udp->ud_addr;
+	! #endif	STANDARDAUTOCONF
+	! 	    for (; addr || (addr = *ap++); addr = 0) {
+	  
+			if (ualloc[ubaoff(addr)]) {
+				if (ap == &addr)
+	***************
+	*** 480,486
+			 */
+		    for (ap = udp->ud_addr; addr || (addr = *ap++); addr = 0) {
+	  
+	! 		if (ualloc[ubaoff(addr)])
+				continue;
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+
+	--- 491,500 -----
+	  #endif	STANDARDAUTOCONF
+		    for (; addr || (addr = *ap++); addr = 0) {
+	  
+	! 		if (ualloc[ubaoff(addr)]) {
+	! 			if (ap == &addr)
+	! 				printf("WARNING: %s%d: csr %o already used\n",
+	! 				    udp->ud_mname, um->um_ctlr, addr);
+				continue;
+			}
+			reg = ubaddr(addr);
+	***************
+	*** 482,487
+	  
+			if (ualloc[ubaoff(addr)])
+				continue;
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+				continue;
+
+	--- 496,502 -----
+					printf("WARNING: %s%d: csr %o already used\n",
+					    udp->ud_mname, um->um_ctlr, addr);
+				continue;
+	+ 		}
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+				continue;
+	***************
+	*** 512,517
+				continue;
+			}
+			printf("vec %o, ipl %x\n", cvec, br);
+			um->um_alive = 1;
+			um->um_ubanum = numuba;
+			um->um_hd = &uba_hd[numuba];
+
+	--- 527,540 -----
+				continue;
+			}
+			printf("vec %o, ipl %x\n", cvec, br);
+	+ 		warned = 0;
+	+ 		while ( --i >= 0 )
+	+ 			if (! warned && ualloc[ubaoff(addr+i)]) {
+	+ 				printf("WARNING: %s%d: Address overlap at %o\n",
+	+ 				    udp->ud_mname, um->um_ctlr, (addr+i)&~01);
+	+ 				++warned;
+	+ 			} else
+	+ 				ualloc[ubaoff(addr+i)] = 1;
+			um->um_alive = 1;
+			um->um_ubanum = numuba;
+			um->um_hd = &uba_hd[numuba];
+	***************
+	*** 558,563
+			    ui->ui_alive || ui->ui_slave != -1)
+				continue;
+			addr = (u_short)ui->ui_addr;
+	  
+		    for (ap = udp->ud_addr; addr || (addr = *ap++); addr = 0) {
+			
+
+	--- 581,594 -----
+			    ui->ui_alive || ui->ui_slave != -1)
+				continue;
+			addr = (u_short)ui->ui_addr;
+	+ #ifdef	STANDARDAUTOCONF
+	+ 		ap = udp->ud_addr;
+	+ #else	STANDARDAUTOCONF
+	+ 		if (addr)
+	+ 			ap = &addr;
+	+ 		else
+	+ 			ap = udp->ud_addr;
+	+ #endif	STANDARDAUTOCONF
+	  
+		    for (; addr || (addr = *ap++); addr = 0) {
+			
+	***************
+	*** 559,565
+				continue;
+			addr = (u_short)ui->ui_addr;
+	  
+	! 	    for (ap = udp->ud_addr; addr || (addr = *ap++); addr = 0) {
+			
+			if (ualloc[ubaoff(addr)])
+				continue;
+
+	--- 590,596 -----
+				ap = udp->ud_addr;
+	  #endif	STANDARDAUTOCONF
+	  
+	! 	    for (; addr || (addr = *ap++); addr = 0) {
+			
+			if (ualloc[ubaoff(addr)]) {
+				if (ap == &addr)
+	***************
+	*** 561,567
+	  
+		    for (ap = udp->ud_addr; addr || (addr = *ap++); addr = 0) {
+			
+	! 		if (ualloc[ubaoff(addr)])
+				continue;
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+
+	--- 592,601 -----
+	  
+		    for (; addr || (addr = *ap++); addr = 0) {
+			
+	! 		if (ualloc[ubaoff(addr)]) {
+	! 			if (ap == &addr)
+	! 				printf("WARNING: %s%d: csr %o already used\n",
+	! 				    udp->ud_mname, um->um_ctlr, addr);
+				continue;
+			}
+			reg = ubaddr(addr);
+	***************
+	*** 563,568
+			
+			if (ualloc[ubaoff(addr)])
+				continue;
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+				continue;
+
+	--- 597,603 -----
+					printf("WARNING: %s%d: csr %o already used\n",
+					    udp->ud_mname, um->um_ctlr, addr);
+				continue;
+	+ 		}
+			reg = ubaddr(addr);
+			if (badaddr((caddr_t)reg, 2))
+				continue;
+	***************
+	*** 593,600
+				continue;
+			}
+			printf("vec %o, ipl %x\n", cvec, br);
+	! 		while (--i >= 0)
+	! 			ualloc[ubaoff(addr+i)] = 1;
+			ui->ui_hd = &uba_hd[numuba];
+			for (ivec = ui->ui_intr; *ivec; ivec++) {
+				ui->ui_hd->uh_vec[cvec/4] =
+
+	--- 628,641 -----
+				continue;
+			}
+			printf("vec %o, ipl %x\n", cvec, br);
+	! 		warned = 0;
+	! 		while ( --i >= 0 )
+	! 			if (! warned && ualloc[ubaoff(addr+i)]) {
+	! 				printf("WARNING: %s%d: Address overlap at %o\n",
+	! 				    udp->ud_mname, um->um_ctlr, (addr+i)&~01 );
+	! 				++warned;
+	! 			} else
+	! 				ualloc[ubaoff(addr+i)] = 1;
+			ui->ui_hd = &uba_hd[numuba];
+			for (ivec = ui->ui_intr; *ivec; ivec++) {
+  			ui->ui_hd->uh_vec[cvec/4] =
+	----------------------------------------------------------------
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016  sdcsvax!sdchema!donn@nosc.ARPA

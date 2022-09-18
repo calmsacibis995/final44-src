@@ -1,0 +1,54 @@
+From balsup@tfs.COM  Tue Feb 18 15:34:36 1992
+Date: Tue, 18 Feb 92 15:35:03 PST
+From: balsup@tfs.COM (Billie Alsup)
+Subject: i386 swtch corrupts stack 
+Index: sys net2
+Apparently-To: net2-bugs@BERKELEY.EDU
+
+Description:
+	in i386/i386/locore.s, the swtch routine uses the wrong base
+	register when trying to set the FP_NEEDSRESTORE bit
+	in the pcb flags field.  the base register used is actually
+	the top of stack, rather than the new curpcb field.
+	this problem only occurs when NPX is defined.
+	this problem only when a process uses floating point,
+	is switched out, and then attempts to switch back in.
+	if the process hadn't used floating point, the problem would
+	not appear.
+
+	Symtoms: 
+	   1. sporadic floating point operation.  for example, "df" may
+		  work in single user mode if all required blocks are in
+		  the buffer cache (and no context switch occurs).  "df"
+		  would fail if a context switch occurred after a 
+		  floating point operation were performed (ie when printing
+		  the statistics for the second filesystem).
+	   2. miscellaneous exceptions/traps due to the stack corruption.
+
+Repeat-By:
+	inspect the code.  the problem will be obvious.
+	in the code, %edx correctly points to the current pcb.
+	%ecx points to the top of stack.  as you can see,
+	when setting the FP_NEEDSRESTORE bit, the wrong base
+	register is used.
+
+    #ifdef NPX
+        movb    PCB_FLAGS(%edx),%al
+        /* if fp could be used, a dna trap will do a restore */
+        testb   $ FP_WASUSED,%al
+        je  1f
+        orb $ FP_NEEDSRESTORE,PCB_FLAGS(%ecx)
+    1:
+    #endif
+
+Fix:
+	use the correct base register (%edx).
+
+	# locore.s.1 contains a fix for ovbcopy, documented previously
+	diff locore.s locore.s.1
+    1052c1052
+    <       orb     $ FP_NEEDSRESTORE,PCB_FLAGS(%edx)
+    ---
+    >       orb     $ FP_NEEDSRESTORE,PCB_FLAGS(%ecx)
+
+

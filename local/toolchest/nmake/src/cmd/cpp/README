@@ -1,0 +1,277 @@
+November 29, 1982	updated to	May 30, 1985
+
+Files in this directory form the C preprocessor, which handles '#include'
+files and macro definition and expansion for the C compiler.
+
+To create the executable file 'cpp' in the current directory:
+	make
+
+To install the preprocessor 'cpp' so it will be used by the C compiler:
+	# safety first: backup the existing version
+	cp /lib/cpp /lib/ocpp
+	# install the new version
+	cp cpp /lib/cpp
+
+Invocation
+	cpp [-CEPS] [-Dname] ... [-Dname=def] ... [-Idirectory] ...
+		[-Nfile] [-Uname] ... [<infile> [<outfile>]]
+
+	If there are two non-flag arguments then the first is the name of the
+	input file and the second is the name of the output file.  If there is
+	one non-flag argument then it is the name of the input file and the
+	output is written on the standard output.  If there are no non-flag
+	arguments then the input is taken from the standard input and the output
+	is written on the standard output.  Flag arguments are:
+
+		-C	retain comments in output
+		-Dname	define name as "1"
+		-Dname=def	define name as def
+		-E	ignored
+		-Idirectory	add directory to search list for #include files
+		-Nfile	use "file" as the input file name if input is stdin
+		-P	don't insert lines "# 12 \"foo.c\"" into output
+		-S	scan file and output dependency info
+		-X	scan file but do not output any generated text
+		-Uname	undefine name
+		
+Documentation clarifications:
+	Symbols defined on the command line by "-Dfoo" are defined as "1",
+		i.e., as if they had been defined by "#define foo 1" or
+		"-Dfoo=1".
+	The directory search order for #include files is
+		1) the directory of the input file (if not in <...>)
+		2) the directories specified by -I, in left-to-right order
+		3) the standard directory(s) (which for UNIX is /usr/include)
+	An unescaped newline (the single character '\n') terminates a
+		character constant or quoted string.
+	An escaped newline (the two-character sequence "\\\n") may be
+		used in the body of a '#define' statement to continue
+		the definition onto the next line.  The escaped newline is
+		converted into a single blank in the macro body.  With
+		the JOIN_LINES switch on "\\\n" is uniformly removed.
+	Comments are uniformly removed (except if the argument -C is specified).
+		They are also ignored, except that a comment terminates a token.
+		Thus "foo/* la di da */bar" may expand 'foo' and 'bar' but
+		will never expand 'foobar'.  If neither 'foo' nor 'bar' is a
+		macro then the output is "foobar", even if 'foobar'
+		is defined as something else.  The file
+			#define foo(a,b)b/**/a
+			foo(1,2)
+		produces "21" because the comment causes a break which enables
+		the recognition of 'b' and 'a' as formals in the string
+		"b/**/a".  The COMMENT_BLANK compile switch causes comments
+		to be replaced by the single character ' '.
+	Macro formal parameters are recognized in '#define' bodies even inside
+		character constants and quoted strings.  The output from
+			#define foo(a) '\a'
+			foo(bar)
+		is the six characters "'\\bar'".  Macro names are not recognized
+		inside character constants or quoted strings during the
+		regular scan.  Thus
+			#define foo bar
+			printf("foo");
+		does not expand 'foo' in the second line, because it is inside
+		a quoted string which is not part of a '#define' macro
+		definition.  Expansion of macro formals inside macro body
+		quoted strings is controlled by the QUOTE_FORMAL compile switch.
+	Macros are not expanded while processing a '#define' or '#undef'.
+		Thus
+			#define foo bletch
+			#define bar foo
+			#undef foo
+			bar
+		produces "foo".  The token appearing immediately after a
+		'#ifdef' or '#ifndef' is not expanded (of course!).
+	Macros are not expanded during the scan which determines the actual
+		parameters to another macro call.  When a macro is expanded,
+		the first step is to put the actual arguments in the
+		corresponding locations in the token-string the macro is
+		defined to be.  The next step is to start to reprocess the
+		token-string as input text.
+
+There are some differences between the new and the old preprocessor.
+
+Bugs fixed:
+	"1.e4" is recognized as a floating-point number, rather than as an
+		opportunity to expand the possible macro name "e4".
+	Any kind and amount of white space (space, tab, newline, vertical tab,
+		formfeed, carriage return) is allowed between a macro name and
+		the left parenthesis which introduces its actual parameters.
+	Any amount of white space is allowed between the beginning of
+		a line and the initial '#' character, as well as between
+		the '#' character and the directive name.
+	The comma operator is valid in preprocessor '#if' statements.
+	Macros with parameters are valid in preprocessor '#if' statements.
+	Single-character character constants are valid in preprocessor '#if'
+		statements.
+	Newlines are put out in the proper place when a multiline comment
+		is not passed through to the output.
+	The following example expands to "# # #" :
+		#define foo #
+		foo foo foo
+	The UNDEF_MACRO compile switch causes a macro to be temporarily
+		undefined during its expansion.  This allows the following:
+			#define f(a,b,c) f(c,a)
+		If UNDEF_MACRO is not set then the invocation of some recursive
+		macros is trapped and the recursion forcibly terminated with an
+		error message.  The recursions that are trapped are the ones
+		in which the nesting level is non-decreasing from some point on.
+		In particular,
+			#define a a
+			a
+		will be detected.  (Use "#undef a" if that is what you want.)
+		The recursion
+			#define a c b
+			#define b c a
+			#define c foo
+			a
+		will not be detected because the nesting level decreases after
+		each expansion of "c".
+	
+Stylistic choice:
+	Nothing (not even newlines) is output while a false '#if', '#ifdef',
+		or '#ifndef' is in effect.  Thus when all conditions become true
+		a line of the form "# 12345 \"foo.c\"" is output (unless -P).
+	Error and warning messages always appear on standard error (file
+		descriptor 2).
+	Mismatch between the number of formals and actuals in a macro call
+		produces only a warning, and not an error.  Excess actuals
+		are ignored; missing actuals are turned into null strings.
+	Comments which work their way into #if lines no longer cause a
+		syntax error.
+	Newlines found during the scan for actual arguments are changed to
+		blanks so that confusing (for cpp) situations do not occur.
+	Formfeeds (^L) act like newlines w.r.t. recognizing # as the flag
+		for cpp.
+
+Incompatibility:
+	The virgule '/' in "a=/*b" is interpreted as the first character of
+		the pair "/*" which introduces a comment, rather than as the
+		second character of the divide-and-replace operator "=/".
+		This incompatibility reflects the recent change in the C
+		language which made "a/=*b" the valid way to write such a
+		statement if the meaning "a=a/ *b" is intended.
+	__FILE__ and __LINE__ have been replaced by ppsymbol(FILE) and
+		ppsymbol(LINE) respectively.
+	Each file is only included once unless the multiple #include
+		statements appear in the same file.  Any children of
+		such a multiply included file are also included more
+		than once.
+
+ANSI incompatability (with the ANSI related compile switches on):
+	From the X3J11/85-008 ANSI C standard draft document:
+	B.1.1.2	(2) physical source lines are not joined into logical lines
+	C.8.1	#include "file" is relative to the directory of the input file.
+
+Additions:
+	The include file "configure.h" contains all of the compile time
+		switch definitions.
+	"#elif", "#else if", "#else ifdef" and "#else ifndef" forms are
+		now recognized.
+	The include file <default.h> is automatically included before
+		any other processing (even before -U and -D processing).
+		Predefined symbols should be placed here.  This helps
+		in cross-compiling environments.  The DEFAULT_INCLUDE
+		compile switch controls this feature.
+	Each include file is checked to see if it has already been included
+		(using info from stat(2)) so that each file is included
+		only once.  The line "#pragma multiple" in a file allows
+		that file to be included any number of times (#pragma multiple
+		must appear before any #include to take affect). This
+		feature dispenses with many kludgy #ifdef's related to
+		include files.  A file may always be included more than
+		once if the #include statements appear in the same file.
+		The ONCE_INCLUDE compile switch controls this feature.
+	The builtin macro "ppsymbol(sym)" expands preprocess time symbols:
+
+			ppsymbol(FILE)	the current input file name
+			ppsymbol(LINE)	the current line number
+			ppsymbol(DATE)	MMM DD YYYY
+			ppsymbol(TIME)	HH:MM:SS
+
+	"#pragma notext" turns off output to the output file until the next
+		"#pragma text".  The "#..." directives are still interpreted,
+		allowing the value of defined variables to be tested.
+	"#pragma class" is a synonym for the obsolete "#class".  "#pragma <arg>"
+		should minimize the proliferation of new cpp directives.
+	"#assert predicate(argument)" asserts conditions that may be tested
+		in "#if" statements.  `predicate(argument)' does not clobber
+		any "#define" symbols or substitutions.  However,
+		"#define x(y)" overrides "#assert x(y)" in #if expressions.
+		Suggested default predicate names and arguments
+		(asserted in <default.h>) are:
+
+			architecture(vax)	{pdp, 3b, mc68000, etc.}
+			model(780)		{03, 20S, 68010, etc.}
+			machine(pc6300)		{package name}
+			system(unix)		{venix, xinu, etc.}
+			release(system5)	{research, bsd, etc.}
+			version(5.2)		version
+		
+		Using #assert can eliminate the (mostly undocumented) 
+		magic cookies like vax, pdp11, sun, unix, etc..
+		Note that predicate names are identifiers and must
+		must match [a-zA-Z_][a-zA-Z_.0-9]*.  Predicate
+		arguments may not contain newline, '(' or ')' characters.
+	Directive names after # are not expanded.  This allows new
+		directives to be added without being clobbered by
+		old programs.
+	Builtin functions in #if expressions:
+		defined(name)		1 if name has been #define'd
+		exists(file)		1 if file can be found using -I dirs
+		exists("file")		1 if file can be found using -I dirs
+		exists(<file>)		1 if file can be found using -I dirs
+		identifiers(file,id,..)	number of null terminated id's found
+					in file -- leading `_' chars are ignored
+					if an archive with symbol directory
+					then only symbol directory is searched
+					(used to process new makefiles)
+	If the environment variable CPPINCLUDE is defined then its
+		value is used instead of /usr/include for the default
+		include file directory.  The -H option can also be
+		used to override both CPPINCLUDE and /usr/include.
+	All internal structures except #if nesting, the number of macro
+		formals and file path name lengths have dynamic sizes.
+		The limits are now defined by the amount of run time memory
+		available.
+	Single and double quote strings may be escaped to allow macro
+		expansion within quoted character and string constants:
+			#define a b
+			s = \"a";
+			c = \'a';
+		expands to
+			s = "b";
+			c = 'b';
+		Notice that only the first quote character is escaped.
+		The QUOTE_ESCAPE compile switch controls this feature.
+	Expansion of macro formals within quotes in a macro body
+		(a great ANSI debate) is controlled by the QUOTE_FORMAL
+		compile switch.
+	The -S option outputs the following information (-P -S -X outputs
+		ONLY this information):
+			#info include file path
+				'file' is being included at this point.
+				'path' is the expanded path name of 'file'.
+			#info end file
+				The end of include file 'file' has been reached.
+			#info parameter file
+				Include file 'file' is a parameter file.
+				Parameter files contain only #define directives,
+				comments and #include directives on other
+				parameter files.
+			#info reference file symbol [ value ]
+				'symbol' defined in 'file' has been referenced.
+				'value' is the current value of 'symbol'.
+				If 'file' is - then 'symbol' can only be
+				defined by -D on the command line.
+			#info unused file
+				none of the symbols defined in the parameter
+				file 'file' have been used.
+		The #info lines can be used to accurately determine file
+		and symbol dependencies.
+	Extra characters are allowed after #else and #endif if they match
+		the corresponding #if, #ifdef or #ifndef symbol.  A single
+		leading '!' char is ignored in the matching.  The
+		MATCH_EXTRA compile switch controls this feature.
+	The ANSI trigraph characters ??* are expanded when the input files
+		are read.  The TRIGRAPH compile switch controls this feature.

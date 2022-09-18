@@ -1,0 +1,167 @@
+Return-Path: <jdb@s1-c.arpa>
+Date: Fri, 30 Aug 85 11:45:13 PDT
+From: John Bruner <jdb@s1-c.arpa>
+Subject: rlogin drops output when stop/start characters change
+Index: ucb/rlogin.c 4.2 Fix
+
+Description:
+	"rlogin" throws away output whenever the stop/start
+	characters are changed to/from ^S/^Q.  This is most
+	noticeable when using a shell which provides its
+	own input line editing (e.g. "tcsh"), and often
+	causes the last portion of the output from the
+	previous program to be lost.
+
+Repeat-By:
+	Use "rlogin" to connect to a machine which has such
+	a shell and enable that shell's line editor.  Then
+	run some commands which produce quite a bit of
+	output (e.g. "cat /etc/passwd").  The problem is
+	timing dependent, but it will probably show up after
+	a couple of attempts.
+
+Fix:
+	"rlogind", the remote daemon for "rlogin", operates
+	the remote pseudo-terminal in packet mode.  Each time
+	that the stop/start characters are changed to/from
+	^S/^Q it receives a TIOCPKT_DOSTOP or TIOCPKT_NOSTOP
+	packet from the master side of the pty.  It sends this
+	as an out-of-band message to the local "rlogin".
+	"rlogind" also sends an out-of-band message if it
+	receives a TIOCPKT_FLUSHWRITE packet from the master
+	side of the pty.  (I haven't look at the code myself,
+	but I'm told that the kernel never produces this
+	packet type.)
+
+	The local "rlogin" process always flushes pending
+	output when it receives an out-of-band message.
+	After flushing output it examines the message to
+	determine if it was TIOCPKT_[DN]OSTOP; if so, then
+	it sets or resets the stop/start characters on the
+	local tty.  Because it unconditionally flushes output,
+	a TIOCPKT_[DN]OSTOP message causes output to be lost.
+
+	"rlogin" cannot simply recv() the out-of-band message
+	because it uses the position of this message among
+	the in-band data to determine how much output must
+	be flushed.  (It does this with the undocumented
+	SIOCATMARK ioctl.)  In order to handle this properly,
+	it must "peek" at the message first to determine
+	its contents, flush output if necessary, and then
+	recv() the message and take any other appropriate
+	actions.
+
+	Guy Harris at Sun suggested that I include code to
+	handle TIOCKPT_FLUSHREAD messages for completeness.
+	The following includes that change as well:
+
+***************
+*** 20,25
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/wait.h>
+  
+  #include <netinet/in.h>
+  
+
+--- 20,26 -----
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/wait.h>
++ #include <sys/file.h>
+  
+  #include <netinet/in.h>
+  
+***************
+*** 362,368
+  
+  oob()
+  {
+! 	int out = 1+1, atmark;
+  	char waste[BUFSIZ], mark;
+  
+  	ioctl(1, TIOCFLUSH, (char *)&out);
+
+--- 363,369 -----
+  
+  oob()
+  {
+! 	int out = FWRITE, in = FREAD, atmark;
+  	char waste[BUFSIZ], mark;
+  
+  	recv(rem, &mark, 1, MSG_OOB|MSG_PEEK);
+***************
+*** 365,375
+  	int out = 1+1, atmark;
+  	char waste[BUFSIZ], mark;
+  
+! 	ioctl(1, TIOCFLUSH, (char *)&out);
+! 	for (;;) {
+! 		if (ioctl(rem, SIOCATMARK, &atmark) < 0) {
+! 			perror("ioctl");
+! 			break;
+  		}
+  		if (atmark)
+  			break;
+
+--- 366,383 -----
+  	int out = FWRITE, in = FREAD, atmark;
+  	char waste[BUFSIZ], mark;
+  
+! 	recv(rem, &mark, 1, MSG_OOB|MSG_PEEK);
+! 	if (mark & TIOCPKT_FLUSHWRITE) {
+! 		ioctl(1, TIOCFLUSH, (char *)&out);
+! 		for (;;) {
+! 			if (ioctl(rem, SIOCATMARK, &atmark) < 0) {
+! 				perror("ioctl");
+! 				break;
+! 			}
+! 			if (atmark)
+! 				break;
+! 			if (read(rem, waste, sizeof (waste)) <= 0)
+! 				break;
+  		}
+  	}
+  	recv(rem, &mark, 1, MSG_OOB);
+***************
+*** 371,380
+  			perror("ioctl");
+  			break;
+  		}
+- 		if (atmark)
+- 			break;
+- 		if (read(rem, waste, sizeof (waste)) <= 0)
+- 			break;
+  	}
+  	recv(rem, &mark, 1, MSG_OOB);
+  	if (mark & TIOCPKT_NOSTOP) {
+
+--- 379,384 -----
+  			if (read(rem, waste, sizeof (waste)) <= 0)
+  				break;
+  		}
+  	}
+  	recv(rem, &mark, 1, MSG_OOB);
+  	if (mark & TIOCPKT_FLUSHREAD)
+***************
+*** 377,382
+  			break;
+  	}
+  	recv(rem, &mark, 1, MSG_OOB);
+  	if (mark & TIOCPKT_NOSTOP) {
+  		notc.t_stopc = -1;
+  		notc.t_startc = -1;
+
+--- 381,388 -----
+  		}
+  	}
+  	recv(rem, &mark, 1, MSG_OOB);
++ 	if (mark & TIOCPKT_FLUSHREAD)
++ 		ioctl(0, TIOCFLUSH, (char *)&in);
+  	if (mark & TIOCPKT_NOSTOP) {
+  		notc.t_stopc = -1;
+  		notc.t_startc = -1;
+--
+  John Bruner (S-1 Project, Lawrence Livermore National Laboratory)
+  MILNET: jdb@mordor [jdb@s1-c.ARPA]	(415) 422-0758
+  UUCP: ...!ucbvax!dual!mordor!jdb 	...!seismo!mordor!jdb

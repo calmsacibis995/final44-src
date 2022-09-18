@@ -1,0 +1,44 @@
+Return-Path: <decvax!philabs!nyit!rick@ucbvax.berkeley.edu>
+From: decvax!philabs!nyit!rick@ucbvax.berkeley.edu
+Date: Mon, 17 Mar 86 17:07:26 est
+Return-Path: <philabs!nyit!rick>
+Subject: VAX 4.2bsd /dev/kmem panic
+
+Index:  sys/vax/locore.s 4.2BSD
+
+Description:
+	It's rather easy for anyone with read access to /dev/kmem to
+	crash a 4.2bsd VAX with a trap-9 (protection fault) panic.
+
+	Apparently, kernacc() (in vax/locore.s) gets confused when
+	called to verify access to a region of memory that straddles
+	P1 and S0 space, ultimately making a wild reference.
+
+	Even well-intentioned utilities such as "ps" and "uptime" can
+	conceivably trip over this bug because they are taking
+	snapshots of data that is changing out from underneath them,
+	and may thus accidentally compute bogus kernel memory addresses
+	and feed them to /dev/kmem.
+
+Repeat-By:
+	char buf[168];
+	main()
+	{
+		int fd;
+
+		fd = open("/dev/kmem", 0);
+		if (fd < 0) {
+			perror("/dev/kmem");
+			exit(1);
+		}
+		lseek(fd, 0x7fffffff, 0); /* begin near the end of P1 space */
+		read(fd, buf, sizeof buf); /* crosses from P1 into S0 space */
+	}
+
+Fix:
+	One possible fix to kernacc() would check for a region
+	that began in one quadrant of virtual memory and ended
+	in a different quadrant.  If so, the existing kernacc
+	logic could be invoked twice, to verify each quadrant's
+	portion independently.  I haven't tried this yet.
+

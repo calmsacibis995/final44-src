@@ -1,0 +1,240 @@
+From mjs@j.cc.purdue.edu  Thu Feb 22 16:15:28 1990
+Date: Thu, 22 Feb 90 19:15:15 -0500
+From: mjs@j.cc.purdue.edu (Michael J Spitzer)
+Subject: rdist fixes
+Index: 	 ucb/rdist 4.3BSD-tahoe
+
+Description:
+	1) In doarrow(), there's code that looks like this
+
+		if (setjmp(env))
+			goto done;
+		[...]
+		makeconn();
+		[...]
+		lfp = fopen(...)
+	  done: [...]
+	        fclose(lfp)
+		
+	    The problem here is that makeconn can call lostconn, which
+	    longjmps back here.  In this case, fclose is passed a nil
+	    pointer. The fixed version makes sure that lfp is non-nil
+	    before fclosing it.
+	
+	2) Rdist uses a variable named tmpfile, which conflicts with
+	    the System V function of the same name (tmpfile is also in
+	    the 4.3 Tahoe libc).  I renamed it.
+	
+	3) There are several magic constants at the beginning of
+	    main.c -- I changed few of them to use the proper symbolic
+	    names.
+	
+Repeat-By:
+	Looking at the code, making the connection fail 
+	in makeconn().
+
+Fix:
+
+	These diffs should apply cleanly to the distributed 4.3T sources.
+
+*** /tmp/,RCSt1002877	Wed Feb 14 23:40:15 1990
+--- defs.h	Wed Feb 14 23:10:35 1990
+***************
+*** 123,129 ****
+  extern int nerrs;		/* number of errors seen */
+  extern int rem;			/* remote file descriptor */
+  extern int iamremote;		/* acting as remote server */
+! extern char tmpfile[];		/* file name for logging changes */
+  extern struct linkbuf *ihead;	/* list of files with more than one link */
+  extern struct passwd *pw;	/* pointer to static area used by getpwent */
+  extern struct group *gr;	/* pointer to static area used by getgrent */
+--- 123,129 ----
+  extern int nerrs;		/* number of errors seen */
+  extern int rem;			/* remote file descriptor */
+  extern int iamremote;		/* acting as remote server */
+! extern char tempfile[];		/* file name for logging changes */
+  extern struct linkbuf *ihead;	/* list of files with more than one link */
+  extern struct passwd *pw;	/* pointer to static area used by getpwent */
+  extern struct group *gr;	/* pointer to static area used by getgrent */
+===================================================================
+RCS file: RCS/docmd.c,v
+retrieving revision 4.3.2.1
+diff  -c -r4.3.2.1 docmd.c
+*** /tmp/,RCSt1002877	Wed Feb 14 23:40:16 1990
+--- docmd.c	Wed Feb 14 23:28:10 1990
+***************
+*** 121,128 ****
+  		signal(SIGPIPE, lostconn);
+  		if (!makeconn(rhost))
+  			return;
+! 		if ((lfp = fopen(tmpfile, "w")) == NULL) {
+! 			fatal("cannot open %s\n", tmpfile);
+  			exit(1);
+  		}
+  	}
+--- 121,128 ----
+  		signal(SIGPIPE, lostconn);
+  		if (!makeconn(rhost))
+  			return;
+! 		if ((lfp = fopen(tempfile, "w")) == NULL) {
+! 			fatal("cannot open %s\n", tempfile);
+  			exit(1);
+  		}
+  	}
+***************
+*** 151,164 ****
+  done:
+  	if (!nflag) {
+  		(void) signal(SIGPIPE, cleanup);
+! 		(void) fclose(lfp);
+  		lfp = NULL;
+  	}
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tmpfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
+! 		(void) unlink(tmpfile);
+  		for (; ihead != NULL; ihead = ihead->nextp) {
+  			free(ihead);
+  			if ((opts & IGNLNKS) || ihead->count == 0)
+--- 151,165 ----
+  done:
+  	if (!nflag) {
+  		(void) signal(SIGPIPE, cleanup);
+! 		if (lfp != NULL) /* we can longjmp here */
+! 			(void) fclose(lfp);
+  		lfp = NULL;
+  	}
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tempfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
+! 		(void) unlink(tempfile);
+  		for (; ihead != NULL; ihead = ihead->nextp) {
+  			free(ihead);
+  			if ((opts & IGNLNKS) || ihead->count == 0)
+***************
+*** 333,339 ****
+  	if (nflag || (options & VERIFY))
+  		tfp = NULL;
+  	else {
+! 		if ((tfp = fopen(tmpfile, "w")) == NULL) {
+  			error("%s: %s\n", stamp, sys_errlist[errno]);
+  			return;
+  		}
+--- 334,340 ----
+  	if (nflag || (options & VERIFY))
+  		tfp = NULL;
+  	else {
+! 		if ((tfp = fopen(tempfile, "w")) == NULL) {
+  			error("%s: %s\n", stamp, sys_errlist[errno]);
+  			return;
+  		}
+***************
+*** 358,366 ****
+  		(void) fclose(tfp);
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tmpfile, NULL, sc->sc_args, lastmod);
+  	if (!nflag && !(options & VERIFY))
+! 		(void) unlink(tmpfile);
+  }
+  
+  /*
+--- 359,367 ----
+  		(void) fclose(tfp);
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tempfile, NULL, sc->sc_args, lastmod);
+  	if (!nflag && !(options & VERIFY))
+! 		(void) unlink(tempfile);
+  }
+  
+  /*
+===================================================================
+RCS file: RCS/main.c,v
+retrieving revision 4.3.2.1
+diff  -c -r4.3.2.1 main.c
+*** /tmp/,RCSt1002877	Wed Feb 14 23:40:17 1990
+--- main.c	Wed Feb 14 23:15:06 1990
+***************
+*** 34,41 ****
+   */
+  
+  char	*distfile = NULL;
+! char	tmpfile[] = "/tmp/rdistXXXXXX";
+! char	*tmpname = &tmpfile[5];
+  
+  int	debug;		/* debugging flag */
+  int	nflag;		/* NOP flag, just print commands without executing */
+--- 34,41 ----
+   */
+  
+  char	*distfile = NULL;
+! char	tempfile[] = "/tmp/rdistXXXXXX";
+! char	*tmpname = &tempfile[5];
+  
+  int	debug;		/* debugging flag */
+  int	nflag;		/* NOP flag, just print commands without executing */
+***************
+*** 45,54 ****
+  
+  FILE	*fin = NULL;	/* input file pointer */
+  int	rem = -1;	/* file descriptor to remote source/sink process */
+! char	host[32];	/* host name */
+  int	nerrs;		/* number of errors while sending/receiving */
+  char	user[10];	/* user's name */
+! char	homedir[128];	/* user's home directory */
+  int	userid;		/* user's user ID */
+  int	groupid;	/* user's group ID */
+  
+--- 45,54 ----
+  
+  FILE	*fin = NULL;	/* input file pointer */
+  int	rem = -1;	/* file descriptor to remote source/sink process */
+! char	host[MAXHOSTNAMELEN+1];	/* host name */
+  int	nerrs;		/* number of errors while sending/receiving */
+  char	user[10];	/* user's name */
+! char	homedir[MAXPATHLEN+1];	/* user's home directory */
+  int	userid;		/* user's user ID */
+  int	groupid;	/* user's group ID */
+  
+***************
+*** 163,169 ****
+  	*hp = NULL;
+  
+  	setreuid(0, userid);
+! 	mktemp(tmpfile);
+  
+  	if (iamremote) {
+  		server();
+--- 163,169 ----
+  	*hp = NULL;
+  
+  	setreuid(0, userid);
+!  	mktemp(tempfile);
+  
+  	if (iamremote) {
+  		server();
+===================================================================
+RCS file: RCS/server.c,v
+retrieving revision 4.3.2.1
+diff  -c -r4.3.2.1 server.c
+*** /tmp/,RCSt1002877	Wed Feb 14 23:40:18 1990
+--- server.c	Wed Feb 14 23:10:23 1990
+***************
+*** 1451,1457 ****
+   */
+  cleanup()
+  {
+! 	(void) unlink(tmpfile);
+  	exit(1);
+  }
+  
+--- 1451,1457 ----
+   */
+  cleanup()
+  {
+! 	(void) unlink(tempfile);
+  	exit(1);
+  }

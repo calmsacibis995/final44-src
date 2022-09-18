@@ -1,0 +1,195 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Fri, 8 Jun 84 18:28:55 pdt
+Subject: Dbx can't access C functions that have blocks containing declarations
+Index: bin/dbx/object.c 4.2BSD
+
+Description:
+	Sometimes when debugging with dbx, mysterious functions like
+	'$b4' or '$b23' appear in the stack trace when the 'where'
+	command is given.  These functions appear to share lines with
+	the function that appears to call them -- for example, if you
+	are stopped in function 'f' which appears to be called by
+	function '$b4' which is in turn called by function 'g', then
+	'f' will appear to be called from the same source file and at
+	the same line number in '$b4' as '$b4' is in 'g'.  Moreover it
+	is impossible to examine local variables in 'g'.
+
+	The common feature of all functions 'g' mentioned above is
+	that they contain blocks or compound statements that have
+	their own declarations.  If you stop in an inner block
+	with declarations, you can print out that block's local
+	variables (although none of the outer local variables),
+	which is a good indication that they are connected with
+	the bug.
+
+Repeat-By:
+	Clip out the following program and compile it with 'cc -g':
+
+	----------------------------------------------------------------
+	#include <stdio.h>
+
+	int	f();
+
+	main()
+	{
+		int	x;
+
+		x	= 1;
+		if (x > 0) {
+			int	y;
+
+			y	= 3;
+			x	= f(y);
+		}
+		printf( "%d\n", x );
+		exit( 0 );
+	}
+
+	int f( z )
+		int	z;
+	{
+		z = z + 1;
+		return ( z );
+	}
+	----------------------------------------------------------------
+
+	Run dbx on the object.  If you put a breakpoint anywhere in the
+	program, run it and check the stack when you stop, you will
+	find that there is a mysterious function '$b1' that is always
+	present.  The variable 'x' in main() will not be accessible but
+	you can get at 'z' when 'f' is active, and you can get at 'y'
+	at any time (clearly a bug).
+
+Fix:
+	Hasn't someone fixed this before?  I sure would like to have
+	a good (official?) fix...
+
+	I won't pretend that my fix is clean or even correct, but it
+	seems to be an improvement.  The changes are to enter_nl() and
+	unnamed_block() in object.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1021606	Fri Jun  8 14:45:57 1984
+	--- object.c	Fri Jun  8 14:44:26 1984
+	***************
+	*** 318,324
+		    break;
+	  
+		case N_RBRAC:
+	! 	    if (addrstk[nesting] == NOADDR) {
+			exitblock();
+			newfunc(curblock, (linep - 1)->addr);
+		    }
+
+	--- 318,325 -----
+		    break;
+	  
+		case N_RBRAC:
+	! 	    --nesting;
+	! 	    if (nesting > 0) {
+			exitblock();
+			newfunc(curblock, (linep - 1)->addr);
+			addrstk[nesting] = (linep - 1)->addr;
+	***************
+	*** 321,326
+		    if (addrstk[nesting] == NOADDR) {
+			exitblock();
+			newfunc(curblock, (linep - 1)->addr);
+		    }
+		    --nesting;
+		    break;
+
+	--- 322,328 -----
+		    if (nesting > 0) {
+			exitblock();
+			newfunc(curblock, (linep - 1)->addr);
+	+ 		addrstk[nesting] = (linep - 1)->addr;
+		    }
+		    break;
+	  
+	***************
+	*** 322,328
+			exitblock();
+			newfunc(curblock, (linep - 1)->addr);
+		    }
+	- 	    --nesting;
+		    break;
+	  
+		case N_SLINE:
+
+	--- 324,329 -----
+			newfunc(curblock, (linep - 1)->addr);
+			addrstk[nesting] = (linep - 1)->addr;
+		    }
+		    break;
+	  
+		case N_SLINE:
+	***************
+	*** 546,552
+	      ++bnum;
+	      sprintf(buf, "$b%d", bnum);
+	      s = insert(identname(buf, false));
+	!     s->class = PROG;
+	      s->symvalue.funcv.src = false;
+	      s->symvalue.funcv.inline = true;
+	      s->symvalue.funcv.beginaddr = addrstk[nesting];
+
+	--- 547,553 -----
+	      ++bnum;
+	      sprintf(buf, "$b%d", bnum);
+	      s = insert(identname(buf, false));
+	!     s->class = PROC;
+	      s->symvalue.funcv.src = false;
+	      s->symvalue.funcv.inline = true;
+	      s->symvalue.funcv.beginaddr = (linep - 1)->addr;
+	***************
+	*** 549,555
+	      s->class = PROG;
+	      s->symvalue.funcv.src = false;
+	      s->symvalue.funcv.inline = true;
+	!     s->symvalue.funcv.beginaddr = addrstk[nesting];
+	      enterblock(s);
+	      newfunc(s, addrstk[nesting]);
+	      addrstk[nesting] = NOADDR;
+
+	--- 550,556 -----
+	      s->class = PROC;
+	      s->symvalue.funcv.src = false;
+	      s->symvalue.funcv.inline = true;
+	!     s->symvalue.funcv.beginaddr = (linep - 1)->addr;
+	      enterblock(s);
+	      newfunc(s, (linep - 1)->addr);
+	      addrstk[nesting] = NOADDR;
+	***************
+	*** 551,557
+	      s->symvalue.funcv.inline = true;
+	      s->symvalue.funcv.beginaddr = addrstk[nesting];
+	      enterblock(s);
+	!     newfunc(s, addrstk[nesting]);
+	      addrstk[nesting] = NOADDR;
+	  }
+	  
+
+	--- 552,558 -----
+	      s->symvalue.funcv.inline = true;
+	      s->symvalue.funcv.beginaddr = (linep - 1)->addr;
+	      enterblock(s);
+	!     newfunc(s, (linep - 1)->addr);
+	      addrstk[nesting] = NOADDR;
+	  }
+	  
+	----------------------------------------------------------------
+
+	What this fix does for you is that it makes it possible to look
+	at the local variables of a function with an inner block
+	containing declarations, with the caveat that if you are
+	actually IN the inner block, you can see that block's variables
+	but not the outer variables (essentially this reduces the scope
+	of the bug without eliminating it).  I am pretty sure that the
+	old code is wrong, but I am not sure that my change is what the
+	author intended.  Anyone with a better solution is urged to
+	post it...
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016  sdcsvax!sdchema!donn@nosc.ARPA

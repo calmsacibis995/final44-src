@@ -1,0 +1,183 @@
+From steve@eleazar.Dartmouth.EDU  Fri Feb 17 11:55:03 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA18949; Fri, 17 Feb 89 11:55:03 -0800
+Received: from dartvax.dartmouth.edu by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA07205; Fri, 17 Feb 89 11:53:49 -0800
+Received: from eleazar.dartmouth.edu by dartvax.dartmouth.edu with SMTP (5.61D/3.10R)
+	id AA20232; Fri, 17 Feb 89 14:55:06 -0500
+Received: by eleazar.dartmouth.edu (5.61D/3.3MXLEAF)
+	id AA18242; Fri, 17 Feb 89 14:54:07 -0500
+Date: Fri, 17 Feb 89 14:54:07 -0500
+From: steve@eleazar.Dartmouth.EDU (Steve Campbell)
+Message-Id: <8902171954.AA18242@eleazar.dartmouth.edu>
+Subject: Timing error causes sendmail to die (5.59, 5.61) +FIX
+Index: 	usr.lib/sendmail/src 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The symptom was that sendmail would sometimes die during queue
+	runs, leaving a lockfile set on some message.  There were no
+	errors in syslog and no core file.
+
+	Running the queue manually shows that the problem is a longjmp
+	botch.  Since setevent/clrevent/tick are the main users of
+	longjmp, I ran more manual queue runs with -d5.5 set to get
+	event data.  Here are the pertinent portions of such a run that
+	ended with the botch.  I have added line numbers for
+	reference.
+
+	Running AA28991
+	<info-prime%ais1@ecla.usc.edu>... Connecting to eclc.usc.edu (tcp)...
+1	setevent: intvl=300, for=602974135, func=bb48, arg=0, ev=689c0
+	tick: now=602973835
+2	setevent: intvl=1800, for=602975635, func=c9f0, arg=0, ev=689e0
+	tick: now=602973836
+3	clrevent: ev=689e0
+	tick: now=602973836
+	220-ECLC.USC.EDU SMTP Service 5.1(15)-5 at Wed 8 Feb 89 12:41:28-PST
+4	setevent: intvl=1800, for=602975636, func=c9f0, arg=0, ev=689e0
+	tick: now=602973837
+5	tick: now=602974136
+	>>> QUIT
+6	setevent: intvl=1800, for=602975936, func=c9f0, arg=0, ev=689c0
+	tick: now=602974137
+7	clrevent: ev=689c0
+	tick: now=602974149
+	<info-prime%ais1@ecla.usc.edu>... reply: read error
+	<info-prime%ais1@ecla.usc.edu>... Deferred: Bad file number
+	
+	...25 minutes later...
+	
+	Chris Bogart <bogartc@handel.cs.colostate.edu>... Connecting to handel.ColoState.EDU (tcp)...
+8	tick: now=602975636
+	longjmp botch
+
+Here's what happens line-by-line.
+
+1	Smtpinit in usersmtp.c calls setevent with a 5 minute timeout for
+	greeting wait.  It calls reply which calls sfgets.
+
+2	sfgets in util.c calls setevent with a 30 minute timeout for reads.
+3	The read is quick, and sfgets calls clrevent to clear the event set at 
+	line 2.
+
+4	The line read happens to be a continuation line, so reply calls
+	sfgets again.  Sfgets again sets a 30 minute timeout.
+
+5	Now the network goes to hell, and the next line is never received.
+	Five minutes after the event set in line 1, the timer goes off.
+	Sendmail gives up on the host and sends a QUIT.
+
+6,7	An event is set for a response to the QUIT, but the connection gets
+	closed down in 10 seconds.  Sendmail goes on to the next message.
+
+	The crucial point is that the event set in line 4 has never
+	been cleared.  Since the queue is big and the network slow,
+	sendmail is still running 25 minutes later when, at line 8,
+	that event goes off.  The functions involved have been called
+	and returned many times, so when the function that tick calls
+	does a longjmp, zap!
+
+Repeat-By:
+	Have sendmail do a queue run that takes more than half an hour
+	on a lossy network.  Sooner or later, you will find orphan
+	lockfiles.
+Fix:
+	The nested calls to setevent, with a subroutine (sfgets) setting
+	a longer timeout than its caller (smtpinit), are the problem
+	here.  I can think of several fixes.  One is to remove the
+	5-minute timer completely; let the greeting timeout in 30
+	minutes like all the other reads.  A second fix would be to
+	change the event structure so that when one event is cleared,
+	it can also clear any obsolete events.  Since events are only
+	used here and in timing the queue runs, this fix seems like a
+	lot of work for a seldom-used feature.  A third fix - the one I
+	used - is to have smtpinit temporarily change the official
+	ReadTimeout that sfgets is going to use, rather than have
+	smtpinit call setevent itself.  While this is not the most
+	elegant solution, it is simple and works.  I have been running
+	it on our hub for more than a week.  There have been no more
+	orphan lockfiles (I was getting about 1 a day), and nothing
+	else seems to have broken.  Here are the patches:
+
+
+*** /tmp/,RCSt1006607	Sun Feb 12 13:05:44 1989
+--- usersmtp.c	Thu Feb  9 22:02:22 1989
+***************
+*** 72,87 ****
+  **		creates connection and sends initial protocol.
+  */
+  
+- jmp_buf	CtxGreeting;
+- 
+  smtpinit(m, pvp)
+  	struct mailer *m;
+  	char **pvp;
+  {
+  	register int r;
+! 	EVENT *gte;
+  	char buf[MAXNAME];
+- 	extern greettimeout();
+  
+  	/*
+  	**  Open the connection to the mailer.
+--- 72,84 ----
+  **		creates connection and sends initial protocol.
+  */
+  
+  smtpinit(m, pvp)
+  	struct mailer *m;
+  	char **pvp;
+  {
+  	register int r;
+! 	time_t SavedReadTimeout;
+  	char buf[MAXNAME];
+  
+  	/*
+  	**  Open the connection to the mailer.
+***************
+*** 133,145 ****
+  	**	happen.
+  	*/
+  
+- 	if (setjmp(CtxGreeting) != 0)
+- 		goto tempfail;
+- 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	setproctitle("%s %s: %s", CurEnv->e_id, CurHostName, SmtpPhase);
+  	r = reply(m);
+! 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+--- 130,142 ----
+  	**	happen.
+  	*/
+  
+  	SmtpPhase = "greeting wait";
+  	setproctitle("%s %s: %s", CurEnv->e_id, CurHostName, SmtpPhase);
++ 	SavedReadTimeout = ReadTimeout;
++ 	if (ReadTimeout > 300)
++ 		ReadTimeout = 300;
+  	r = reply(m);
+! 	ReadTimeout = SavedReadTimeout;
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+  
+***************
+*** 218,231 ****
+    unavailable:
+  	smtpquit(m);
+  	return (EX_UNAVAILABLE);
+- }
+- 
+- 
+- static
+- greettimeout()
+- {
+- 	/* timeout reading the greeting message */
+- 	longjmp(CtxGreeting, 1);
+  }
+  /*
+  **  SMTPRCPT -- designate recipient.
+--- 215,220 ----

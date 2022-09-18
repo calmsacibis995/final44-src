@@ -1,0 +1,27 @@
+Return-Path: <allegra!watmath!arwhite>
+Date: Fri, 17 Feb 84 03:18:26 est
+From: watmath!arwhite (Alex White)
+Subject: in_pcbdetach does a sofree
+Index:	sys/netinet/in_pcb.c 4.2BSD
+
+Description:
+	System dies with a panic from a garbage pointer in soqremque called
+	from sonewconn.
+	What happens is that sonewconn, calls tcp_usrreq which calls
+	tcp_attach, this calls in_pcballoc which succeeds, but then
+	tcp_newtcpcb fails due to lack of mbufs.  tcp_attach hence
+	calls in_pcbdetach to clean up.  in_pcbdetach unfortunately
+	invokes sofree which releases the socket itself.  we then
+	return back up to sonewconn.  Sonewconn now tries to clean up
+	and release the socket itself; it calls soqremq with the socket
+	which now has a zero pointer for so_head and craps out.
+	Superficial examination of code as in udp_usrreq, PRU_ABORT
+	shows that it invokes in_pcbdetach and then itself calls sofree
+	which was done in in_pcbdetach!
+Repeat-By:
+	Run out of mbuf's.  If you don't crash of panic: exit: m_getclr
+	first (I have a fix for that one...) I suppose its probable
+	that you'll hit this after a while...
+	How to run out of mbuf's is another bug, which I haven't tracked
+	down yet - but I suspect that it has something to do with
+	unix domain ipc being done by students....

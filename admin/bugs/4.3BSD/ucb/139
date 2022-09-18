@@ -1,0 +1,70 @@
+Path: seismo!uunet!husc6!rutgers!iuvax!pur-ee!ea.ecn.purdue.edu!housel
+From: housel@ea.ecn.purdue.edu (Peter S. Housel)
+Newsgroups: comp.bugs.4bsd
+Subject: Berkeley Pascal structure alignment bug - fix for previous fix
+Index: ucb/pascal 4.3BSD
+
+Problem:
+	On machines with a non-Vax-byteorder, the pascal compiler
+(pc) attempts to realign small (<=sizeof(int)) structures, arrays, and
+strings when they are passed by value. Unfortunately, this realignment
+only happens in the called procedure and not in the function call, so
+accesses to fields within the structure get the wrong bytes.
+
+Repeat-By:
+	Run the following program. It fails (prints two different
+values) on some machines with big-endian byteorder, such as the
+Gould 9080 or CCI 6/32. It does not fail on a Sun, but we don't
+have Sun pascal source so I can't tell why.
+-----------------cut--------------------
+program pgm(output);
+type foo = record bar:1..10 end;
+var pos : foo;
+	procedure killer(arg : foo);
+	begin writeln('arg=',arg.bar) end;
+begin
+pos.bar := 2;
+writeln('pos=', pos.bar);
+killer(pos);
+end.
+-----------------cut--------------------
+Fix:
+	Apply the following patch to /usr/src/ucb/pascal/src/fhdr.c, BY HAND.
+This diff is relative to the VAX version; the patch works on the VAX but is
+probably not strictly necessary.
+
+*** fhdr.c.old	Tue Nov 10 08:38:35 1987
+--- fhdr.c	Tue Nov 10 08:41:25 1987
+***************
+*** 384,393 ****
+  					o = roundup(o, (long) A_STACK);
+  					w = lwidth(p);
+  #					ifndef DEC11
+! 					    if (w <= sizeof(int)) {
+! 						o += sizeof(int) - w;
+! 					    }
+! #					endif not DEC11
+  					dp = defnl((char *) idlist->list_node.list,VAR,
+  							p, o);
+  					o += w;
+--- 384,400 ----
+  					o = roundup(o, (long) A_STACK);
+  					w = lwidth(p);
+  #					ifndef DEC11
+! 					switch(classify(p)) {
+! 					    case TFILE:	/* these should not  */
+! 					    case TARY:	/* be realigned...   */
+! 					    case TREC:	/* pushed with STARG */
+! 					    case TSET:
+! 					    case TSTR:	break;
+! 					    default: if (w <= sizeof(int)) {
+! 						         o += sizeof(int) - w;
+! 					             }
+! 					}
+! #					endif !DEC11
+  					dp = defnl((char *) idlist->list_node.list,VAR,
+  							p, o);
+  					o += w;
+-------------------------------------------------------------------------------
+Peter S. Housel		housel@ei.ecn.purdue.edu
+			{decvax,uiucdcs,inuxc}!pur-ee!housel

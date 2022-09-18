@@ -1,0 +1,219 @@
+From guy@Sun.COM Wed Dec  2 12:17:54 1987
+Date: Wed, 2 Dec 87 12:14:46 PST
+From: guy@Sun.COM (Guy Harris)
+Subject: Sun fixes to "more"
+Index: ucb/more/more.c 4.3BSD
+
+Use "struct exec" to parse the a.out header.
+
+Use "varargs".
+
+*** more/more.c	Thu Apr  3 18:13:41 1986
+--- /tmp/more.c	Wed Dec  2 12:13:06 1987
+***************
+*** 31,36 ****
+--- 31,38 ----
+  #include <sgtty.h>
+  #include <setjmp.h>
+  #include <sys/stat.h>
++ #include <a.out.h>
++ #include <varargs.h>
+  
+  #define HELPFILE	"/usr/lib/more.help"
+  #define VI		"/usr/ucb/vi"
+***************
+*** 332,337 ****
+--- 334,340 ----
+      struct stat stbuf;
+      register FILE *f;
+      char c;
++     struct exec ex;
+  
+      if (stat (fs, &stbuf) == -1) {
+  	fflush(stdout);
+***************
+*** 349,371 ****
+  	perror(fs);
+  	return (NULL);
+      }
+-     c = Getc(f);
+  
+      /* Try to see whether it is an ASCII file */
+  
+!     switch ((c | *f->_ptr << 8) & 0177777) {
+!     case 0405:
+!     case 0407:
+!     case 0410:
+!     case 0411:
+!     case 0413:
+!     case 0177545:
+! 	printf("\n******** %s: Not a text file ********\n\n", fs);
+! 	fclose (f);
+! 	return (NULL);
+!     default:
+! 	break;
+      }
+      if (c == '\f')
+  	*clearfirst = 1;
+      else {
+--- 352,378 ----
+  	perror(fs);
+  	return (NULL);
+      }
+  
+      /* Try to see whether it is an ASCII file */
+  
+!     if (fread(&ex, sizeof(ex), 1, f) == 1) {
+! 	    switch (ex.a_magic) {
+! 	    case OMAGIC:
+! 	    case NMAGIC:
+! 	    case ZMAGIC:
+! 	    case 0405:
+! 	    case 0411:
+! 	    case 0177545:
+! 		printf("\n******** %s: Not a text file ********\n\n", fs);
+! 		fclose (f);
+! 		return (NULL);
+! 	    default:
+! 		break;
+! 	    }
+      }
++     fseek(f, 0L, 0);		/* better than using rewind() here */
++ 
++     c = Getc(f);
+      if (c == '\f')
+  	*clearfirst = 1;
+      else {
+***************
+*** 547,562 ****
+  
+  /* Simplified printf function */
+  
+! printf (fmt, args)
+  register char *fmt;
+! int args;
+  {
+! 	register int *argp;
+  	register char ch;
+  	register int ccount;
+  
+  	ccount = 0;
+! 	argp = &args;
+  	while (*fmt) {
+  		while ((ch = *fmt++) != '%') {
+  			if (ch == '\0')
+--- 554,569 ----
+  
+  /* Simplified printf function */
+  
+! printf (fmt, va_alist)
+  register char *fmt;
+! va_dcl
+  {
+! 	va_list ap;
+  	register char ch;
+  	register int ccount;
+  
+  	ccount = 0;
+! 	va_start(ap);
+  	while (*fmt) {
+  		while ((ch = *fmt++) != '%') {
+  			if (ch == '\0')
+***************
+*** 566,579 ****
+  		}
+  		switch (*fmt++) {
+  		case 'd':
+! 			ccount += printd (*argp);
+  			break;
+  		case 's':
+! 			ccount += pr ((char *)*argp);
+  			break;
+  		case '%':
+  			ccount++;
+- 			argp--;
+  			putchar ('%');
+  			break;
+  		case '0':
+--- 573,585 ----
+  		}
+  		switch (*fmt++) {
+  		case 'd':
+! 			ccount += printd (va_arg(ap, int));
+  			break;
+  		case 's':
+! 			ccount += pr (va_arg(ap, char *));
+  			break;
+  		case '%':
+  			ccount++;
+  			putchar ('%');
+  			break;
+  		case '0':
+***************
+*** 581,588 ****
+  		default:
+  			break;
+  		}
+- 		++argp;
+  	}
+  	return (ccount);
+  
+  }
+--- 587,594 ----
+  		default:
+  			break;
+  		}
+  	}
++ 	va_end(ap);
+  	return (ccount);
+  
+  }
+***************
+*** 1339,1350 ****
+      }
+  }
+  
+! execute (filename, cmd, args)
+  char *filename;
+! char *cmd, *args;
+  {
+  	int id;
+  	int n;
+  
+  	fflush (stdout);
+  	reset_tty ();
+--- 1345,1359 ----
+      }
+  }
+  
+! /*VARARGS2*/
+! execute (filename, cmd, va_alist)
+  char *filename;
+! char *cmd;
+! va_dcl
+  {
+  	int id;
+  	int n;
++ 	va_list argp;
+  
+  	fflush (stdout);
+  	reset_tty ();
+***************
+*** 1355,1361 ****
+  		close(0);
+  		open("/dev/tty", 0);
+  	    }
+! 	    execv (cmd, &args);
+  	    write (2, "exec failed\n", 12);
+  	    exit (1);
+  	}
+--- 1364,1371 ----
+  		close(0);
+  		open("/dev/tty", 0);
+  	    }
+! 	    va_start(argp);
+! 	    execv (cmd, argp);
+  	    write (2, "exec failed\n", 12);
+  	    exit (1);
+  	}
+

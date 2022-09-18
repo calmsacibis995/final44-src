@@ -1,0 +1,153 @@
+Return-Path: <@lbl-csam.ARPA:oddjob!matt@lbl-csam>
+Return-Path: <oddjob!matt@lbl-csam>
+Date: Mon, 26 Aug 85 17:22:24 cdt
+From: oddjob!matt@lbl-csam (Matt Crawford)
+Phone: +1 312 962-8207
+Postal-Address: Astronomy & Astrophysics Center 105
+		5640 S. Ellis ; Chicago, IL 60637
+Subject: ftp calculates xfer rate wrong and has trouble talking to some servers
+Index: 	ucb/ftp/ftp.c 4.2BSD
+
+#1:
+Description:
+	At the end of a transfer ftp prints the bytes transferred,
+	time elapsed and transfer rate.  The transfer rate is wrong
+	if the file size exceeds MAXLONG/(1000*NBBY) where MAXLONG is
+	the largest positive long integer and NBBY is the number of
+	bits in a byte.
+Repeat-By:
+	(On a vax) transfer a file of 268436 bytes or more (counting
+	\n and \r as two characters each!).  Then perform the division
+	of bytes/time and compare.
+
+#2:
+Description:
+	Ftp does not know when a multiline reply is finished.
+Repeat-By:
+	Send the HELP command to a TOPS-20 server, or any other which
+	prefixes all but the last line of a multiline reply with "nnn-".
+	Ftp thinks the reply is finished at the second line.
+Fix:
+	Here are both fixes at once.  They are independent.  Your
+	line numbers will vary.
+
+RCS file: RCS/ftp.c,v
+retrieving revision 1.2
+retrieving revision 1.4
+diff -c -r1.2 -r1.4
+*** /tmp/,RCSt1017801	Mon Aug 26 16:58:03 1985
+--- /tmp/,RCSt2017801	Mon Aug 26 16:58:06 1985
+***************
+*** 1,6
+  #ifndef lint
+  static char sccsid[] = "@(#)ftp.c	4.11 (Berkeley) 7/26/83";
+! static char rcsid[] = "$Header: ftp.c,v 1.2 85/06/26 13:49:37 bin Exp $";
+  #endif
+  /* $Log:	ftp.c,v $
+   * Revision 1.2  85/06/26  13:49:37  bin
+
+--- 1,6 -----
+  #ifndef lint
+  static char sccsid[] = "@(#)ftp.c	4.11 (Berkeley) 7/26/83";
+! static char rcsid[] = "$Header: ftp.c,v 1.4 85/08/26 15:36:03 bin Exp $";
+  #endif
+  /* $Log:	ftp.c,v $
+   * Revision 1.4  85/08/26  15:36:03  bin
+***************
+*** 3,8
+  static char rcsid[] = "$Header: ftp.c,v 1.2 85/06/26 13:49:37 bin Exp $";
+  #endif
+  /* $Log:	ftp.c,v $
+   * Revision 1.2  85/06/26  13:49:37  bin
+   * fix from Guy Harris for the case of two replies arriving in
+   * rapid succession.
+
+--- 3,16 -----
+  static char rcsid[] = "$Header: ftp.c,v 1.4 85/08/26 15:36:03 bin Exp $";
+  #endif
+  /* $Log:	ftp.c,v $
++  * Revision 1.4  85/08/26  15:36:03  bin
++  * Fix integer overflow in ptransfer()
++  * 
++  * Revision 1.3  85/07/18  18:21:22  matt
++  * Change test for end of multiline reply to accommodate the
++  * TOPS-20 server (which appears to be technically within the
++  * bounds of RFC765 if interpreted loosely).
++  * 
+   * Revision 1.2  85/06/26  13:49:37  bin
+   * fix from Guy Harris for the case of two replies arriving in
+   * rapid succession.
+***************
+*** 159,165
+  {
+  	register int c, n;
+  	register int code, dig;
+! 	int originalcode = 0, continuation = 0;
+  
+  	for (;;) {
+  		dig = n = code = 0;
+
+--- 167,173 -----
+  {
+  	register int c, n;
+  	register int code, dig;
+! 	int originalcode = 0, continuation;
+  
+  	for (;;) {
+  		dig = n = code = continuation = 0;
+***************
+*** 162,168
+  	int originalcode = 0, continuation = 0;
+  
+  	for (;;) {
+! 		dig = n = code = 0;
+  		while ((c = getc(cin)) != '\n') {
+  			dig++;
+  			if (c == EOF) {
+
+--- 170,176 -----
+  	int originalcode = 0, continuation;
+  
+  	for (;;) {
+! 		dig = n = code = continuation = 0;
+  		while ((c = getc(cin)) != '\n') {
+  			dig++;
+  			if (c == EOF) {
+***************
+*** 185,191
+  			putchar(c);
+  			(void) fflush (stdout);
+  		}
+! 		if (continuation && code != originalcode) {
+  			if (originalcode == 0)
+  				originalcode = code;
+  			continue;
+
+--- 193,200 -----
+  			putchar(c);
+  			(void) fflush (stdout);
+  		}
+! 		if (continuation || (code != originalcode &&
+! 				     originalcode != 0)) {
+  			if (originalcode == 0)
+  				originalcode = code;
+  			continue;
+***************
+*** 555,561
+  	tvsub(&td, t1, t0);
+  	ms = (td.tv_sec * 1000) + (td.tv_usec / 1000);
+  #define	nz(x)	((x) == 0 ? 1 : (x))
+! 	bs = ((bytes * NBBY * 1000) / (float) nz(ms)) / NBBY;
+  	printf("%ld bytes %s in %d.%02d seconds (%.2g Kbytes/s)\n",
+  		bytes, direction, td.tv_sec, td.tv_usec / 10000, bs / 1024.);
+  }
+
+--- 564,570 -----
+  	tvsub(&td, t1, t0);
+  	ms = (td.tv_sec * 1000) + (td.tv_usec / 1000);
+  #define	nz(x)	((x) == 0 ? 1 : (x))
+! 	bs = (bytes * 1000.0) / (float) nz(ms);
+  	printf("%ld bytes %s in %d.%02d seconds (%.2g Kbytes/s)\n",
+  		bytes, direction, td.tv_sec, td.tv_usec / 10000, bs / 1024.);
+  }
+

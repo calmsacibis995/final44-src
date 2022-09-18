@@ -1,0 +1,63 @@
+From greg%hobbes@LBL.Gov Wed Aug 24 15:52:32 1988
+Date: Wed, 24 Aug 88 15:53:50 PDT
+From: greg%hobbes@LBL.Gov (Gregory J. Ward)
+Subject: Editor bug
+Index: ucb/ex 4.3BSD
+
+Dave,
+
+There is a bug in version 3.7 of the vi editor that when the program
+receives a hangup prevents it from removing its temporary files after
+a successful preserve.  It might also be causing the editor to get
+caught in an infinite loop, but I'm not certain.
+
+The routine waitfor() in ex_unix.c seems to have been modified in such
+a way that the external rpid is always -1, when it should normally
+equal pid.  Rpid is checked in preserve() to see if the preserve program
+terminated normally, and it ends up deciding something went wrong when
+rpid doesn't equal pid.  The current waitfor() is:
+
+/*
+ * Wait for the process (pid an external) to complete.
+ */
+waitfor()
+{
+	int stat = 0;
+
+	do {
+		rpid = wait(&stat);
+		if (rpid == pid)
+			status = stat;
+	} while (rpid != -1);
+	status = (status >> 8) & 0377;
+}
+
+The corrected version should look something like:
+
+waitfor()
+{
+	int stat = 0;
+	int lrpid;
+
+	rpid = -1;
+	do {
+		lrpid = wait(&stat);
+		if (rpid == -1 || lrpid == pid) {
+			rpid = lrpid;
+			status = stat;
+		}
+	} while (lrpid != -1);
+	status = (status >> 8) & 0377;
+}
+
+Also, in onhup(), an unnecessary call is made to setexit(), which might
+be the source of a loop (again I'm guessing).
+
+I have not had much luck in the past reporting bugs to the UC campus.  There
+seems to be a bug in the bug reporting program that causes it to reject all
+bugs as having the wrong format.  (Someone must have thought this was a good
+joke.)  I hope you'll know what to do with this.
+
+-Greg
+
+

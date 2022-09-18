@@ -1,0 +1,123 @@
+From chris@gyre.umd.edu  Sun Apr 17 23:07:17 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.59/1.27)
+	id AA01572; Sun, 17 Apr 88 23:07:17 PDT
+Received: from gyre.umd.edu by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA08669; Sun, 17 Apr 88 23:06:59 PDT
+Received: by gyre.umd.edu (5.58/4.7)
+	id AA07642; Mon, 18 Apr 88 02:07:06 EDT
+Date: Mon, 18 Apr 88 02:07:06 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+Message-Id: <8804180607.AA07642@gyre.umd.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: c2 optimiser refers to nonexistent labels
+
+Index: lib/c2/c2.vax/c21.c 4.3BSD Fix
+
+Description:
+	When rearranging a branch to branch past a test whose result
+	is already known, the optimiser forgets to update the label
+	number in the branch node.  If the test itself is later
+	deleted, the label disappears entirely.  Hence given input like
+
+			movl	r9,r8
+		L2:
+			tstl	r8
+			movl	r7,r8
+			jbr	L2
+
+	it removes the label L2, replacing it with the internal
+	label L2000000, but never generates L2000000, and winds
+	up producing
+
+		movl	r9,r8
+		movl	r7,r8
+		jbr	L2
+
+	instead of the correct infinite loop
+
+		movl	r9,r8
+		L2000000:movl	r7,r8
+		jbr	L2000000
+
+Repeat-by:
+	See above.
+
+Fix:
+	Someone (jfr?) simply forgot one statement: `p->labno = p1->labno'.
+	Every other place that alters p->ref also carefully fixes p->labno.
+	While I was verifying this, I also added comments, and reformatted
+	a few lines.
+
+RCS file: RCS/c21.c,v
+retrieving revision 1.2
+diff -c2 -r1.2 c21.c
+*** /tmp/,RCSt1007542	Mon Apr 18 01:39:55 1988
+--- c21.c	Mon Apr 18 01:39:08 1988
+***************
+*** 1296,1299 ****
+--- 1296,1300 ----
+  */
+  
++ /* find branches to comparisons whose result is already known */
+  redunbr(p)
+  register struct node *p;
+***************
+*** 1306,1310 ****
+  		return;
+  	p1 = nonlab(p1);
+! 	if (p1->op==TST) {
+  		splitrand(p1);
+  		savereg(RT2, "$0", p1->subop);
+--- 1307,1311 ----
+  		return;
+  	p1 = nonlab(p1);
+! 	if (p1->op==TST) {	/* test == compare $0 */
+  		splitrand(p1);
+  		savereg(RT2, "$0", p1->subop);
+***************
+*** 1314,1317 ****
+--- 1315,1319 ----
+  		return;
+  	if (p1->forw->op==CBR) {
++ 		/* branching to compare+branch ... can we short circuit? */
+  		ap1 = findcon(RT1, p1->subop);
+  		ap2 = findcon(RT2, p1->subop);
+***************
+*** 1318,1321 ****
+--- 1320,1324 ----
+  		p1 = p1->forw;
+  		if (compare(p1->subop, ap1, ap2)) {
++ 			/* p1 always branches, so go to p1's dst, not p's */
+  			nredunj++;
+  			nchange++;
+***************
+*** 1331,1337 ****
+  		}
+  	} else if (p1->op==TST && equstr(regs[RT1],ccloc+1) &&
+! 			equtype(ccloc[0],p1->subop)) {
+! 		p1=insertl(p1->forw); decref(p->ref); p->ref=p1; 
+! 		nrtst++; nchange++;
+  	}
+  }
+--- 1334,1345 ----
+  		}
+  	} else if (p1->op==TST && equstr(regs[RT1],ccloc+1) &&
+! 	    equtype(ccloc[0],p1->subop)) {
+! 		/* branch past the test, since ccodes already set properly */
+! 		p1 = insertl(p1->forw);
+! 		decref(p->ref);
+! 		p->ref = p1;
+! 		p->labno = p1->labno;
+! 		nrtst++;
+! 		nchange++;
+  	}
+  }
+***************
+*** 1483,1485 ****
+  	if (*--p == '+' && *--p == ')') return(1);
+  	return(0);
+!   }
+--- 1491,1493 ----
+  	if (*--p == '+' && *--p == ')') return(1);
+  	return(0);
+! }

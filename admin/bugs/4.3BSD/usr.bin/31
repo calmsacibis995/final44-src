@@ -1,0 +1,296 @@
+Date: Sat, 8 Nov 86 16:57:17 PST
+From: voder!root@ucbvax.Berkeley.EDU (The System Manager)
+Subject: minor uucp changes
+Index: usr.bin 4.3BSD
+
+usr.bin/uucp/{Makefile,cico.c,uusnap.c,uucp.h} 4.3BSD
+usr.bin/uucp/aculib/{Makefile,vsld.c} 4.3BSD
+Description:
+	1) Makefile is missing the dependency of condevs.o on uucp.h.
+	2) The "call to system" message is written with a trailing blank.
+	3) uusnap can truncate the system name to 5 characters in some
+	   circumstances: received data files with a grade character other
+	   than 'S' or 'B' cause the system name to be truncated.
+	4) A (slightly) new acu driver is included.  The RV811/831
+	   configuration can be run in a two port configuration.  It's
+	   a straight-forward mod to the vmacs driver, just eliminate
+	   the stuff to select the rack and modem.
+Repeat-By:
+	Inspection.
+Fix:
+	Run this mess through patch -p to do everything in one fell swoop.
+
+Add the condevs.o dependency on uucp.h
+
+Makefile
+*** /tmp/,RCSt1001751	Sat Nov  8 15:59:35 1986
+--- /tmp/,RCSt2001751	Sat Nov  8 15:59:38 1986
+***************
+*** 239,244 ****
+--- 239,245 ----
+  cntrl.o: uust.h
+  condevs.o: condevs.c
+  condevs.o: condevs.h
++ condevs.o: uucp.h
+  condevs.o: /usr/include/sys/time.h
+  conn.o: conn.c
+  conn.o: /usr/include/signal.h
+
+Get rid of trailing blank in log message.
+
+cico.c
+*** /tmp/,RCSt1001770	Sat Nov  8 16:00:09 1986
+--- /tmp/,RCSt2001770	Sat Nov  8 16:00:12 1986
+***************
+*** 488,494 ****
+  			rmlock(CNULL);
+  			sleep(3);
+  		}
+! 		sprintf(msg, "call to %s ", Rmtname);
+  		if (mlock(Rmtname) != SUCCESS) {
+  			logent(msg, "LOCKED");
+  			US_SST(us_s_lock);
+--- 488,494 ----
+  			rmlock(CNULL);
+  			sleep(3);
+  		}
+! 		sprintf(msg, "call to %s", Rmtname);
+  		if (mlock(Rmtname) != SUCCESS) {
+  			logent(msg, "LOCKED");
+  			US_SST(us_s_lock);
+
+Don't truncate system names in uusnap output.
+
+uusnap.c
+*** /tmp/,RCSt1001801	Sat Nov  8 16:00:35 1986
+--- /tmp/,RCSt2001801	Sat Nov  8 16:00:36 1986
+***************
+*** 152,169 ****
+  		strcpy(fnam, &dentp->d_name[plen]);
+  		fnamlen = strlen(fnam);
+  		if(flen > 0) {
+- 			char c;
+  			fnamlen -= flen;
+! 			c = fnam[fnamlen];
+! 			if (islower(c))
+! 				c = toupper(c);
+! 			if (type == DATTYPE && (c != 'S' && c != 'B')) {
+! 				fnamlen -= 2;	/* For Honey DanBer */
+! 				fnam[fnamlen] = NULL;
+! 			} else {
+! 				fnam[fnamlen] = NULL;
+! 				fnamlen = MAXBASENAME; /* yes, after = NULL*/
+! 			}
+  		} else {
+  			for(; fnamlen>0; --fnamlen) {
+  				if(fnam[fnamlen] == fchr) {
+--- 152,160 ----
+  		strcpy(fnam, &dentp->d_name[plen]);
+  		fnamlen = strlen(fnam);
+  		if(flen > 0) {
+  			fnamlen -= flen;
+! 			fnam[fnamlen] = NULL;
+! 			fnamlen = MAXBASENAME; /* yes, after = NULL*/
+  		} else {
+  			for(; fnamlen>0; --fnamlen) {
+  				if(fnam[fnamlen] == fchr) {
+
+Changes to add the vsld driver.
+Add a #define to uucp.h first.
+
+uucp.h
+*** /tmp/,RCSt1002821	Sat Nov  8 16:32:15 1986
+--- /tmp/,RCSt2002821	Sat Nov  8 16:10:25 1986
+***************
+*** 81,86 ****
+--- 81,87 ----
+  #define VADIC		/* Racal-Vadic 345x */
+  #define VENTEL		/* Ventel Dialer */
+  #define VMACS		/* Racal-Vadic MACS  811 dialer, 831 adaptor */
++ #define VSLD		/* Racal-Vadic SLD  811 dialer, 831 adaptor */
+  
+  #if defined(USR2400) && !defined(HAYES)
+  #define HAYES
+
+Add vsld driver to aculib/Makefile.
+
+aculib/Makefile
+*** /tmp/,RCSt1002168	Sat Nov  8 16:12:35 1986
+--- /tmp/,RCSt2002168	Sat Nov  8 16:12:36 1986
+***************
+*** 5,11 ****
+  
+  OBJS= bsdtcp.o df2.o df12.o dk.o dn.o hys.o hysq.o mic.o nov.o pen.o pnet.o \
+  	rvmacs.o sy.o unet.o va212.o va811.o va820.o vad.o vent.o vmacs.o \
+! 	hys24.o cds224.o att2224.o
+  
+  aculib.a: ${OBJS}
+  	ar cr aculib.a ${OBJS}
+--- 5,11 ----
+  
+  OBJS= bsdtcp.o df2.o df12.o dk.o dn.o hys.o hysq.o mic.o nov.o pen.o pnet.o \
+  	rvmacs.o sy.o unet.o va212.o va811.o va820.o vad.o vent.o vmacs.o \
+! 	vsld.o hys24.o cds224.o att2224.o
+  
+  aculib.a: ${OBJS}
+  	ar cr aculib.a ${OBJS}
+
+Finally, the new driver.
+
+aculib/vsld.c
+*** aculib/vsld.c	Sat Nov  8 15:35:47 1986
+--- aculib/vsld.c	Tue Nov  4 23:20:51 1986
+***************
+*** 0 ****
+--- 1,151 ----
++ #ifndef lint
++ static char sccsid[] = "@(#)vsld.c	4.3 (Berkeley) 10/10/85";
++ #endif
++ 
++ #include "../condevs.h"
++ #ifdef	VSLD
++ /*
++  * Racal-Vadic 'RV811' SLD system with 831 adaptor.
++  *
++  * A typical 300 baud L-devices entry is
++  *	ACU /dev/tty10 /dev/tty11,1200 300 vsld
++  * where tty10 is the communication line (D_Line),
++  * tty11 is the dialer line (D_calldev)
++  * and the 1200 is the dialer speed.
++  * (Note: Based on RVMACS version for 820 dialer.  This version
++  *  developed by Doug Kingston @ BRL, 13 December 83.)
++  */
++ 
++ #define	SOH	01	/* Abort */
++ #define	STX	02	/* Access Adaptor */
++ #define	ETX	03	/* Transfer to Dialer */
++ #define	SI	017	/* Buffer Empty (end of phone number) */
++ 
++ vsldopn(ph, flds, dev)
++ char *ph, *flds[];
++ struct Devices *dev;
++ {
++ 	register int va, i, child;
++ 	register char *p;
++ 	char c, acu[20], com[20];
++ 	int	dialspeed;
++ 	char c_STX = STX;
++ 	char c_ETX = ETX;
++ 	char c_SI = SI;
++ 	char c_SOH = SOH;
++ 
++ 	/* create child to open comm line */
++ 	child = -1;
++ 	sprintf(com, "/dev/%s", dev->D_line);
++ 	if ((child = fork()) == 0) {
++ 		signal(SIGINT, SIG_DFL);
++ 		open(com, 0);
++ 		DEBUG(5, "%s Opened.", com);
++ 		sleep(5);
++ 		exit(1);
++ 	}
++ 
++ 	if ((p = index(dev->D_calldev, ',')) != NULL) {
++ 		*p++ = '\0';
++ 		dialspeed = atoi (p);
++ 	}
++ 	else
++ 		dialspeed = dev->D_speed;
++ 	if (setjmp(Sjbuf)) {
++ 		logent("vsldopn", "TIMEOUT");
++ 		i = CF_DIAL;
++ 		goto ret;
++ 	}
++ 	DEBUG(4, "STARTING CALL\n", 0);
++ 	sprintf(acu, "/dev/%s", dev->D_calldev);
++ 	getnextfd();
++ 	signal(SIGALRM, alarmtr);
++ 	alarm(60);
++ 	if ((va = open(acu, 2)) < 0) {
++ 		logent(acu, "CAN'T OPEN");
++ 		i = CF_NODEV;
++ 		goto ret;
++ 	}
++ 	DEBUG(5, "ACU %s opened.\n", acu);
++ 	next_fd = -1;
++ 	fixline(va, dialspeed);
++ 
++ 	write(va, &c_SOH, 1);		/* abort, reset the dialer */
++ 	do {
++ 		if (read (va, &c, 1) != 1) {
++ 			logent ("SLD initialization", _FAILED);
++ 			goto failret;
++ 		}
++ 	} while ((c&0177) != 'B');
++ 	DEBUG(5, "ACU initialized\n", 0);
++ 
++ 	write(va, &c_STX, 1);		/* start text, access adaptor */
++ 	for (p=ph; *p; p++) {
++ 		if (*p == '=' || (*p >= '0' && *p <= '9'))
++ 			write(va, p, 1);
++ 	}
++ 	write(va, &c_SI, 1);		/* send buffer empty */
++ 	write(va, &c_ETX, 1);		/* end of text, initiate call */
++ 
++ 	if (read(va, &c, 1) != 1) {
++ 		logent("ACU READ", _FAILED);
++ 		goto failret;
++ 	}
++ 	switch(c) {
++ 	case 'A':
++ 		/* Fine! */
++ 		DEBUG(5, "Call connected\n", 0);
++ 		break;
++ 	case 'B':
++ 		DEBUG(2, "Dialer Timeout or Abort\n", 0);
++ 		goto failret;
++ 	case 'D':
++ 		DEBUG(2, "Dialer format error\n", 0);
++ 		goto failret;
++ 	case 'E':
++ 		DEBUG(2, "Dialer parity error\n", 0);
++ 		goto failret;
++ 	case 'F':
++ 		DEBUG(2, "Phone number too long\n", 0);
++ 		goto failret;
++ 	case 'G':
++ 		DEBUG(2, "Busy signal\n", 0);
++ 		goto failret;
++ 	default:
++ 		DEBUG(2, "Unknown SLD return code '%c'\n", i);
++ 		goto failret;
++ 	}
++ 	/*
++ 	 * open line - will return on carrier
++ 	 */
++ 	if ((i = open(com, 2)) < 0) {
++ 		if (errno == EIO)
++ 			logent("carrier", "LOST");
++ 		else
++ 			logent("dialup open", _FAILED);
++ 		goto failret;
++ 	}
++ 	fixline(i, dev->D_speed);
++ 	goto ret;
++ failret:
++ 	i = CF_DIAL;
++ ret:
++ 	alarm(0);
++ 	if (child > 1)
++ 		kill(child, SIGKILL);
++ 	close(va);
++ 	sleep(2);
++ 	return i;
++ }
++ 
++ vsldcls(fd)
++ register int fd;
++ {
++ 	char c_SOH = SOH;
++ 
++ 	DEBUG(2, "SLD close %d\n", fd);
++ 	write(fd, &c_SOH, 1);
++ /*	ioctl(fd, TIOCCDTR, NULL);*/
++ 	close(fd);
++ }
++ #endif VSLD

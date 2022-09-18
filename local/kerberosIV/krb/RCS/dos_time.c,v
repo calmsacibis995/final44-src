@@ -1,0 +1,219 @@
+head     4.1;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.1 KPATCH4:4.1 KPATCH3:4.1 KPATCH2:4.1 KREL1:4.1 BETA5/24/88:4.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.1
+date     87.09.01.15.46.17;  author steiner;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.03.28.14.39.04;  author bcn;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.03.07.13.10.55;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@/* Copyright 1985 by the Massachusetts Institute of Technology			   */
+
+#include 	<stdio.h>
+typedef	long	in_name;
+#include	"/projects/auth/ibm/include/custom.h"
+
+/* use the 4.n bsd include file to define structs						   */
+#include	<sys/time.h>
+
+
+extern 	getdt();
+extern	get_custom();
+extern char dos_wday;
+extern unsigned int dos_year;
+extern char dos_month;
+extern char dos_day;
+extern char dos_hour;
+extern char dos_min;
+extern char dos_sec;
+extern char dos_hund;
+
+
+int
+	gettimeofday(t,z)
+	
+	struct	timeval		*t;
+	struct	timezone	*z;
+
+	{
+		
+	/* emulate the 4.2bsd call										   */
+	int		delta_yr;
+	int		leap;
+	int		yrs;
+	int		days;
+	long	sec;
+	int		i;
+	int		is_dst;
+	int		wday;
+	static	custom_init;
+
+	static	int	month_size[12] =
+    	{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+	/* first ask DOS for the time, in broken down ascii format			   */
+
+	getdt();
+
+	/* now convert this to seconds and microseconds of current GMT;
+	 * seconds is number of seconds since midnight Jan 1, 1970
+	 */
+	
+	yrs = dos_year - 1970;
+	/* adjust for leap years											   */
+	if (dos_month >2) 
+		{
+		days = (yrs + 2)/4;	/* 1970 was two years from leap		   */
+		}
+	else
+		{
+		days = (yrs +1)/4;	/* don't count this one yet				   */
+		}		
+
+	days += yrs * 365;
+
+#ifdef	DEBUG
+	fprintf(stderr,"\nyrs = %d days = %d", yrs, days);
+#endif
+
+	/* adjust for leap seconds
+	 * adjust for the fact that each century is NOT a leap year
+	 * FAT CHANCE!
+	 */
+
+	/* add the amount for months										   */
+
+	for (i = 1; i < dos_month ; i++)
+		{
+		days += month_size[i-1];
+		}
+	
+#ifdef	DEBUG
+	fprintf(stderr,"\ndos_month = %d , now days = %d", dos_month, days);
+#endif
+	/* add full days within month										   */
+		days += dos_day -1;		
+
+#ifdef	DEBUG
+		fprintf(stderr,
+	"\ndos_day = %d , now days = %d\n\tdos_hour = %d dos_min = %d",
+		 dos_day, days, dos_hour, dos_min, dos_sec);
+#endif
+
+	/* 
+	 * convert to sec, add full hours, minutes and sec within day
+	 * BEWARE 16 bit expression evals
+     */
+
+		sec = ((((days*24L)+dos_hour)*60L)+dos_min)*60L + dos_sec;
+
+	/* what if today is feb 29?											   */
+
+	/* adjust for gmt													   */
+		if (!custom_init)
+			{
+			get_custom();
+			custom_init = 1;
+			}
+		
+		sec += custom.c_tmoffset * 60L;
+#ifdef	DEBUG
+	fprintf(stderr,"\ntmoffset = %d, label = %s",custom.c_tmoffset,
+			custom.c_tmlabel);
+#endif
+	is_dst = 0;
+	if (custom.c_tmlabel[1] == 's' || custom.c_tmlabel[1] == 'S')
+		{
+		/* adjust for daylight savings time								   */
+
+		switch (dos_month)
+			{
+			case	4:			/* 30 days hath April					   */
+					/* is it at or beyond last Sunday in month ?		   */
+					if ((dos_day - dos_wday) > 23) 
+						{
+						/* just make sure it is not before 2am on Sunday   */
+						if (  (dos_wday == 0)  && ( dos_hour < 2 )) break;
+						is_dst = 1;
+						}
+					break;
+	
+			case	5:
+			case	6:
+			case	7:
+			case	8:
+			case	9:
+					is_dst = 1;
+					break;
+	
+			case	10:			/* 31 days for October					   */
+					/* is it at or beyond last sunday in month?			   */
+					if ((dos_day - dos_wday) < 25) 
+						{
+						is_dst = 1;
+						}
+					
+					else
+						{
+						/* just make sure it is not before 2am on Sunday   */
+						if (  (dos_wday == 0)  && ( dos_hour <2 ))
+							{
+							is_dst = 1;
+							}	
+						}
+					break;
+			}
+		
+		if (is_dst)	sec -= 3600L;
+		}
+#ifdef	DEBUG
+	fprintf(stderr,"\n is_dst = %d",is_dst);
+#endif	
+	/* stuff and return													   */
+	t->tv_sec = sec;
+	t->tv_usec = dos_hund * 10000;
+	z->tz_minuteswest = custom.c_tmoffset;
+	z->tz_dsttime = is_dst;
+	return;
+}
+@
+
+
+3.1
+log
+@Update major revision number.
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@@

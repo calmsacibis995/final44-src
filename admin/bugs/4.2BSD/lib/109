@@ -1,0 +1,52 @@
+Return-Path: <jss@purdue-asc.arpa>
+Date: Wed, 13 Aug 86 15:04:13 est
+From: James S. Schoner <jss@ASC.PURDUE.EDU>
+Subject: C compiler does not handle bit-field assignments properly.
+Index: lib/pcc/local2.c 4.2BSD
+Index: lib/pcc/table.c  4.2BSD
+
+Description:
+	The result of a bit-field assignment is erroneously interpreted
+	as the rhs of the assignment.  For example, the statement
+	"a = b.fld = c;" causes the value of `c' to be assigned to `a'.
+	If `b.fld' is a bit-field two-bits wide, the value of `a' should
+	be this two-bit value, which is not necessarily the value of `c'.
+
+Repeat-By:
+	Compile and execute the following:
+
+	struct {
+		int fld:2;
+	} b;
+	int a, c;
+
+	main () {
+		c = 8;
+		a = b.fld = c;
+		if (a == c) printf ("failed: a = %d, b.fld = %d, c = %d\n", a,
+					b.fld, c);
+	}
+Fix:
+	Modify the respref structure in /usr/src/lib/pcc/local2.c by adding
+	the macro SFLD as shown:
+
+	struct respref
+	respref[] = {
+	 INTAREG|INTBREG,	INTAREG|INTBREG,
+	 INAREG|INBREG,	INAREG|INBREG|SOREG|STARREG|STARNM|SNAME|SCON|SFLD,
+								     ^^^^^
+	Then, modify /usr/src/lib/pcc/table.c by modifying the following
+	ASSIGN template:
+
+	ASSIGN,		INAREG|FOREFF,
+		SFLD,	TANY,
+		SAREG|AWD,	TWORD,
+		0,	RRIGHT,
+		"	insv	AR,$H,$S,AL\n",
+
+	The line of the template above which looks like:
+		0,	RRIGHT,
+	must be changed to the following:
+		0,	RLEFT,
+	
+	That's all there is to it!

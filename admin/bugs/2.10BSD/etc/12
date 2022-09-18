@@ -1,0 +1,85 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Nov 17 07:06:20 1989
+Date: Fri, 17 Nov 89 07:06:44 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Subject: ftpd free()'s his stack area
+Index: etc/ftpd/popen.c 2.10BSD
+
+Description:
+	It is an error to free() something that was never malloc'd,
+	and it is an even greater faux pas to free() part of a program's
+	stack area, which is what ftpd is doing in ftpd_popen().
+
+	In ftpd_popen() the function glob() is called to do name
+	expansion.  If glob() DOES expansion it calls malloc() to
+	allocate memory to place the expanded name into, however,
+	if glob() DOES NO expansion a pointer to the original
+	address is returned.  The original address will likely lie
+	within an auto (stack) buffer that was sprintf'd into, and
+	later when a free() is done strange and mysterious events
+	will possibly occur.
+
+Repeat-By:
+	Use ftp to connect to a ftpd - do a "ls".  If you see "/bin/lr"
+	instead of "/bin/ls" in the "150 ..." message, then the
+	ftpd has the problem.
+
+	Then, do a "ls x" or "rstatus x" (doesn't matter if x exists or not).
+	Depending on the machine in use, possibly the order of events, etc,
+	you will get a "421 Service not available, remote server has closed"
+	indicating that the ftpd process has dropped core.  On some machines
+	(VAX) no ill effects are observed, while on other machines (PDP11)
+	the daemon dies a horrible death.
+
+Fix:
+	This patch is for popen.c 5.7 dated 2/14/89.  
+
+	If the return block from glob() points into the original buffer
+	(first arg to ftpd_popen) then a copy is made into malloc()'d
+	memory which will be free()'d (rather than the stack buffer) before
+	exiting ftpd_popen().
+
+*** popen.c.old	Wed May 10 14:13:51 1989
+--- popen.c	Thu Nov 16 19:17:13 1989
+***************
+*** 43,49 ****
+  	register char *cp;
+  	FILE *iop;
+  	int argc, gargc, pdes[2], pid;
+! 	char **pop, *argv[100], *gargv[1000], *vv[2];
+  	extern char **glob(), **copyblk(), *strtok(), *malloc();
+  
+  	if (*type != 'r' && *type != 'w' || type[1])
+--- 43,49 ----
+  	register char *cp;
+  	FILE *iop;
+  	int argc, gargc, pdes[2], pid;
+! 	char **pop, *argv[100], *gargv[1000], *vv[2], **ppop, *endprogram;
+  	extern char **glob(), **copyblk(), *strtok(), *malloc();
+  
+  	if (*type != 'r' && *type != 'w' || type[1])
+***************
+*** 58,63 ****
+--- 58,64 ----
+  	}
+  	if (pipe(pdes) < 0)
+  		return(NULL);
++ 	endprogram = program + strlen(program);
+  
+  	/* break up string into pieces */
+  	for (argc = 0, cp = program;; cp = NULL)
+***************
+*** 71,76 ****
+--- 72,84 ----
+  			vv[0] = argv[argc];
+  			vv[1] = NULL;
+  			pop = copyblk(vv);
++ 		}
++ 		for (ppop = pop; *ppop != NULL; ppop++) {
++ 			if (*ppop >= program && *ppop <= endprogram) {
++ 				cp = (char *) malloc(strlen(*ppop) + 1);
++ 				strcpy(cp, *ppop);
++ 				*ppop = cp;
++ 			}
+  		}
+  		argv[argc] = (char *)pop;		/* save to free later */
+  		while (*pop && gargc < 1000)

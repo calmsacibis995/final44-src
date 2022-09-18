@@ -1,0 +1,143 @@
+Path: seismo!uunet!mcvax!unido!sbsvax!greim
+From: greim@sbsvax.UUCP (Michael Greim)
+Newsgroups: comp.bugs.4bsd
+Subject: yet another csh bug and fix
+Index: bin/csh 4.3BSD
+
+Hi folks,
+
+With the utmost humidity and hoping not to be a nuance I herewith
+adventure to percent a new fix for an old bug of csh.
+
+Symptoms:
+
+	There is an 4bsd undocumented feature of history mechanism in csh.
+	With !# you can get the whole last command.
+	When you try
+		alias a '\!#'
+		b;a
+	the csh will take a loooooooong time. Quite probably it will dump
+	core. It is not neccessary for b to have any special value or
+	even to exist.
+
+Diagnosis:
+
+	When doing the alias substitution a new command line is built
+	substituting the old command line in place of 'a'. Then this line
+	is searched for candidates for alias substitution. The new 'a' at
+	the end of the new line is found, and alias substitution happens.
+	Old 'a's are marked, so 'a;b' does not produce garbage.
+	In our example the line grows with each alias substitution:
+
+	b;a
+	b;b;a
+	b;b;b;b;b;a
+	...
+
+	In short, let l0 = 4 (end-of-wordlist counts !), then 
+	ln = 2^n * (l0-2) + 2 is the number of words in the input list
+	after n substitutions.
+
+	csh does only 20 alias substitutions (or is it 21 ?), but after
+	that time the number of words is 2.097.154. And it takes a long
+	time to reach this result.
+
+Therapy:
+
+	Firstly, add a line to sh.local.h defining MAX_PARAMS, the maximal
+	number of words in the input while alias substituting.
+		Example:
+			#define MAX_PARAMS	2000
+	2000 is a value I seem to find quite sufficient.
+
+	Secondly, apply the following context diff.
+
+*** sh.parse.c.old	Thu Mar 24 13:55:12 1988
+--- sh.parse.c	Thu Mar 24 13:55:11 1988
+***************
+*** 34,43 ****
+--- 34,67 ----
+  	resexit(osetexit);
+  }
++ static int
++ too_long (p1, p2)
++ 	register struct wordent *p1, *p2;
++ /*
++  * 15.jan.88  mg
++  * it was possible to get csh into an endless loop.
++  * Just type : alias a '\!#'  then  b; a
++  * Diagnosis : the alias routine substitute the command to "b;!#"
++  * then lex is called, which substitutes "b;b;a". The alias routines
++  * continue to run on the wordlist, but it gets longer each time, so
++  * an end is only reached when the list is 2**21 + 2 entries long, and
++  * this take long and needs a lot of memory.
++  * This routines here counts the number of words in the list.
++  * Maximum number of 2000 should be sufficient.
++  */
++ {
++ 	register int i;
++ 
++ 	for (i=0; p1!=p2 && i<MAX_PARAMS; i++, p1=p1->next);
++ 	return (i<MAX_PARAMS ? 0 : 1);
++ }
++ 
+  asyntax(p1, p2)
+  	register struct wordent *p1, *p2;
+  {
++ 	if (too_long(p1,p2))
++ 		error ("Infinite alias substitution loop detected");
+  	while (p1 != p2)
+  		if (any(p1->word[0], ";&\n"))
+  			p1 = p1->next;
+
+Absorb, apply and enjoy,
+
+		Michael
+
+-- 
++------------------------------------------------------------------------------+
+| UUCP:  ...!uunet!unido!sbsvax!greim   | Michael T. Greim                     |
+|        or greim@sbsvax.UUCP           | Universitaet des Saarlandes          |
+| CSNET: greim%sbsvax.uucp@Germany.CSnet| FB 10 - Informatik (Dept. of CS)     |
+| ARPA:  greim%sbsvax.uucp@uunet.UU.NET | Bau 36, Im Stadtwald 15              |
+| Phone: +49 681 302 2434               | D-6600 Saarbruecken 11, West Germany |
++------------------------------------------------------------------------------+
+| Watch this space. Don't let it escape.                                       |
++------------------------------------------------------------------------------+
+
+
+Path: seismo!uunet!husc6!bloom-beacon!tut.cis.ohio-state.edu!mailrus!ames!pasteur!ucbvax!ucsfcgl!pixar!unicom!daniel
+From: daniel@unicom.UUCP (Dan Smith, not your average Lithuanian...)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: yet another csh bug and fix
+In article <470@sbsvax.UUCP> greim@sbsvax.UUCP (Michael Greim) writes:
+>Symptoms:
+>	There is an 4bsd undocumented feature of history mechanism in csh.
+>	With !# you can get the whole last command.
+>	When you try
+>		alias a '\!#'
+>		b;a
+>	the csh will take a loooooooong time. Quite probably it will dump
+>	core. It is not neccessary for b to have any special value or
+>	even to exist.
+	whoa! quick comment time... I'm running 4.3 BSD on a Vax 11/750,
+and Sun 4.2 R3.5 on various Suns. The use of "!#" is "the command line
+typed in so far..." very useful for things like renaming files via:
+
+	mv longfilename.c really!#:1
+
+	which gives you "reallylongfilename.c". I've never had to use
+things like "!#:2-4", but that's possible, as well as:
+
+	"echo this is !#:1:s/is/at"
+
+	For more clarification (This is *not* "the last command", at least
+on the versions I mentioned...), see "The C Shell Field Guide" by Gail
+& Paul Anderson. I hope this averts some confusion among csh users
+reading this :-)
+
+				dan
+
+dan smith, island graphics, marin co, ca|"A womp ba ba lu ba, a womp bam boom!"
+uucp: {ucbvax!ucbcad,sun}!island!daniel | ph: +1 (415) 491 1000 (W), 332 FAST, 
+uucp: pixar!unicom!daniel, well!daniels | 332 EASY (H)| unix/guitars/films/tuna

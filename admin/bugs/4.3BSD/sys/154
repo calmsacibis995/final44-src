@@ -1,0 +1,42 @@
+Path: seismo!uunet!seismo!sundc!pitstop!sun!amdcad!ames!ll-xn!mit-eddie!husc6!linus!necntc!necis!encore!loverso
+From: loverso@encore.UUCP (John LoVerso)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.[23]BSD TCP checksum problem
+Index: sys/netinet/tcp_input.c 4.3BSD
+
+Description:
+	If you turn off checking of TCP checksums (via the tcpcksum
+	variable in tcp_input.c), then checksums on outgoing datagrams
+	are computed incorrectly.  When checking is off, the checksum
+	on an incoming frame isn't recalculated, and thus doesn't get
+	set to zero.  When tcp_respond() (of tcp_subr.c) is called, it
+	reuses the tcpiphdr of the received frame and a garbage TCP
+	checksum gets calculated.
+
+	This bug is in 4.2 and 4.3.  Probably no one ever noticed
+	because noone runs with checking of TCP checksums off.
+
+Repeat-By:
+	Change tcpcksum from 1 to 0 in tcp_input.c and recompile your
+	kernel (or use adb to change it on a live machine).  Watch
+	after 6 minutes (8 rexmits at 45 seconds a peice).
+
+Fix:
+	The simplest fix is to change tcp_input.c to
+
+	if (tcpcksum) {
+	...
+	}
++	else ti->ti_sum = 0;
+
+	However, there might be other places where tcp_respond() is handed
+	an existing tcpiphdr that hasn't had the cksum zeroed.  It would
+	be safest to just add the following right before the call to
+	in_cksum() in tcp_respond().
+
+	ti->ti_sum = 0;
+
+--
+Chi-Ping Chen (cpchen@multimax.arpa)
+John LoVerso (loverso@multimax.arpa)
+Encore Computer Corp, Marlboro MA

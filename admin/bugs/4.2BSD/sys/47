@@ -1,0 +1,56 @@
+Return-Path: <jrs@Purdue.ARPA>
+Date: Fri, 25 May 84 13:37:17 est
+From: Jeff Schwab <jrs@Purdue.ARPA>
+Subject: if_uba.c routines do not local net hlen of 0
+Index: sys/vaxif/if_uba.c 4.2BSD
+
+Description:
+	If a local network interface has an hlen of 0, the routines
+	in if_ubainit() allocate spurious pages and the if_rubaget()
+	routine will exchange the wrong page when handling a packet
+	greater than 1024 bytes long.
+Repeat-By:
+	The pcl-11 is such a device.  If you raise the mtu on the
+	device from the default 1006 to anything greater than
+	1024, your network will be unusable.
+Fix:
+	The following diff's fix the extraneous page allocations and
+	the problems in if_rubaget().
+
+---- if_ubainit() ------
+  	register caddr_t cp;
+  	int i, ncl;
+  
++ #ifdef	PUCC
++ 	ncl = clrnd(nmr + (hlen? CLSIZE: 0)) / CLSIZE;
++ #else	PUCC
+  	ncl = clrnd(nmr + CLSIZE) / CLSIZE;
++ #endif	PUCC
+  	if (ifu->ifu_r.ifrw_addr)
++ #ifdef	PUCC
++ 		cp = ifu->ifu_r.ifrw_addr - (hlen? (CLBYTES - hlen): 0);
++ #else	PUCC
+  		cp = ifu->ifu_r.ifrw_addr - (CLBYTES - hlen);
++ #endif	PUCC
+  	else {
+  		cp = m_clalloc(2 * ncl, MPG_SPACE);
+  		if (cp == 0)
+  			return (0);
++ #ifdef	PUCC
++ 		ifu->ifu_r.ifrw_addr = cp + (hlen? (CLBYTES - hlen): 0);
++ #else	PUCC
+  		ifu->ifu_r.ifrw_addr = cp + CLBYTES - hlen;
++ #endif	PUCC
+  		ifu->ifu_w.ifrw_addr = ifu->ifu_r.ifrw_addr + ncl * CLBYTES;
+------- if_rubaget() -------
+  			ppte = &Mbmap[mtocl(p)*CLSIZE];
+  			x = btop(cp - ifu->ifu_r.ifrw_addr);
+  			ip = (int *)&ifu->ifu_r.ifrw_mr[x];
++ #ifdef	PUCC
++ 			if (ifu->ifu_hlen == 0) {
++ 				ip--;
++ 			}
++ #endif	PUCC
+  			for (i = 0; i < CLSIZE; i++) {
+  				struct pte t;
+  				t = *ppte; *ppte++ = *cpte; *cpte = t;

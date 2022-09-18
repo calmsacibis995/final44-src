@@ -1,0 +1,61 @@
+Return-Path: <schoch@orion>
+Date: Thu, 26 Sep 85 17:08:46 pdt
+From: Steve Schoch <schoch@orion>
+Subject: csh bug fix
+Index: ucb 4.2BSD
+
+When csh starts up, it uses getwd to set the shell variable cwd to the
+current directory.  If this fails, it exits without printing anything:
+
+% set prompt = 'foo '
+foo mkdir /tmp/test
+foo cd /tmp/test
+foo rmdir /tmp/test
+foo csh
+foo echo $status
+1
+foo
+
+Notice that we were left in the old csh; the new one exited without
+saying anything.
+
+The problem is in dinit() in sh.dir.c.  If getwd(path) fails, it writes
+a message to file descripter 2.  However by this time, initdesc() has
+been called, which dup's fd's 0, 1, and 2, and closes them, so the
+write(2, path, strlen(path)) fails.  The solution is to change the
+file descripter from 2 to SHDIAG, which is what was fd 2.  I also
+added a new line at the end of the error message.
+
+sh.dir.c:
+    25	/*
+    26	 * dinit - initialize current working directory
+    27	 */
+    28	dinit(hp)
+    29		char *hp;
+    30	{
+    31		register char *cp;
+    32		register struct directory *dp;
+    33		char path[MAXPATHLEN];
+    34	
+    35		if (loginsh && hp)
+    36			cp = hp;
+    37		else {
+    38			cp = getwd(path);
+    39			if (cp == NULL) {
+    40				cp = &path[strlen(path)];
+    41				*cp++ = '\n';
+    42				*cp = '\0';
+    43				(void) write(SHDIAG, path, strlen(path));
+    44				exit(1);
+    45			}
+    46		}
+    47		dp = (struct directory *)calloc(sizeof (struct directory), 1);
+    48		dp->di_name = savestr(cp);
+    49		dp->di_count = 0;
+    50		dhead.di_next = dhead.di_prev = dp;
+    51		dp->di_next = dp->di_prev = &dhead;
+    52		printd = 0;
+    53		dnewcwd(dp);
+    54	}
+
+				Steve Schoch

@@ -1,0 +1,93 @@
+Return-Path: <mjb%Brown@UDel-Relay>
+Date:     27 Sep 83 (Tuesday) 20:49 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  write() of 64K to a pipe crashes system
+
+Index:	sys/sys/uipc_socket.c 4.1BSD Fix
+Description:
+	If you try to write 64K or more to a pipe in a single write()
+	system call, the system will crash with "panic: sbflush 2"
+	when the reader closes its end of the pipe.
+	There is a bug in the socket sending routine (sosend()) whereby
+	it doesn't ever do partial writes to the socket. So when you
+	tell it to write 64KB, by golly, it just jams the data in the
+	pipe without regard for the arbitrary pipe size limit of 4KB.
+	This in itself is not that bad (after all, we have 6MB of
+	memory!), but, alas, the size of the data queued in the socket
+	is kept in a short int. So 64KB of buffers have been allocated,
+	but the count has wrapped to 0. The read statement doesn't do
+	anything. But on closing the 'read' half of the pipe, the
+	system crashes because it can't figure out how to de-allocate
+	the 64KB worth of memory buffers.
+Repeat-By:
+	Compile and run the following program:
+	main()
+	{
+		int pipefd[2];
+		char data[64*1024];
+		pipe(pipefd);
+		write(pipefd[1], data, 64*1024);
+		/* Shouldn't get here, right? WRONG! */
+		/* (it should hang because the pipe's not that big, */
+		/* and no one is reading it) */
+		close(pipefd[1]);
+		while (read(pipefd[0], data, 1) > 0);
+		close(pipefd[0]);
+		/* SURPRISE! your system just crashed. */
+	}
+Fix:
+	Make the following changes to uipc_socket.c:
+	(version is 4.71 83/01/22)
+	*** uipc_socket.c.ucb	Thu Sep 22 10:04:08 1983
+	--- uipc_socket.c	Thu Sep 22 10:05:01 1983
+	***************
+	*** 278,283
+		register struct mbuf *m, **mp = &top;
+		register int len;
+		int error = 0, space, s, dontroute;
+	  
+		if (sosendallatonce(so) && uio->uio_resid > so->so_snd.sb_hiwat)
+			return (EMSGSIZE);
+	--- 278,284 -----
+		register struct mbuf *m, **mp = &top;
+		register int len;
+		int error = 0, space, s, dontroute;
+	+ 	struct sockbuf sendtempbuf;
+	  
+		if (sosendallatonce(so) && uio->uio_resid > so->so_snd.sb_hiwat)
+			return (EMSGSIZE);
+	***************
+	*** 341,345
+			}
+		}
+		splx(s);
+		while (uio->uio_resid > 0 && space > 0) {
+			register struct iovec *iov = uio->uio_iov;
+	--- 342,347 -----
+			}
+		}
+		splx(s);
+	+ 	sendtempbuf = so->so_snd;
+		while (uio->uio_resid > 0 && space > 0) {
+			register struct iovec *iov = uio->uio_iov;
+	***************
+	*** 373,379
+			mp = &m->m_next;
+			if (flags & SOF_OOB)
+				space -= len;
+	! 		else
+	! 			space = sbspace(&so->so_snd);
+		}
+		goto again;
+	--- 375,383 -----
+			mp = &m->m_next;
+			if (flags & SOF_OOB)
+				space -= len;
+	! 		else {
+	! 			sballoc(&sendtempbuf, m);
+	! 			space = sbspace(&sendtempbuf);
+	! 		}
+		}
+		goto again;
+	====END OF FIX====

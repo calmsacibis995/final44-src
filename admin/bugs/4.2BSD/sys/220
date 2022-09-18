@@ -1,0 +1,111 @@
+Return-Path: <cithep!cit-vax!stever>
+Date: Sat, 25 Feb 84 03:01:02 pst
+From: cit-vax!stever (Steve Rabin)
+To: cithep!ucbvax!4bsd-bugs
+Index: sys 4.2BSD
+
+Dear Unix-Maintainance at Berkeley:
+
+  This is a bug report about process groups in 4.1bsd and 4.2bsd
+running on a VAX780 at Caltech.  This is my first UNIX bug report,
+so please let me know if I'm sending it to the wrong address.
+
+					Steve Rabin
+					Caltech
+
+
+>From sdr237 Wed Mar 16 13:30:19 1983
+To: eric
+
+Eric:
+
+I had a most disconcerting experience this morning -
+I was running ked on a file (hleMod).
+I escaped into a subshell under the ked process.
+  (ked saves the file when you escape into a subshell).
+Since I no longer cared about the ked process, I sent
+it a KILL signal.
+
+It printed the message 'Reset tty pgrp ... ' and logged me out.
+I was very suprised by this.  Since I had just done a ps
+I decided to write down what was on the screen:
+
+% ps
+PID TT STAT  TIME COMMAND
+8880 03 I       0:22 ked hleMod
+8952 03 S       0:06 -bin/csh (csh)
+8957 03 I       0:00 leave 900
+9037 03 R       0:00 ps
+% kill -9 8880
+Killed
+Reset tty pgrp from 6518 to 8952
+
+Caltech Computer Science VAX/UNIX V4.1bsd
+Username:
+
+Here is a minimal case:
+
+% csh
+% csh
+% ps
+PID TT STAT  TIME COMMAND
+1000 03 S       0:06 -bin/csh (csh)
+1007 03 S       0:06 -bin/csh (csh)
+1015 03 R       0:00 ps
+% kill -9 1000
+Killed
+Reset tty pgrp from 9050 to 1007
+
+Caltech Computer Science VAX/UNIX V4.1bsd
+Username:
+
+Why was I logged off?
+
+				Steve
+
+>From eric Wed Mar 16 22:53:25 1983
+To: sdr237
+Subject: why was I logged off?
+
+After much puzzling over the source to the C shell, I believe I have  an
+explanation. Right before you did kill -9 nnnn, you  had  the  following
+processes:
+
+	init
+	 |
+	csh I
+	 |
+	csh II
+	 |
+	csh III
+
+You killed csh II.
+
+When csh II died, csh I woke up and tried to  read  from  the  terminal.
+When csh wakes up after its subprocess terminates, it  silently  regains
+control of the terminal by setting the terminal process group to its own
+process group. (tty(4):TIOCSPGRP) It did this.
+
+Simultaneously, the kill command terminated, csh III woke up  and  tried
+to read from the terminal. It was no longer in  the  terminal's  process
+group, since csh I had stolen the terminal, and so the read failed.
+
+When a read fails from the terminal in csh it tries to grab the terminal
+back. To do this it first sends HANGUP to everyone in the process  group
+presently having control of the terminal (killpg(2)), and  then  changes
+the terminal process group to its own process group  (tty(4):TIOCSPGRP).
+This is when "Reset tty pgrp from 9050 to 1007" was printed. The  HANGUP
+it sent killed off csh I, which had just grabbed the terminal.
+
+Now the parent  of  csh  I  was  init  (init(8)),  the  system  terminal
+initialization process. Init is the parent of all top level shells. When
+one of its top level shells goes away, it wants to start up a new  getty
+(getty(8)) on the line so someone else can log in. To do the it  revokes
+access of everyone to that  terminal,  and  then  sends  HANGUP  to  all
+processes in the terminal process group (vhangup(2)).  This  killed  off
+csh III. Init then ran a getty, which is what prints:
+
+Caltech Computer Science ....
+Username:
+
+By this time everything else was dead. Now if any of that made sense ...

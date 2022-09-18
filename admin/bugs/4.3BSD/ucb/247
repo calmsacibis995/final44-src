@@ -1,0 +1,373 @@
+From elsie!ado@ncifcrf.gov  Wed Oct 12 17:36:08 1988
+Date: Wed, 12 Oct 88 20:30:03 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87)/SunOS 4.0 vi don't check foreground before gtty
+Index: ucb/vi 4.3BSD
+
+This item was addressed to sunbugs@sun.com, not to hotline@sun.com
+No reply from Sun is necessary.
+
+Workstation-model:
+	Sun 3/60
+
+Serial-Number:
+	838F0353
+
+My-Name:
+	Arthur David Olson
+
+Phone-Number:
+	+1 (301) 496-5688
+
+Electronic-Mail-Address:
+	ado@ncifcrf.gov
+
+Company-Or-Organization-Name-And-Address:
+	National Institutes of Health
+	Building 37, Room 3B03
+	Bethesda, MD  20892
+
+Sun-Software-Release-Number:
+	SunOS 4.0
+
+Description:
+	The "vi" command in both MORE/bsd 4.3 and SunOS 4.0 doesn't check that
+	it's "in foreground" before getting the terminal characteristics it
+	restores when exiting.  This means the terminal can be put in a funny
+	state when vi exits.
+
+Repeat-By:
+	Typing the command
+		( sleep 5 ; vi ) & vi
+	then waiting ten seconds.  Exit from the running vi session; bring the
+	other vi session into foreground; and exit from the other vi session.
+	Note that your terminal is now in cbreak, -echo mode.
+
+Note:
+	The tip (and, by linkage, cu) command also suffers this problem.
+
+Fix:
+	Okay non-Sun folks. . .what's the currently preferred way to wait until
+	a process is "in foreground"?  Whatever the way is, the wait should 
+	occur before the initial gtty's in processes that change and then
+	restore terminal state, right?
+-- 
+	ado@ncifcrf.gov			ADO is a trademark of Ampex.
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+From chris@gyre.umd.edu Thu Oct 13 01:47:03 1988
+Date: Thu, 13 Oct 88 04:47:00 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+To: elsie!ado@ncifcrf.gov
+Subject: Re:  MORE/bsd 4.3 (10/5/87)/SunOS 4.0 vi don't check foreground before gtty
+
+Here is what I use (from Emacs).  A bit gross, but quite reliable.
+Probably something like this should sit in the C library.  The
+various static structures should be passed in from the caller in
+that case, along with a function to set the new modes, and the code
+clearly should save the old state of the various signals rather
+than assuming SIG_DFL.  The SIGTTIN handling is paranoia (the Emacs
+code runs on all sorts of weird Unix machines).
+
+In fact, I think I will take a stab at cleaning it up (appended
+after the trimmed-down Emacs version):
+-----------------------------------------------------------------
+struct sgttyb old;
+static struct tchars OldTchars;
+static struct ltchars OldLtchars;
+static int OldLmode;
+static jmp_buf StopBuf;
+
+/* anti-lint */
+#define	IOCTL(fd, cmd, addr) ioctl(fd, cmd, (caddr_t)(addr))
+
+/*
+ * This gets called on signals which stop us, usually if an ioctl()
+ * generates one.  When this happens, we must halt, then when we are
+ * resumed, restart the tty initialization, or the modes may be wrong.
+ */
+static
+StopHandler(sig)
+	int sig;
+{
+
+	(void) signal(sig, SIG_DFL);	/* Also releases it */
+	(void) kill(0, sig);
+	longjmp(StopBuf, 1);
+}
+
+setup()
+{
+	struct sgttyb sg;
+	struct tchars tchars;
+	struct ltchars ltchars;
+	int lmode;
+
+	(void) setjmp(StopBuf);
+	(void) signal(SIGTTOU, StopHandler);
+	(void) signal(SIGTTIN, StopHandler);
+	(void) signal(SIGTSTP, StopHandler);
+	(void) IOCTL(0, TIOCGETP, &old);
+	sg = old;
+	(void) IOCTL(0, TIOCGETC, &OldTchars);
+	(void) IOCTL(0, TIOCGLTC, &OldLtchars);
+	(void) IOCTL(0, TIOCLGET, &OldLmode);
+	sg.sg_flags &= ~(ECHO | CRMOD | XTABS);
+#ifndef LPASS8
+	sg.sg_flags |= (HalfBakedInput || XonFlow) ? CBREAK : RAW;
+#else
+	sg.sg_flags |= CBREAK;
+#endif
+	tchars = OldTchars;
+	tchars.t_intrc = HalfBakedInput ? Ctl('G') : -1;
+	tchars.t_quitc = -1;
+	if (!XonFlow) {
+		tchars.t_startc = -1;
+		tchars.t_stopc = -1;
+		FlowIsControlled = 0;
+	} else
+		FlowIsControlled = 1;
+	tchars.t_eofc = -1;
+	tchars.t_brkc = -1;
+	ltchars.t_suspc = -1;
+	ltchars.t_dsuspc = -1;
+	ltchars.t_rprntc = -1;
+	ltchars.t_flushc = -1;
+	ltchars.t_werasc = -1;
+	ltchars.t_lnextc = -1;
+#ifndef LPASS8
+	lmode = OldLmode | LLITOUT;
+#else
+	lmode = OldLmode | LPASS8 | LLITOUT;
+#endif
+	(void) IOCTL(0, TIOCSETC, &tchars);
+	(void) IOCTL(0, TIOCSLTC, &ltchars);
+	(void) IOCTL(0, TIOCLSET, &lmode);
+	(void) IOCTL(0, TIOCSETN, &sg);
+	(void) signal(SIGTTOU, SIG_DFL);
+	(void) signal(SIGTTIN, SIG_DFL);
+	(void) signal(SIGTSTP, SIG_DFL);
+}
+
+cleanup()
+{
+
+	(void) IOCTL(0, TIOCSETC, &OldTchars);
+	(void) IOCTL(0, TIOCSLTC, &OldLtchars);
+	(void) IOCTL(0, TIOCLSET, &OldLmode);
+	(void) IOCTL(0, TIOCSETN, &old);
+}
+
+-----------------------------------------------------------------
+/* this goes in some header file */
+/* actually, there should be a single ioctl to set/get all of these */
+struct tty_settings {
+	struct	sgttyb ts_sg;
+	struct	tchars ts_tchars;
+	struct	ltchars ts_ltchars;
+	int	ts_lmode;
+};
+struct tty_setup_context {
+	struct	tty_settings tsc_old;
+	struct	tty_settings tsc_new;
+};
+/* end of header stuff */
+-----------------------------------------------------------------
+/* library routine */
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <that_header.h>
+#include <setjmp.h>
+
+/* anti-lint */
+#define	IOCTL(fd, cmd, addr) ioctl(fd, cmd, (caddr_t)(addr))
+
+/* these typedefs belong in <sys/types.h> and <signal.h> respectively */
+typedef long sigmask_t;
+typedef int (*sigfn_t)();	/* void (*sigfn_t)() on Suns */
+
+static jmp_buf	stopbuf;
+static sigfn_t	ttou;
+static sigfn_t	tstp;
+
+static
+stophandler(sig, code, scp)
+	int sig, code;
+	struct sigcontect *scp;
+{
+	sigfn_t olddisp;
+
+	switch (sig) {
+	case SIGTTOU:
+		olddisp = ttou;
+		break;
+	case SIGTSTP:
+		olddisp = tstp;
+		break;
+	default:
+		/* panic() is another useful library routine that is missing */
+		panic("tty_setup: bad signal");
+		/* NOTREACHED */
+	}
+	if (olddisp == SIG_DFL) {
+		/* just stop */
+		(void) signal(sig, SIG_DFL);	/* also releases it */
+		(void) kill(0, sig);		/* stop */
+		longjmp(StopBuf, 1);		/* take it from the top */
+		/* NOTREACHED */
+	}
+	/* handle it as before, then (if that returns) restart */
+	(void) signal(sig, olddisp);	/* XXX should probably use sigvec */
+	(*olddisp)(sig, code, scp);
+	longjmp(StopBuf, 1);
+}
+
+/*
+ * Set up the terminal on file descriptor fd.
+ *
+ * p is a pointer to a tty_context structure allocated by the caller.
+ * We obtain the old setup, then call the function fn to set the new
+ * modes; when it returns, we set those modes.  The function may be
+ * called several times if an attempt to set fails due to a stop signal.
+ */
+setup(fd, p, fn)
+	int fd;
+	struct tty_setup_context *p;
+	int (*fn)();
+{
+	sigmask_t omask;
+	int ret;
+
+	(void) setjmp(stopbuf);
+	omask = sigblock(sigmask(SIGTTOU) | sigmask(SIGTSTP));
+	if ((ttou = signal(SIGTTOU, stophandler)) == SIG_IGN)
+		(void) signal(SIGTTOU, SIG_IGN);
+	if ((tstp = signal(SIGTSTP, stophandler)) == SIG_IGN)
+		(void) signal(SIGTSTP, SIG_IGN);
+	(void) sigsetmask(omask);
+	if (IOCTL(fd, TIOCGETP, &p->tsc_old.ts_sg))
+		ret = -1;
+	else {
+		ret = 0;
+		(void) IOCTL(fd, TIOCGETC, &p->tsc_old.ts_tchars);
+		(void) IOCTL(fd, TIOCGLTC, &p->tsc_old.ts_ltchars);
+		(void) IOCTL(fd, TIOCLGET, &p->tsc_old.ts_lmode);
+		p->tsc_new = p->tsc_old;	/* paranoid */
+		(*fn)(p);
+		(void) IOCTL(fd, TIOCSETC, &p->tsc_new.ts_tchars);
+		(void) IOCTL(fd, TIOCSLTC, &p->tsc_new.ts_ltchars);
+		(void) IOCTL(fd, TIOCLSET, &p->tsc_new.ts_lmode);
+		(void) IOCTL(fd, TIOCSETN, &p->tsc_new.ts_sg);
+	}
+	(void) signal(SIGTTOU, ttou);
+	(void) signal(SIGTSTP, tstp);
+	return (ret);
+}
+
+cleanup(fd, p)
+	int fd;
+	struct tty_setup_context *p;
+{
+	sigmask_t omask;
+
+	/* TTOU is unlikely here, but TSTP is quite possible */
+	(void) setjmp(stopbuf);
+	omask = sigblock(sigmask(SIGTTOU) | sigmask(SIGTSTP));
+	if ((ttou = signal(SIGTTOU, stophandler)) == SIG_IGN)
+		(void) signal(SIGTTOU, SIG_IGN);
+	if ((tstp = signal(SIGTSTP, stophandler)) == SIG_IGN)
+		(void) signal(SIGTSTP, SIG_IGN);
+	(void) sigsetmask(omask);
+	(void) IOCTL(fd, TIOCSETC, &p->tsc_old.ts_tchars);
+	(void) IOCTL(fd, TIOCSLTC, &p->tsc_old.ts_ltchars);
+	(void) IOCTL(fd, TIOCLSET, &p->tsc_old.ts_lmode);
+	(void) IOCTL(fd, TIOCSETN, &p->tsc_old.ts_sg);
+	(void) signal(SIGTTOU, ttou);
+	(void) signal(SIGTSTP, tstp);
+}
+-----------------------------------------------------------------
+
+Well, there it is... it is still not really right for `more',
+though; anything that does not disable ^Z (and then emulate it
+itself) really wants a TSTP handler that automatically calls
+cleanup() and setup().  Maybe I can get someone started on it
+though.
+
+Chris
+
+From elsie!ado@ncifcrf.gov Thu Oct 13 08:47:59 1988
+Received: from FCS280S.NCIFCRF.GOV by okeeffe.berkeley.edu (5.60/1.29)
+	id AA16115; Thu, 13 Oct 88 08:47:55 PDT
+Received: by fcs280s.ncifcrf.gov (4.0/NCIFCRF-1.0)
+	id AA08804; Thu, 13 Oct 88 10:51:04 EDT
+Received: by elsie.UUCP (5.51/4.7)
+	id AA00415; Thu, 13 Oct 88 10:49:09 EDT
+Date: Thu, 13 Oct 88 10:49:09 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Message-Id: <8810131449.AA00415@elsie.UUCP>
+To: chris@gyre.umd.edu
+Subject: Re:  MORE/bsd 4.3 (10/5/87)/SunOS 4.0 vi don't check foreground before gtty
+Cc: bostic@okeeffe.berkeley.edu, marc@okeeffe.berkeley.edu
+Status: R
+
+Thanks for the code!  The only window of vulnerability I can see crops up 
+if the process gets put into background at an inopportune time.
+
+	(void) setjmp(stopbuf);
+	/*...*/
+		(void) IOCTL(fd, TIOCGETC, &p->tsc_old.ts_tchars);
+		(void) IOCTL(fd, TIOCGLTC, &p->tsc_old.ts_ltchars);
+		(void) IOCTL(fd, TIOCLGET, &p->tsc_old.ts_lmode);
+		p->tsc_new = p->tsc_old;	/* paranoid */
+		(*fn)(p);
+		(void) IOCTL(fd, TIOCSETC, &p->tsc_new.ts_tchars);
+		/*
+		** START OF INOPPORTUNE TIME
+		*/
+		(void) IOCTL(fd, TIOCSLTC, &p->tsc_new.ts_ltchars);
+		(void) IOCTL(fd, TIOCLSET, &p->tsc_new.ts_lmode);
+		/*
+		** END OF INOPPORTUNE TIME
+		*/
+		(void) IOCTL(fd, TIOCSETN, &p->tsc_new.ts_sg);
+
+If one or more of the TIOCS's gets done before all of them get done, then
+when the longjmp occurs and you go back to the site of the setjmp, the
+second TIOCG's will pick up the partially changed state of the terminal,
+which will be used later when restoration is done.
+
+The only (ugly) way I see around this would be to have several setjmps, a la
+
+	(void) setjmp(stopbuf);
+	(void) IOCTL(fd, TIOCGETC, &before);
+	/* set up after */
+	(void) IOCTL(fd, TIOCSETC, &after);
+	(void) setjmp(stopbuf);
+	(void) IOCTL(fd, TIOCGLTC, &before2);
+	/* set up after2 */
+	(void) IOCTL(fd, TIOCSLTC, &after2);
+	/*...*/
+
+-------
+
+What would be really terrific would variants of TIOCGETC et al.
+that would hang the same way TIOCSETC does in the kernel, waiting for
+foregroundedness.  (Alternately, an ioctl that says subsequent TIOCG's
+should be so handled.)
+
+-------
+
+And. . .the Bandaid (tm) approach I've taken in tip is to drop in
+
+	{
+		int	minus1 = -1;
+
+		(void) ioctl(1, TIOCSETD, &minus1);
+	}
+
+immediately before the TIOCG's.  Since the system's ioctl code goes through
+the "hang until in foreground" code before verifying parameters, you get a
+hang without changing anything.
+
+				--ado
+

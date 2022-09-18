@@ -1,0 +1,632 @@
+head     4.1;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.1 KPATCH4:4.0 KPATCH3:4.0 KPATCH2:4.0 KREL1:4.0 BETA5/24/88:1.4;
+locks    ; strict;
+comment  @ * @;
+
+
+4.1
+date     89.07.18.16.49.30;  author jtkohl;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     89.01.23.09.30.22;  author jtkohl;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     89.01.13.17.24.38;  author rfrench;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     89.01.10.11.37.51;  author steiner;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     88.10.07.04.38.32;  author shanzer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     88.10.07.04.37.18;  author shanzer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     88.03.24.18.06.14;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     88.02.23.17.31.57;  author steiner;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     88.01.13.18.59.33;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.11.30.06.09.08;  author panda;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial checkin.
+@
+
+
+4.1
+log
+@Allow new flag '-r' to specify realm, and make the -n argument non-positional
+Programmer: Jay Berkenbilt
+Auditor: John Kohl
+@
+text
+@/*
+ * $Source: /mit/kerberos/src/admin/RCS/ext_srvtab.c,v $
+ * $Header: ext_srvtab.c,v 4.0 89/01/23 09:30:22 jtkohl Exp $
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ *
+ * Description 
+ */
+
+#ifndef	lint
+static char rcsid_ext_srvtab_c[] =
+    "$Header: ext_srvtab.c,v 4.0 89/01/23 09:30:22 jtkohl Exp $";
+#endif	lint
+
+#include <mit-copyright.h>
+
+#include <stdio.h>
+#include <sys/file.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <des.h>
+#include <krb.h>
+#include <krb_db.h>
+
+#define TRUE 1
+#define FALSE 0
+
+static C_Block master_key;
+static C_Block session_key;
+static Key_schedule master_key_schedule;
+char progname[] = "ext_srvtab";
+char realm[REALM_SZ];
+
+main(argc, argv)
+  int argc;
+  char *argv[];
+{
+    FILE *fout;
+    char fname[1024];
+    int fopen_errs = 0;
+    int arg;
+    Principal princs[40];
+    int more; 
+    int prompt = TRUE;
+    register int n, i;
+    
+    bzero(realm, sizeof(realm));
+    
+    /* Parse commandline arguments */
+    if (argc < 2)
+	usage();
+    else {
+	for (i = 1; i < argc; i++) {
+	    if (strcmp(argv[i], "-n") == 0)
+		prompt = FALSE;
+	    else if (strcmp(argv[i], "-r") == 0) {
+		if (++i >= argc)
+		    usage();
+		else {
+		    strcpy(realm, argv[i]);
+		    /* 
+		     * This is to humor the broken way commandline
+		     * argument parsing is done.  Later, this
+		     * program ignores everything that starts with -.
+		     */
+		    argv[i][0] = '-';
+		}
+	    }
+	    else if (argv[i][0] == '-')
+		usage();
+	    else
+		if (!k_isinst(argv[i])) {
+		fprintf(stderr, "%s: bad instance name: %s\n",
+			progname, argv[i]);
+		usage();
+	    }
+	}
+    }
+
+    if (kdb_get_master_key (prompt, master_key, master_key_schedule) != 0) {
+      fprintf (stderr, "Couldn't read master key.\n");
+      fflush (stderr);
+      exit(1);
+    }
+
+    if (kdb_verify_master_key (master_key, master_key_schedule, stderr) < 0) {
+      exit(1);
+    }
+
+    /* For each arg, search for instances of arg, and produce */
+    /* srvtab file */
+    if (!realm[0])
+	if (krb_get_lrealm(realm, 1) != KSUCCESS) {
+	    fprintf(stderr, "%s: couldn't get local realm\n", progname);
+	    exit(1);
+	}
+    (void) umask(077);
+
+    for (arg = 1; arg < argc; arg++) {
+	if (argv[arg][0] == '-')
+	    continue;
+	sprintf(fname, "%s-new-srvtab", argv[arg]);
+	if ((fout = fopen(fname, "w")) == NULL) {
+	    fprintf(stderr, "Couldn't create file '%s'.\n", fname);
+	    fopen_errs++;
+	    continue;
+	}
+	printf("Generating '%s'....\n", fname);
+	n = kerb_get_principal("*", argv[arg], &princs[0], 40, &more);
+	if (more)
+	    fprintf(stderr, "More than 40 found...\n");
+	for (i = 0; i < n; i++) {
+	    FWrite(princs[i].name, strlen(princs[i].name) + 1, 1, fout);
+	    FWrite(princs[i].instance, strlen(princs[i].instance) + 1,
+		   1, fout);
+	    FWrite(realm, strlen(realm) + 1, 1, fout);
+	    FWrite(&princs[i].key_version,
+		sizeof(princs[i].key_version), 1, fout);
+	    bcopy(&princs[i].key_low, session_key, sizeof(long));
+	    bcopy(&princs[i].key_high, session_key + sizeof(long),
+		  sizeof(long));
+	    kdb_encrypt_key (session_key, session_key, 
+			     master_key, master_key_schedule, DES_DECRYPT);
+	    FWrite(session_key, sizeof session_key, 1, fout);
+	}
+	fclose(fout);
+    }
+
+    StampOutSecrets();
+
+    exit(fopen_errs);		/* 0 errors if successful */
+
+}
+
+Die()
+{
+    StampOutSecrets();
+    exit(1);
+}
+
+FWrite(p, size, n, f)
+  char   *p;
+  int     size;
+  int     n;
+  FILE   *f;
+{
+    if (fwrite(p, size, n, f) != n) {
+	printf("Error writing output file.  Terminating.\n");
+	Die();
+    }
+}
+
+StampOutSecrets()
+{
+    bzero(master_key, sizeof master_key);
+    bzero(session_key, sizeof session_key);
+    bzero(master_key_schedule, sizeof master_key_schedule);
+}
+
+usage()
+{
+    fprintf(stderr, 
+	    "Usage: %s [-n] [-r realm] instance [instance ...]\n", progname);
+    exit(1);
+}
+@
+
+
+4.0
+log
+@Programmer/Auditor: John Kohl
+changes: name changes to krb_xxx
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.8 89/01/13 17:24:38 jtkohl Locked $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.8 89/01/13 17:24:38 jtkohl Locked $";
+d37 2
+a38 1
+char    progname[] = "ext_srvtab";
+d41 2
+a42 2
+    int     argc;
+    char  **argv;
+d44 4
+a47 5
+    FILE   *fout;
+    char    fname[1024];
+    char    realm[REALM_SZ];
+    int     fopen_errs = 0;
+    char   *arg;
+d49 2
+a50 1
+    int     more, prompt;
+d52 32
+a83 11
+
+    prompt = TRUE;
+    /* skip over control args, -n means read key from MKEYFILE */
+    /* use up args by counting down argc and counting up argv */
+    while (--argc > 0 && (*++argv)[0] == '-') {
+      if (strcmp (argv[0], "-n") == 0) prompt = FALSE; 
+      else {
+	fprintf (stderr, "%s: Unknown control arg %s.\n", progname, argv[0]);
+	fflush (stderr);
+	usage(-1);
+      }
+a85 2
+    CheckArgs(argc, argv);
+
+d89 1
+a89 1
+      exit (-1);
+d93 1
+a93 1
+      exit (-1);
+d98 5
+a102 4
+    if (krb_get_lrealm(realm, 1) != KSUCCESS) {
+	fprintf(stderr, "%s: couldn't get local realm\n", progname);
+	exit(1);
+    }
+d104 5
+a108 3
+    while (argc--) {
+	arg = *argv++;
+	sprintf(fname, "%s-new-srvtab", arg);
+d115 1
+a115 1
+	n = kerb_get_principal("*", arg, &princs[0], 40, &more);
+d144 1
+a144 1
+    exit(-1);
+a146 14
+CheckArgs(c, v)
+    int     c;
+    char   *v[];
+{
+    if (!c)
+	usage(2);
+    for (; c--; v++)
+	if (!k_isinst(*v) || !strcmp(*v, "-n")) {
+	    fprintf(stderr, "%s: bad instance name: %s\n",
+		    progname, *v);
+	    usage(1);
+	}
+}
+
+d148 4
+a151 4
+    char   *p;
+    int     size;
+    int     n;
+    FILE   *f;
+d166 1
+a166 2
+usage(val)
+int val;
+d168 3
+a170 2
+    fprintf(stderr, "Usage: %s [-n] instance [instance ...]\n", progname);
+    exit(val);
+@
+
+
+1.8
+log
+@Programmer: jtkohl
+Auditor: rfrench
+Fixed parsing of "-n" option and added usage message
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.7 89/01/10 11:37:51 jtkohl Locked $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.7 89/01/10 11:37:51 jtkohl Locked $";
+d78 1
+a78 1
+    if (get_krbrlm(realm, 1) != KSUCCESS) {
+@
+
+
+1.7
+log
+@use the standard DES_DECRYPT constant.
+programmer: jtkohl
+auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.6 88/10/07 04:38:32 jtkohl Locked $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.6 88/10/07 04:38:32 jtkohl Locked $";
+a36 1
+int     debug;			/* What the hell is this for? */
+d60 1
+a60 1
+	exit (-1);
+d128 2
+d131 1
+a131 1
+	if (!k_isinst(*v)) {
+d134 1
+a134 1
+	    exit(1);
+d155 7
+@
+
+
+1.6
+log
+@(Opps No changes since last checkin forgot information in the log)
+Programer: jb@@cs.brown.edu
+Auditor: shanzer
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.5 88/10/07 04:37:18 shanzer Locked $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.5 88/10/07 04:37:18 shanzer Locked $";
+a30 2
+#define DECRYPT 0
+#define ENCRYPT 1
+d107 1
+a107 1
+			     master_key, master_key_schedule, DECRYPT);
+@
+
+
+1.5
+log
+@Added jb@@cs.brown.edu changes to fix the handling of the argument list 
+and fixed the creatin mode of the new srvtab.
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.4 88/03/24 18:06:14 steiner Exp $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.4 88/03/24 18:06:14 steiner Exp $";
+@
+
+
+1.4
+log
+@Encrypt in master key rather than key schedule for
+byte-order independence.
+Programmer: jon.
+Auditor: jtkohl.
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.3 88/02/23 17:31:57 steiner Exp $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.3 88/02/23 17:31:57 steiner Exp $";
+a50 1
+    Principal master_princ;
+a65 1
+    argc++; argv--;
+d85 3
+a87 2
+    while (--argc) {
+	arg = *++argv;
+d131 1
+a131 1
+    for (; --c; ++v)
+@
+
+
+1.3
+log
+@Copyright notice, etc.
+@
+text
+@d3 1
+a3 1
+ * $Header: ext_srvtab.c,v 1.2 88/01/13 18:59:33 steiner Locked $
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.2 88/01/13 18:59:33 steiner Locked $";
+d53 1
+a53 1
+    int     more;
+d56 13
+d71 4
+a74 7
+    n = kerb_get_principal(KERB_M_NAME, KERB_M_INST, &master_princ,
+	1, &more);
+    if (n != 1) {
+	fprintf(stderr,
+	"\07error on master key version lookup, %d found, more = %d\n",
+		n, more);
+	exit(-1);
+d76 3
+a78 11
+    des_read_password(master_key,
+	"\nEnter current Kerberos master key: ", TRUE);
+    key_sched(master_key, master_key_schedule);
+    bcopy(&master_princ.key_low, session_key, sizeof(long));
+    bcopy(&master_princ.key_high, session_key + sizeof(long),
+	sizeof(long));
+    pcbc_encrypt(session_key, session_key, (long) sizeof session_key,
+		 master_key_schedule, master_key_schedule, DECRYPT);
+    if (bcmp(master_key, session_key, sizeof master_key)) {
+	printf("\nInvalid master key.\n");
+	Die();
+a79 1
+    printf("\nMaster key verified.\n\n");
+a80 1
+
+d91 1
+a91 1
+	    printf("Couldn't create file '%s'.\n", fname);
+d98 1
+a98 1
+	    printf("More than 40 found...\n");
+d109 2
+a110 3
+	    pcbc_encrypt(session_key, session_key,
+		(long) sizeof session_key,
+		master_key_schedule, master_key_schedule, DECRYPT);
+d132 1
+a132 1
+    for (++v; --c; ++v)
+@
+
+
+1.2
+log
+@Formatted.
+@
+text
+@d2 2
+a3 2
+ * $Source: /u1/mit/kerberos/admin/RCS/ext_srvtab.c,v $
+ * $Header$
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology. 
+d14 2
+a15 2
+static char rcsid_module_c[] =
+"$Header: ext_srvtab.c,v 1.1 87/11/30 06:09:08 panda Exp $";
+d18 1
+a18 1
+#include	<mit-copyright.h>
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 3
+a3 2
+/* $Source: /u1/mit/kerberos/admin/RCS/ext_srvtab.c,v $
+ * $Author: panda $
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d7 2
+a8 2
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+d10 1
+a10 1
+ * Description
+d15 1
+a15 1
+"$Header: ext_srvtab.c,v 1.1 87/11/29 12:16:47 panda Locked $";
+d39 2
+a40 2
+int debug;		/* What the hell is this for? */
+char progname[] = "ext_srvtab";
+d43 2
+a44 2
+int argc;
+char **argv;
+d46 5
+a50 5
+    FILE *fout;
+    char fname[1024];
+    char realm[REALM_SZ];
+    int fopen_errs = 0;
+    char *arg;
+d53 1
+a53 1
+    int more;
+d58 2
+a59 1
+    n = kerb_get_principal(KERB_M_NAME,KERB_M_INST,&master_princ,1,&more);
+d62 2
+a63 2
+		"\07error on master key version lookup, %d found, more = %d\n",
+		n,more);
+d66 2
+a67 3
+        
+    des_read_password(master_key, "\nEnter current Kerberos master key: ",
+			TRUE);
+d70 4
+a73 3
+    bcopy(&master_princ.key_high, session_key + sizeof(long), sizeof(long));
+    pcbc_encrypt(session_key, session_key, (long)sizeof session_key,
+			master_key_schedule, master_key_schedule, DECRYPT);
+d81 2
+a82 2
+	/* For each arg, search for instances of arg, and produce */
+	/* srvtab file */
+d97 2
+a98 1
+	if (more) printf("More than 40 found...\n");
+d104 2
+a105 2
+	    FWrite(&princs[i].key_version, sizeof(princs[i].key_version),
+		   1, fout);
+d108 4
+a111 3
+	   	 sizeof(long));
+	    pcbc_encrypt(session_key, session_key, (long)sizeof session_key,
+			master_key_schedule, master_key_schedule, DECRYPT);
+d130 2
+a131 2
+int c;
+char *v[];
+d133 6
+a138 6
+	for (++v; --c; ++v)
+		if (!k_isinst(*v)) {
+			fprintf(stderr, "%s: bad instance name: %s\n",
+				progname, *v);
+			exit(1);
+		}
+d142 4
+a145 4
+char *p;
+int size;
+int n;
+FILE *f;
+a158 1
+
+@

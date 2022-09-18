@@ -1,0 +1,81 @@
+Return-Path: <cbosgd!mark>
+Date: 29 Jul 83 11:43:06 EDT (Fri)
+From: cbosgd!mark (Mark Horton)
+Subject: accounting bug
+To: 4bsd-bugs, harpo!41cbsd
+
+Index:	sys/sys/sys_xxx.c 4.1BSD Fix
+
+Description:
+	Accounting gets turned off when there is plenty of space
+	on the /usr filesystem.
+Repeat-By:
+	Fill up /usr to where df shows over 92% full.
+	The console will print "Accounting suspended" and
+	all accounting is turned off.  If your system is
+	already over 92% full, this happens when /etc/rc
+	tries to turn on accounting.
+
+	The manual claims that when the disk fills up (I read
+	this to mean 100% full), accounting is turned off.
+	The code suggests that the intent was that if it gets
+	less than 2% free, accounting is turned off, and if it
+	gets over 4% free, it will be turned back on.  In reality,
+	the numbers used are 8% and 16%.
+Fix:
+	The basic problem is that an apples to oranges comparison
+	is being made.  The test in the acct() procedure in sys_xxx.c
+	essentially asks if the disk is at least acctlow% full with
+		if (nbfree < (acctlow/100) * dsize)
+			turn off accounting
+	(The actually code associates to avoid truncation, but the
+	above is more readable for this explanation.)  nbfree is the
+	number of blocks free, dsize is the data size of the filesystem.
+	acctlow is 2, and the comment says that 2% is the threshold.
+	The problem is that nbfree is in units of 2K bytes, but
+	dsize is in units of 512 bytes.
+
+	The fix enclosed here just multiplies nbfree by 4 so that
+	a fair comparison is made.  Probably a cleaner fix would
+	invoke some conversion macros.  Note that two fixes must
+	be made - one to the "turn off accounting" code and one
+	to the "turn on accounting" code right above it.
+
+*** sys_xxx.c.orig	Fri Jul 29 11:03:58 1983
+--- sys_xxx.c.new	Fri Jul 29 11:32:15 1983
+***************
+*** 599,605
+  	off_t siz;
+  	register struct acct *ap = &acctbuf;
+  
+! 	if (savacctp && savacctp->i_fs->fs_cstotal.cs_nbfree >
+  	    accthigh * savacctp->i_fs->fs_dsize / 100) {
+  		acctp = savacctp;
+  		savacctp = NULL;
+
+--- 599,605 -----
+  	off_t siz;
+  	register struct acct *ap = &acctbuf;
+  
+! 	if (savacctp && savacctp->i_fs->fs_cstotal.cs_nbfree * 4 >
+  	    accthigh * savacctp->i_fs->fs_dsize / 100) {
+  		acctp = savacctp;
+  		savacctp = NULL;
+***************
+*** 607,613
+  	}
+  	if ((ip=acctp)==NULL)
+  		return;
+! 	if (acctp->i_fs->fs_cstotal.cs_nbfree <
+  	    acctlow * acctp->i_fs->fs_dsize / 100) {
+  		savacctp = acctp;
+  		acctp = NULL;
+
+--- 607,613 -----
+  	}
+  	if ((ip=acctp)==NULL)
+  		return;
+! 	if (acctp->i_fs->fs_cstotal.cs_nbfree * 4 <
+  	    acctlow * acctp->i_fs->fs_dsize / 100) {
+  		savacctp = acctp;
+  		acctp = NULL;

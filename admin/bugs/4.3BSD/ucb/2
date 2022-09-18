@@ -1,0 +1,59 @@
+Return-Path: <serge@MONET.BERKELEY>
+Date: Tue, 27 Aug 85 19:35:01 PDT
+From: serge@MONET.BERKELEY (Serge Granik)
+Subject: /usr/ucb/script hangs
+Index: 	ucb/script.c 4.3BSD
+
+Description:
+	Under certain conditions, script will hang when the user tries
+	to exit.  One has to kill the script.
+
+	As a side note, the initial message "Script started, file is ..."
+	is sometimes not printed in its entirety.  The only thing I can
+	see that could be causing this is the switching of the terminal
+	into raw mode immediately after the message is printed (via the
+	fixtty subroutine).  However, neither the addition of "fflush(stdout);"
+	nor "fflush(stdout); fsync(fileno(stdout));" seems to fix the problem.
+Repeat-By:
+	Perform the following commands
+
+	prompt% script
+	% sleep 10 &
+	% exit
+
+	At this point you will hang until the sleep command finishes.
+Fix:
+	35a36
+	> int	subchild;
+	89,90c90,91
+	< 		f = fork();
+	< 		if (f < 0) {
+	---
+	> 		subchild = child = fork();
+	> 		if (child < 0) {
+	94c95
+	< 		if (f)
+	---
+	> 		if (child)
+	117a119,120
+	> 	register int pid;
+	> 	register int die = 0;
+	119,121c122,127
+	< 	if (wait3(&status, WNOHANG, 0) != child)
+	< 		return;
+	< 	done();
+	---
+	> 	while ((pid = wait3(&status, WNOHANG, 0)) > 0)
+	> 		if (pid == child)
+	> 			die = 1;
+	> 
+	> 	if (die)
+	> 		done();
+	188,189c194,197
+	< 	ioctl(0, TIOCSETP, (char *)&b);
+	< 	printf("Script done, file is %s\n", fname);
+	---
+	> 	if (!subchild) {
+	> 		ioctl(0, TIOCSETP, (char *)&b);
+	> 		printf("Script done, file is %s\n", fname);
+	> 	}

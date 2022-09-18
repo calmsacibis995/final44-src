@@ -1,0 +1,1227 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Dec 15 12:23:57 1989
+Received: from ucbarpa.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA01090; Fri, 15 Dec 89 12:23:57 -0800
+Received: from ucbvax.Berkeley.EDU by ucbarpa.Berkeley.EDU (5.61/1.39)
+	id AA20005; Fri, 15 Dec 89 11:29:03 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.39)
+	id AA25691; Fri, 15 Dec 89 11:27:09 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA04256; Fri, 15 Dec 89 08:22:44 -0800
+Date: Fri, 15 Dec 89 08:22:44 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8912151622.AA04256@WLV.IMSD.CONTEL.COM>
+Subject: /bin/as can't be built -i or -n
+Index: 	bin/as/as1?.s 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The first phase of the assembler (/bin/as) can not be built
+	shared text or split I/D.  This defeats the text caching and
+	sticky-ness, slowing down loading of the assembler.
+
+Repeat-By:
+	Set SEPFLAG to "-i", make 'as'.  Run it, observe the core dump.
+
+Fix:
+	When building split I/D the subroutine calling sequence cannot place
+	data inline with text, as in "jsr r5,function; data1; data2;...".  
+	Also, there were several missing .data/.text directives which would 
+	cause data to be place in the text section...
+
+	Also, the read/write buffer size was increased from 512 to 1024.
+
+	Apply the patches to the as1?.s modules.
+
+	Merry Christmas!  Perhaps /lib/as2 will be out in time for a Happy
+	New Year. ;-)
+
+diff -c as.old/Makefile as/Makefile
+*** as.old/Makefile	Wed Mar 11 17:26:34 1987
+--- as/Makefile	Wed Dec 13 11:16:15 1989
+***************
+*** 10,21 ****
+  
+  all: as as2
+  
+- #
+- # "as" can't be loaded with either -i or -n
+- #
+  as: ${AS1SRC}
+  	${AS} ${ASFLAGS} -o as1.o as1?.s
+! 	ld -o $@ as1.o -lc
+  
+  as2: ${AS2SRC}
+  	${AS} ${ASFLAGS} -o as2.o as2?.s
+--- 10,18 ----
+  
+  all: as as2
+  
+  as: ${AS1SRC}
+  	${AS} ${ASFLAGS} -o as1.o as1?.s
+! 	ld ${SEPFLAG} -o $@ as1.o -lc
+  
+  as2: ${AS2SRC}
+  	${AS} ${ASFLAGS} -o as2.o as2?.s
+diff -c as.old/as11.s as/as11.s
+*** as.old/as11.s	Sun Feb  8 17:26:12 1987
+--- as/as11.s	Wed Dec 13 10:30:55 1989
+***************
+*** 14,22 ****
+  go:
+  	jsr	pc,assem
+  
+! 	mov	$512.,-(sp)		/ write(pof, outbuf, 512)
+  	mov	$outbuf,-(sp)		/	movb	pof,r0
+! 	mov	pof,-(sp)		/	sys	write; outbuf; 512.
+  	jsr	pc,_write		/	jes	wrterr
+  	add	$6,sp
+  	tst	r0
+--- 14,22 ----
+  go:
+  	jsr	pc,assem
+  
+! 	mov	$1024.,-(sp)		/ write(pof, outbuf, 1024)
+  	mov	$outbuf,-(sp)		/	movb	pof,r0
+! 	mov	pof,-(sp)		/	sys	write; outbuf; 1024.
+  	jsr	pc,_write		/	jes	wrterr
+  	add	$6,sp
+  	tst	r0
+***************
+*** 31,37 ****
+  
+  	tstb	errflg
+  	bne	aexit
+! 	jsr	r5,fcreat; a.tmp3
+  
+  	mov	r0,-(sp)		/ r0 = fcreat(a.tmp3)
+  	mov	symend,-(sp)		/ write(r0, usymtab, symend-usymtab)
+--- 31,38 ----
+  
+  	tstb	errflg
+  	bne	aexit
+! 	mov	$a.tmp3,r5
+! 	jsr	pc,fcreat
+  
+  	mov	r0,-(sp)		/ r0 = fcreat(a.tmp3)
+  	mov	symend,-(sp)		/ write(r0, usymtab, symend-usymtab)
+***************
+*** 51,57 ****
+  	mov	$a.tmp3,-(sp)		/   "-o", outfp, a.tmp1, a.tmp2, a.tmp3, 0)
+  	mov	$a.tmp2,-(sp)		/	sys	exec; fpass2; 1f
+  	mov	$a.tmp1,-(sp)		/	mov	$fpass2,r0
+! 	mov	outfp,-(sp)		/	jsr	r5,filerr; "?\n
+  	mov	$3f,-(sp)		/ { "-o" }
+  	mov	$ovflag,-(sp)
+  	mov	$globfl,-(sp)
+--- 52,59 ----
+  	mov	$a.tmp3,-(sp)		/   "-o", outfp, a.tmp1, a.tmp2, a.tmp3, 0)
+  	mov	$a.tmp2,-(sp)		/	sys	exec; fpass2; 1f
+  	mov	$a.tmp1,-(sp)		/	mov	$fpass2,r0
+! 					/	mov	$"?\n,-(sp)
+! 	mov	outfp,-(sp)		/	jsr	pc,filerr; tst (sp)+
+  	mov	$3f,-(sp)		/ { "-o" }
+  	mov	$ovflag,-(sp)
+  	mov	$globfl,-(sp)
+***************
+*** 60,67 ****
+  	jsr	pc,_execl
+  
+  	mov	$1f,r0			/ { "/lib/as2" }
+! 	jsr	r5,filerr; "?\n
+! 
+  aexit:
+  	mov	$a.tmp1,-(sp)		/ unlink(a.tmp1)
+  	jsr	pc,_unlink		/	sys	unlink; a.tmp1
+--- 62,70 ----
+  	jsr	pc,_execl
+  
+  	mov	$1f,r0			/ { "/lib/as2" }
+! 	mov	$"?\n,-(sp)
+! 	jsr	pc,filerr
+! 	tst	(sp)+
+  aexit:
+  	mov	$a.tmp1,-(sp)		/ unlink(a.tmp1)
+  	jsr	pc,_unlink		/	sys	unlink; a.tmp1
+***************
+*** 83,91 ****
+  outfp:	4b				/ { "a.out" }
+  .text
+  
+! / filerr(fname::r0, err::r5)
+  /	char	*fname, *err;
+  filerr:
+  	mov	r1,-(sp)		/ protect r1 from library
+  	tst	-(sp)			/ write(1, r0, strlen(r0))
+  	mov	r0,-(sp)
+--- 86,96 ----
+  outfp:	4b				/ { "a.out" }
+  .text
+  
+! / filerr(fname::r0, err::2(sp))
+  /	char	*fname, *err;
+  filerr:
++ 	mov	sp,r5
++ 	tst	(r5)+			/ point to error characters
+  	mov	r1,-(sp)		/ protect r1 from library
+  	tst	-(sp)			/ write(1, r0, strlen(r0))
+  	mov	r0,-(sp)
+***************
+*** 112,119 ****
+  	jsr	pc,_write
+  	add	$6,sp
+  	mov	(sp)+,r1
+! 	tst	(r5)+
+! 	rts	r5
+  
+  / fd = fcreat(fname::r5) { emulates mkstemp }
+  /	int	fd;
+--- 117,123 ----
+  	jsr	pc,_write
+  	add	$6,sp
+  	mov	(sp)+,r1
+! 	rts	pc
+  
+  / fd = fcreat(fname::r5) { emulates mkstemp }
+  /	int	fd;
+***************
+*** 120,152 ****
+  /	char	**fname;
+  fcreat:
+  	mov	r1,-(sp)		/ protect r1 from library
+- 	mov	r2,-(sp)
+- 	mov	(r5)+,r2
+  1:
+  	mov	$outbuf,-(sp)		/ stat(r5, outbuf)
+! 	mov	r2,-(sp)
+  	jsr	pc,_stat
+  	cmp	(sp)+,(sp)+
+  	tst	r0			/ does the file already exist?
+  	bmi	3f
+! 	incb	9.(r2)			/ (yes) increment trailing letter
+! 	cmpb	9.(r2),$'z		/ out of temporaries?
+  	blos	1b
+  2:
+! 	mov	r2,r0			/ (yes) filerr(*r5, "?\n")
+! 	jsr	r5,filerr; "?\n
+! 	mov	$3,-(sp)		/ _exit(3)
+  	jsr	pc,__exit
+  3:
+  	mov	$0444,-(sp)		/ creat(*r5, 0444)
+! 	mov	r2,-(sp)
+  	jsr	pc,_creat
+  	cmp	(sp)+,(sp)+
+  	tst	r0
+  	bmi	2b
+- 	mov	(sp)+,r2
+  	mov	(sp)+,r1
+! 	rts	r5
+  
+  wrterr:
+  	mov	$8f-9f, -(sp)		/ write(1, WRTMSG, strlen(WRTERR))
+--- 124,154 ----
+  /	char	**fname;
+  fcreat:
+  	mov	r1,-(sp)		/ protect r1 from library
+  1:
+  	mov	$outbuf,-(sp)		/ stat(r5, outbuf)
+! 	mov	r5,-(sp)
+  	jsr	pc,_stat
+  	cmp	(sp)+,(sp)+
+  	tst	r0			/ does the file already exist?
+  	bmi	3f
+! 	incb	9.(r5)			/ (yes) increment trailing letter
+! 	cmpb	9.(r5),$'z		/ out of temporaries?
+  	blos	1b
+  2:
+! 	mov	r5,r0			/ (yes) filerr(*r5, "?\n")
+! 	mov	$"?\n,-(sp)
+! 	jsr	pc,filerr
+! 	mov	$3,(sp)			/ _exit(3)
+  	jsr	pc,__exit
+  3:
+  	mov	$0444,-(sp)		/ creat(*r5, 0444)
+! 	mov	r5,-(sp)
+  	jsr	pc,_creat
+  	cmp	(sp)+,(sp)+
+  	tst	r0
+  	bmi	2b
+  	mov	(sp)+,r1
+! 	rts	pc
+  
+  wrterr:
+  	mov	$8f-9f, -(sp)		/ write(1, WRTMSG, strlen(WRTERR))
+diff -c as.old/as12.s as/as12.s
+*** as.old/as12.s	Sun Feb  8 17:26:12 1987
+--- as/as12.s	Wed Dec 13 11:01:05 1989
+***************
+*** 7,19 ****
+  	incb	errflg
+  	mov	r0,-(sp)
+  	mov	r1,-(sp)
+! 	mov	(r5)+,r0
+  	tst	*curarg
+  	beq	1f
+  	mov	r0,-(sp)
+  	mov	*curarg,r0
+  	clr	*curarg
+! 	jsr	r5,filerr; '\n
+  	mov	(sp)+,r0
+  1:
+  	mov	r2,-(sp)
+--- 7,21 ----
+  	incb	errflg
+  	mov	r0,-(sp)
+  	mov	r1,-(sp)
+! 	mov	r5,r0
+  	tst	*curarg
+  	beq	1f
+  	mov	r0,-(sp)
+  	mov	*curarg,r0
+  	clr	*curarg
+! 	mov	$'\n,-(sp)
+! 	jsr	pc,filerr
+! 	tst	(sp)+
+  	mov	(sp)+,r0
+  1:
+  	mov	r2,-(sp)
+***************
+*** 40,61 ****
+  	mov	(sp)+,r2
+  	mov	(sp)+,r1
+  	mov	(sp)+,r0
+! 	rts	r5
+  
+  	.data
+  1:	<f xxxx\n>
+  	.even
+  	.text
+- 
+- betwen:
+- 	cmp	r0,(r5)+
+- 	blt	1f
+- 	cmp	(r5)+,r0
+- 	blt	2f
+- 1:
+- 	tst	(r5)+
+- 2:
+- 	rts	r5
+  putw:
+  	tst	ifflg
+  	beq	1f
+--- 42,53 ----
+  	mov	(sp)+,r2
+  	mov	(sp)+,r1
+  	mov	(sp)+,r0
+! 	rts	pc
+  
+  	.data
+  1:	<f xxxx\n>
+  	.even
+  	.text
+  putw:
+  	tst	ifflg
+  	beq	1f
+***************
+*** 64,78 ****
+  1:
+  	mov	r4,*obufp
+  	add	$2,obufp
+! 	cmp	obufp,$outbuf+512.
+  	blo	2f
+  	mov	$outbuf,obufp
+  
+  	mov	r1,-(sp)			/ protect r1 from library
+! 	mov	$512.,-(sp)			/ write(pof, outbuf, 512)
+! 	mov	$outbuf,-(sp)			/	movb	pof,r0
+! 	mov	pof,-(sp)			/	sys	write; outbuf; 512.
+! 	jsr	pc,_write			/	jes	wrterr
+  	add	$6,sp
+  	mov	(sp)+,r1
+  	tst	r0
+--- 56,70 ----
+  1:
+  	mov	r4,*obufp
+  	add	$2,obufp
+! 	cmp	obufp,$outbuf+1024.
+  	blo	2f
+  	mov	$outbuf,obufp
+  
+  	mov	r1,-(sp)			/ protect r1 from library
+! 	mov	$1024.,-(sp)			/ write(pof, outbuf, 1024)
+! 	mov	$outbuf,-(sp)
+! 	mov	pof,-(sp)
+! 	jsr	pc,_write
+  	add	$6,sp
+  	mov	(sp)+,r1
+  	tst	r0
+***************
+*** 79,82 ****
+  	jmi	wrterr
+  2:
+  	rts	pc
+- 
+--- 71,73 ----
+diff -c as.old/as13.s as/as13.s
+*** as.old/as13.s	Sun Feb  8 17:26:12 1987
+--- as/as13.s	Wed Dec 13 10:25:16 1989
+***************
+*** 6,12 ****
+  assem:
+  	jsr	pc,readop
+  	jsr	pc,checkeos
+! 		br ealoop
+  	tst	ifflg
+  	beq	3f
+  	cmp	r4,$200
+--- 6,12 ----
+  assem:
+  	jsr	pc,readop
+  	jsr	pc,checkeos
+! 		br 7f
+  	tst	ifflg
+  	beq	3f
+  	cmp	r4,$200
+***************
+*** 36,42 ****
+  	bhis	1f
+  	cmp	r4,$1		/ digit
+  	beq	3f
+! 	jsr	r5,error; 'x
+  	br	assem
+  1:
+  	bitb	$37,(r4)
+--- 36,43 ----
+  	bhis	1f
+  	cmp	r4,$1		/ digit
+  	beq	3f
+! 	mov	$'x,r5
+! 	jsr	pc,error
+  	br	assem
+  1:
+  	bitb	$37,(r4)
+***************
+*** 73,79 ****
+  	mov	(sp)+,r1
+  	cmp	r1,$200
+  	bhis	1f
+! 	jsr	r5,error; 'x
+  	br	ealoop
+  1:
+  	cmp	r1,$dotrel
+--- 74,82 ----
+  	mov	(sp)+,r1
+  	cmp	r1,$200
+  	bhis	1f
+! 	mov	$'x,r5
+! 	jsr	pc,error
+! 7:
+  	br	ealoop
+  1:
+  	cmp	r1,$dotrel
+***************
+*** 91,97 ****
+  	mov	r2,2(r1)
+  	br	ealoop
+  1:
+! 	jsr	r5,error; '.
+  	movb	$2,dotrel
+  ealoop:
+  	cmp	r4,$';
+--- 94,101 ----
+  	mov	r2,2(r1)
+  	br	ealoop
+  1:
+! 	mov	$'.,r5
+! 	jsr	pc,error
+  	movb	$2,dotrel
+  ealoop:
+  	cmp	r4,$';
+***************
+*** 105,115 ****
+  	bne	2f
+  	tst	ifflg
+  	beq	1f
+! 	jsr	r5,error; 'x
+  1:
+  	rts	pc
+  2:
+! 	jsr	r5,error; 'x
+  2:
+  	jsr	pc,checkeos
+  		br assem1
+--- 109,121 ----
+  	bne	2f
+  	tst	ifflg
+  	beq	1f
+! 	mov	$'x,r5
+! 	jsr	pc,error
+  1:
+  	rts	pc
+  2:
+! 	mov	$'x,r5
+! 	jsr	pc,error
+  2:
+  	jsr	pc,checkeos
+  		br assem1
+***************
+*** 123,129 ****
+  	bhi	1f
+  	rts	pc
+  1:
+! 	jsr	r5,error; 'f
+  	clr	r0
+  	rts	pc
+  
+--- 129,136 ----
+  	bhi	1f
+  	rts	pc
+  1:
+! 	mov	$'f,r5
+! 	jsr	pc,error
+  	clr	r0
+  	rts	pc
+  
+***************
+*** 137,140 ****
+  	add	$2,(sp)
+  1:
+  	rts	pc
+- 
+--- 144,146 ----
+diff -c as.old/as14.s as/as14.s
+*** as.old/as14.s	Sun Feb  8 17:26:12 1987
+--- as/as14.s	Wed Dec 13 10:02:35 1989
+***************
+*** 141,148 ****
+  	clr	r5
+  1:
+  	jsr	pc,rch
+! 	jsr	r5,betwen; '0; '9
+! 		br 1f
+  	sub	$'0,r0
+  	mpy	$10.,r5
+  	add	r0,r5
+--- 141,150 ----
+  	clr	r5
+  1:
+  	jsr	pc,rch
+! 	cmp	r0,$'0
+! 	blt	1f
+! 	cmp	r0,$'9
+! 	bgt	1f
+  	sub	$'0,r0
+  	mpy	$10.,r5
+  	add	r0,r5
+***************
+*** 198,205 ****
+  	mov	fin,r0
+  	beq	3f
+  	mov	r1,-(sp)		/ protect r1 from library
+! 	mov	$512.,-(sp)		/ read(fin, inbuf, 512)
+! 	mov	$inbuf,-(sp)		/	sys	read; inbuf;512.
+  	mov	r0,-(sp)		/	bcs	2f
+  	jsr	pc,_read		/	tst	r0
+  	add	$6,sp
+--- 200,207 ----
+  	mov	fin,r0
+  	beq	3f
+  	mov	r1,-(sp)		/ protect r1 from library
+! 	mov	$1024.,-(sp)		/ read(fin, inbuf, 1024)
+! 	mov	$inbuf,-(sp)		/	sys	read; inbuf;1024.
+  	mov	r0,-(sp)		/	bcs	2f
+  	jsr	pc,_read		/	tst	r0
+  	add	$6,sp
+***************
+*** 228,234 ****
+  2:
+  	tst	ifflg
+  	beq	2f
+! 	jsr	r5,error; 'i
+  	jmp	aexit
+  2:
+  	mov	curarg,r0
+--- 230,237 ----
+  2:
+  	tst	ifflg
+  	beq	2f
+! 	mov	$'i,r5
+! 	jsr	pc,error
+  	jmp	aexit
+  2:
+  	mov	curarg,r0
+***************
+*** 244,254 ****
+  	add	$6,sp			/9:	sys	open; 0:0; 0
+  	mov	(sp)+,r1		/	.text
+  	tst	r0			/	bec	2f
+! 	jpl	2f			/	mov	0b,r0
+  	mov	curarg,r0
+  	mov	(r0),r0
+  
+! 	jsr	r5,filerr; <?\n>
+  	jmp	aexit
+  2:
+  	mov	r0,fin
+--- 247,259 ----
+  	add	$6,sp			/9:	sys	open; 0:0; 0
+  	mov	(sp)+,r1		/	.text
+  	tst	r0			/	bec	2f
+! 	bpl	2f			/	mov	0b,r0
+  	mov	curarg,r0
+  	mov	(r0),r0
+  
+! 	mov	$"?\n,-(sp)
+! 	jsr	pc,filerr
+! 	tst	(sp)+
+  	jmp	aexit
+  2:
+  	mov	r0,fin
+***************
+*** 269,272 ****
+  	mov	(sp)+,r1
+  	mov	(sp)+,r4
+  	br	1b
+- 
+--- 274,276 ----
+diff -c as.old/as15.s as/as15.s
+*** as.old/as15.s	Sun Feb  8 17:26:13 1987
+--- as/as15.s	Wed Dec 13 10:04:46 1989
+***************
+*** 21,26 ****
+--- 21,27 ----
+  	bgt	rdname
+  	jmp	*1f-2(r1)
+  
++ 	.data
+  	fixor
+  	escp
+  	8b
+***************
+*** 34,40 ****
+  	retread
+  	string
+  1:
+! 
+  escp:
+  	jsr	pc,rch
+  	mov	$esctab,r1
+--- 35,41 ----
+  	retread
+  	string
+  1:
+! 	.text
+  escp:
+  	jsr	pc,rch
+  	mov	$esctab,r1
+***************
+*** 48,53 ****
+--- 49,55 ----
+  	movb	(r1),r4
+  	rts	pc
+  
++ 	.data
+  esctab:
+  	.byte '/, '/
+  	.byte '\<, 035
+***************
+*** 54,59 ****
+--- 56,62 ----
+  	.byte '>, 036
+  	.byte '%, 037
+  	.byte 0, 0
++ 	.text
+  
+  fixor:
+  	mov	$037,r4
+***************
+*** 104,110 ****
+  	rts	pc
+  
+  garb:
+! 	jsr	r5,error; 'g
+  	br	8b
+  
+  string:
+--- 107,114 ----
+  	rts	pc
+  
+  garb:
+! 	mov	$'g,r5
+! 	jsr	pc,error
+  	br	8b
+  
+  string:
+***************
+*** 155,163 ****
+  1:
+  	rts	pc
+  4:
+! 	jsr	r5,error; '<
+  	jmp	aexit
+  
+  schar:
+  	.byte 'n, 012
+  	.byte 's, 040
+--- 159,169 ----
+  1:
+  	rts	pc
+  4:
+! 	mov	$'<,r5
+! 	jsr	pc,error
+  	jmp	aexit
+  
++ 	.data
+  schar:
+  	.byte 'n, 012
+  	.byte 's, 040
+***************
+*** 168,171 ****
+  	.byte 'a, 006
+  	.byte 'p, 033
+  	.byte 0,  -1
+! 
+--- 174,177 ----
+  	.byte 'a, 006
+  	.byte 'p, 033
+  	.byte 0,  -1
+! 	.text
+diff -c as.old/as16.s as/as16.s
+*** as.old/as16.s	Sun Feb  8 17:26:13 1987
+--- as/as16.s	Wed Dec 13 10:11:19 1989
+***************
+*** 5,12 ****
+  
+  opline:
+  	mov	r4,r0
+! 	jsr	r5,betwen; 0; 200
+! 		br	1f
+  	cmp	r0,$'<
+  	bne	xpr
+  	jmp	opl17
+--- 5,14 ----
+  
+  opline:
+  	mov	r4,r0
+! 	tst	r0
+! 	blt	1f
+! 	cmp	r0,$200
+! 	bgt	1f
+  	cmp	r0,$'<
+  	bne	xpr
+  	jmp	opl17
+***************
+*** 18,25 ****
+  	movb	(r4),r0
+  	cmp	r0,$24
+  	beq	xpr
+! 	jsr	r5,betwen; 5; 36
+! 		br xpr
+  	mov	r0,-(sp)
+  	jsr	pc,readop
+  	mov	(sp)+,r0
+--- 20,29 ----
+  	movb	(r4),r0
+  	cmp	r0,$24
+  	beq	xpr
+! 	cmp	r0,$5
+! 	blt	xpr
+! 	cmp	r0,$36
+! 	bgt	xpr
+  	mov	r0,-(sp)
+  	jsr	pc,readop
+  	mov	(sp)+,r0
+***************
+*** 26,31 ****
+--- 30,36 ----
+  	asl	r0
+  	jmp	*1f-12(r0)
+  
++ 	.data
+  1:
+  	opl13	/ map fop freg,fdst to double
+  	opl6
+***************
+*** 53,58 ****
+--- 58,64 ----
+  	xpr
+  	opl35
+  	opl36
++ 	.text
+  
+  / jbr
+  opl35:
+***************
+*** 135,141 ****
+  	jsr	pc,expres
+  	tst	r3
+  	bne	1f
+! 	jsr	r5,error; 'U
+  1:
+  	tst	r2
+  	bne	opl22
+--- 141,148 ----
+  	jsr	pc,expres
+  	tst	r3
+  	bne	1f
+! 	mov	$'U,r5
+! 	jsr	pc,error
+  1:
+  	tst	r2
+  	bne	opl22
+***************
+*** 180,186 ****
+  	jsr	pc,expres
+  	rts	pc
+  1:
+! 	jsr	r5,error; 'x
+  	rts	pc
+  
+  addres:
+--- 187,194 ----
+  	jsr	pc,expres
+  	rts	pc
+  1:
+! 	mov	$'x,r5
+! 	jsr	pc,error
+  	rts	pc
+  
+  addres:
+***************
+*** 254,260 ****
+  	jsr	pc,readop
+  	cmp	r4,$'*
+  	bne	1f
+! 	jsr	r5,error; '*
+  1:
+  	jsr	pc,addres
+  	add	r0,dot
+--- 262,269 ----
+  	jsr	pc,readop
+  	cmp	r4,$'*
+  	bne	1f
+! 	mov	$'*,r5
+! 	jsr	pc,error
+  1:
+  	jsr	pc,addres
+  	add	r0,dot
+***************
+*** 261,267 ****
+  	rts	pc
+  
+  errora:
+! 	jsr	r5,error; 'a
+  	rts	pc
+  
+  checkreg:
+--- 270,277 ----
+  	rts	pc
+  
+  errora:
+! 	mov	$'a,r5
+! 	jsr	pc,error
+  	rts	pc
+  
+  checkreg:
+***************
+*** 277,291 ****
+  	rts	pc
+  
+  errore:
+! 	jsr	r5,error; 'e
+  	rts	pc
+  
+  checkrp:
+  	cmp	r4,$')
+  	beq	1f
+! 	jsr	r5,error; ')
+  	rts	pc
+  1:
+  	jsr	pc,readop
+  	rts	pc
+- 
+--- 287,302 ----
+  	rts	pc
+  
+  errore:
+! 	mov	$'e,r5
+! 	jsr	pc,error
+  	rts	pc
+  
+  checkrp:
+  	cmp	r4,$')
+  	beq	1f
+! 	mov	$'),r5
+! 	jsr	pc,error
+  	rts	pc
+  1:
+  	jsr	pc,readop
+  	rts	pc
+diff -c as.old/as17.s as/as17.s
+*** as.old/as17.s	Sun Feb  8 17:26:13 1987
+--- as/as17.s	Wed Dec 13 10:19:54 1989
+***************
+*** 14,22 ****
+  	jsr	pc,readop
+  1:
+  	mov	r4,r0
+! 	jsr	r5,betwen; 0; 177
+! 		br .+4
+! 	br	7f
+  	movb	(r4),r0
+  	mov	2(r4),r1
+  	br	oprand
+--- 14,24 ----
+  	jsr	pc,readop
+  1:
+  	mov	r4,r0
+! 	tst	r0
+! 	blt	6f
+! 	cmp	r0,$177
+! 	ble	7f
+! 6:
+  	movb	(r4),r0
+  	mov	2(r4),r1
+  	br	oprand
+***************
+*** 30,36 ****
+  	mov	curfb-[2*141](r4),r2
+  	cmp	r2,$-1
+  	bne	oprand
+! 	jsr	r5,error; 'f
+  	br	oprand
+  2:
+  	clr	r3
+--- 32,39 ----
+  	mov	curfb-[2*141](r4),r2
+  	cmp	r2,$-1
+  	bne	oprand
+! 	mov	$'f,r5
+! 	jsr	pc,error
+  	br	oprand
+  2:
+  	clr	r3
+***************
+*** 53,58 ****
+--- 56,62 ----
+  1:
+  	jmp	*(r1)
+  
++ 	.data
+  esw1:
+  	'+;	binop
+  	'-;	binop
+***************
+*** 68,73 ****
+--- 72,78 ----
+  	1;	exnum
+  	'!;	binop
+  	0;	0
++ 	.text
+  
+  binop:
+  	cmpb	(sp),$'+
+***************
+*** 89,95 ****
+  	jsr	pc,expres
+  	cmp	r4,$']
+  	beq	1f
+! 	jsr	r5,error; ']
+  1:
+  	mov	r3,r0
+  	mov	r2,r1
+--- 94,101 ----
+  	jsr	pc,expres
+  	cmp	r4,$']
+  	beq	1f
+! 	mov	$'],r5
+! 	jsr	pc,error
+  1:
+  	mov	r3,r0
+  	mov	r2,r1
+***************
+*** 108,113 ****
+--- 114,120 ----
+  1:
+  	jmp	*(r5)
+  
++ 	.data
+  exsw2:
+  	'+; exadd
+  	'-; exsub
+***************
+*** 121,126 ****
+--- 128,134 ----
+  	'!; exnot
+  	'^; excmbin
+  	0;  0
++ 	.text
+  
+  excmbin:
+  	mov	r0,r3			/ give left flag of right
+***************
+*** 133,144 ****
+  	clc
+  	ror	r2
+  exlsh:
+! 	jsr	r5,combin; 0
+  	als	r1,r2
+  	br	eoprnd
+  
+  exmod:
+! 	jsr	r5,combin; 0
+  	mov	r1,-(sp)
+  	mov	r2,r1
+  	clr	r0
+--- 141,154 ----
+  	clc
+  	ror	r2
+  exlsh:
+! 	clr	r5
+! 	jsr	pc,combin
+  	als	r1,r2
+  	br	eoprnd
+  
+  exmod:
+! 	clr	r5
+! 	jsr	pc,combin
+  	mov	r1,-(sp)
+  	mov	r2,r1
+  	clr	r0
+***************
+*** 147,180 ****
+  	br	eoprnd
+  
+  exadd:
+! 	jsr	r5,combin; 0
+  	add	r1,r2
+  	br	eoprnd
+  
+  exsub:
+! 	jsr	r5,combin; 1
+  	sub	r1,r2
+  	br	eoprnd
+  
+  exand:
+! 	jsr	r5,combin; 0
+  	com	r1
+  	bic	r1,r2
+  	br	eoprnd
+  
+  exor:
+! 	jsr	r5,combin; 0
+  	bis	r1,r2
+  	br	eoprnd
+  
+  exmul:
+! 	jsr	r5,combin; 0
+  	mpy	r2,r1
+  	mov	r1,r2
+  	br	eoprnd
+  
+  exdiv:
+! 	jsr	r5,combin; 0
+  	mov	r1,-(sp)
+  	mov	r2,r1
+  	clr	r0
+--- 157,196 ----
+  	br	eoprnd
+  
+  exadd:
+! 	clr	r5
+! 	jsr	pc,combin
+  	add	r1,r2
+  	br	eoprnd
+  
+  exsub:
+! 	mov	$1,r5
+! 	jsr	pc,combin
+  	sub	r1,r2
+  	br	eoprnd
+  
+  exand:
+! 	clr	r5
+! 	jsr	pc,combin
+  	com	r1
+  	bic	r1,r2
+  	br	eoprnd
+  
+  exor:
+! 	clr	r5
+! 	jsr	pc,combin
+  	bis	r1,r2
+  	br	eoprnd
+  
+  exmul:
+! 	clr	r5
+! 	jsr	pc,combin
+  	mpy	r2,r1
+  	mov	r1,r2
+  	br	eoprnd
+  
+  exdiv:
+! 	clr	r5
+! 	jsr	pc,combin
+  	mov	r1,-(sp)
+  	mov	r2,r1
+  	clr	r0
+***************
+*** 183,189 ****
+  	br	eoprnd
+  
+  exnot:
+! 	jsr	r5,combin; 0
+  	com	r1
+  	add	r1,r2
+  	br	eoprnd
+--- 199,206 ----
+  	br	eoprnd
+  
+  exnot:
+! 	clr	r5
+! 	jsr	pc,combin
+  	com	r1
+  	add	r1,r2
+  	br	eoprnd
+***************
+*** 206,212 ****
+  1:
+  	tst	r0
+  	beq	1f
+! 	tst	(r5)+
+  	beq	2f
+  	cmp	r0,r3
+  	bne	2f
+--- 223,229 ----
+  1:
+  	tst	r0
+  	beq	1f
+! 	tst	r5
+  	beq	2f
+  	cmp	r0,r3
+  	bne	2f
+***************
+*** 213,221 ****
+  	mov	$1,r3
+  	br	2f
+  1:
+! 	tst	(r5)+
+  	clr	r3
+  2:
+  	bis	(sp)+,r3
+! 	rts	r5
+! 
+--- 230,237 ----
+  	mov	$1,r3
+  	br	2f
+  1:
+! 	tst	r5
+  	clr	r3
+  2:
+  	bis	(sp)+,r3
+! 	rts	pc
+diff -c as.old/as18.s as/as18.s
+*** as.old/as18.s	Sun Feb  8 17:26:13 1987
+--- as/as18.s	Wed Dec 13 10:20:51 1989
+***************
+*** 2,8 ****
+  /
+  
+  / a8 -- pdp-11 assembler pass 1
+! 
+  chartab:
+  	.byte -14,-14,-14,-14,-02,-14,-14,-14
+  	.byte -14,-22, -2,-14,-14,-22,-14,-14
+--- 2,8 ----
+  /
+  
+  / a8 -- pdp-11 assembler pass 1
+! 	.data
+  chartab:
+  	.byte -14,-14,-14,-14,-02,-14,-14,-14
+  	.byte -14,-22, -2,-14,-14,-22,-14,-14
+***************
+*** 21,28 ****
+  	.byte 160,161,162,163,164,165,166,167
+  	.byte 170,171,172,-14,-26,-14,176,-14
+  
+- .data
+- 
+  namedone:.byte 0
+  a.tmp1:	</tmp/atm1a\0>
+  a.tmp2:	</tmp/atm2a\0>
+--- 21,26 ----
+***************
+*** 49,55 ****
+  fbfil:	.=.+2
+  symbol:	.=.+8.
+  obufc:	.=.+2
+! outbuf:	.=.+512.
+  line:	.=.+2
+  inbfcnt:.=.+2
+  ifflg:	.=.+2
+--- 47,53 ----
+  fbfil:	.=.+2
+  symbol:	.=.+8.
+  obufc:	.=.+2
+! outbuf:	.=.+1024.
+  line:	.=.+2
+  inbfcnt:.=.+2
+  ifflg:	.=.+2
+diff -c as.old/as19.s as/as19.s
+*** as.old/as19.s	Tue Aug 22 20:14:29 1989
+--- as/as19.s	Wed Dec 13 10:23:35 1989
+***************
+*** 264,270 ****
+  
+  ebsymtab:
+  
+! 
+  start:
+  	mov	$1,-(sp)		/ signal(SIGINT, SIG_IGN)
+  	mov	$2,-(sp)		/	sys	signal; 2; 1
+--- 264,270 ----
+  
+  ebsymtab:
+  
+! 	.text
+  start:
+  	mov	$1,-(sp)		/ signal(SIGINT, SIG_IGN)
+  	mov	$2,-(sp)		/	sys	signal; 2; 1
+***************
+*** 312,320 ****
+  	movb	r0,nargs
+  	tst	-(sp)
+  	mov	sp,curarg
+! 	jsr	r5,fcreat; a.tmp1
+  	mov	r0,pof
+! 	jsr	r5,fcreat; a.tmp2
+  	mov	r0,fbfil
+  	jsr	pc,setup
+  	jmp	go
+--- 312,322 ----
+  	movb	r0,nargs
+  	tst	-(sp)
+  	mov	sp,curarg
+! 	mov	$a.tmp1,r5
+! 	jsr	pc,fcreat
+  	mov	r0,pof
+! 	mov	$a.tmp2,r5
+! 	jsr	pc,fcreat
+  	mov	r0,fbfil
+  	jsr	pc,setup
+  	jmp	go
+***************
+*** 351,356 ****
+  	blo	1b
+  	rts	pc
+  
+! /overlay buffer
+! inbuf	= setup
+! .	=inbuf+512.
+--- 353,358 ----
+  	blo	1b
+  	rts	pc
+  
+! 	.data
+! inbuf:
+! 	. = inbuf+1024.

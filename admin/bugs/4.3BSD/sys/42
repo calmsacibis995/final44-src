@@ -1,0 +1,42 @@
+Return-Path: <csustan!casey@lll-crg.ARPA>
+Date: Mon, 15 Sep 86 18:48:45 pdt
+From: csustan!casey@lll-crg.ARPA
+To: lll-crg!4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: Bug in sendsig?
+
+Index:	sys/vax/machdep.c 4.3BSD
+
+Description:  Like my last "bug report" this is more an observation of what
+	looks like bad coding in the kernel than anything else.  In the
+	documentation for sigstack, there is the following:
+		NOTES
+			Signal stacks are not ``grown'' automatically, as is
+			done for the normal stack.  If the stack overflows
+			unpredictable results may occur.
+
+However, in sys/vax/machdep.c in lines 321 to 335 the following code is in
+the routine "sendsig":
+	/*
+	 * Allocate and validate space for the signal handler
+	 * context. Note that if the stack is in P0 space, the
+	 * call to grow() is a nop, and the useracc() check
+	 * will fail if the process has not already allocated
+	 * the space with a `brk'.
+	 */
+	if (!u.u_onstack && (u.u_sigonstack & sigmask(sig))) {
+		scp = (struct sigcontext *)u.u_sigsp - 1;
+		u.u_onstack = 1;
+	} else
+		scp = (struct sigcontext *)regs[SP] - 1;
+	fp = (struct sigframe *)scp - 1;
+	if ((int)fp <= USRSTACK - ctob(u.u_ssize)) 
+		grow((unsigned)fp);
+
+The call to grow is done indiscriminately of whether fp is pointing into the
+user process' stack or the special signal catching stack.  As statically
+allocated variables have considerably lower addresses than dynamically
+allocated stack variables, if the user process specifies a static signal
+catching stack and a signal specified to be processed on that stack occurs,
+the test for "(int)fp <= ..." will succeed and an absurd call to grow will
+be made - luckily grow is very cautious.
+

@@ -1,0 +1,52 @@
+From steve@eleazar.Dartmouth.EDU  Wed Jun 15 12:13:57 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.59/1.28)
+	id AA27519; Wed, 15 Jun 88 12:13:57 PDT
+Received: from DARTVAX.DARTMOUTH.EDU by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA05636; Wed, 15 Jun 88 12:11:59 PDT
+Received: from eleazar.dartmouth.edu by dartvax.dartmouth.edu (5.59/3.6R)
+	id AA28269; Wed, 15 Jun 88 14:36:15 EDT
+Received: by eleazar.dartmouth.edu (5.59/3.2LEAF)
+	id AA00481; Wed, 15 Jun 88 14:36:00 EDT
+Date: Wed, 15 Jun 88 14:36:00 EDT
+From: steve@eleazar.Dartmouth.EDU (Steve Campbell)
+Message-Id: <8806151836.AA00481@eleazar.dartmouth.edu>
+Subject: sendmail can loop collecting long headers
+Index: 	usr.lib/sendmail/src/util.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Sendmail can loop forever if it tries to collect a message with
+	a very long (> MAXFIELD) header.  The sfgets function is called
+	repeatedly to read the header lines, but when the header overflows
+	the buffer into which it's being read, then the length parameter
+	to sgets goes negative.  Sfgets doesn't check this parameter, but
+	passes it blindly to fgets.  Fgets, when passed a negative length,
+	returns NULL, and we go round and round in sfgets.
+Repeat-By:
+	Try to receive a message with a header field, eg To:, that totals
+	more than MAXFIELD (2400) characters.  Watch sendmail loop.
+Fix:
+	Have sfgets check for a negative length and return immediately.
+	NOTE: With this fix in, the header will get truncated, and the
+	message may be mangled, but at least sendmail doesn't loop.  A
+	better fix would correct the mechanism in collect() that reads
+	the long header.
+
+*** /tmp/,RCSt1003578	Wed Jun  8 11:16:45 1988
+--- util.c	Wed Jun  1 18:20:15 1988
+***************
+*** 615,620 ****
+--- 615,627 ----
+  	register char *p;
+  	extern readtimeout();
+  
++ 	/* check for reasonable siz arg */
++ 	if (siz < 1)
++ 	{
++ 		buf[0] = '\0';
++ 		return (NULL);
++ 	}
++ 
+  	/* set the timeout */
+  	if (ReadTimeout != 0)
+  	{

@@ -1,0 +1,172 @@
+From sms@WLV.IMSD.CONTEL.COM  Sat Oct  7 11:21:45 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA04004; Sat, 7 Oct 89 11:21:45 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA12049; Sat, 7 Oct 89 11:21:46 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA16927; Sat, 7 Oct 89 11:21:36 -0700
+Date: Sat, 7 Oct 89 11:21:36 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8910071821.AA16927@WLV.IMSD.CONTEL.COM>
+Subject: /etc/hosts and multiple addresses (2nd try)
+Index: 	lib/libc/net/hosttable/gethnamadr.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The /etc/hosts file does not correctly handle the
+	case where a host has more than one address - only the
+	first is returned when a gethostbyaddr() is performed.
+
+Repeat-By:
+	Do a gethostbyname() on a host with multiple addresses, print the
+	addresses returned in h_addr_list, note there will be only one.
+
+Fix:
+	Apply the patches below to gethostent.c and gethnamadr.c, replace
+	gethnamadr.o and gethostent.o in libc.a and libc_p.a.
+	install in /etc.
+
+	This is the second (and hopefully last) correction, 
+	I blew it in the earlier patch to gethnamadr.c
+
+	The latest versions of rlogind(8) and rshd(8) were the reason
+	for making changes to mkhosts(8) - if a host has more than one
+	address, the authentication performed by rshd(8) and rlogind(8)
+	would fail.
+
+	It turns out that a static area is required after all.  
+	To help save some D-space the maximum number of aliases is reduced 
+	from 35 to 20 (still seems way too high - i've never seen more 
+	than 5 or 6 aliases) the maximum line length is reduced to 160 
+	from 256 and the address buffer in gethostent.c is down sized
+	as well (every little byte helps sometimes).
+	
+*** gethnamadr.old	Tue Aug 23 14:45:14 1988
+--- gethnamadr.c	Sat Oct  7 14:02:26 1989
+***************
+*** 15,26 ****
+  #include <ndbm.h>
+  #include <ctype.h>
+  
+! #define	MAXALIASES	35
+  
+  static struct hostent host;
+  static char *host_aliases[MAXALIASES];
+! static char hostbuf[256+1];
+! static char *host_addrs[2];
+  
+  int h_errno;
+  
+--- 15,27 ----
+  #include <ndbm.h>
+  #include <ctype.h>
+  
+! #define	MAXALIASES	20
+! #define	MAXADDRS	10
+  
+  static struct hostent host;
++ static char hostbuf[256];
+  static char *host_aliases[MAXALIASES];
+! static char *host_addrs[MAXADDRS];
+  
+  int h_errno;
+  
+***************
+*** 36,42 ****
+  	datum key;
+  {
+          register char *cp, *tp, **ap;
+! 	int naliases;
+  
+          if (key.dptr == 0)
+                  return ((struct hostent *)NULL);
+--- 37,43 ----
+  	datum key;
+  {
+          register char *cp, *tp, **ap;
+! 	int naliases, naddrs;
+  
+          if (key.dptr == 0)
+                  return ((struct hostent *)NULL);
+***************
+*** 43,54 ****
+  	key = dbm_fetch(_host_db, key);
+  	if (key.dptr == 0)
+                  return ((struct hostent *)NULL);
+!         cp = key.dptr;
+! 	tp = hostbuf;
+  	host.h_name = tp;
+  	while (*tp++ = *cp++)
+  		;
+! 	bcopy(cp, (char *)&naliases, sizeof(int)); cp += sizeof (int);
+  	for (ap = host_aliases; naliases > 0; naliases--) {
+  		*ap++ = tp;
+  		while (*tp++ = *cp++)
+--- 44,56 ----
+  	key = dbm_fetch(_host_db, key);
+  	if (key.dptr == 0)
+                  return ((struct hostent *)NULL);
+! 	cp = key.dptr;
+!         tp = hostbuf;
+  	host.h_name = tp;
+  	while (*tp++ = *cp++)
+  		;
+! 	bcopy(cp, (char *)&naliases, sizeof(int));
+! 	cp += sizeof (int);
+  	for (ap = host_aliases; naliases > 0; naliases--) {
+  		*ap++ = tp;
+  		while (*tp++ = *cp++)
+***************
+*** 61,68 ****
+  	bcopy(cp, (char *)&host.h_length, sizeof (int));
+  	cp += sizeof (int);
+  	host.h_addr_list = host_addrs;
+! 	host.h_addr = tp;
+! 	bcopy(cp, tp, host.h_length);
+          return (&host);
+  }
+  
+--- 63,78 ----
+  	bcopy(cp, (char *)&host.h_length, sizeof (int));
+  	cp += sizeof (int);
+  	host.h_addr_list = host_addrs;
+! 	naddrs = (key.dsize - (cp - key.dptr)) / host.h_length;
+! 	if (naddrs > MAXADDRS)
+! 		naddrs = MAXADDRS;
+! 	for (ap = host_addrs; naddrs; naddrs--) {
+! 		*ap++ = tp;
+! 		bcopy(cp, tp, host.h_length);
+! 		cp += host.h_length;
+! 		tp += host.h_length;
+! 	}
+! 	*ap = (char *)NULL;
+          return (&host);
+  }
+  
+*** gethostent.old	Sat Oct  7 14:08:14 1989
+--- gethostent.c	Sat Oct  7 14:03:41 1989
+***************
+*** 19,29 ****
+  /*
+   * Internet version.
+   */
+! #define	MAXALIASES	35
+! #define	MAXADDRSIZE	14
+  
+  static FILE *hostf = NULL;
+! static char line[256+1];
+  static char hostaddr[MAXADDRSIZE];
+  static struct hostent host;
+  static char *host_aliases[MAXALIASES];
+--- 19,29 ----
+  /*
+   * Internet version.
+   */
+! #define	MAXALIASES	20
+! #define	MAXADDRSIZE	(sizeof (u_long))
+  
+  static FILE *hostf = NULL;
+! static char line[160+1];
+  static char hostaddr[MAXADDRSIZE];
+  static struct hostent host;
+  static char *host_aliases[MAXALIASES];

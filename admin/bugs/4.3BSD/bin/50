@@ -1,0 +1,46 @@
+From abe@n.cc.purdue.edu  Wed Jan 28 12:42:23 1987
+Date: Wed, 28 Jan 87 15:17:54 EST
+From: "abe" <abe@n.cc.purdue.edu>
+Subject: csh's dinit() dropping error message from getwd()
+Index: bin/csh/sh.dir.c 4.3BSD
+
+Description:
+	When dinit cannot get the name of the current working directory,
+	it exits without giving the caller any idea of the cause for its
+	premature exit.  It tries, but uses a non-existent, HARD CODED
+	file descriptor (2) as the destination of the error message.
+Repeat-By:
+	Create a simple setuid csh script in the files of user A - e. g.,
+	with nothing but a simple echo line.
+
+		#!/bin/csh -bf
+		echo success
+
+	Go to the home directory of user B, make sure it is not accessible
+	to user A (chmod 0700 .), and try to execute the script.  Neither
+	the echo output nor any diagnostic will appear.  Now give user A
+	access to user B's home directory (chmod 777 .) and execute the
+	script again - "success" will be yours.
+Fix:
+	The problem is caused by a correction in the getwd() function that
+	makes sure that the current directory is accessible by issuing a stat
+	call on ".".  In the case of this example, the stat fails. Csh senses
+	the error and tries to report it to the caller on line 40 of dinit()
+	in the file sh.dir.c:
+
+		(void) write(2, path, strlen(path));
+
+	It is wrong on two counts: 1) file descriptor 2 is no longer open;
+	and 2) the message that getwd() placed in path has no terminating
+	'\n'.  Perhaps the code should read:
+
+		(void) write(SHDIAG, path, strlen(path));
+		(void) write(SHDIAG, "\n", ));
+
+	I'm not completely sure that SHDIAG is the correct file descriptor
+	in all cases.
+
+Victor A. Abell
+Purdue University Computing Center
+abe@j.cc.purdue.edu
+...!ihnp4!pur-ee!j.cc.purdue.edu!abe

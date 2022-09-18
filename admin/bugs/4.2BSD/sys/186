@@ -1,0 +1,49 @@
+Return-Path: <lwa@mit-mrclean>
+From: lwa@mit-mrclean (Larry Allen)
+Date:  9 Nov 1984 1627-EST (Friday)
+Subject: recvfrom() on raw sockets sometimes gives bad source address
+Index:  sys/net/raw_usrreq.c 4.2BSD
+
+Description:
+	Recvfrom occasionally (about once out of every 1000 packets received)
+	returns a bad source address when used on a raw socket.  The packet
+	is received successfully, everything looks fine, but the contents of
+	the from sockaddr are completely trashed.
+Repeat-By:
+	Because it happens so rarely, this problem is a hard one to repeat.
+Fix:
+	The problem is caused by a bug in the rawintr() procedure in the
+	file /sys/net/raw_usrreq.c.  An extra mbuf has been prepended to 
+	the received packet to hold the demultiplexing information; the
+	address of the source address in this mbuf is passed to sbappendaddr.
+	However, the header mbuf is mfree'd before the call to sbappendaddr,
+	and under heavy network traffic it may be reused before the address
+	can be copied from it.
+
+	Make the following changes to rawintr():
+
+*** /fs/usr/sys/net/raw_usrreq.c	Fri Mar 23 03:15:38 1984
+--- /u/sys/net/raw_usrreq.c	Fri Nov  9 16:08:12 1984
+***************
+*** 125,133
+  		last = rp->rcb_socket;
+  	}
+  	if (last) {
+- 		m = m_free(m);		/* header */
+  		if (sbappendaddr(&last->so_rcv, &rh->raw_src,
+! 		    m, (struct mbuf *)0) == 0)
+  			goto drop;
+  		sorwakeup(last);
+  		goto next;
+
+--- 126,132 -----
+  	}
+  	if (last) {
+  		if (sbappendaddr(&last->so_rcv, &rh->raw_src,
+! 		    m->m_next, (struct mbuf *)0) == 0)
+  			goto drop;
++  		m_free(m);		/* header */
+  		sorwakeup(last);
+
+******************
+					-Larry Allen

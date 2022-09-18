@@ -1,0 +1,2107 @@
+head	1.14;
+access;
+symbols;
+locks
+	margo:1.14; strict;
+comment	@ * @;
+
+
+1.14
+date	94.12.27.21.39.15;	author margo;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	94.11.15.22.23.50;	author margo;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	94.10.25.14.31.23;	author margo;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	94.10.04.18.29.04;	author margo;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	94.10.04.17.02.30;	author margo;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	94.10.04.17.00.49;	author margo;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	94.09.01.12.57.30;	author margo;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	94.07.14.15.23.47;	author margo;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	94.07.11.18.55.38;	author margo;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	94.06.16.21.19.24;	author margo;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	94.05.13.13.55.43;	author margo;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	94.04.08.16.46.17;	author margo;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	94.04.08.16.40.06;	author margo;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.09.01.17.43.07;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@4.4BSD version
+@
+
+
+1.14
+log
+@Add checkpoint handling.  During a sync, force sync of ffs so
+that log can be reclaimed.
+@
+text
+@#ifdef CLFS
+/*
+ * CLFS
+ * $Log: wafs_vfsops.c,v $
+ * Revision 1.13  1994/11/15  22:23:50  margo
+ * Merge lastrec and lastlen into nextrec.
+ *
+ * Revision 1.12  1994/10/25  14:31:23  margo
+ * Convert to use the new vfs_export interface.
+ *
+ * Revision 1.11  1994/10/04  18:29:04  margo
+ * Make sure that wafs includes get included in both AIX and BSD.
+ *
+ * Revision 1.10  1994/10/04  17:02:30  margo
+ * Make 4.4Lite version compile under BSD4.4-Lite.
+ *
+ * Revision 1.2  1994/09/27  18:53:27  jat
+ * Fixed includes for alternate AIX/SPARC building.
+ *
+ * Revision 1.1  1994/09/26  18:47:43  jat
+ * Initial WAFS checkin.
+ *
+ */
+#endif
+/*
+ * Copyright (c) 1989, 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * Copyright (c) 1994
+ *	The President and Fellows of Harvard University.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	$Id: wafs_vfsops.c,v 1.13 1994/11/15 22:23:50 margo Exp margo $
+ */
+static char *rcsid = "$Id: wafs_vfsops.c,v 1.13 1994/11/15 22:23:50 margo Exp margo $";
+
+#ifdef CLFS
+#include <sys/bsd_param.h>
+#include <clfs_param.h>
+#include <sys/cdefs.h>
+#include <sys/ucred.h>
+#include <sys/param.h>
+#include <sys/vnode.h>
+#include <sys/compat.h>
+#include <sys/bsd_types.h>
+#include <sys/socket.h>
+#include <sys/mbuf.h>
+#include <sys/file.h>
+#include <sys/disklabel.h>
+#include <sys/ioctl.h>
+#include <sys/errno.h>
+#include <sys/malloc.h>
+
+#include <miscfs/specfs/specdev.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+
+#else /* CLFS */
+
+#include <sys/param.h>
+#include <sys/malloc.h>
+#include <sys/systm.h>
+#include <sys/namei.h>
+#include <sys/proc.h>
+#include <sys/kernel.h>
+#include <sys/vnode.h>
+#include <sys/socket.h>
+#include <sys/mount.h>
+#include <sys/buf.h>
+#include <sys/mbuf.h>
+#include <sys/file.h>
+#include <sys/disklabel.h>
+#include <sys/ioctl.h>
+#include <sys/errno.h>
+
+#include <miscfs/specfs/specdev.h>
+
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+
+#include <ufs/logging/lffs_extern.h>
+#endif /* CLFS */
+
+#include <ufs/wafs/wafs.h>
+#include <ufs/wafs/wnode.h>
+#include <ufs/wafs/wafs_extern.h>
+
+
+#ifdef AIX
+extern int 	(**glue_ufs_vnodeops)();
+extern int	(**glue_spec_vnodeop_p)();
+extern int	ffs_unsupp();
+struct bsd_vfsops wafs_vfsops = {
+	wafs_mount,
+	ffs_unsupp,	/* wafs_start NOT_SUPPORTED */
+	wafs_unmount,
+	wafs_root,
+	ffs_unsupp,	/* wafs_quotactl NOT_SUPPORTED */
+	wafs_statfs,
+	wafs_sync,
+	wafs_vget,
+	ffs_unsupp,	/* wafs_fhtovp NOT_YET */
+	ffs_unsupp,	/* wafs_vptofh NOT_YET */
+	wafs_init,
+};
+#else
+struct vfsops wafs_vfsops = {
+	wafs_mount,
+	ufs_start,
+	wafs_unmount,
+	wafs_root,
+	ufs_quotactl,
+	wafs_statfs,
+	wafs_sync,
+	wafs_vget,
+	wafs_fhtovp,
+	wafs_vptofh,
+	ufs_init,
+};
+#endif
+
+#ifdef AIX
+extern struct  timestruc_t tod;
+#endif
+
+/*
+ * VFS Operations.
+ *
+ * mount system call
+ */
+int
+wafs_mount(mp, path, data, ndp, p)
+#ifdef AIX
+	register struct bsd_mount *mp;
+#else
+	register struct mount *mp;
+#endif
+	char *path;
+	caddr_t data;
+	struct nameidata *ndp;
+	struct proc *p;
+{
+#ifdef AIX
+	struct ufs_args *args;
+	aix_vnode_t *aix_devvp, *aix_frootvp;
+#else
+	struct ufs_args args;
+#endif
+	struct vnode *devvp, *frootvp;
+	struct ufsmount *ump;
+	register struct wafs *wafs;
+	u_int size;
+	int error, flags;
+
+#ifdef CLFS
+	CLFSDEBUG("in wafs_mount...\n", NULL);
+#endif
+#ifdef AIX
+	args = (struct ufs_args *)data;
+#else
+	if (error = copyin(data, (caddr_t)&args, sizeof (struct ufs_args)))
+		return (error);
+#endif
+	/*
+	 * If updating, check whether changing from read-only to
+	 * read/write; if there is no device name, that's all we do.
+	 */
+#ifndef CLFS /* CLFS_NOTYET */
+	if (mp->mnt_flag & MNT_UPDATE) {
+		ump = VFSTOUFS(mp);
+		wafs = ump->um_wafs;
+		error = 0;
+		if (wafs->wafs_ronly == 0 && (mp->mnt_flag & MNT_RDONLY)) {
+			flags = WRITECLOSE;
+			if (mp->mnt_flag & MNT_FORCE)
+				flags |= FORCECLOSE;
+			if (vfs_busy(mp))
+				return (EBUSY);
+			/*
+			 * For now, there is only one file; if we
+			 * go to multiple files, this will have to change.
+			 */
+			error = VOP_FSYNC(mp->mnt_vnodelist.lh_first,
+			    p->p_ucred, MNT_WAIT, p);
+			vfs_unbusy(mp);
+		}
+		if (!error && (mp->mnt_flag & MNT_RELOAD))
+			error = wafs_reload(mp, ndp->ni_cnd.cn_cred, p);
+		if (error)
+			return (error);
+		if (wafs->wafs_ronly && (mp->mnt_flag & MNT_WANTRDWR))
+			wafs->wafs_ronly = 0;
+		if (args.fspec == 0) {
+			/*
+			 * Process export requests.
+			 */
+			return (vfs_export(mp, &ump->um_export, &args.export));
+		}
+	}
+#endif
+	/*
+	 * Not an update, or updating the name: look up the name
+	 * and verify that it refers to a sensible block device.
+	 */
+#ifdef AIX
+	error = lookupvp(args->fspec, 0, &aix_devvp);
+	if (error)
+		return(error);
+	/*
+	 * At this point we have an AIX vnode for the device.  We allocate a
+	 * BSD vnode to make it easier for all of ffs and the buffer cache to
+	 * use devvp.
+ 	 */
+	error = getnewvnode(VT_AIXDEV, NULL, NULL, &devvp);
+	if (error) { 
+		VNOP_RELE(aix_devvp); /* note: AIX VNOP */
+		return(error); 
+	}
+	devvp->v_gnode.gn_vnode = aix_devvp;
+	devvp->v_gnode.gn_ops = NULL; /* not used,only need ops in BSD vnode */
+	devvp->v_type = VBLK;
+	devvp->v_op = glue_spec_vnodeop_p;
+#else
+	NDINIT(ndp, LOOKUP, FOLLOW, UIO_USERSPACE, args.fspec, p);
+	if (error = namei(ndp))
+		return (error);
+	devvp = ndp->ni_vp;
+#endif
+
+#ifdef AIX
+	if (aix_devvp->v_gnode->gn_type != VBLK) {
+		vrele(devvp);
+		VNOP_RELE(aix_devvp); /* note: AIX VNOP */
+		return (ENOTBLK);
+	}
+#else
+	if (devvp->v_type != VBLK) {
+		vrele(devvp);
+		return (ENOTBLK);
+	}
+	if (major(devvp->v_rdev) >= nblkdev) {
+		vrele(devvp);
+		return (ENXIO);
+	}
+#endif
+	if ((mp->mnt_flag & MNT_UPDATE) == 0)
+		error = wafs_mountfs(devvp, mp, p);
+	else {
+#ifndef CLFS /* CLFS_NOTYET */
+		if (devvp != ump->um_devvp)
+			error = EINVAL;	/* needs translation */
+		else
+			vrele(devvp);
+#endif
+	}
+	if (error) {
+		vrele(devvp);
+#ifdef AIX
+		VNOP_RELE(aix_devvp); /* note: AIX VNOP */
+#endif		
+		return (error);
+	}
+	ump = VFSTOUFS(mp);
+	wafs = ump->um_wafs;
+
+#ifdef LFFS
+	/*
+	 * If the log_fs field is filled in then we need verify that
+	 * the specified file system is a UFS and that its ID matches
+	 * our ID.
+	 */
+	if (args.log_fs) {
+		frootvp = lffs_getvn(p, args.log_fs);
+		ump->um_relmp = frootvp->v_mount;
+		vrele(frootvp);
+		if (ump->um_relmp->mnt_stat.f_type != MOUNT_UFS ||
+		    VFSTOUFS(ump->um_relmp)->um_joinid != wafs->wafs_id) {
+			vrele(devvp);
+			return(EINVAL);
+		}
+	}
+#endif
+
+#ifdef AIX
+	bzero(wafs->wafs_fsmnt, sizeof(wafs->wafs_fsmnt));
+	strcpy(wafs->wafs_fsmnt, path);
+	strcpy(mp->mnt_stat.f_mntonname, wafs->wafs_fsmnt);
+	bzero(mp->mnt_stat.f_mntfromname, sizeof(mp->mnt_stat.f_mntfromname));
+	strcpy(mp->mnt_stat.f_mntfromname, args->fspec);
+#else
+	(void) copyinstr(path, wafs->wafs_fsmnt, sizeof(wafs->wafs_fsmnt) - 1,
+	    &size);
+	bzero(wafs->wafs_fsmnt + size, sizeof(wafs->wafs_fsmnt) - size);
+	bcopy((caddr_t)wafs->wafs_fsmnt, (caddr_t)mp->mnt_stat.f_mntonname,
+	    MNAMELEN);
+	(void) copyinstr(args.fspec, mp->mnt_stat.f_mntfromname, MNAMELEN- 1, 
+	    &size);
+	bzero(mp->mnt_stat.f_mntfromname + size, MNAMELEN - size);
+#endif
+	(void)wafs_statfs(mp, &mp->mnt_stat, p);
+	return (0);
+}
+
+#ifndef CLFS /* CLFS_NOTYET */
+/*
+ * Reload all incore data for a filesystem.  The filesystem must
+ * be mounted read-only.
+ *
+ * Things to do to update the mount:
+ *	1) re-read superblock from disk.
+ *	2) invalidate all cached file data.
+ *	3) re-initialize wnode data for all active vnodes.
+ */
+wafs_reload(mountp, cred, p)
+	register struct mount *mountp;
+	struct ucred *cred;
+	struct proc *p;
+{
+	register struct vnode *vp, *nvp, *devvp;
+	struct wnode *wp;
+	struct csum *space;
+	struct buf *bp;
+	struct wafs *wafs;
+	int i, blks, size, error;
+
+	if ((mountp->mnt_flag & MNT_RDONLY) == 0)
+		return (EINVAL);
+	/*
+	 * Step 1: re-read superblock from disk.
+	 */
+	if (error = bread(devvp, SBLOCK, WAFS_SBSIZE, NOCRED, &bp))
+		return (error);
+	/* XXX do we want to add wafs to buf struct? */
+	wafs = (struct wafs *)bp->b_data;
+	if (wafs->wafs_magic != WAFS_MAGIC || wafs->wafs_bsize > MAXBSIZE ||
+	    wafs->wafs_bsize < sizeof(struct wafs)) {
+		brelse(bp);
+		return (EIO);		/* XXX needs translation */
+	}
+	wafs = VFSTOUFS(mountp)->um_wafs;
+	bcopy(bp->b_data, (caddr_t)wafs, (u_int)wafs->wafs_sbsize);
+	if (wafs->wafs_sbsize < WAFS_SBSIZE)
+		bp->b_flags |= B_INVAL;
+	wafs->wafs_flags &= ~WAFS_MOD;
+	brelse(bp);
+
+	/* Verify that there is only one node on the vnode chain */
+loop:
+	for (vp = mountp->mnt_vnodelist.lh_first; vp; vp = nvp) {
+		nvp = vp->v_mntvnodes.le_next;
+		/*
+		 * We should never have an inactive vnodes.
+		 */
+		if (vp->v_usecount == 0)
+			return(EINVAL);
+		/*
+		 * Should only be a single node with cached data.
+		 */
+		if (vget(vp, 1))
+			goto loop;
+		if (vinvalbuf(vp, 0, cred, p, 0, 0))
+			panic("wafs_reload: dirty2");
+		if (vp->v_mntvnodes.le_next)
+			panic("wafs_reload: too many vnodes on chain");
+		/*
+		 * Step 3: re-initialize wnode data for log.
+		 */
+		wp = VTOW(vp);
+		wp->w_head = wafs->wafs_head;
+		wp->w_tail = wafs->wafs_tail;
+		wp->w_ctime.ts_sec = wp->w_mtime.ts_sec = wafs->wafs_time;
+		wp->w_atime.ts_sec = wafs->wafs_rtime;
+		wp->w_nextrec = 0;
+		wp->w_type = WAFS_NORECORD;
+		if (error = bread(devvp, wp->w_head, (int)wafs->wafs_bsize,
+		    NOCRED, &bp)) {
+			vput(vp);
+			return (error);
+		}
+		/*
+		 * XXX Find last valid log record so that you can set
+		 * last_lsn correctly.  Also, does w_flag need to be
+		 * changed?
+		 */
+		brelse(bp);
+		vput(vp);
+		if (vp->v_mount != mountp)
+			goto loop;
+	}
+	return (0);
+}
+#endif /* CLFS_NOTYET */
+
+/*
+ * Nitty gritty mount code.
+ */
+int
+wafs_mountfs(devvp, mp, p)
+	register struct vnode *devvp;
+#ifdef AIX
+	struct bsd_mount *mp;
+#else
+	struct mount *mp;
+#endif
+	struct proc *p;
+{
+	register struct ufsmount *ump;
+	struct buf *bp;
+	register struct wafs *wafs;
+
+	dev_t dev = devvp->v_rdev;
+	struct partinfo dpart;
+	caddr_t base, space;
+	int havepart = 0, blks;
+	int error, i, size;
+	int ronly;
+#ifndef AIX
+	extern struct vnode *rootvp;
+#endif
+
+	/*
+	 * Disallow multiple mounts of the same device.
+	 * Disallow mounting of a device that is currently in use
+	 * Flush out any old buffers remaining from a previous use.
+	 */
+#ifndef AIX /* STUB: how to check in AIX? */
+	if (error = vfs_mountedon(devvp))
+		return (error);
+	if (vcount(devvp) > 1 && devvp != rootvp)
+		return (EBUSY);
+#endif
+#ifndef CLFS /* CLFS_NOTYET */
+	if (error = vinvalbuf(devvp, V_SAVE, p->p_ucred, p, 0, 0))
+		return (error);
+#endif
+
+	ronly = (mp->mnt_flag & MNT_RDONLY) != 0;
+	if (error = VOP_OPEN(devvp, ronly ? FREAD : FREAD|FWRITE, FSCRED, p))
+		return (error);
+	if (VOP_IOCTL(devvp, DIOCGPART, (caddr_t)&dpart, FREAD, NOCRED, p) != 0)
+		size = DEV_BSIZE;
+	else {
+		havepart = 1;
+		size = dpart.disklab->d_secsize;
+	}
+
+	bp = NULL;
+	ump = NULL;
+	if (error = bread(devvp, SBLOCK, WAFS_SBSIZE, NOCRED, &bp))
+		goto out;
+	wafs = (struct wafs *)bp->b_data;
+	if (wafs->wafs_magic != WAFS_MAGIC || wafs->wafs_bsize > MAXBSIZE ||
+	    wafs->wafs_bsize < sizeof(struct wafs)) {
+		error = EINVAL;		/* XXX needs translation */
+		goto out;
+	}
+#ifdef AIX
+	ump = malloc(sizeof *ump);
+	bzero((caddr_t)ump, sizeof *ump);
+	ump->um_wafs = malloc((u_long)wafs->wafs_sbsize);
+#else
+	ump = malloc(sizeof *ump, M_UFSMNT, M_WAITOK);
+	bzero((caddr_t)ump, sizeof *ump);
+	ump->um_wafs = malloc((u_long)wafs->wafs_sbsize, M_UFSMNT,
+	    M_WAITOK);
+#endif
+	bcopy(bp->b_data, ump->um_wafs, (u_int)wafs->wafs_sbsize);
+	if (wafs->wafs_sbsize < WAFS_SBSIZE)
+		bp->b_flags |= B_INVAL;
+	brelse(bp);
+	bp = NULL;
+	wafs = ump->um_wafs;
+	wafs->wafs_ronly = ronly;
+	if (ronly == 0)
+		wafs->wafs_fmod = 1;
+	if (havepart) {
+		dpart.part->p_fstype = FS_BSDFFS;
+		dpart.part->p_fsize = wafs->wafs_bsize;
+		dpart.part->p_frag = 1;
+		dpart.part->p_cpg = 0;
+	}
+	/* Figure out how much space is available in the file system */
+#ifdef AIX
+	mp->mnt_data = (long)ump;
+#else
+	mp->mnt_data = (qaddr_t)ump;
+#endif
+	mp->mnt_stat.f_fsid.val[0] = (long)dev;
+	mp->mnt_stat.f_fsid.val[1] = MOUNT_WAFS;
+	mp->mnt_maxsymlinklen = -1;
+	mp->mnt_flag |= MNT_LOCAL;
+	ump->um_mountp = mp;
+	ump->um_dev = dev;
+	ump->um_devvp = devvp;
+	ump->um_joinid = wafs->wafs_id;
+	ump->um_nindir = 0;
+	ump->um_bptrtodb = 0;
+	ump->um_seqinc = 1;
+#ifndef AIX
+	devvp->v_specflags |= SI_MOUNTEDON;
+#endif
+	return (0);
+out:
+	if (bp)
+		brelse(bp);
+	(void)VOP_CLOSE(devvp, ronly ? FREAD : FREAD|FWRITE, NOCRED, p);
+	if (ump) {
+#ifdef AIX
+		free(ump->um_wafs);
+		free(ump);
+		mp->mnt_data = (long)0;
+#else
+		free(ump->um_wafs, M_UFSMNT);
+		free(ump, M_UFSMNT);
+		mp->mnt_data = (qaddr_t)0;
+#endif
+	}
+	return (error);
+}
+
+
+/*
+ * unmount system call
+ */
+int
+wafs_unmount(mp, mntflags, p)
+	struct mount *mp;
+	int mntflags;
+	struct proc *p;
+{
+	register struct ufsmount *ump;
+	register struct wafs *wafs;
+	struct vnode *frootvp;
+	int error, flags, ronly;
+
+#ifdef CLFS
+	CLFSDEBUG("in wafs_unmount...\n", NULL);
+#endif
+	flags = 0;
+	if (mntflags & MNT_FORCE) {
+		if (mp->mnt_flag & MNT_ROOTFS)
+			return (EINVAL);
+		flags |= FORCECLOSE;
+	}
+
+	ump = VFSTOUFS(mp);
+
+	/*
+	 * Only unmount wafs if there is no associated ffs, this
+	 * is called from ffs_unmount, or this is a FORCE.
+	 */
+	if (ump->um_relmp && !(mntflags & (MNT_UNWAFS | MNT_FORCE)))
+		return (EBUSY);
+
+	/* XXX Is this the right cred? */
+	if (error = wafs_sync(mp, 1, p->p_ucred, p))
+		return (error);
+	/*
+	 * XXX this is probably an unsafe thing to do without
+	 * locking the other mp
+	 */
+#ifdef LFFS
+	if (ump->um_relmp) {
+		frootvp = VFSTOUFS(ump->um_relmp)->um_relvp;
+		if (!(mntflags & MNT_UNWAFS))
+			VFSTOUFS(ump->um_relmp)->um_relvp = NULL;
+		vrele(frootvp);
+	}
+#endif
+
+	/* Now, flush all vnodes */
+	vflush(mp, NULL, flags & FORCECLOSE ? FORCECLOSE : 0);
+
+	ump = VFSTOUFS(mp);
+	wafs = ump->um_wafs;
+	ronly = !wafs->wafs_ronly;
+#ifndef AIX
+	ump->um_devvp->v_specflags &= ~SI_MOUNTEDON;
+#endif
+	error = VOP_CLOSE(ump->um_devvp, ronly ? FREAD : FREAD|FWRITE,
+		NOCRED, p);
+	vrele(ump->um_devvp);
+#ifdef AIX
+	free(wafs);
+	free(ump);
+	mp->mnt_data = (ulong_t)0;
+#else
+	free(wafs, M_UFSMNT);
+	free(ump, M_UFSMNT);
+	mp->mnt_data = (qaddr_t)0;
+#endif
+	mp->mnt_flag &= ~MNT_LOCAL;
+	return (error);
+}
+
+/*
+ * Return root of a filesystem
+ */
+int
+wafs_root(mp, vpp)
+	struct mount *mp;
+	struct vnode **vpp;
+{
+	struct vnode *nvp;
+	int error;
+
+	if (error = VFS_VGET(mp, (ino_t)MASTERLOG, &nvp))
+		return (error);
+	*vpp = nvp;
+	return (0);
+}
+
+/*
+ * Get file system statistics.
+ */
+int
+wafs_statfs(mp, sbp, p)
+#ifdef AIX
+	struct bsd_mount *mp;
+	register struct bsd_statfs *sbp;
+#else
+	struct mount *mp;
+	register struct statfs *sbp;
+#endif
+	struct proc *p;
+{
+	register struct ufsmount *ump;
+	register struct wafs *wafs;
+	daddr_t head, tail;
+
+	ump = VFSTOUFS(mp);
+	wafs = ump->um_wafs;
+	if (wafs->wafs_magic != WAFS_MAGIC)
+		panic("wafs_statfs");
+	sbp->f_type = MOUNT_WAFS;
+	sbp->f_bsize = wafs->wafs_bsize;
+	sbp->f_iosize = wafs->wafs_bsize;
+	sbp->f_blocks = wafs->wafs_dsize;
+
+	/* Amount free is everything except blocks between tail and head. */
+	sbp->f_bfree = wafs->wafs_dsize - 
+	    (lblkno(wafs, wafs->wafs_head) - lblkno(wafs, wafs->wafs_tail));
+
+	sbp->f_bavail = sbp->f_bfree;
+	sbp->f_files =  1;
+	sbp->f_ffree = 0;
+	if (sbp != &mp->mnt_stat) {
+		bcopy((caddr_t)mp->mnt_stat.f_mntonname,
+			(caddr_t)&sbp->f_mntonname[0], MNAMELEN);
+		bcopy((caddr_t)mp->mnt_stat.f_mntfromname,
+			(caddr_t)&sbp->f_mntfromname[0], MNAMELEN);
+	}
+	return (0);
+}
+
+/*
+ * Make sure that all records are written to disk.
+ * Note: we are always called with the filesystem marked `MPBUSY'.
+ */
+int
+wafs_sync(mp, waitfor, cred, p)
+	struct mount *mp;
+	int waitfor;
+	struct ucred *cred;
+	struct proc *p;
+{
+	register struct vnode *vp;
+	register struct inode *ip;
+	register struct ufsmount *ump = VFSTOUFS(mp);
+	register struct wafs *wafs;
+	off_t checkpoint_lsn;
+	long flag;
+	int error, allerror = 0;
+
+	wafs = ump->um_wafs;
+	wafs->wafs_inchkpt = 1;
+	/*
+	 * Write back any dirty buffers.
+	 */
+loop:
+	for (vp = mp->mnt_vnodelist.lh_first;
+	     vp != NULL;
+	     vp = vp->v_mntvnodes.le_next) {
+		if (vp->v_mntvnodes.le_next)
+			panic("wafs_sync: too many vnodes on chain");
+
+		/* Lock vnode */
+		/*
+		 * This is where we call to the other file
+		 * system and take a checkpoint.
+		 */
+		checkpoint_lsn = VTOW(vp)->w_head;
+		if (error = VOP_FSYNC(vp, cred, waitfor, p))
+			allerror = error;
+		if (!(mp->mnt_flag & MNT_UNMOUNT) && waitfor &&
+		    ump->um_relmp) {
+			vfs_busy(ump->um_relmp);
+			flag = ump->um_relmp->mnt_flag & MNT_ASYNC;
+			ump->um_relmp->mnt_flag &= ~MNT_ASYNC;
+			VFS_SYNC(ump->um_relmp, waitfor, cred, p);
+			ump->um_relmp->mnt_flag |= flag;
+			vfs_unbusy(ump->um_relmp);
+		}
+		wafs->wafs_tail = VTOW(vp)->w_tail = checkpoint_lsn;
+	}
+
+
+	/*
+	 * Write back superblock; it will always be modified since
+	 * we just updated the tail. Consistency check that the superblock
+	 * is still in the buffer cache.
+	 */
+	if (wafs->wafs_ronly != 0) {
+#ifdef AIX
+		wafs->wafs_time = tod.tv_sec;
+#else
+		wafs->wafs_time = time.tv_sec;
+#endif
+		allerror = wafs_sbupdate(ump, waitfor);
+	}
+	wafs->wafs_inchkpt = 0;
+	return (allerror);
+}
+
+/*
+ * Check the vnode chain for our one vnode.  If it is not
+ * there, construct the single wnode for this file system
+ * from the superblock information.
+ */
+int
+wafs_vget(mp, ino, vpp)
+	struct mount *mp;
+	ino_t ino;
+	struct vnode **vpp;
+{
+	register struct wafs *wafs;
+	register struct wnode *wp;
+	struct ufsmount *ump;
+	struct vnode *vp;
+	dev_t dev;
+	int error;
+
+	/* Only one inode in this file system */
+	if (ino != MASTERLOG)
+		return(EINVAL);
+loop:
+	for (vp = mp->mnt_vnodelist.lh_first;
+	     vp != NULL;
+	     vp = vp->v_mntvnodes.le_next) {
+		wp = VTOW(vp);
+		if (wp->w_ino != ino)
+			continue;
+		*vpp = vp;
+		if (vget(vp, 1))
+			goto loop;
+		return (0);
+	}
+
+	/* Allocate a new vnode/wnode. */
+	if (error = getnewvnode(VT_WAFS, mp, wafs_vnodeop_p, &vp)) {
+		*vpp = NULL;
+		return (error);
+	}
+
+	ump = VFSTOUFS(mp);
+	dev = ump->um_dev;
+#ifdef AIX
+	MALLOC(wp, struct wnode *, sizeof(struct wnode), type, M_WAITOK);
+#else
+	wp = malloc(sizeof (struct wnode), M_WAFSNODE, M_WAITOK);
+#endif
+	bzero((caddr_t)wp, sizeof(struct wnode));
+	vp->v_data = wp;
+	wp->w_vnode = vp;
+	wp->w_fs = wafs = ump->um_wafs;
+	wp->w_dev = dev;
+	wp->w_ino = ino;
+	wp->w_flag = WLOCKED;
+#ifndef CLFS /* CLFS_NOTYET */
+	if (curproc)
+		wp->w_lockholder = curproc->p_pid;
+	else
+		wp->w_lockholder = -1;
+#endif
+	wp->w_lastlsn = wafs->wafs_lsn;
+	wp->w_head = wafs->wafs_head;
+	wp->w_tail = wafs->wafs_tail;
+	wp->w_ctime.ts_sec = wp->w_mtime.ts_sec = wafs->wafs_time;
+	wp->w_atime.ts_sec = wafs->wafs_rtime;
+	wp->w_devvp = ump->um_devvp;
+	VREF(wp->w_devvp);
+
+	/* Initialize vnode */
+	vp->v_flag |= VROOT;
+	vp->v_type = VREG;
+
+	*vpp = vp;
+	return (0);
+}
+
+#ifndef CLFS /* CLFS_NOTYET */
+/*
+ * File handle to vnode
+ *
+ * Have to be really careful about stale file handles:
+ * - check that the inode number is valid
+ * - call wafs_vget() to get the locked inode
+ * - check for an unallocated inode (i_mode == 0)
+ * - check that the given client host has export rights and return
+ *   those rights via. exflagsp and credanonp
+ */
+int
+wafs_fhtovp(mp, fhp, nam, vpp, exflagsp, credanonp)
+	register struct mount *mp;
+	struct fid *fhp;
+	struct mbuf *nam;
+	struct vnode **vpp;
+	int *exflagsp;
+	struct ucred **credanonp;
+{
+	register struct ufid *ufhp;
+	struct wafs *wafs;
+
+	ufhp = (struct ufid *)fhp;
+	wafs = VFSTOUFS(mp)->um_wafs;
+	if (ufhp->ufid_ino |= MASTERLOG)
+		return (ESTALE);
+	return (wafs_check_export(mp, ufhp, nam, vpp, exflagsp, credanonp));
+}
+
+/*
+ * Vnode pointer to File handle
+ */
+/* ARGSUSED */
+wafs_vptofh(vp, fhp)
+	struct vnode *vp;
+	struct fid *fhp;
+{
+	register struct wnode *wp;
+	register struct ufid *ufhp;
+
+	wp = VTOW(vp);
+	ufhp = (struct ufid *)fhp;
+	ufhp->ufid_len = sizeof(struct ufid);
+	ufhp->ufid_ino = wp->w_ino;
+	ufhp->ufid_gen = 1;	/* XXX Always make it one */
+	return (0);
+}
+#endif /* CLFS_NOTYET */
+
+/*
+ * Write a superblock.
+ */
+int
+wafs_sbupdate(ump, waitfor)
+	struct ufsmount *ump;
+	int waitfor;
+{
+	register struct wafs *wafs = ump->um_wafs;
+	register struct buf *bp;
+	struct vnode *vp;
+	struct wnode *wp;
+	struct mount *mp;
+	int error = 0;
+
+	mp = ump->um_mountp;
+	if ((wafs->wafs_flags & WAFS_MOD) == 0)
+		return(0);
+
+	bp = getblk(ump->um_devvp, SBLOCK, (int)wafs->wafs_sbsize, 0, 0);
+	bcopy((caddr_t)wafs, bp->b_data, (u_int)wafs->wafs_sbsize);
+	if (waitfor == MNT_WAIT)
+		error = bwrite(bp);
+	else
+		bawrite(bp);
+	wafs->wafs_flags &= ~WAFS_MOD;
+	return (error);
+}
+@
+
+
+1.13
+log
+@Merge lastrec and lastlen into nextrec.
+@
+text
+@d5 3
+d59 1
+a59 1
+ *	$Id: wafs_vfsops.c,v 1.12 1994/10/25 14:31:23 margo Exp margo $
+d61 1
+a61 1
+static char *rcsid = "$Id: wafs_vfsops.c,v 1.12 1994/10/25 14:31:23 margo Exp margo $";
+a585 1
+#ifndef CLFS /* CLFS_NOTYET */
+a587 1
+#endif
+d701 2
+d706 1
+d722 1
+d725 10
+d737 1
+d739 2
+a740 2
+	 * Write back modified superblock.
+	 * Consistency check that the superblock
+d743 1
+a743 5
+	if (wafs->wafs_fmod != 0) {
+		if (wafs->wafs_ronly != 0) {		/* XXX */
+			printf("fs = %s\n", wafs->wafs_fsmnt);
+			panic("update: rofs mod");
+		}
+d751 1
+@
+
+
+1.12
+log
+@Convert to use the new vfs_export interface.
+@
+text
+@d5 3
+d56 1
+a56 1
+ *	$Id: wafs_vfsops.c,v 1.11 1994/10/04 18:29:04 margo Exp margo $
+d58 1
+a58 1
+static char *rcsid = "$Id: wafs_vfsops.c,v 1.11 1994/10/04 18:29:04 margo Exp margo $";
+d400 1
+a400 2
+		wp->w_lastrec = 0;
+		wp->w_lastlen = 0;
+@
+
+
+1.11
+log
+@Make sure that wafs includes get included in both AIX and BSD.
+@
+text
+@d5 3
+d53 1
+a53 1
+ *	$Id: wafs_vfsops.c,v 1.10 1994/10/04 17:02:30 margo Exp margo $
+d55 1
+a55 1
+static char *rcsid = "$Id: wafs_vfsops.c,v 1.10 1994/10/04 17:02:30 margo Exp margo $";
+d221 1
+a221 11
+			if (args.export.ex_flags & MNT_EXPORTED) {
+				if (error = ufs_hang_addrlist(mp, &args))
+					return (error);
+				mp->mnt_flag |= MNT_EXPORTED;
+			}
+			if (args.export.ex_flags & MNT_DELEXPORT) {
+				ufs_free_addrlist(ump);
+				mp->mnt_flag &=
+				    ~(MNT_EXPORTED | MNT_DEFEXPORTED);
+			}
+			return (0);
+@
+
+
+1.10
+log
+@Make 4.4Lite version compile under BSD4.4-Lite.
+@
+text
+@d5 3
+d50 1
+a50 1
+ *	$Id$
+d52 1
+a52 1
+static char *rcsid = "$Id$";
+d102 3
+a108 2
+#include <ufs/logging/lffs_extern.h>
+#endif /* CLFS */
+@
+
+
+1.9
+log
+@4.4Lite modifications from CLAM/Jack Test
+@
+text
+@d1 1
+d12 1
+a12 2
+static char *rcsid = "$Id";
+
+d16 2
+d47 1
+a47 1
+ *	@@(#)wafs_vfsops.c	8.1 (Berkeley) 6/11/93
+d49 1
+a105 4
+#include <ufs/wafs/wafs.h>
+#include <ufs/wafs/wnode.h>
+#include <ufs/wafs/wafs_extern.h>
+
+a110 3
+#else
+struct vfsops wafs_vfsops = {
+#endif
+d123 15
+d172 1
+d174 1
+d188 1
+a188 1
+		fs = ump->um_wafs;
+d200 2
+a201 2
+			error = VOP_FSYNC(mp->mnt_mounth, p->p_ucred,
+			    MNT_WAIT, p);
+d214 1
+a214 1
+			if (args.exflags & MNT_EXPORTED) {
+d219 1
+a219 1
+			if (args.exflags & MNT_DELEXPORT) {
+d259 4
+a264 1
+#endif
+a265 3
+#ifdef AIX
+		VNOP_RELE(aix_devvp); /* note: AIX VNOP */
+#endif		
+a267 1
+#ifndef AIX
+d361 1
+a361 1
+	wafs = (struct wafs *)bp->b_un.b_fs;
+d368 1
+a368 2
+	bcopy((caddr_t)bp->b_un.b_addr, (caddr_t)wafs,
+	    (u_int)wafs->wafs_sbsize);
+d376 2
+a377 2
+	for (vp = mountp->mnt_mounth; vp; vp = nvp) {
+		nvp = vp->v_mountf;
+d386 1
+a386 1
+		if (vget(vp))
+d390 1
+a390 1
+		if (vp->v_mountf)
+d487 2
+a490 1
+#endif
+a491 3
+#ifdef AIX
+	ump->um_wafs = malloc((u_long)wafs->wafs_sbsize);
+#else
+d564 1
+d566 1
+d592 1
+d599 1
+d618 1
+a618 1
+	free(fs, M_UFSMNT);
+d889 1
+a889 1
+	bcopy((caddr_t)wafs, bp->b_un.b_addr, (u_int)wafs->wafs_sbsize);
+@
+
+
+1.8
+log
+@Only force close on files during unmount if that was specified
+in the argument flags.
+@
+text
+@d2 12
+d48 5
+d54 9
+d64 11
+d101 1
+d103 10
+d114 1
+d116 1
+a116 1
+	ufs_start,	/* NOP */
+d119 1
+a119 1
+	ufs_quotactl,	/* NOP */
+d123 3
+a125 3
+	wafs_fhtovp,
+	wafs_vptofh,
+	ufs_init,	/* NOP */
+d128 4
+d139 3
+d143 1
+d149 6
+a155 1
+	struct ufs_args uargs;
+d157 1
+a157 1
+	register struct wafs *fs;
+d161 5
+a165 1
+	if (error = copyin(data, (caddr_t)&uargs, sizeof (struct ufs_args)))
+d167 1
+d172 1
+d177 1
+a177 1
+		if (fs->wafs_ronly == 0 && (mp->mnt_flag & MNT_RDONLY)) {
+d195 3
+a197 3
+		if (fs->wafs_ronly && (mp->mnt_flag & MNT_WANTRDWR))
+			fs->wafs_ronly = 0;
+		if (uargs.fspec == 0) {
+d201 2
+a202 2
+			if (uargs.exflags & MNT_EXPORTED) {
+				if (error = ufs_hang_addrlist(mp, &uargs))
+d206 1
+a206 1
+			if (uargs.exflags & MNT_DELEXPORT) {
+d214 1
+d219 20
+a238 1
+	NDINIT(ndp, LOOKUP, FOLLOW, UIO_USERSPACE, uargs.fspec, p);
+d242 1
+d244 3
+d248 1
+d250 3
+d255 1
+d260 1
+d264 1
+d269 1
+d273 3
+d279 1
+a279 1
+	fs = ump->um_wafs;
+d281 1
+d287 2
+a288 2
+	if (uargs.log_fs) {
+		frootvp = lffs_getvn(p, uargs.log_fs);
+d292 1
+a292 1
+		    VFSTOUFS(ump->um_relmp)->um_joinid != fs->wafs_id) {
+d297 1
+d299 8
+a306 1
+	(void) copyinstr(path, fs->wafs_fsmnt, sizeof(fs->wafs_fsmnt) - 1,
+d308 2
+a309 2
+	bzero(fs->wafs_fsmnt + size, sizeof(fs->wafs_fsmnt) - size);
+	bcopy((caddr_t)fs->wafs_fsmnt, (caddr_t)mp->mnt_stat.f_mntonname,
+d311 1
+a311 1
+	(void) copyinstr(uargs.fspec, mp->mnt_stat.f_mntfromname, MNAMELEN - 1, 
+d314 1
+a315 2
+
+
+d319 1
+d409 1
+d417 3
+d421 1
+d427 1
+d434 1
+d436 1
+d443 2
+a444 1
+	if (error = ufs_mountedon(devvp))
+d448 2
+d452 1
+d468 1
+a468 2
+	/* XXX add wafs to buf struct */
+	wafs = (struct wafs *)bp->b_un.b_fs;
+d474 3
+d478 1
+d480 3
+d485 2
+a486 2
+	bcopy((caddr_t)bp->b_un.b_addr, (caddr_t)ump->um_wafs,
+	   (u_int)wafs->wafs_sbsize);
+d502 3
+d506 1
+d518 1
+d520 1
+d527 5
+d535 1
+d555 1
+d558 1
+a558 1
+		if (mp == rootfs)
+d573 1
+d576 1
+a576 1
+
+d590 1
+d594 1
+d596 1
+d600 6
+a605 1
+	free(wafs, M_UFSMNT);
+d608 1
+d635 4
+d641 1
+d657 1
+a657 1
+	/* Amount free is everything except the blocks between tail and head. */
+d695 4
+a698 2
+	for (vp = mp->mnt_mounth; vp; vp = vp->v_mountf) {
+		if (vp->v_mountf)
+d709 1
+d720 3
+d724 1
+d752 3
+a754 1
+	for (vp = mp->mnt_mounth; vp; vp = vp->v_mountf) {
+d759 3
+a761 2
+		vget(vp);
+		return(0);
+d772 3
+d776 1
+d784 1
+d789 1
+a789 1
+
+d806 1
+d854 1
+d869 1
+a869 1
+	int error;
+a871 1
+
+a875 1
+
+a876 1
+
+@
+
+
+1.7
+log
+@Add unmount code.  Release vnode for relative file system on mount.
+@
+text
+@d445 1
+a445 1
+	vflush(mp, NULL, FORCECLOSE);
+@
+
+
+1.6
+log
+@Get rid of wafs_args structure and use ufs_args instead.
+@
+text
+@d92 1
+a92 1
+	struct vnode *devvp;
+d184 3
+a186 1
+		ump->um_relmp = lffs_getvn(p, uargs.log_fs)->v_mount;
+d410 1
+d419 10
+d432 11
+@
+
+
+1.5
+log
+@Add coordination in mount to assocaite wafs with ffs.
+@
+text
+@a92 1
+	struct wafs_args args;
+d99 1
+a99 4
+	if (error = copyin(data, (caddr_t)&args, sizeof (struct wafs_args)))
+		return (error);
+	if (error = copyin(args.ufsargs, (caddr_t)&uargs,
+	    sizeof (struct ufs_args)))
+@
+
+
+1.4
+log
+@Fix the problem in reading records that naturally fall at the end of
+a block.  We need to skip that end of the block if it could hold only
+a header.  Make sure that the wnode pointers get initialized correctly.
+@
+text
+@d63 2
+d181 15
+a205 1
+	/* If otherfs is specified, we have to do coordination here. */
+d382 1
+@
+
+
+1.3
+log
+@Mount/Unmount work!
+@
+text
+@d263 3
+d451 1
+d464 1
+a464 1
+	    diff(wafs, wafs->wafs_tail, wafs->wafs_head);
+d505 4
+@
+
+
+1.2
+log
+@Mount/Unmount pairs work!
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d33 1
+a33 1
+ *	@@(#)ffs_vfsops.c	8.1 (Berkeley) 6/11/93
+d37 1
+a50 1
+#include <sys/malloc.h>
+d59 3
+a61 2
+#include <ufs/ffs/fs.h>
+#include <ufs/ffs/ffs_extern.h>
+d63 12
+a74 14
+int ffs_sbupdate __P((struct ufsmount *, int));
+
+struct vfsops ufs_vfsops = {
+	ffs_mount,
+	ufs_start,
+	ffs_unmount,
+	ffs_root,
+	ufs_quotactl,
+	ffs_statfs,
+	ffs_sync,
+	ffs_vget,
+	ffs_fhtovp,
+	ffs_vptofh,
+	ffs_init,
+a76 2
+extern u_long nextgennumber;
+
+a77 55
+ * Called by main() when ufs is going to be mounted as root.
+ *
+ * Name is updated by mount(8) after booting.
+ */
+#define ROOTNAME	"root_device"
+
+ffs_mountroot()
+{
+	extern struct vnode *rootvp;
+	register struct fs *fs;
+	register struct mount *mp;
+	struct proc *p = curproc;	/* XXX */
+	struct ufsmount *ump;
+	u_int size;
+	int error;
+	
+	/*
+	 * Get vnodes for swapdev and rootdev.
+	 */
+	if (bdevvp(swapdev, &swapdev_vp) || bdevvp(rootdev, &rootvp))
+		panic("ffs_mountroot: can't setup bdevvp's");
+
+	mp = malloc((u_long)sizeof(struct mount), M_MOUNT, M_WAITOK);
+	bzero((char *)mp, (u_long)sizeof(struct mount));
+	mp->mnt_op = &ufs_vfsops;
+	mp->mnt_flag = MNT_RDONLY;
+	if (error = ffs_mountfs(rootvp, mp, p)) {
+		free(mp, M_MOUNT);
+		return (error);
+	}
+	if (error = vfs_lock(mp)) {
+		(void)ffs_unmount(mp, 0, p);
+		free(mp, M_MOUNT);
+		return (error);
+	}
+	rootfs = mp;
+	mp->mnt_next = mp;
+	mp->mnt_prev = mp;
+	mp->mnt_vnodecovered = NULLVP;
+	ump = VFSTOUFS(mp);
+	fs = ump->um_fs;
+	bzero(fs->fs_fsmnt, sizeof(fs->fs_fsmnt));
+	fs->fs_fsmnt[0] = '/';
+	bcopy((caddr_t)fs->fs_fsmnt, (caddr_t)mp->mnt_stat.f_mntonname,
+	    MNAMELEN);
+	(void) copystr(ROOTNAME, mp->mnt_stat.f_mntfromname, MNAMELEN - 1,
+	    &size);
+	bzero(mp->mnt_stat.f_mntfromname + size, MNAMELEN - size);
+	(void)ffs_statfs(mp, &mp->mnt_stat, p);
+	vfs_unlock(mp);
+	inittodr(fs->fs_time);
+	return (0);
+}
+
+/*
+d83 1
+a83 1
+ffs_mount(mp, path, data, ndp, p)
+d91 2
+a92 1
+	struct ufs_args args;
+d94 1
+a94 1
+	register struct fs *fs;
+d98 1
+a98 1
+	if (error = copyin(data, (caddr_t)&args, sizeof (struct ufs_args)))
+d100 3
+d109 1
+a109 1
+		fs = ump->um_fs;
+d111 1
+a111 1
+		if (fs->fs_ronly == 0 && (mp->mnt_flag & MNT_RDONLY)) {
+d117 6
+a122 1
+			error = ffs_flushfiles(mp, flags, p);
+d126 1
+a126 1
+			error = ffs_reload(mp, ndp->ni_cnd.cn_cred, p);
+d129 3
+a131 3
+		if (fs->fs_ronly && (mp->mnt_flag & MNT_WANTRDWR))
+			fs->fs_ronly = 0;
+		if (args.fspec == 0) {
+d135 2
+a136 2
+			if (args.exflags & MNT_EXPORTED) {
+				if (error = ufs_hang_addrlist(mp, &args))
+d140 1
+a140 1
+			if (args.exflags & MNT_DELEXPORT) {
+d152 1
+a152 1
+	NDINIT(ndp, LOOKUP, FOLLOW, UIO_USERSPACE, args.fspec, p);
+d166 1
+a166 1
+		error = ffs_mountfs(devvp, mp, p);
+d178 5
+a182 4
+	fs = ump->um_fs;
+	(void) copyinstr(path, fs->fs_fsmnt, sizeof(fs->fs_fsmnt) - 1, &size);
+	bzero(fs->fs_fsmnt + size, sizeof(fs->fs_fsmnt) - size);
+	bcopy((caddr_t)fs->fs_fsmnt, (caddr_t)mp->mnt_stat.f_mntonname,
+d184 1
+a184 1
+	(void) copyinstr(args.fspec, mp->mnt_stat.f_mntfromname, MNAMELEN - 1, 
+d187 4
+a190 1
+	(void)ffs_statfs(mp, &mp->mnt_stat, p);
+d195 1
+a195 2
+ * Reload all incore data for a filesystem (used after running fsck on
+ * the root filesystem and finding things to fix). The filesystem must
+d199 3
+a201 6
+ *	1) invalidate all cached meta-data.
+ *	2) re-read superblock from disk.
+ *	3) re-read summary information from disk.
+ *	4) invalidate all inactive vnodes.
+ *	5) invalidate all cached file data.
+ *	6) re-read inode data for all active vnodes.
+d203 1
+a203 1
+ffs_reload(mountp, cred, p)
+d209 1
+a209 2
+	struct inode *ip;
+	struct dinode *dp;
+d212 1
+a212 1
+	struct fs *fs;
+d218 1
+a218 1
+	 * Step 1: invalidate all cached meta-data.
+d220 1
+a220 7
+	devvp = VFSTOUFS(mountp)->um_devvp;
+	if (vinvalbuf(devvp, 0, cred, p, 0, 0))
+		panic("ffs_reload: dirty1");
+	/*
+	 * Step 2: re-read superblock from disk.
+	 */
+	if (error = bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp))
+d222 4
+a225 3
+	fs = bp->b_un.b_fs;
+	if (fs->fs_magic != FS_MAGIC || fs->fs_bsize > MAXBSIZE ||
+	    fs->fs_bsize < sizeof(struct fs)) {
+d229 4
+a232 5
+	fs = VFSTOUFS(mountp)->um_fs;
+	bcopy((caddr_t)&fs->fs_csp[0], (caddr_t)&bp->b_un.b_fs->fs_csp[0],
+	    sizeof(fs->fs_csp));
+	bcopy((caddr_t)bp->b_un.b_addr, (caddr_t)fs, (u_int)fs->fs_sbsize);
+	if (fs->fs_sbsize < SBSIZE)
+d234 1
+d236 2
+a237 17
+	ffs_oldfscompat(fs);
+	/*
+	 * Step 3: re-read summary information from disk.
+	 */
+	blks = howmany(fs->fs_cssize, fs->fs_fsize);
+	space = fs->fs_csp[0];
+	for (i = 0; i < blks; i += fs->fs_frag) {
+		size = fs->fs_bsize;
+		if (i + fs->fs_frag > blks)
+			size = (blks - i) * fs->fs_fsize;
+		if (error = bread(devvp, fsbtodb(fs, fs->fs_csaddr + i), size,
+		    NOCRED, &bp))
+			return (error);
+		bcopy((caddr_t)bp->b_un.b_addr, fs->fs_csp[fragstoblks(fs, i)],
+		    (u_int)size);
+		brelse(bp);
+	}
+d242 1
+a242 1
+		 * Step 4: invalidate all inactive vnodes.
+d244 2
+a245 4
+		if (vp->v_usecount == 0) {
+			vgone(vp);
+			continue;
+		}
+d247 1
+a247 1
+		 * Step 5: invalidate all cached file data.
+d252 3
+a254 1
+			panic("ffs_reload: dirty2");
+d256 1
+a256 1
+		 * Step 6: re-read inode data for all active vnodes.
+d258 7
+a264 3
+		ip = VTOI(vp);
+		if (error = bread(devvp, fsbtodb(fs, itod(fs, ip->i_number)),
+		    (int)fs->fs_bsize, NOCRED, &bp)) {
+d268 5
+a272 3
+		dp = bp->b_un.b_dino;
+		dp += itoo(fs, ip->i_number);
+		ip->i_din = *dp;
+d282 1
+a282 1
+ * Common code for mount and mountroot
+d285 1
+a285 1
+ffs_mountfs(devvp, mp, p)
+d292 1
+a292 1
+	register struct fs *fs;
+a303 1
+	 * (except for root, which might share swap device for miniroot).
+d325 1
+a325 1
+	if (error = bread(devvp, SBLOCK, SBSIZE, NOCRED, &bp))
+d327 4
+a330 3
+	fs = bp->b_un.b_fs;
+	if (fs->fs_magic != FS_MAGIC || fs->fs_bsize > MAXBSIZE ||
+	    fs->fs_bsize < sizeof(struct fs)) {
+d336 1
+a336 1
+	ump->um_fs = malloc((u_long)fs->fs_sbsize, M_UFSMNT,
+d338 3
+a340 3
+	bcopy((caddr_t)bp->b_un.b_addr, (caddr_t)ump->um_fs,
+	   (u_int)fs->fs_sbsize);
+	if (fs->fs_sbsize < SBSIZE)
+d344 2
+a345 2
+	fs = ump->um_fs;
+	fs->fs_ronly = ronly;
+d347 1
+a347 1
+		fs->fs_fmod = 1;
+d350 3
+a352 3
+		dpart.part->p_fsize = fs->fs_fsize;
+		dpart.part->p_frag = fs->fs_frag;
+		dpart.part->p_cpg = fs->fs_cpg;
+d354 1
+a354 19
+	blks = howmany(fs->fs_cssize, fs->fs_fsize);
+	base = space = malloc((u_long)fs->fs_cssize, M_UFSMNT,
+	    M_WAITOK);
+	for (i = 0; i < blks; i += fs->fs_frag) {
+		size = fs->fs_bsize;
+		if (i + fs->fs_frag > blks)
+			size = (blks - i) * fs->fs_fsize;
+		error = bread(devvp, fsbtodb(fs, fs->fs_csaddr + i), size,
+			NOCRED, &bp);
+		if (error) {
+			free(base, M_UFSMNT);
+			goto out;
+		}
+		bcopy((caddr_t)bp->b_un.b_addr, space, (u_int)size);
+		fs->fs_csp[fragstoblks(fs, i)] = (struct csum *)space;
+		space += size;
+		brelse(bp);
+		bp = NULL;
+	}
+d357 2
+a358 2
+	mp->mnt_stat.f_fsid.val[1] = MOUNT_UFS;
+	mp->mnt_maxsymlinklen = fs->fs_maxsymlinklen;
+d363 3
+a365 5
+	ump->um_nindir = fs->fs_nindir;
+	ump->um_bptrtodb = fs->fs_fsbtodb;
+	ump->um_seqinc = fs->fs_frag;
+	for (i = 0; i < MAXQUOTAS; i++)
+		ump->um_quotas[i] = NULLVP;
+a366 1
+	ffs_oldfscompat(fs);
+d373 1
+a373 1
+		free(ump->um_fs, M_UFSMNT);
+a379 9
+/*
+ * Sanity checks for old file systems.
+ *
+ * XXX - goes away some day.
+ */
+ffs_oldfscompat(fs)
+	struct fs *fs;
+{
+	int i;
+a380 18
+	fs->fs_npsect = max(fs->fs_npsect, fs->fs_nsect);	/* XXX */
+	fs->fs_interleave = max(fs->fs_interleave, 1);		/* XXX */
+	if (fs->fs_postblformat == FS_42POSTBLFMT)		/* XXX */
+		fs->fs_nrpos = 8;				/* XXX */
+	if (fs->fs_inodefmt < FS_44INODEFMT) {			/* XXX */
+		quad_t sizepb = fs->fs_bsize;			/* XXX */
+								/* XXX */
+		fs->fs_maxfilesize = fs->fs_bsize * NDADDR - 1;	/* XXX */
+		for (i = 0; i < NIADDR; i++) {			/* XXX */
+			sizepb *= NINDIR(fs);			/* XXX */
+			fs->fs_maxfilesize += sizepb;		/* XXX */
+		}						/* XXX */
+		fs->fs_qbmask = ~fs->fs_bmask;			/* XXX */
+		fs->fs_qfmask = ~fs->fs_fmask;			/* XXX */
+	}							/* XXX */
+	return (0);
+}
+
+d385 1
+a385 1
+ffs_unmount(mp, mntflags, p)
+d391 1
+a391 1
+	register struct fs *fs;
+d400 2
+a401 1
+	if (error = ffs_flushfiles(mp, flags, p))
+d403 3
+d407 2
+a408 2
+	fs = ump->um_fs;
+	ronly = !fs->fs_ronly;
+d413 1
+a413 2
+	free(fs->fs_csp[0], M_UFSMNT);
+	free(fs, M_UFSMNT);
+a420 34
+ * Flush out all the files in a filesystem.
+ */
+ffs_flushfiles(mp, flags, p)
+	register struct mount *mp;
+	int flags;
+	struct proc *p;
+{
+	extern int doforce;
+	register struct ufsmount *ump;
+	int i, error;
+
+	if (!doforce)
+		flags &= ~FORCECLOSE;
+	ump = VFSTOUFS(mp);
+#ifdef QUOTA
+	if (mp->mnt_flag & MNT_QUOTA) {
+		if (error = vflush(mp, NULLVP, SKIPSYSTEM|flags))
+			return (error);
+		for (i = 0; i < MAXQUOTAS; i++) {
+			if (ump->um_quotas[i] == NULLVP)
+				continue;
+			quotaoff(p, mp, i);
+		}
+		/*
+		 * Here we fall through to vflush again to ensure
+		 * that we have gotten rid of all the system vnodes.
+		 */
+	}
+#endif
+	error = vflush(mp, NULLVP, flags);
+	return (error);
+}
+
+/*
+d424 1
+a424 1
+ffs_root(mp, vpp)
+d431 1
+a431 1
+	if (error = VFS_VGET(mp, (ino_t)ROOTINO, &nvp))
+d441 1
+a441 1
+ffs_statfs(mp, sbp, p)
+d447 1
+a447 1
+	register struct fs *fs;
+d450 15
+a464 13
+	fs = ump->um_fs;
+	if (fs->fs_magic != FS_MAGIC)
+		panic("ffs_statfs");
+	sbp->f_type = MOUNT_UFS;
+	sbp->f_bsize = fs->fs_fsize;
+	sbp->f_iosize = fs->fs_bsize;
+	sbp->f_blocks = fs->fs_dsize;
+	sbp->f_bfree = fs->fs_cstotal.cs_nbfree * fs->fs_frag +
+		fs->fs_cstotal.cs_nffree;
+	sbp->f_bavail = (fs->fs_dsize * (100 - fs->fs_minfree) / 100) -
+		(fs->fs_dsize - sbp->f_bfree);
+	sbp->f_files =  fs->fs_ncg * fs->fs_ipg - ROOTINO;
+	sbp->f_ffree = fs->fs_cstotal.cs_nifree;
+d475 1
+a475 4
+ * Go through the disk queues to initiate sandbagged IO;
+ * go through the inodes to write those that have been modified;
+ * initiate the writing of the super block if it has been modified.
+ *
+d479 1
+a479 1
+ffs_sync(mp, waitfor, cred, p)
+d488 1
+a488 1
+	register struct fs *fs;
+d491 1
+a491 1
+	fs = ump->um_fs;
+d493 1
+a493 3
+	 * Write back modified superblock.
+	 * Consistency check that the superblock
+	 * is still in the buffer cache.
+a494 12
+	if (fs->fs_fmod != 0) {
+		if (fs->fs_ronly != 0) {		/* XXX */
+			printf("fs = %s\n", fs->fs_fsmnt);
+			panic("update: rofs mod");
+		}
+		fs->fs_fmod = 0;
+		fs->fs_time = time.tv_sec;
+		allerror = ffs_sbupdate(ump, waitfor);
+	}
+	/*
+	 * Write back each (modified) inode.
+	 */
+d497 4
+a500 14
+		/*
+		 * If the vnode that we are about to sync is no longer
+		 * associated with this mount point, start over.
+		 */
+		if (vp->v_mount != mp)
+			goto loop;
+		if (VOP_ISLOCKED(vp))
+			continue;
+		ip = VTOI(vp);
+		if ((ip->i_flag & (IMOD|IACC|IUPD|ICHG)) == 0 &&
+		    vp->v_dirtyblkhd.le_next == NULL)
+			continue;
+		if (vget(vp))
+			goto loop;
+a502 1
+		vput(vp);
+d505 3
+a507 1
+	 * Force stale file system control information to be flushed.
+d509 8
+a516 5
+	if (error = VOP_FSYNC(ump->um_devvp, cred, waitfor, p))
+		allerror = error;
+#ifdef QUOTA
+	qsync(mp);
+#endif
+d521 3
+a523 5
+ * Look up a FFS dinode number to find its incore vnode.
+ * If it is not in core, read it in from the specified device.
+ * If it is in core, wait for the lock bit to clear, then
+ * return the inode locked. Detection and handling of mount
+ * points must be done by the calling routine.
+d526 1
+a526 1
+ffs_vget(mp, ino, vpp)
+d531 2
+a532 2
+	register struct fs *fs;
+	register struct inode *ip;
+a533 2
+	struct buf *bp;
+	struct dinode *dp;
+a534 1
+	union ihead *ih;
+d536 1
+a536 1
+	int i, type, error;
+d538 11
+a548 9
+	ump = VFSTOUFS(mp);
+	dev = ump->um_dev;
+	if ((*vpp = ufs_ihashget(dev, ino)) != NULL)
+		return (0);
+
+	/* Allocate a new vnode/inode. */
+	if (error = getnewvnode(VT_UFS, mp, ffs_vnodeop_p, &vp)) {
+		*vpp = NULL;
+		return (error);
+a549 19
+	type = ump->um_devvp->v_tag == VT_MFS ? M_MFSNODE : M_FFSNODE; /* XXX */
+	MALLOC(ip, struct inode *, sizeof(struct inode), type, M_WAITOK);
+	bzero((caddr_t)ip, sizeof(struct inode));
+	vp->v_data = ip;
+	ip->i_vnode = vp;
+	ip->i_fs = fs = ump->um_fs;
+	ip->i_dev = dev;
+	ip->i_number = ino;
+#ifdef QUOTA
+	for (i = 0; i < MAXQUOTAS; i++)
+		ip->i_dquot[i] = NODQUOT;
+#endif
+	/*
+	 * Put it onto its hash chain and lock it so that other requests for
+	 * this inode will block if they arrive while we are sleeping waiting
+	 * for old data structures to be purged or for the contents of the
+	 * disk portion of this inode to be read.
+	 */
+	ufs_ihashins(ip);
+d551 2
+a552 11
+	/* Read in the disk contents for the inode, copy into the inode. */
+	if (error = bread(ump->um_devvp, fsbtodb(fs, itod(fs, ino)),
+	    (int)fs->fs_bsize, NOCRED, &bp)) {
+		/*
+		 * The inode does not contain anything useful, so it would
+		 * be misleading to leave it on its hash chain. With mode
+		 * still zero, it will be unlinked and returned to the free
+		 * list by vput().
+		 */
+		vput(vp);
+		brelse(bp);
+a555 4
+	dp = bp->b_un.b_dino;
+	dp += itoo(fs, ino);
+	ip->i_din = *dp;
+	brelse(bp);
+d557 14
+a570 33
+	/*
+	 * Initialize the vnode from the inode, check for aliases.
+	 * Note that the underlying vnode may have changed.
+	 */
+	if (error = ufs_vinit(mp, ffs_specop_p, FFS_FIFOOPS, &vp)) {
+		vput(vp);
+		*vpp = NULL;
+		return (error);
+	}
+	/*
+	 * Finish inode initialization now that aliasing has been resolved.
+	 */
+	ip->i_devvp = ump->um_devvp;
+	VREF(ip->i_devvp);
+	/*
+	 * Set up a generation number for this inode if it does not
+	 * already have one. This should only happen on old filesystems.
+	 */
+	if (ip->i_gen == 0) {
+		if (++nextgennumber < (u_long)time.tv_sec)
+			nextgennumber = time.tv_sec;
+		ip->i_gen = nextgennumber;
+		if ((vp->v_mount->mnt_flag & MNT_RDONLY) == 0)
+			ip->i_flag |= IMOD;
+	}
+	/*
+	 * Ensure that uid and gid are correct. This is a temporary
+	 * fix until fsck has been changed to do the update.
+	 */
+	if (fs->fs_inodefmt < FS_44INODEFMT) {		/* XXX */
+		ip->i_uid = ip->i_din.di_ouid;		/* XXX */
+		ip->i_gid = ip->i_din.di_ogid;		/* XXX */
+	}						/* XXX */
+d572 12
+d593 1
+a593 1
+ * - call ffs_vget() to get the locked inode
+d599 1
+a599 1
+ffs_fhtovp(mp, fhp, nam, vpp, exflagsp, credanonp)
+d608 1
+a608 1
+	struct fs *fs;
+d611 2
+a612 3
+	fs = VFSTOUFS(mp)->um_fs;
+	if (ufhp->ufid_ino < ROOTINO ||
+	    ufhp->ufid_ino >= fs->fs_ncg * fs->fs_ipg)
+d614 1
+a614 1
+	return (ufs_check_export(mp, ufhp, nam, vpp, exflagsp, credanonp));
+d621 1
+a621 1
+ffs_vptofh(vp, fhp)
+d625 1
+a625 1
+	register struct inode *ip;
+d628 1
+a628 1
+	ip = VTOI(vp);
+d631 2
+a632 2
+	ufhp->ufid_ino = ip->i_number;
+	ufhp->ufid_gen = ip->i_gen;
+d637 1
+a637 1
+ * Write a superblock and associated information back to disk.
+d640 2
+a641 2
+ffs_sbupdate(mp, waitfor)
+	struct ufsmount *mp;
+d644 1
+a644 1
+	register struct fs *fs = mp->um_fs;
+d646 4
+a649 3
+	int blks;
+	caddr_t space;
+	int i, size, error = 0;
+d651 9
+a659 5
+	bp = getblk(mp->um_devvp, SBLOCK, (int)fs->fs_sbsize, 0, 0);
+	bcopy((caddr_t)fs, bp->b_un.b_addr, (u_int)fs->fs_sbsize);
+	/* Restore compatibility to old file systems.		   XXX */
+	if (fs->fs_postblformat == FS_42POSTBLFMT)		/* XXX */
+		bp->b_un.b_fs->fs_nrpos = -1;			/* XXX */
+d664 1
+a664 15
+	blks = howmany(fs->fs_cssize, fs->fs_fsize);
+	space = (caddr_t)fs->fs_csp[0];
+	for (i = 0; i < blks; i += fs->fs_frag) {
+		size = fs->fs_bsize;
+		if (i + fs->fs_frag > blks)
+			size = (blks - i) * fs->fs_fsize;
+		bp = getblk(mp->um_devvp, fsbtodb(fs, fs->fs_csaddr + i),
+		    size, 0, 0);
+		bcopy(space, bp->b_un.b_addr, (u_int)size);
+		space += size;
+		if (waitfor == MNT_WAIT)
+			error = bwrite(bp);
+		else
+			bawrite(bp);
+	}
+@

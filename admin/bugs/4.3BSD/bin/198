@@ -1,0 +1,123 @@
+Path: seismo!uunet!mcvax!unido!sbsvax!greim
+From: greim@sbsvax.UUCP (Michael Greim)
+Newsgroups: comp.bugs.4bsd
+Subject: Two csh bugs and fixes.
+Index: bin/csh 4.3BSD
+
+Here are another two somewhat related csh bugs and their fixes.
+The fixes are in the same file, so I send the diff of the file only once.
+Don't put your csh sources away, in some days I will send some other
+fixes which you might want to apply.
+
+1.)
+	Symptoms:
+		- create files a-b and acd
+		- echo a[-c]d
+		--> acd
+			the "-" is interpretated as a meta character for "range"
+		- echo a[\-c]d
+		--> will still yield only acd, "-" is not a meta character, because
+			it has its 8'th bit set, but it does not match either because
+			of this.
+			I rather expected it to match a-d and acd.
+		- echo a[c-]d
+		--> missing "]" : the "]" is interpreted as second argument
+			to range-operator "-", and eaten
+
+	Diagnosis:
+		You can play around a little bit with this, all effects are
+		created by the fact, that there is no test, if a left or
+		right hand side of "-" is empty, and the 8'th bit is not stripped
+		of the characters so you cannot distinguish between - and "-".
+		There was a discussion recently, what the
+		shell should do with files whose names contained unprintable
+		characters. As the csh uses the 8'th bit internally for quoting
+		it cannot but ignore cases where such a bit REALLY is desired.
+		Write a program to manipulate such weird file names, the csh is
+		unreliable in this respect.
+2.)
+	Symptoms:
+		- create files a,b and acb
+		- echo a{,,c}b
+		-->ab ab acd
+		- echo a{\,,c}b
+		-->ab ab acd
+			I rather expected a,b acb
+	Diagnosis:
+		The reason is similar to the above.
+
+Therapy:
+	apply the following context diff to sh.glob.c.
+	The resulting routines will let you quote meta characters in
+	"[...]" or "{...}" expressions. So a{\,,c}b will expand to
+	"a,b acb" and a[\-c]d will match files a-d and acd.
+*** sh.glob.old.c	Mon Apr 25 12:30:00 1988
+--- sh.glob.c	Mon Apr 25 12:30:17 1988
+***************
+*** 270,275 ****
+--- 270,276 ----
+  		goto doit;
+  	case ','|QUOTE:
++ 		continue;
+  	case ',':
+  		if (brclev)
+  			continue;
+***************
+*** 344,353 ****
+  					return (0);
+  				}
+  				if (cc == '-') {
+! 					if (lc <= scc && scc <= *p++)
+  						ok++;
+  				} else
+! 					if (scc == (lc = cc))
+  						ok++;
+  			}
+  			if (cc == 0)
+--- 345,354 ----
+  					return (0);
+  				}
+  				if (cc == '-') {
+! 					if (lc <= scc && scc <= (*p++ & TRIM))
+  						ok++;
+  				} else
+! 					if (scc == (lc = (cc & TRIM)))
+  						ok++;
+  			}
+  			if (cc == 0)
+***************
+*** 422,431 ****
+  					return (0);
+  				}
+  				if (cc == '-') {
+! 					if (lc <= scc && scc <= *p++)
+  						ok++;
+  				} else
+! 					if (scc == (lc = cc))
+  						ok++;
+  			}
+  			if (cc == 0)
+--- 423,432 ----
+  					return (0);
+  				}
+  				if (cc == '-') {
+! 					if (lc <= scc && scc <= (*p++ & TRIM))
+  						ok++;
+  				} else
+! 					if (scc == (lc = (cc & TRIM)))
+  						ok++;
+  			}
+  			if (cc == 0)
+
+I hope, I found all the problem places. If not so, inform me.
+
+Absorb, apply and enjoy,
+	Michael
+
+-- 
+
+snail-mail : Michael Greim,
+			 Universitaet des Saarlandes, FB 10 - Informatik (Dept. of CS),
+             Bau 36, Im Stadtwald 15, D-6600 Saarbruecken 11, West Germany
+E-mail     : greim@sbsvax.UUCP
+

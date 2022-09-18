@@ -1,0 +1,121 @@
+Return-Path: <hpda!hpdsd!hpdsa!eric>
+Date: Thu, 22 Mar 84 15:55:16 pst
+From: hpda!hpdsd!hpdsa!eric (Eric B. Wertz)
+
+/*
+    Since our outgoing news/notes feed is broken, please post this
+    to net.bugs(.4bsd) if appropriate.
+*/
+
+Subject:	dd(1) destroys file if input and output are the same.
+Index:		bin/dd.c 4.2BSD
+Submitter:	Eric Wertz ( ..!ucbvax!hpda!eric,
+			     wertz@su-glacier.ARPA,
+			     eric@cmu-ee-faraday.ARPA )
+
+Description:
+	If file arguments given via "if=" and "of=" are the same, the
+	file gets trashed.
+	Programs like cp(1) usually catch this.
+
+Repeat-By:
+	% cat foo
+	This is a test file.
+	% dd if=foo of=foo
+	0+0 records in
+	0+0 records out			(oh dear, this doesn't look good...)
+	% cat foo
+	%				(sure enough...)
+
+Fix:
+	Add <sys/types.h> and <sys/stat.h> to the list of include files.
+	and insert code with change bars...
+
+	if(ibf < 0) {
+		perror(ifile);
+		exit(0);
+	}
+	if (ifile && ofile) {						    |
+		struct stat sbuf_in, sbuf_out;				    |
+									    |
+		if ( stat(ifile,&sbuf_in) == -1 ) {			    |
+			perror(ifile);					    |
+			exit(0);					    |
+		}							    |
+		if ( stat(ofile,&sbuf_out) == -1 ) {			    |
+			perror(ofile);					    |
+			exit(0);					    |
+		}							    |
+		if ( sbuf_in.st_dev == sbuf_out.st_dev &&		    |
+		     sbuf_in.st_ino == sbuf_out.st_ino ) {		    |
+			fprintf(stderr,"dd: can't copy file onto itself\n");|
+			exit(0);					    |
+		}							    |
+	}								    |
+	if (ofile)
+		obf = creat(ofile, 0666);
+
+Comments:
+	This bug occurs in System III, System V, System V.2, and
+	4.[12] BSD.
+
+	Of course, there's no way to prevent...
+	% dd if=foo >foo			...from trashing a file.
+
+===================================================================
+Return-Path: <hpda!hpdsd!hpdsa!eric>
+Date: Fri, 23 Mar 84 16:44:05 pst
+From: hpda!hpdsd!hpdsa!eric (Eric B. Wertz)
+
+/*
+	OOPS.
+	The bug fix I sent yesterday needed fixed.
+	Here's today's version.
+*/
+
+Subject:	dd(1) destroys file if input and output are the same.
+Index:		bin/dd.c 4.2BSD
+Submitter:	Eric Wertz ( ..!ucbvax!hpda!eric,
+			     wertz@su-glacier.ARPA,
+			     eric@cmu-ee-faraday.ARPA )
+
+Description:
+	If file arguments given via "if=" and "of=" are the same, the
+	file gets trashed.
+	Programs like cp(1) usually catch this.
+
+Repeat-By:
+	% cat foo
+	This is a test file.
+	% dd if=foo of=foo
+	0+0 records in
+	0+0 records out			(oh dear, this doesn't look good...)
+	% cat foo
+	%				(sure enough...)
+
+Fix:
+	Add <sys/types.h> and <sys/stat.h> to the list of include files.
+	and insert code with change bars...
+
+	if(ibf < 0) {
+		perror(ifile);
+		exit(0);
+	}	
+|	if (ifile && ofile) {
+|		struct stat sbuf_in, sbuf_out;
+|
+|		/* Can I stat ifile ? */
+|		if ( stat(ifile,&sbuf_in) == -1 ) {
+|			perror(ifile);
+|			exit(0);
+|		}
+|		/* If ofile exists, test to see if it's the same as ifile */
+|		if ( stat(ofile,&sbuf_out) == 0 &&
+|		     sbuf_in.st_dev == sbuf_out.st_dev &&
+|		     sbuf_in.st_ino == sbuf_out.st_ino ) {
+|			fprintf(stderr,"dd: can't copy file onto itself\n");
+|			exit(0);
+|		}
+|	}
+	if (ofile)
+		obf = creat(ofile, 0666);

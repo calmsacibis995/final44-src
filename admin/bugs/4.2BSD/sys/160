@@ -1,0 +1,66 @@
+Return-Path: <sun!gorodish!guy>
+Return-Path: <guy@gorodish>
+Date: Fri, 11 Oct 85 12:07:03 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: "setreuid" sets p_uid incorrectly
+Index: 	sys/sys/kern_prot.c 4.2BSD and 4.3BSD
+
+Description:
+	The entry p_uid in the process table normally contains the
+	process' effective UID.  It is set to this value when
+	a process executes a set-UID program.  However, when
+	a "setreuid" system call is executed, it is set to the new
+	value of the real UID, not the effective UID.
+
+	In several places in the manual, a check against "p_uid" is
+	documented as a check against a process' effective UID, so the
+	current behavior of "setreuid" is incorrect.
+
+	One may argue that a user should be able to kill a process if
+	their UID (which is probably the effective UID of their shell)
+	matches the real UID of the process, so that they can kill a
+	set-UID process.  However,
+
+	1) the current behavior of "setreuid" does not set "p_uid" to
+	   a value other than that of the effective UID, unless the
+	   process sets its real UID to one value a value other than
+	   the value of the effective UID
+
+and
+
+	2) the proper way to make this possible is to change the permissions
+	   checking code in "kill", not to change the meaning of "p_uid"
+	   in some, but not all, cases.
+
+	(System V permits you to send a signal to a process if either the
+	real or effective UID of the sending process matches either the
+	original set-UID UID or the real UID of the target process.  The
+	reason why it says "original set-UID UID" is that a set-UID process
+	which is not set-UID to 0 can repeatedly change its effective UID
+	between its real UID and the UID that it was set-UID to at the last
+	time it did an "exec".)
+Repeat-By:
+	Look at the code.
+Fix:
+	Line numbers may differ in 4.3.
+
+*** /arch/4.2/sys/sys/kern_prot.c	Fri Jul 29 07:07:18 1983
+--- kern_prot.c	Fri Oct 11 11:07:11 1985
+***************
+*** 133,139
+  		qstart(getquota(ruid, 0, 0));
+  	}
+  #endif
+! 	u.u_procp->p_uid = ruid;
+  	u.u_ruid = ruid;
+  	u.u_uid = euid;
+  }
+
+--- 133,139 -----
+  		qstart(getquota(ruid, 0, 0));
+  	}
+  #endif
+! 	u.u_procp->p_uid = euid;
+  	u.u_ruid = ruid;
+  	u.u_uid = euid;
+  }

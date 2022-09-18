@@ -1,0 +1,99 @@
+From guy@Sun.COM  Wed Aug 17 17:14:29 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.60/1.29)
+	id AA03184; Wed, 17 Aug 88 17:14:29 PDT
+Received: from SUN.COM by ucbvax.Berkeley.EDU (5.59/1.30)
+	id AA00668; Wed, 17 Aug 88 17:11:28 PDT
+Received: from snail.sun.com by Sun.COM (4.0/SMI-4.0)
+	id AA12364; Wed, 17 Aug 88 17:12:32 PDT
+Received: from gorodish.sun.com by snail.sun.com (4.0/SMI-4.0)
+	id AA15878; Wed, 17 Aug 88 17:13:19 PDT
+Received: by gorodish.sun.com (4.0/SMI-4.0)
+	id AA09289; Wed, 17 Aug 88 17:13:03 PDT
+Date: Wed, 17 Aug 88 17:13:03 PDT
+From: guy@Sun.COM (Guy Harris)
+Message-Id: <8808180013.AA09289@gorodish.sun.com>
+Subject: FORTRAN "system" routine drags in bogus C "system" routine
+Index: 	usr.lib/libU77/system_.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The FORTRAN "system" routine has its own copy of the C library
+	"system" routine, which, according to the comment preceding it,
+	purports to be a "sane" version of "system".
+
+	It is no such thing.  It is, in fact, completely INsane.
+
+	The only difference between it and the standard C library "system" is
+	that the FORTRAN library version uses the shell defined by the
+	environment variable SHELL, rather than "/bin/sh", to run the command.
+
+	Unfortunately, an extremely common use of "system" is to run a
+	*specific* command, so that the command is hardcoded into the program.
+	Equally unfortunately, the various UNIX shells have different syntaxes
+	for some operations; for example, the way you redirect both the
+	standard output and standard error of a command is different in the
+	Bourne and C shells.
+
+	Thus, while the C statement
+
+		i = system("command >file 2>&1");
+
+	will work correctly, regardless of the setting of SHELL, if the module
+	including that statement is not linked with the FORTRAN libraries, it
+	will work if the module is linked with the FORTRAN libraries *ONLY* if
+	SHELL refers to the Bourne shell, the Korn shell, or some shell
+	compatible with them.  It will fall apart if SHELL is set to, for
+	instance, "/bin/csh".  This is evil.
+Repeat-By:
+	Take the following three source files:
+
+	boop.c:
+
+		boop_()
+		{
+			printf("%d\n", system("echo hi mom >/tmp/foo 2>&1"));
+		}
+
+	test.c:
+
+		main()
+		{
+			boop_();
+		}
+
+	test.f:
+
+		call boop
+		stop
+		end
+
+	Now do
+
+		cc -c boop.c
+		cc test.c boop.o
+
+	and run the resulting "a.out" from an account whose shell is the C
+	shell (so that SHELL is set to "/bin/csh").  Note that the program
+	prints "0" (indicating that the command ran successfully) and that
+	"/tmp/foo" now contains "hi mom".
+
+	Now remove "/tmp/foo", and do
+
+		f77 test.f boop.o
+
+	and run the resulting "a.out" from the same account.  Note that the
+	message "Ambiguous output redirect" is printed, followed by "256"
+	(indicating that the command did NOT run successfully), and that
+	"/tmp/foo" does not exist.  Now do
+
+		setenv SHELL /bin/sh
+
+	and run "a.out" again; note that it prints "0" and that "/tmp/foo" now
+	contains "hi mom".
+Fix:
+	Blow away the allegedly "sane" version of "system()" in
+	"usr.lib/libU77/system_.c", and just have it call the standard system
+	version.  If somebody really desperately wants some procedure that
+	takes a string argument and runs it as a command *under the user's
+	shell*, rather than under a standard shell, feel free to write it - but
+	*DON'T* call it "system"!!!!!

@@ -1,0 +1,69 @@
+From kcs@j.cc.purdue.edu  Fri Dec 16 13:33:43 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA09276; Fri, 16 Dec 88 13:33:43 PST
+Received: from j.cc.purdue.edu by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA29225; Fri, 16 Dec 88 13:32:23 PST
+Received: by j.cc.purdue.edu (5.54/1.14)
+	id AA04246; Fri, 16 Dec 88 16:31:49 EST
+Date: Fri, 16 Dec 88 16:31:49 EST
+From: kcs@j.cc.purdue.edu (Kevin C. Smallwood)
+Message-Id: <8812162131.AA04246@j.cc.purdue.edu>
+Subject: "find / -print" with a non-accessible directory in / fails
+Index: 	usr.bin/find/find.c 4.3BSD Tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	If a non-root user runs "find / -print" and a directory in "/" is
+	non-accessible (like mode 700, root), "find" will print "bad
+	status" messages for just about all of the files/directories after
+	that.  We would mainly see this using a non-root id to build the
+	"find" database -- it would be almost empty in the worst case
+	(below).
+
+Repeat-By:
+	Find the first directory entry in / (using "ls -f /", for example
+	-- often lost+found).  Make this directory mode 700, for example.
+	Now, as non-root, run "find / -print".  You may get a few files
+	printed and then you will get several "bad status" messages.
+
+Fix:
+	The problem appears to only be with a starting "Pathname" of "/" to
+	the "find" command.  The problem is in this section of code:
+
+#ifndef	lint
+static char *sccsid = "@(#)find.c	4.20 (Berkeley) 9/28/87";
+#endif
+
+	. . .
+
+descend(name, fname, exlist)
+	
+	. . .
+
+		if(!descend(name, Fname, exlist)) {
+			*endofname = '\0';
+			chdir(Home);
+*******			if(chdir(Pathname) == -1) {		********
+				fprintf(stderr, "find: bad directory tree\n");
+				exit(1);
+			}
+		}
+	. . .
+
+At this point, "Pathname" is null if it is only "/" (it looks like the
+trailing "/" is stripped off -- in this case, the only "/" ;-).  So, you
+first "chdir" to the current working directory ("Home" -- gotten at the
+start), then you "chdir" to "" (null), which is the same as "." -- you
+don't go anywhere -- you are still in the current working directory.  Since
+you are still reading the directory (readdir), you try to stat/lstat
+entries that are in "/" in your current working directory -- sometimes they
+makes sense, but often they don't.
+
+The fix is to use:
+
+			if(chdir(*Pathname? Pathname: "/") == -1) {
+
+in the line above so that "/" is handled specially at this point; this is
+how it is handled once higher up in the code.  This seems to work.
+
+							Kevin Smallwood

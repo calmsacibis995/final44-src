@@ -1,0 +1,92 @@
+From mike@brl-vgr  Wed Dec 14 00:56:58 1983
+Date:     Wed, 14 Dec 83 3:55:40 EST
+From: Michael John Muuss <mike@brl-vgr>
+Subject:  Fix for 20% loss of ICMP Packets
+
+Index:	sys/netinet/ip_icmp.c 4.2BSD
+
+Description:
+	When using a "ping" program to send ICMP_ECHO packets onto
+	the network, a steady 20% of them are lost, regardless of
+	interface, including the software loopback driver.	
+	The problem is that ip_icmp is incorrectly looking in
+	the sequence number and ID field of the ICMP header,
+	as if this was an "error advice" packet much like ICMP_REDIRECT.
+Repeat-By:
+	Ping the loopback device.  Ping program availible on request.
+	(Pitty that one was not included with 4.2)
+Fix:
+	A little code has to be rearranged in ip_icmp.c, around line 200+.
+
+******* ORIGINAL CODE *******
+		goto free;		/* not yet implemented: ignore */
+#endif
+
+	case ICMP_REDIRECT:
+	case ICMP_ECHOREPLY:
+	case ICMP_TSTAMPREPLY:
+	case ICMP_IREQREPLY:
+		if (icmplen < ICMP_ADVLENMIN || icmplen < ICMP_ADVLEN(icp)) {
+			icmpstat.icps_badlen++;
+			goto free;
+		}
+		/*
+		 * Short circuit routing redirects to force
+		 * immediate change in the kernel's routing
+		 * tables.  The message is also handed to anyone
+		 * listening on a raw socket (e.g. the routing
+		 * daemon for use in updating it's tables).
+		 */
+		if (icp->icmp_type == ICMP_REDIRECT) {
+			icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
+			icmpdst.sin_addr = icp->icmp_gwaddr;
+			rtredirect((struct sockaddr *)&icmpsrc,
+			  (struct sockaddr *)&icmpdst);
+		}
+		icmpsrc.sin_addr = ip->ip_src;
+		icmpdst.sin_addr = ip->ip_dst;
+		raw_input(dtom(icp), &icmproto, (struct sockaddr *)&icmpsrc,
+		  (struct sockaddr *)&icmpdst);
+		return;
+
+	default:
+		goto free;
+
+********** Correct code **********
+		goto free;		/* not yet implemented: ignore */
+#endif
+
+	case ICMP_REDIRECT:
+		/* Make sure it includes "error advice" (ie, front of
+		 * packet which advice applies to).
+		 */
+		if (icmplen < ICMP_ADVLENMIN || icmplen < ICMP_ADVLEN(icp)) {
+			icmpstat.icps_badlen++;
+			goto free;
+		}
+		/*
+		 * Short circuit routing redirects to force
+		 * immediate change in the kernel's routing
+		 * tables.  The message is also handed to anyone
+		 * listening on a raw socket (e.g. the routing
+		 * daemon for use in updating it's tables).
+		 */
+		icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
+		icmpdst.sin_addr = icp->icmp_gwaddr;
+		rtredirect((struct sockaddr *)&icmpsrc,
+		  (struct sockaddr *)&icmpdst);
+		/* fall through */
+
+	case ICMP_ECHOREPLY:
+	case ICMP_TSTAMPREPLY:
+	case ICMP_IREQREPLY:
+		icmpsrc.sin_addr = ip->ip_src;
+		icmpdst.sin_addr = ip->ip_dst;
+		raw_input(dtom(icp), &icmproto, (struct sockaddr *)&icmpsrc,
+		  (struct sockaddr *)&icmpdst);
+		return;
+
+	default:
+		goto free;
+
+********* END OF FIX ********

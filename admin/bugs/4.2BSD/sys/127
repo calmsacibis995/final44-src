@@ -1,0 +1,53 @@
+Return-Path: <ihnp4!stolaf!agnes!vtl>
+From: ihnp4!stolaf!agnes!vtl (Victor Lee)
+Date: Tue, 7 Aug 84 10:49:32 cdt
+Subject: getmdev() doesn't iput on errors
+Index: sys/ufs_mount.c 4.2BSD
+
+Description:
+	System hangs if you cause getmdev to fail by mount/umounting
+	a non-block device or a 'bad' block device.  These aren't security
+	holes 'cause they're super-user only, but they could bend some
+	minds if /dev or /etc/fstab were messed up.
+Repeat-By:
+	# mknod /dev/bob b 69 0		# assuming 69 is out of range
+	# mount /dev/bob /mnt
+	/dev/bob on /mnt: No such device or address
+	# mount /dev/bob /mnt		# system hangs
+or
+	# umount /dev/rhp0g
+	/dev/rhp0g: Block device required
+	# umount /dev/rhp0g		# hangs
+Fix:
+	/*
+	 * Common code for mount and umount.
+	 * Check that the user's argument is a reasonable
+	 * thing on which to mount, and return the device number if so.
+	 */
+	getmdev(pdev)
+		dev_t *pdev;
+	{
+		dev_t dev;
+		register struct inode *ip;
+
+		if (!suser())
+			return (u.u_error);
+		ip = namei(uchar, LOOKUP, 1);
+		if (ip == NULL)
+			return (u.u_error);
+		if ((ip->i_mode&IFMT) != IFBLK) {
+			iput(ip);
+			return (ENOTBLK);
+		}
+		dev = (dev_t)ip->i_rdev;
+		if (major(dev) >= nblkdev) {
+			iput(ip);
+			return (ENXIO);
+		}
+		iput(ip);
+		*pdev = dev;
+		return (0);
+	}
+
+
+Victor Lee -- St. Olaf College, Northfield MN -- ihnp4!stolaf!vtl

@@ -1,0 +1,122 @@
+From csustan!casey@lll-crg.llnl.gov  Sun Dec 27 16:32:47 1987
+Date: Sun, 27 Dec 87 16:22:59 PST
+From: csustan!casey@lll-crg.llnl.gov (Casey Leedom)
+Subject: process exit accounting records are written on full file systems ...
+Index: sys/sys/kern_acct.c 2.10BSD
+
+Description:
+	The function acct() in kern_acct.c attempts to write process exit
+	accounting records even when the file system it's writing to is full.
+
+	Note that the fix below also corrects a bug in the freespace macro
+	and reformats it in a more readable manner. (The file system fields
+	were being referenced as s_fsize instead of fs_fsize, etc.)
+Repeat-By:
+	Fill up the file system that process exit records are written to
+	and note the message ``/usr: file system full'' (or something
+	similar) being output for every command you execute ...
+Fix:
+*** fs.h-dist	Tue Aug 18 19:02:45 1987
+--- fs.h	Sun Dec 27 13:27:04 1987
+***************
+*** 96,103 ****
+   * percentage to hold in reserve
+   */
+  #define freespace(fs, percentreserved) \
+! 	((fs)->s_tfree - ((fs)->s_fsize - \
+! 	(fs)->s_isize) * (percentreserved) / 100)
+  
+  /*
+   * INOPB is the number of inodes in a secondary storage block.
+--- 96,103 ----
+   * percentage to hold in reserve
+   */
+  #define freespace(fs, percentreserved) \
+! 	((fs)->fs_tfree - \
+!  		((fs)->fs_fsize - (fs)->fs_isize) * (percentreserved) / 100)
+  
+  /*
+   * INOPB is the number of inodes in a secondary storage block.
+*** kern_acct.c-dist	Mon Jul 13 11:49:02 1987
+--- kern_acct.c	Sun Dec 27 13:21:21 1987
+***************
+*** 22,27 ****
+--- 22,28 ----
+   * SHOULD REPLACE THIS WITH A DRIVER THAT CAN BE READ TO SIMPLIFY.
+   */
+  struct	inode *acctp;
++ struct	inode *savacctp;
+  
+  /*
+   * Perform process accounting functions.
+***************
+*** 34,39 ****
+--- 35,44 ----
+  	} *uap = (struct a *)u.u_ap;
+  
+  	if (suser()) {
++ 		if (savacctp) {
++ 			acctp = savacctp;
++ 			savacctp = NULL;
++ 		}
+  		if (uap->fname==NULL) {
+  			if (ip = acctp) {
+  				irele(ip);
+***************
+*** 64,69 ****
+--- 69,77 ----
+  	}
+  }
+  
++ int	acctsuspend = 2;	/* stop accounting when < 2% free space left */
++ int	acctresume = 4;		/* resume when free space risen to > 4% */
++ 
+  struct	acct acctbuf;
+  /*
+   * On exit, write a record on the accounting file.
+***************
+*** 71,80 ****
+--- 79,104 ----
+  acct()
+  {
+  	register struct inode *ip;
++ 	register struct fs *fs;
+  	off_t siz;
+  
++ 	if (savacctp) {
++ 		fs = savacctp->i_fs;
++ 		if (freespace(fs, acctresume) > 0) {
++ 			acctp = savacctp;
++ 			savacctp = NULL;
++ 			printf("Accounting resumed\n");
++ 		}
++ 	}
+  	if ((ip = acctp) == NULL)
+  		return;
++ 	fs = acctp->i_fs;
++ 	if (freespace(fs, acctsuspend) <= 0) {
++ 		savacctp = acctp;
++ 		acctp = NULL;
++ 		printf("Accounting suspended\n");
++ 		return;
++ 	}
+  	ilock(ip);
+  	bcopy(u.u_comm, acctbuf.ac_comm, sizeof(acctbuf.ac_comm));
+  	acctbuf.ac_utime = compress(u.u_ru.ru_utime);
+***************
+*** 97,103 ****
+  	u.u_error = 0;
+  	writei(ip);
+  	if(u.u_error)
+! 		ip->i_size = siz;
+  	iunlock(ip);
+  }
+  
+--- 121,127 ----
+  	u.u_error = 0;
+  	writei(ip);
+  	if(u.u_error)
+! 		itrunc(ip, (u_long)siz);
+  	iunlock(ip);
+  }
+  

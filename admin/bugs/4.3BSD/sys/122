@@ -1,0 +1,65 @@
+From glenn@sun.com  Wed May 27 18:13:27 1987
+Date: Wed, 27 May 87 17:51:07 PDT
+From: glenn@sun.com (Glenn C. Skinner)
+Message-Id: <8705280051.AA20978@ivrel.sun.uucp>
+Subject: pageout daemon hands can become misaligned
+Index: sys/vm_page.c 4.3BSD	FIX
+
+Description:
+	The 4.3 kernel pageout daemon sweeps through memory using two
+	"hands" whose positions relative to each other are supposed to
+	remain constant.  However, there is a path through the code of
+	pageout that allows the front hand to advance without the back
+	hand advancing as well, thereby destroying the assumed invariant.
+
+	The problem is that the front hand is advanced unconditionally.
+	Then there are some tests that can result in a goto back to the
+	top of the routine.  Finally, (provided that the tests fail) the
+	back hand is advanced.  Every time that these tests succeed, the
+	front hand gains one click on the back hand.
+
+Repeat-By:
+	This bug manifests only under very pathological system conditions.
+	Read the code to see it, instead.
+Fix:
+	in sys/vm_page.c:pageout(), change the code that reads
+
+		if (++fronthand >= maxhand) {
+			fronthand = 0;
+			cnt.v_rev++;
+			if (count > 2) {
+				/*
+				 * Extremely unlikely, but we went around
+				 * the loop twice and didn't get anywhere.
+				 * Don't cycle, stop till the next clock tick.
+				 */
+				goto loop;
+			}
+			count++;
+		}
+		if (++backhand >= maxhand)
+			backhand = 0;
+
+	to read
+
+		if (++backhand >= maxhand)
+			backhand = 0;
+		if (++fronthand >= maxhand) {
+			fronthand = 0;
+			cnt.v_rev++;
+			if (count > 2) {
+				/*
+				 * Extremely unlikely, but we went around
+				 * the loop twice and didn't get anywhere.
+				 * Don't cycle, stop till the next clock tick.
+				 */
+				goto loop;
+			}
+			count++;
+		}
+
+	This change forces both hands to advance in step since the
+	`goto loop;' statement can be executed only after both hands
+	have advanced.
+
+		-- Glenn Skinner, SMI

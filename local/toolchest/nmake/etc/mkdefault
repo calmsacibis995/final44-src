@@ -1,0 +1,215 @@
+: i want my sh
+#
+# mkdefault [ file ]
+#
+#	if file is specified then the assertions are placed there
+#	else the symbols are just defined
+#
+# determine #assert statements for <default.h>
+#
+
+SYSTEM="unix"
+RELEASE=""
+VERSION=""
+ARCHITECTURE=""
+MODEL=""
+MACHINE=""
+
+if	test -f /vmunix -o -f /dynix
+then
+	if	test -f /etc/networks
+	then
+		RELEASE="bsd"
+		VERSION="4.2"
+	fi
+	if	test ! -f /etc/gettytab
+	then
+		RELEASE="bsd"
+		VERSION="4.1c"
+	fi
+	if	test -d /usr/suntool
+	then
+		MACHINE="sun"
+	elif	test -f /dynix
+	then
+		MACHINE="balance8000"
+	fi
+elif	test -f /usr/include/sys/stream.h -a -f /usr/include/sys/vmparam.h
+then
+	RELEASE="research"
+	VERSION="8"
+elif	test -f /venix
+then
+	RELEASE="venix"
+elif	test -f /xenix
+then
+	RELEASE="xenix"
+elif	test -f /sys/apollo_logo
+then
+	RELEASE="apollo"
+	MACHINE="apollo"
+elif	test -f /bin/uts && /bin/uts
+then
+	RELEASE="uts"
+elif	uname -m 2> /dev/null > /dev/null
+then
+	RELEASE="system5"
+	if	uname -r 2> /dev/null > /dev/null
+	then
+		X="`uname -r | tr '[A-Z]' '[a-z]'`"
+		case $X in
+		[Ss]*[Vv5]*[Rr]*)
+			N=`echo $X | sed -e 's/.*[^0-9.][^0-9.]*//'`
+			if	test "$N" != ""
+			then
+				VERSION="5.$N"
+			fi
+			;;
+		[0-9]*)
+			case $X in
+			5.*.*)
+				N=`echo $X | sed -e 's/\.[^.]*$//'`
+				;;
+			*)
+				N=`echo $X | sed -e 's/v.*//'`
+				;;
+			esac
+			if	test "$N" != ""
+			then
+				VERSION="$N"
+			fi
+			;;
+		*)
+			N=`echo $X | sed -e 's/[^a-z0-9._].*//g'`
+			if	test "$N" != ""
+			then
+				RELEASE="$N"
+			fi
+			;;
+		esac
+	fi
+fi
+
+if	test "$RELEASE" = apollo
+then	ARCHITECTURE=m68000
+elif	uname -m >/dev/null 2>&1
+then
+	X="`uname -m | tr '[A-Z]' '[a-z]'`"
+	N=`echo $X | sed -e 's/[^a-z0-9._].*//'`
+	if	test "$N" != ""
+	then
+		ARCHITECTURE="$N"
+	fi
+	M=`echo $X | sed -e 's/.*[^a-z0-9._]//'`
+	if	test "$M" != "" -a "$M" != "$N"
+	then
+		MODEL="$M"
+	fi
+fi
+
+arch="i8080 i8086 i80186 i80286 ibm m68000 mc68000 mc68k ns32000 ns16000 pdp11 u370 u3b u3b2 u3b5 u3b20 vax z80 z8000"
+
+if	test "$ARCHITECTURE" = ""
+then	for i in $arch
+	do	if	test -f /bin/$i && /bin/$i
+		then	case $i in
+
+	ibm)		ARCHITECTURE=ibm	MODEL=370	;;
+	m*68*)		ARCHITECTURE=m68000	MODEL=		;;
+	u3b2)		ARCHITECTURE=3b		MODEL=2		;;
+	u3b5)		ARCHITECTURE=3b		MODEL=5		;;
+	u3b20)		ARCHITECTURE=3b		MODEL=20	;;
+	*)		ARCHITECTURE=$i		MODEL=		;;
+
+			esac
+			break
+		fi
+	done
+fi
+
+if	test "$ARCHITECTURE" = "" -a -f /lib/cpp
+then	for i in $arch
+	do	if	test "`echo "$i" | /lib/cpp | grep -v '^#'`" = "1"
+		then	case $i in
+
+	ibm)		ARCHITECTURE=ibm	MODEL=370	;;
+	m*68*)		ARCHITECTURE=m68000	MODEL=		;;
+	u3b2)		ARCHITECTURE=3b		MODEL=2		;;
+	u3b5)		ARCHITECTURE=3b		MODEL=5		;;
+	u3b20)		ARCHITECTURE=3b		MODEL=20	;;
+	*)		ARCHITECTURE=$i		MODEL=		;;
+
+			esac
+			break
+		fi
+	done
+fi
+
+if	test "$1" != ""
+then
+	(cat <<!
+/*
+ * default.h -- automatically included by cpp for all files
+ */
+
+!
+	if	test "$SYSTEM" != ""
+	then
+		echo "#assert system($SYSTEM)"
+	fi
+	if	test "$RELEASE" != ""
+	then
+		echo "#assert release($RELEASE)"
+	fi
+	if	test "$VERSION" != ""
+	then
+		echo "#assert version($VERSION)"
+	fi
+	if	test "$ARCHITECTURE" != ""
+	then
+		echo "#assert architecture($ARCHITECTURE)"
+	fi
+	if	test "$MODEL" != ""
+	then
+		echo "#assert model($MODEL)"
+	fi
+	if	test "$MACHINE" != ""
+	then
+		echo "#assert machine($MACHINE)"
+	fi
+	if	test "$ARCHITECTURE" != "" -a "$MODEL" != ""
+	then
+		echo "#assert machine($ARCHITECTURE$MODEL)"
+	fi
+
+	cat <<!
+
+/*
+ * the following #define's are for compatability with the old cpp
+ * they should go away as soon as possible
+ */
+
+!
+	echo "#define __FILE__ ppsymbol(FILE)"
+	echo "#define __LINE__ ppsymbol(LINE)"
+	case "$ARCHITECTURE" in
+	3b*)	echo "#define u$ARCHITECTURE 1" ;;
+	68*)	echo "#define m$ARCHITECTURE 1" ;;
+	ibm)	echo "#define ibm 1" ;;
+	"")	;;
+	*)	echo "#define $ARCHITECTURE$MODEL 1" ;;
+	esac
+	case "$SYSTEM" in
+	"")	;;
+	*)	echo "#define $SYSTEM 1" ;;
+	esac
+	case "$RELEASE" in
+	apollo|uts|venix)		echo "#define $RELEASE 1" ;;
+	research)			echo "#define RES 1" ;;
+	esac
+	case "$MACHINE" in
+	"")	;;
+	*)	echo "#define $MACHINE 1" ;;
+	esac
+	) >$1
+fi

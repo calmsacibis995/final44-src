@@ -1,0 +1,85 @@
+Return-Path: <sun!megatest!ametek!vahe@ucbvax.Berkeley.EDU>
+Date: Tue, 30 Sep 86 11:19:48 PDT
+From: Vahe Sarkissian <sun!megatest!ametek!vahe@ucbvax.Berkeley.EDU>
+Subject: chsh/passwd improperly disallows valid shells
+Index: 	bin/passwd.c 4.3BSD
+
+Description:
+	chsh/passwd is sensitive to the order of shells listed in
+	/etc/shells.  If a user's "old" shell occurs after their
+	desired "new" shell in /etc/shells, the "new" shell will
+	not be installed, as passwd will consider it invalid.
+
+Repeat-By:
+
+	% cat /etc/shells
+	# List of acceptable shells for chsh/passwd -s
+	# Ftpd will not allow users to connect who
+	# do not have one of these shells
+	#
+	/bin/sh
+	/bin/csh
+	# local addition:
+	/usr/new/csh
+	% chsh
+	Changing login shell for vahe.
+	Old shell: /bin/csh
+	New shell: /bin/sh
+	/bin/sh is unacceptable as a new shell.
+	% 
+	  (((edit /etc/shells as root, reversing order of sh and csh)))
+	% cat /etc/shells
+	# List of acceptable shells for chsh/passwd -s
+	# Ftpd will not allow users to connect who
+	# do not have one of these shells
+	#
+	/bin/csh
+	/bin/sh
+	# local addition:
+	/usr/new/csh
+	% chsh
+	Changing login shell for vahe.
+	Old shell: /bin/csh
+	New shell: /bin/sh
+	% chsh
+	Changing login shell for vahe.
+	Old shell: /bin/sh
+	New shell: /bin/csh
+	/bin/csh is unacceptable as a new shell.
+	% 
+
+	And so on....
+
+Fix:
+	In the routine getloginshell(), passwd.c reads /etc/shells twice,
+	once to verify the old shell, and once to verify the new one.
+	However, it doesn't rewind /etc/shells between the two scans.
+	Adding a call to endusershell(3) fixes the problem:
+	Old code:
+	--------
+	/*
+	 * Allow user to give shell name w/o preceding pathname.
+	 */
+	if (u == 0) {
+		valid = newshell;
+	} else {
+		for (valid = getusershell(); valid; valid = getusershell()) {
+			if (newshell[0] == '/') {
+				cp = valid;
+			} else {
+	--------
+	New code:
+	--------
+	/*
+	 * Allow user to give shell name w/o preceding pathname.
+	 */
+	if (u == 0) {
+		valid = newshell;
+	} else {
+		/* BUG FIX: rewind the shell database */
+		endusershell();
+		for (valid = getusershell(); valid; valid = getusershell()) {
+			if (newshell[0] == '/') {
+				cp = valid;
+			} else {
+	--------

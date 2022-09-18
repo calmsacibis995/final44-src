@@ -1,0 +1,732 @@
+From sms@WLV.IMSD.CONTEL.COM  Tue May 16 21:24:24 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA05224; Tue, 16 May 89 21:24:24 GMT
+Received: from ETN-WLV.EATON.COM by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA12716; Tue, 16 May 89 14:23:36 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA05805; Tue, 16 May 89 14:23:03 -0700
+Date: Tue, 16 May 89 14:23:03 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz(Y))
+Message-Id: <8905162123.AA05805@WLV.IMSD.CONTEL.COM>
+Subject: Shadow passwords for 2.10.1BSD
+Index: 	lib 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	This is a repost of V1.81 from comp.bugs.4bsd-fixes with diffs
+	attached for implementing the shadow password capability
+	under 2.10.1BSD.  
+===========================================================================
+	     A shadow  password implementation is now available from
+	Berkeley,  and  will  be  a  standard  part of the next 4BSD
+	distribution.  The following describes the package  in  more
+	detail.  To get copies of the package, send electronic  mail
+	to  ucb-fixes-request@ucbvax.berkeley.edu,  or  call the BSD
+	distribution office at 415-642-7780.
+	     In the current BSD  system, there  are  three  password
+	files:  /etc/passwd,  /etc/passwd.pag,  and /etc/passwd.dir.
+	The first is the password file as  described  in  passwd(5);
+	the  others  are  files  containing  an ndbm(3) style hashed
+	database version of /etc/passwd.
+	     In the new  system,  there  are  four  password  files:
+	/etc/passwd,    /etc/master.passwd,   /etc/passwd.pag,   and
+	/etc/passwd.dir.  The first is exactly as it has always been
+	with  the  exception  that  the encrypted password field has
+	been replaced with a single asterisk.  The next three  files
+	have  much  the  same  relationship  as  the original model;
+	master.passwd is the new password file, and  passwd.pag  and
+	passwd.dir  comprise  the  ndbm version.  The one difference
+	between the contents of master.passwd and  the  contents  of
+	its  ndbm files is that only master.passwd has the encrypted
+	form of the password.  The ndbm  files  have,  instead,  its
+	offset  in  master.passwd.  Note, the file /etc/passwd is no
+	longer used for anything, it is simply  left  in  place  for
+	backward  compatibility  with  shell  scripts.
+	     The model we are  using  assumes  that  standard,  non-
+	privileged  programs  do  not  need to look at the encrypted
+	form of  the  password.   Therefore,  we  have  altered  the
+	getpwent(3) routines to read the standard data from the ndbm
+	files, and only attempt to read  and  return  the  encrypted
+	password  if  the  process  is running as super-user.  Obvi-
+	ously, master.passwd is read/writable only by the super-user
+	and  and  the ndbm files are readable by anyone and writable
+	only by the super-user.
+	     We also added three new fields to the password file;  a
+	``change''  field,  for password aging, an ``expire'' field,
+	for account expiration, and a ``class'' field for everything
+	else.   The  first two are implemented in login(1), and are,
+	respectively,  the  date  by  which  the  password  must  be
+	changed,  and  the date when the account expires.  The third
+	will be part of the next  4BSD  release,  but  is  currently
+	unimplemented.   It will be a ``pointer'' to a termcap style
+	database that may be used to store  site-dependent  informa-
+	tion  about a user, from when the user may be allowed to log
+	into the system, to how often the user is required to change
+	their password.
+	     The include file, pwd.h, has changed  in  fairly  major
+	ways.   We've  deleted  the two unused fields, ``pw_quota'',
+	and ``pw_comment'', and replaced them with ``pw_change'' and
+	``pw_class'',    respectively.    The   other   new   field,
+	``pw_expire'', has been added at the end of the structure.
+	     The only known problem with the current  implementation
+	of  password aging is that there is no ``reset'' -- when the
+	user changes his or her password it  essentially  shuts  off
+	password  aging  for  that  user.   To  reenable  aging,  an
+	administrator will have to use vipw(8) or chpass(1) to  pro-
+	vide  a new password timeout.  We expect to remedy this with
+	the new ``class'' database, where one of the provided fields
+	will  be  a value specifying how often the password needs to
+	be updated.  Once this is in place,  passwd(1)  will  simply
+	reset  the password timeout value each time the user changes
+	their password.
+	     Two programs have been deleted by this package, chfn(1)
+	and  chsh(1).  They are replaced by the much more comprehen-
+	sive program chpass(1).  The other programs affected by this
+	package behave much like they have always behaved.
+=======================================================================
+
+	The README file that is included in the package says that the
+	new password files are binary compatible with existing 4.3 and
+	4.3Tahoe programs.  Unfortunately this is not the case with
+	2.10.1BSD.  Not EVERYTHING in the system needs to be rebuilt,
+	but 'sendmail' and 'csh' do need relinking.  Alas, this puts
+	'csh' over the 64Kb text limit, so overlay time strikes (sendmail
+	is already overlaid and needs no adjustments).  This is not the
+	big bad thing one might suspect, a relatively optimal overlay
+	scheme has proven to have negligble effect AND now "limits"
+	are included.
+
+	Several standard utilities (vipw, mkpasswd, etc) are replaced, and
+	in the process move from their standard places to subdirectories:
+	/usr/src/etc/vipw.c -> /usr/src/etc/vipw/{Makefile,vipw.c,vipw.8}
+	for example.  The Makefiles in /usr/src/{etc,bin,...} will have
+	to be adjusted.
+
+	Here is the Makefile for the overlaid 'csh'.  At the end of the
+	Makefile are the diffs to apply to the shadow password package
+	after it has been obtained from:
+
+	"To get copies of the package, send electronic  mail
+	to  ucb-fixes-request@ucbvax.berkeley.edu,  or  call the BSD
+	distribution office at 415-642-7780."
+
+------------------------start of src/csh/Makefile-------------------
+#
+# Copyright (c) 1980 Regents of the University of California.
+# All rights reserved.  The Berkeley Software License Agreement
+# specifies the terms and conditions for redistribution.
+#
+#	@(#)Makefile	5.3 (Berkeley) 3/29/86
+#
+# C Shell with process control; VM/UNIX VAX Makefile
+# Bill Joy UC Berkeley; Jim Kulp IIASA, Austria
+#
+# To profile, put -DPROF in DEFS and -pg in CFLAGS, and recompile.
+#
+# 2.10BSD does have limits, but including them in the csh doesn't really give
+# you that much (at least I've never used them) and forces us to set up
+# overlays for the separate I&D processor which makes the csh slower.  If you
+# really want to have limits in the csh, feel free to take NOLIMITS out of the
+# defines - but you'll have to set up an overlay scheme.
+
+DEFS=	-DTELL -DVFORK -DFILEC
+CFLAGS=	$(DEFS) -O
+SEPFLAG=-i
+XSTR=	/usr/ucb/xstr
+AS=	as
+RM=	-rm
+CXREF=	/usr/ucb/cxref
+VGRIND=	/usr/ucb/vgrind
+CTAGS=	/usr/ucb/ctags
+LIBES=  /lib/libc.a
+SCCS=	sccs
+CPP=	/lib/cpp
+SED=	sed
+
+BASE=	alloc11.o doprnt11.o printf.o sh.char.o sh.dir.o sh.dol.o \
+	sh.err.o sh.exp.o sh.file.o sh.func.o sh.glob.o sh.hist.o \
+	sh.init.o sh.lex.o sh.misc.o sh.parse.o sh.print.o sh.proc.o sh.sem.o \
+	sh.set.o
+OV1= 	sh.o sh.exec.o sh.time.o
+
+OBJS=	${BASE} ${OV1}
+
+LIBOBJS= ndbm.o getpwent.o
+
+# Special massaging of C files for sharing of strings
+.c.o:
+	${CC} -E ${CFLAGS} $*.c | ${XSTR} -c -
+	${CC} -c ${CFLAGS} x.c 
+	mv -f x.o $*.o
+	rm -f x.c
+
+# strings.o must be last since it can change when previous files compile
+csh: ${OBJS} strings.o
+	ar x /lib/libc.a ${LIBOBJS}
+	rm -f csh
+	/bin/ld ${SEPFLAG} /lib/crt0.o ${BASE} \
+		-Z ${OV1} \
+		-Z ${LIBOBJS} \
+		-Y strings.o -o csh ${LIBES};
+
+.DEFAULT:
+	${SCCS} get $<
+
+# need an old doprnt, whose output we can trap
+doprnt11.o: doprnt11.s
+	${CPP} doprnt11.s | ${SED} '/^#/d' >x.i
+	${AS} -o doprnt11.o x.i
+	rm -f x.i
+
+strings.o: strings
+	${XSTR}
+	${CC} -c xs.c
+	mv -f xs.o strings.o
+	rm -f xs.c
+
+lint:
+	lint -z ${DEFS} sh*.c alloc.c
+
+print:
+	@pr READ_ME
+	@pr Makefile Makefile.*
+	@(size -l a.out; size *.o) | pr -h SIZES
+	@${CXREF} sh*.c | pr -h XREF
+	@ls -l | pr 
+	@pr sh*.h [a-rt-z]*.h sh*.c alloc.c
+
+vprint:
+	@pr -l84 READ_ME TODO
+	@pr -l84 Makefile Makefile.*
+	@(size -l a.out; size *.o) | pr -l84 -h SIZES
+	@${CXREF} sh*.c | pr -l84 -h XREF
+	@ls -l | pr -l84
+	@${CXREF} sh*.c | pr -l84 -h XREF
+	@pr -l84 sh*.h [a-rt-z]*.h sh*.c alloc.c
+
+vgrind:
+	@cp /dev/null index
+	@-mkdir grind
+	for i in *.h; do ${VGRIND} -t -h "C Shell" $$i >grind/$$i.t; done
+	for i in *.c; do ${VGRIND} -t -h "C Shell" $$i >grind/$$i.t; done
+	${VGRIND} -t -x -h Index index >grind/index.t
+
+install: csh
+	install -s csh ${DESTDIR}/bin/csh
+
+clean:
+	${RM} -f a.out strings x.c xs.c csh errs
+	${RM} -f *.o
+	${RM} -rf vgrind
+
+tags:
+	${CTAGS} -t *.h sh*.c
+
+sh.o: sh.h sh.local.h sh.char.h
+sh.char.o: sh.char.h
+sh.dir.o: sh.h sh.local.h sh.dir.h
+sh.dol.o: sh.h sh.local.h sh.char.h
+sh.err.o: sh.h sh.local.h sh.char.h
+sh.exec.o: sh.h sh.local.h sh.char.h
+sh.exp.o: sh.h sh.local.h sh.char.h
+sh.file.o: sh.h sh.local.h sh.char.h
+sh.func.o: sh.h sh.local.h sh.char.h
+sh.glob.o: sh.h sh.local.h sh.char.h
+sh.hist.o: sh.h sh.local.h sh.char.h
+sh.init.o: sh.local.h
+sh.lex.o: sh.h sh.local.h sh.char.h
+sh.misc.o: sh.h sh.local.h sh.char.h
+sh.parse.o: sh.h sh.local.h sh.char.h
+sh.print.o: sh.h sh.local.h sh.char.h
+sh.proc.o: sh.h sh.local.h sh.dir.h sh.proc.h sh.char.h
+sh.sem.o: sh.h sh.local.h sh.proc.h sh.char.h
+sh.set.o: sh.h sh.local.h sh.char.h
+sh.time.o: sh.h sh.local.h sh.char.h
+------------------------end of Makefile--------------------------------
+
+----------------------start of shadow password diffs--------------------
+
+diff -r -c shadow.orig/chpass/Makefile shadow/chpass/Makefile
+*** shadow.orig/chpass/Makefile	Thu May 11 16:33:19 1989
+--- shadow/chpass/Makefile	Sun May 14 21:59:31 1989
+***************
+*** 17,22 ****
+--- 17,23 ----
+  #	@(#)Makefile	5.1 (Berkeley) 2/22/89
+  #
+  CFLAGS=	-I. -O -DUSHRT_MAX=0xffff
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	chpass.c field.c util.c
+  OBJS=	chpass.o field.o util.o
+***************
+*** 25,31 ****
+  all: chpass
+  
+  chpass: ${LIBC} ${OBJS}
+! 	${CC} ${CFLAGS} -o $@ ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core chpass
+--- 26,32 ----
+  all: chpass
+  
+  chpass: ${LIBC} ${OBJS}
+! 	${CC} ${CFLAGS} ${SEPFLAG} -o $@ ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core chpass
+diff -r -c shadow.orig/chpass/chpass.c shadow/chpass/chpass.c
+*** shadow.orig/chpass/chpass.c	Thu May 11 16:33:28 1989
+--- shadow/chpass/chpass.c	Sun May 14 21:30:59 1989
+***************
+*** 284,290 ****
+  {
+  	register struct entry *ep;
+  	register char *p;
+! 	static char buf[1024];
+  
+  	while (fgets(buf, sizeof(buf), fp)) {
+  		if (!buf[0] || buf[0] == '#')
+--- 284,290 ----
+  {
+  	register struct entry *ep;
+  	register char *p;
+! 	static char buf[256];
+  
+  	while (fgets(buf, sizeof(buf), fp)) {
+  		if (!buf[0] || buf[0] == '#')
+***************
+*** 331,337 ****
+  	 */
+  	if (strlen(list[E_NAME].save) + strlen(list[E_BPHONE].save) +
+  	    strlen(list[E_HPHONE].save) + strlen(list[E_LOCATE].save)
+! 	    > 512) {
+  		(void)fprintf(stderr, "chpass: gecos field too large.\n");
+  		exit(1);
+  	}
+--- 331,337 ----
+  	 */
+  	if (strlen(list[E_NAME].save) + strlen(list[E_BPHONE].save) +
+  	    strlen(list[E_HPHONE].save) + strlen(list[E_LOCATE].save)
+! 	    > 128) {
+  		(void)fprintf(stderr, "chpass: gecos field too large.\n");
+  		exit(1);
+  	}
+***************
+*** 347,353 ****
+  {
+  	register int done;
+  	register char *p;
+! 	char buf[1024];
+  
+  	for (done = 0; fgets(buf, sizeof(buf), stdin);) {
+  		/* skip lines that are too big */
+--- 347,353 ----
+  {
+  	register int done;
+  	register char *p;
+! 	char buf[256];
+  
+  	for (done = 0; fgets(buf, sizeof(buf), stdin);) {
+  		/* skip lines that are too big */
+diff -r -c shadow.orig/include/utmp.h shadow/include/utmp.h
+*** shadow.orig/include/utmp.h	Thu May 11 16:33:39 1989
+--- shadow/include/utmp.h	Sun May 14 21:35:10 1989
+***************
+*** 23,30 ****
+  #define	UT_LINESIZE	8
+  #define	UT_HOSTSIZE	16
+  struct utmp {
+! 	char	ut_line[UT_NAMESIZE];
+! 	char	ut_name[UT_LINESIZE];
+  	char	ut_host[UT_HOSTSIZE];
+  	long	ut_time;
+  };
+--- 23,30 ----
+  #define	UT_LINESIZE	8
+  #define	UT_HOSTSIZE	16
+  struct utmp {
+! 	char	ut_line[UT_LINESIZE];
+! 	char	ut_name[UT_NAMESIZE];
+  	char	ut_host[UT_HOSTSIZE];
+  	long	ut_time;
+  };
+diff -r -c shadow.orig/lib/getpwent.c shadow/lib/getpwent.c
+*** shadow.orig/lib/getpwent.c	Thu May 11 16:33:47 1989
+--- shadow/lib/getpwent.c	Sun May 14 21:38:12 1989
+***************
+*** 31,37 ****
+  static int _pw_rewind = 1, _pw_stayopen;
+  static char _pw_flag, *_pw_file = _PATH_PASSWD;
+  
+! #define	MAXLINELENGTH	1024
+  static char line[MAXLINELENGTH];
+  
+  struct passwd *
+--- 31,37 ----
+  static int _pw_rewind = 1, _pw_stayopen;
+  static char _pw_flag, *_pw_file = _PATH_PASSWD;
+  
+! #define	MAXLINELENGTH	256
+  static char line[MAXLINELENGTH];
+  
+  struct passwd *
+diff -r -c shadow.orig/lock/Makefile shadow/lock/Makefile
+*** shadow.orig/lock/Makefile	Thu May 11 16:33:53 1989
+--- shadow/lock/Makefile	Sun May 14 22:04:14 1989
+***************
+*** 18,23 ****
+--- 18,24 ----
+  #
+  
+  CFLAGS=	-O
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	lock.c
+  OBJS=
+***************
+*** 26,32 ****
+  all: lock
+  
+  lock: ${LIBC}
+! 	${CC} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core lock
+--- 27,33 ----
+  all: lock
+  
+  lock: ${LIBC}
+! 	${CC} ${SEPFLAG} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core lock
+diff -r -c shadow.orig/lock/lock.c shadow/lock/lock.c
+*** shadow.orig/lock/lock.c	Thu May 11 16:33:52 1989
+--- shadow/lock/lock.c	Mon May 15 09:49:48 1989
+***************
+*** 42,47 ****
+--- 42,48 ----
+  #include <stdio.h>
+  #include <ctype.h>
+  #include <strings.h>
++ #include <short_names.h>
+  
+  #define	TIMEOUT	15
+  
+***************
+*** 65,71 ****
+  	struct tm *timp;
+  	int ch, sectimeout, usemine;
+  	char *ap, *mypw, *ttynam, *tzn;
+! 	char hostname[MAXHOSTNAMELEN], s[BUFSIZ], s1[BUFSIZ];
+  	char *crypt(), *ttyname();
+  
+  	sectimeout = TIMEOUT;
+--- 66,72 ----
+  	struct tm *timp;
+  	int ch, sectimeout, usemine;
+  	char *ap, *mypw, *ttynam, *tzn;
+! 	char hostname[MAXHOSTNAMELEN], s[256], s1[256];
+  	char *crypt(), *ttyname();
+  
+  	sectimeout = TIMEOUT;
+diff -r -c shadow.orig/login/Makefile shadow/login/Makefile
+*** shadow.orig/login/Makefile	Thu May 11 16:34:02 1989
+--- shadow/login/Makefile	Sun May 14 22:04:43 1989
+***************
+*** 18,23 ****
+--- 18,24 ----
+  #
+  
+  CFLAGS=	-O
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	login.c liblogin.c
+  OBJS=	login.o liblogin.o
+***************
+*** 26,32 ****
+  all: login
+  
+  login: ${LIBC} ${OBJS}
+! 	${CC} -o $@ ${CFLAGS} ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core login
+--- 27,33 ----
+  all: login
+  
+  login: ${LIBC} ${OBJS}
+! 	${CC} ${SEPFLAG} -o $@ ${CFLAGS} ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core login
+diff -r -c shadow.orig/login/login.c shadow/login/login.c
+*** shadow.orig/login/login.c	Thu May 11 16:34:01 1989
+--- shadow/login/login.c	Mon May 15 10:01:29 1989
+***************
+*** 32,37 ****
+--- 32,43 ----
+   * login -f name	(for pre-authenticated login: datakit, xterm, etc.)
+   */
+  
++ #ifdef	BSD2_10
++ #define	doremotelogin	_drmtlgn
++ #define	doremoteterm	_drmttrm
++ #define	getloginname	_gtlgnnm
++ #endif
++ 
+  #include <sys/param.h>
+  #include <sys/quota.h>
+  #include <sys/stat.h>
+***************
+*** 51,56 ****
+--- 57,63 ----
+  #include <setjmp.h>
+  #include <stdio.h>
+  #include <strings.h>
++ #include <netdb.h>
+  
+  #define	TTYGRPNAME	"tty"		/* name of group to own ttys */
+  
+***************
+*** 330,336 ****
+  		printf("Logging in with home = \"/\".\n");
+  	}
+  
+! #define	TWOWEEKS	(14*24*60*60)
+  	if (pwd->pw_change || pwd->pw_expire)
+  		(void)gettimeofday(&tp, (struct timezone *)NULL);
+  	if (pwd->pw_change)
+--- 337,343 ----
+  		printf("Logging in with home = \"/\".\n");
+  	}
+  
+! #define	TWOWEEKS	(14L*24L*60L*60L)
+  	if (pwd->pw_change || pwd->pw_expire)
+  		(void)gettimeofday(&tp, (struct timezone *)NULL);
+  	if (pwd->pw_change)
+***************
+*** 486,492 ****
+  {
+  	register int fd, nchars;
+  	int (*oldint)(), sigint();
+! 	char tbuf[8192];
+  
+  	if ((fd = open(MOTDFILE, O_RDONLY, 0)) < 0)
+  		return;
+--- 493,499 ----
+  {
+  	register int fd, nchars;
+  	int (*oldint)(), sigint();
+! 	char tbuf[1024];
+  
+  	if ((fd = open(MOTDFILE, O_RDONLY, 0)) < 0)
+  		return;
+***************
+*** 506,512 ****
+  checknologin()
+  {
+  	register int fd, nchars;
+! 	char tbuf[8192];
+  
+  	if ((fd = open(NOLOGIN, O_RDONLY, 0)) >= 0) {
+  		while ((nchars = read(fd, tbuf, sizeof(tbuf))) > 0)
+--- 513,519 ----
+  checknologin()
+  {
+  	register int fd, nchars;
+! 	char tbuf[1024];
+  
+  	if ((fd = open(NOLOGIN, O_RDONLY, 0)) >= 0) {
+  		while ((nchars = read(fd, tbuf, sizeof(tbuf))) > 0)
+diff -r -c shadow.orig/mkpasswd/Makefile shadow/mkpasswd/Makefile
+*** shadow.orig/mkpasswd/Makefile	Thu May 11 16:34:23 1989
+--- shadow/mkpasswd/Makefile	Sun May 14 22:01:21 1989
+***************
+*** 18,23 ****
+--- 18,24 ----
+  #
+  
+  CFLAGS=	-O
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	mkpasswd.c
+  OBJS=
+***************
+*** 26,32 ****
+  all: mkpasswd
+  
+  mkpasswd: ${LIBC}
+! 	${CC} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core mkpasswd
+--- 27,33 ----
+  all: mkpasswd
+  
+  mkpasswd: ${LIBC}
+! 	${CC} ${SEPFLAG} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core mkpasswd
+diff -r -c shadow.orig/mkpasswd/mkpasswd.c shadow/mkpasswd/mkpasswd.c
+*** shadow.orig/mkpasswd/mkpasswd.c	Thu May 11 16:34:21 1989
+--- shadow/mkpasswd/mkpasswd.c	Sun May 14 21:54:02 1989
+***************
+*** 35,41 ****
+  static struct passwd _pw_passwd;
+  static off_t offset;
+  
+! #define	MAXLINELENGTH	1024
+  static char line[MAXLINELENGTH];
+  
+  /*
+--- 35,41 ----
+  static struct passwd _pw_passwd;
+  static off_t offset;
+  
+! #define	MAXLINELENGTH	256
+  static char line[MAXLINELENGTH];
+  
+  /*
+***************
+*** 60,66 ****
+  	DBM *dp;
+  	datum key, content;
+  	int ch;
+! 	char buf[8192], nbuf[50], *strerror();
+  
+  	makeold = 0;
+  	while ((ch = getopt(argc, argv, "pv")) != EOF)
+--- 60,66 ----
+  	DBM *dp;
+  	datum key, content;
+  	int ch;
+! 	char buf[256], nbuf[50], *strerror();
+  
+  	makeold = 0;
+  	while ((ch = getopt(argc, argv, "pv")) != EOF)
+diff -r -c shadow.orig/passwd/Makefile shadow/passwd/Makefile
+*** shadow.orig/passwd/Makefile	Thu May 11 16:34:25 1989
+--- shadow/passwd/Makefile	Sun May 14 22:01:50 1989
+***************
+*** 17,22 ****
+--- 17,23 ----
+  #	@(#)Makefile	5.4 (Berkeley) 2/22/89
+  #
+  CFLAGS=	-I. -O
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	passwd.c
+  OBJS=	passwd.o
+***************
+*** 25,31 ****
+  all: passwd
+  
+  passwd: ${LIBC} ${OBJS}
+! 	${CC} ${CFLAGS} -o $@ ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core passwd
+--- 26,32 ----
+  all: passwd
+  
+  passwd: ${LIBC} ${OBJS}
+! 	${CC} ${CFLAGS} ${SEPFLAG} -o $@ ${OBJS}
+  
+  clean:
+  	rm -f ${OBJS} core passwd
+diff -r -c shadow.orig/passwd/passwd.c shadow/passwd/passwd.c
+*** shadow.orig/passwd/passwd.c	Thu May 11 16:34:29 1989
+--- shadow/passwd/passwd.c	Sun May 14 21:55:53 1989
+***************
+*** 166,172 ****
+  {
+  	register int done;
+  	register char *p;
+! 	char buf[1024];
+  
+  	for (done = 0; fgets(buf, sizeof(buf), stdin);) {
+  		/* skip lines that are too big */
+--- 166,172 ----
+  {
+  	register int done;
+  	register char *p;
+! 	char buf[256];
+  
+  	for (done = 0; fgets(buf, sizeof(buf), stdin);) {
+  		/* skip lines that are too big */
+diff -r -c shadow.orig/vipw/Makefile shadow/vipw/Makefile
+*** shadow.orig/vipw/Makefile	Thu May 11 16:34:35 1989
+--- shadow/vipw/Makefile	Sun May 14 22:02:19 1989
+***************
+*** 18,23 ****
+--- 18,24 ----
+  #
+  
+  CFLAGS=	-O -DUSHRT_MAX=0xffff
++ SEPFLAG= -i
+  LIBC=	/lib/libc.a
+  SRCS=	vipw.c
+  OBJS=
+***************
+*** 26,32 ****
+  all: vipw
+  
+  vipw: ${LIBC}
+! 	${CC} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core vipw
+--- 27,33 ----
+  all: vipw
+  
+  vipw: ${LIBC}
+! 	${CC} ${SEPFLAG} -o $@ ${CFLAGS} $@.c
+  
+  clean:
+  	rm -f ${OBJS} core vipw
+diff -r -c shadow.orig/vipw/vipw.c shadow/vipw/vipw.c
+*** shadow.orig/vipw/vipw.c	Thu May 11 16:34:34 1989
+--- shadow/vipw/vipw.c	Sun May 14 21:57:19 1989
+***************
+*** 46,52 ****
+  	struct stat s1, s2;
+  	FILE *tfp;
+  	char *fend, *tend;
+! 	char buf[8*1024], from[MAXPATHLEN], to[MAXPATHLEN];
+  
+  	(void)signal(SIGHUP, SIG_IGN);
+  	(void)signal(SIGINT, SIG_IGN);
+--- 46,52 ----
+  	struct stat s1, s2;
+  	FILE *tfp;
+  	char *fend, *tend;
+! 	char buf[1024], from[MAXPATHLEN], to[MAXPATHLEN];
+  
+  	(void)signal(SIGHUP, SIG_IGN);
+  	(void)signal(SIGINT, SIG_IGN);
+***************
+*** 157,163 ****
+  	register int lcnt, root;
+  	register char *p, *sh;
+  	long atol();
+! 	char buf[1024], *getusershell();
+  
+  	for (lcnt = 1; fgets(buf, sizeof(buf), tfp); ++lcnt) {
+  		/* skip lines that are too big */
+--- 157,163 ----
+  	register int lcnt, root;
+  	register char *p, *sh;
+  	long atol();
+! 	char buf[256], *getusershell();
+  
+  	for (lcnt = 1; fgets(buf, sizeof(buf), tfp); ++lcnt) {
+  		/* skip lines that are too big */
+----------------------end of shadow password diffs--------------------
+
+	Steven M. Schultz
+	sms@wlv.imsd.contel.com
+

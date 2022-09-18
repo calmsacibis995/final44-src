@@ -1,0 +1,72 @@
+Return-Path: <mogul@Gregorio>
+Date: Wed, 23 Jan 85 17:53:38 pst
+From: Jeff Mogul <mogul@Gregorio>
+Subject: 1-UBA kernel panics when booted on 2-UBA hardware (VAX)
+Index: 	sys/vax/autoconf.c 4.2BSD Fix
+
+Description:
+	The code in autoconf.c is not sufficiently robust to
+	handle the case where a system configured for 1 UBA
+	is booted on a VAX with more than 1 UBA.  This is because
+	of confusion over the allocation of space for UBA
+	resources; some is allocated for MAXNUBA UBAs, some
+	is allocated staticly for 1 or 2 UBAs depending on
+	NUBA, and some is allocated dynamically for more than
+	2 UBAs on a VAX-11/780.
+	
+	The upshot is that the kernel doesn't realize that it
+	hasn't allocated any space, and blithely dereferences
+	a null pointer.
+Repeat-By:
+	(1) configure kernel for 1 UBA
+	(2) boot it on a system with 2 UBAs
+	(3) watch it panic when it find the 2nd one.
+Fix:
+	Two changes to autoconf.c: in probenexus(), don't
+	allow more than NUBA UBAs; treat extras as unconfigured
+	rather than panicking in unifind().  In unifind(),
+	panic with a meaningful message if no vector space is
+	allocated, rather than following a bogus pointer and
+	getting a cryptic panic.
+
+*** autoconf.c.BAK	Wed Oct 24 12:43:08 1984
+--- autoconf.c	Wed Jan 23 16:45:15 1985
+***************
+*** 159,164
+  		case NEX_UBA2:
+  		case NEX_UBA3:
+  			printf("uba%d at tr%d\n", numuba, nexnum);
+  			if (numuba >= 4) {
+  				printf("5 uba's");
+  				goto unsupp;
+
+--- 159,169 -----
+  		case NEX_UBA2:
+  		case NEX_UBA3:
+  			printf("uba%d at tr%d\n", numuba, nexnum);
++ 			if (numuba >= NUBA) {
++ 				/* avoid panic in unifind */
++ 				printf("%d uba's", NUBA);
++ 				goto unconfig;
++ 			}
+  			if (numuba >= 4) {
+  				printf("5 uba's");
+  				goto unsupp;
+***************
+*** 454,459
+  			uhp->uh_vec = (int(**)())calloc(512);
+  	}
+  #endif
+  	for (i = 0; i < 128; i++)
+  		uhp->uh_vec[i] =
+  		    scbentry(&catcher[i*2], SCB_ISTACK);
+
+--- 459,466 -----
+  			uhp->uh_vec = (int(**)())calloc(512);
+  	}
+  #endif
++ 	if (uhp->uh_vec == 0)
++ 		panic("unifind: no vector space");
+  	for (i = 0; i < 128; i++)
+  		uhp->uh_vec[i] =
+  		    scbentry(&catcher[i*2], SCB_ISTACK);

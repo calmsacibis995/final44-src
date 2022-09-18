@@ -1,0 +1,345 @@
+Return-Path: <fluke!joe@uw-beaver.arpa>
+Date: Tue, 6 Nov 84 12:04:42 pst
+From: joe@fluke (Joe Kelsey)
+Subject: Support for VA811S and VA212 modems in condevs.c
+Index: usr.bin/uucp/condevs.c 4.2BSD
+
+Description:
+	condevs currently supports the VA811M and the VA8451 modems.
+	Here is code for the VA811S (single line instead of MACS) and
+	the VA212 modems (new free standing LCD display or single card
+	rack mount.)
+Fix:
+	The following code will add support for VA811S and VA212.  These
+	can be referred to in the L-devices file by va811s and va212.
+	You will have to add the appropriate #define's to uucp.h also.
+	This also includes some miscellaneous cleanup of the VA811 and V8451
+	code.
+
+condevs.c log:
+----------------------------
+version 1.6        
+date: 84/04/11 15:46:36;  author: joe;  state: Exp;  lines added/del: 2/2
+modified VADIC and VA212 to attempt the call TRYCALLS times, instead
+of the previous 5 times.
+----------------------------
+version 1.5        
+date: 84/04/10 15:25:11;  author: joe;  state: Exp;  lines added/del: 30/7
+Modified va811 code to retry call up to TRYCALLS times.
+----------------------------
+version 1.4        
+date: 84/04/10 14:56:50;  author: joe;  state: Exp;  lines added/del: 104/1
+added code for VA811S.  Copied most of VADIC code, but this is a 
+single line dialer, so no MACS support.  Also modified the micom
+stuff to match FLUKE's Micom prompts.  va811 tested, micom not tested.
+----------------------------
+version 1.3        
+date: 84/02/20 09:20:52;  author: joe;  state: Exp;  lines added/del: 141/0
+Added code for VA212.  Similar to VADIC 3451, but differs in modem
+responses.  Tested and verified.
+----------------------------
+version 1.2        
+date: 84/02/20 08:03:55;  author: joe;  state: Exp;  lines added/del: 3/1
+Added more info on error returns from vaopen().
+----------------------------
+version 1.1        
+date: 84/01/24 11:19:57;  author: lcp;  state: Exp;  
+Initial version
+=============================================================================
+
+< condevs.c.r1.1
+> condevs.c.r1.6
+74a75,77
+> #ifdef VA212
+> int va212opn(), va212cls();
+> #endif VA212
+76a80,82
+> #endif VA212
+> #ifdef VA811S
+> int va811opn(), va811cls();
+113a120,122
+> #ifdef VA212
+> { "ACU", "va212", Acuopn, va212opn, va212cls },
+> #endif VA212
+116a126,128
+> #ifdef VA811S
+> { "ACU", "va811s", Acuopn, va811opn, va811cls },
+> #endif VA811S
+422a435
+> #ifndef FLUKE
+424a438,441
+> #else
+> 	DEBUG(4, "wanted %s ", "#");
+> 	ok = expect("#", dh);
+> #endif FLUKE
+429a447
+> #ifndef FLUKE
+431a450,453
+> #else
+> 		DEBUG(4, "wanted %s ", "CONNECTING");
+> 		ok = expect("CONNECTING", dh);
+> #endif FLUKE
+1265a1288,1289
+> 		DEBUG (4, errno == 4 ? "%s: no carrier\n" : "%s: can't open\n",
+> 			dcname);
+1267c1291
+< 		return(CF_NODEV);
+---
+> 		return(errno == 4 ? CF_DIAL : CF_NODEV);
+1285c1309
+< 	for(i = 0; i < 5; ++i) {	/* make 5 tries */
+---
+> 	for(i = 0; i < TRYCALLS; ++i) {	/* make TRYCALLS tries */
+1347a1372,1500
+> #ifdef VA212
+> 
+> /*
+>  *	va212opn: establish dial-out connection through a Racal-Vadic 212.
+>  *	Returns descriptor open to tty for reading and writing.
+>  *	Negative values (-1...-7) denote errors in connmsg.
+>  *	Be sure to disconnect tty when done, via HUPCL or stty 0.
+>  */
+> 
+> va212opn(telno, flds, dev)
+> char *telno;
+> char *flds[];
+> struct Devices *dev;
+> {
+> 	int	dh = -1;
+> 	int	i, ok, er = 0, delay;
+> 	extern errno;
+> 	char dcname[20];
+> 
+> 	sprintf(dcname, "/dev/%s", dev->D_line);
+> 	if (setjmp(Sjbuf)) {
+> 		DEBUG(1, "timeout va212 open\n", "");
+> 		logent("va212 open", "TIMEOUT");
+> 		if (dh >= 0)
+> 			close(dh);
+> 		delock(dev->D_line);
+> 		return(CF_NODEV);
+> 	}
+> 	signal(SIGALRM, alarmtr);
+> 	getnextfd();
+> 	alarm(10);
+> 	dh = open(dcname, 2);
+> 	alarm(0);
+> 
+> 	/* modem is open */
+> 	next_fd = -1;
+> 	if (dh < 0) {
+> 		DEBUG (4, errno == 4 ? "%s: no carrier\n" : "%s: can't open\n",
+> 			dcname);
+> 		delock(dev->D_line);
+> 		return(errno == 4 ? CF_DIAL : CF_NODEV);
+> 		}
+> 	fixline(dh, dev->D_speed);
+> 
+> /* translate - to K for Vadic */
+> 	DEBUG(4, "calling %s -> ", telno);
+> 	delay = 0;
+> 	for (i = 0; i < strlen(telno); ++i) {
+> 		switch(telno[i]) {
+> 		case '=':	/* await dial tone */
+> 		case '-':	/* delay */
+> 		case '<':
+> 			telno[i] = 'K';
+> 			delay += 5;
+> 			break;
+> 		}
+> 	}
+> 	DEBUG(4, "%s\n", telno);
+> 	for(i = 0; i < TRYCALLS; ++i) {	/* make TRYCALLS tries */
+> 		/* wake up Vadic */
+> 		sendthem("\005\\d", dh);
+> 		DEBUG(4, "wanted %s ", "*");
+> 		ok = expect("*", dh);
+> 		DEBUG(4, "got %s\n", ok ? "?" : "that");
+> 		if (ok != 0)
+> 			continue;
+> 
+> 		sendthem("D\\d", dh);	/* "D" (enter number) command */
+> 		DEBUG(4, "wanted %s ", "NUMBER?");
+> 		ok = expect("NUMBER?", dh);
+> 		if (ok == 0)
+> 			ok = expect("\n", dh);
+> 		DEBUG(4, "got %s\n", ok ? "?" : "that");
+> 		if (ok != 0)
+> 			continue;
+> 
+> 	/* send telno, send \r */
+> 		sendthem(telno, dh);
+> 		ok = expect(telno, dh);
+> 		if (ok == 0)
+> 			ok = expect("\n", dh);
+> 		DEBUG(4, "got %s\n", ok ? "?" : "that");
+> 		if (ok != 0)
+> 			continue;
+> 
+> 		sendthem("", dh); /* confirm number */
+> 		DEBUG(4, "wanted %s ", "DIALING...");
+> 		ok = expect("DIALING...", dh);
+> 		if (ok == 0) {
+> 		    ok = expect("\n", dh);
+> 		    DEBUG(4, "wanted %s ", "ANSWER TONE");
+> 		    ok = expect("ANSWER TONE", dh);
+> 		    if (ok == 0)
+> 		        ok = expect("\n", dh);
+> 		}
+> 		DEBUG(4, "got %s\n", ok ? "?" : "that");
+> 		if (ok == 0)
+> 			break;
+> 	}
+> 
+> 	if (ok == 0) {
+> 		DEBUG(4, "wanted ON LINE \\r\\n ", 0);
+> 		ok = expect("ON LINE \r\n", dh);
+> 		DEBUG(4, "got %s\n", ok ? "?" : "that");
+> 	}
+> 
+> 	if (ok != 0) {
+> 		sendthem("I\\d", dh);	/* back to idle */
+> 		if (dh > 2)
+> 			close(dh);
+> 		DEBUG(4, "vadDial failed\n", "");
+> 		delock(dev->D_line);
+> 		return(CF_DIAL);
+> 	}
+> 	DEBUG(4, "va212 ok\n", "");
+> 	return(dh);
+> }
+> 
+> va212cls(fd) {
+> 
+> 	if (fd > 0) {
+> 		close(fd);
+> 		sleep(5);
+> 		delock(devSel);
+> 		}
+> 	}
+> 
+> #endif VA212
+> 
+1482c1635,1751
+< #endif
+---
+> #endif RVMACS
+> 
+> #ifdef	VA811S
+> /*
+>  * Racal-Vadic VA811 dialer with 831 adaptor.
+>  * A typical 300 baud L-devices entry is
+>  *	ACU /dev/tty10 unused 300 va811s
+>  * where tty10 is the communication line (D_Line),
+>  * and 300 is the line speed.
+>  * This is almost identical to RVMACS except that we don't need to
+>  * send addresses and modem types, and don't need the fork.
+>  */
+> 
+> #define	STX	02	/* Access Adaptor */
+> #define	ETX	03	/* Transfer to Dialer */
+> #define	SI	017	/* Buffer Empty (end of phone number) */
+> #define	SOH	01	/* Abort */
+> 
+> va811opn(ph, flds, dev)
+> char *ph, *flds[];
+> struct Devices *dev;
+> {
+> 	int va;
+> 	register int i, tries;
+> 	char c, dcname[20];
+> 	char vabuf[35];		/* STX, 31 phone digits, SI, ETX, NUL */
+> 
+> 	va = 0;
+> 	sprintf(dcname, "/dev/%s", dev->D_line);
+> 	if (setjmp(Sjbuf)) {
+> 		DEBUG(1, "timeout va811 open\n", "");
+> 		logent("va811opn", "TIMEOUT");
+> 		if (va >= 0)
+> 			close(va);
+> 		delock(dev->D_line);
+> 		return CF_NODEV;
+> 	}
+> 	DEBUG(4, "va811: STARTING CALL\n", 0);
+> 	getnextfd();
+> 	signal(SIGALRM, alarmtr);
+> 	alarm(10);
+> 	va = open(dcname, 2);
+> 	alarm(0);
+> 
+> 	/* line is open */
+> 	next_fd = -1;
+> 	if (va < 0) {
+> 		DEBUG(4, errno == 4 ? "%s: no carrier\n" : "%s: can't open\n",
+> 			dcname);
+> 		delock(dev->D_line);
+> 		logent(dcname, "CAN'T OPEN");
+> 		return(errno == 4 ? CF_DIAL : CF_NODEV);
+> 	}
+> 	fixline(va, dev->D_speed);
+> 
+> 	/* first, reset everything */
+> 	sendthem("\\01\\c", va);
+> 	DEBUG(4, "wanted %c ", 'B');
+> 	i = expect("B", va);
+> 	DEBUG(4, "got %s\n", i ? "?" : "that");
+> 	if (i != 0) {
+> 	    DEBUG(4, "va811: NO RESPONSE\n", "");
+> 	    logent("va811 reset", "TIMEOUT");
+> 	    close(va);
+> 	    delock(dev->D_line);
+> 	    return(CF_DIAL);
+> 	}
+> 
+> 	sprintf(vabuf, "%c%.31s%c%c\\c", STX, ph, SI, SOH);
+> 	sendthem(vabuf, va);
+> 	DEBUG(4, "wanted %c ", 'B');
+> 	i = expect("B", va);
+> 	DEBUG(4, "got %s\n", i ? "?" : "that");
+> 
+> 	if (i != 0) {
+> 	    DEBUG(4, "va811: STORE NUMBER\n", "");
+> 	    logent("va811 STORE", "FAILED");
+> 	    close(va);
+> 	    delock(dev->D_line);
+> 	    return(CF_DIAL);
+> 	}
+> 
+> 	for (tries = 0; tries < TRYCALLS; tries++) {
+> 	    sprintf(vabuf, "%c%c\\c", STX, ETX);
+> 	    sendthem(vabuf, va);
+> 	    DEBUG(4, "DIALING...", "");
+> 	    i = expect("A", va);
+> 	    DEBUG(4, " %s\n", i ? "FAILED" : "SUCCEEDED");
+> 	    if (i != 0) {
+> 		DEBUG(4, "va811: RESETTING\n", "");
+> 		logent("va811 DIAL", "FAILED");
+> 	        sendthem("\\01\\c", va);
+> 	        expect("B", va);
+> 	    }
+> 	    else
+> 	        break;
+> 	}
+> 
+> 	if (tries >= TRYCALLS) {
+> 	    close(va);
+> 	    delock(dev->D_line);
+> 	    return(CF_DIAL);
+> 	}
+> 
+> 	DEBUG(4, "va811 ok\n", "");
+> 	return(va);
+> }
+> 
+> va811cls(fd)
+> register int fd;
+> {
+> 	DEBUG(2, "va811 close %d\n", fd);
+> 	p_chwrite(fd, SOH);
+> /*	ioctl(fd, TIOCCDTR, NULL);*/
+> 	close(fd);
+> }
+> #endif VA811S
+
+/Joe Kelsey	John Fluke Mfg. Co., Inc.	PO Box C9090
+(206)356 5933	Everett, WA  98206

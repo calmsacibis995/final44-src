@@ -1,0 +1,47 @@
+From balsup@tfs.COM  Tue Feb 18 15:35:41 1992
+Date: Tue, 18 Feb 92 15:36:06 PST
+From: balsup@tfs.COM (Billie Alsup)
+Subject: clnp_hexp broken for hex bytes with sign bit on
+Index: sys net2
+Apparently-To: net2-bugs@BERKELEY.EDU
+
+Description:
+	in netiso/clnp_debug, clnp_hexp() fails when processing
+	bytes greater than 0x7f.  by "fails", i mean the routine
+	returns an incorrect buffer of ascii hex digits.
+	the problem occurs when the source byte is shifted
+	4 bits right to creat an index into an array of 16
+	ascii letters.  if the sign bit is on (and the default
+	behaviour of your compiler treats "char" as signed),
+	then the resulting index will be a negative number
+	and cause you to put a random value into your buffer.
+
+Repeat-By:
+	I saw the problem by turning on ISO debugging within the
+	kernel.  when printing iso address structures that contained
+	bytes with the bit 7 set, i just happened to get a zero stored
+	in the buffer, and thus i saw a short address on the console.
+	for example, i may have seen
+
+			00002A   
+
+	instead of
+	 
+			00002AFF00AE
+
+Fix:
+	My fix just coerced the source data to be unsigned character.
+	an alternate fix would be to redefine the function parameter
+	to be unsigned char.  however, i wasn't sure if that would
+	cause warning errors elsewhere in the system if a function
+	passed a "char" when the function expected an "unsigned char".
+
+	diff clnp_debug.c clnp_debug.c.released
+	151,152c151,152
+	<               *where++ = letters[(u_char)src[i] >> 4];
+	<               *where++ = letters[(u_char)src[i] & 0x0f];
+	---
+	>               *where++ = letters[src[i] >> 4];
+	>               *where++ = letters[src[i] & 0x0f];
+
+

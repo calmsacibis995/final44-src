@@ -1,0 +1,387 @@
+Return-Path: <mike@BRL-VGR.ARPA>
+Date:     Fri, 12 Oct 84 3:14:54 EDT
+From: Mike Muuss <mike@BRL-VGR.ARPA>
+To: 4bsd-bugs@BERKELEY, Unix-Wizards@BRL-VGR.ARPA
+Subject:  Tune TCP max seg size, source correct local addresses.
+Index:	sys/netinet/tcp_input.c 4.2BSD Fix
+
+Description:
+
+1)  Tune TCP max segment size based upon IP interface MTU.
+
+	Bob Gilligan at sri-spam, Chris Kent at Purdue, and
+	steveh at tektronix have provided bug reports which
+	contain code to address this problem.  This bug report
+	includes code which gives the same results, but with no
+	loss in efficiency, or in clarity of code.  By making
+	the correct abstractions, problem #2 can be easily fixed
+	at the same time.
+	
+	On input, if a connection is in the LISTEN state (e.g., a
+	server), an incoming maximum segment size option is ignored. The
+	maximum segment size option is accepted on all packets, contrary
+	to the spec which says it is only acceptable on packets with SYN.
+
+	In no case does this code result in worse global network performance
+	than the vanilla 4.2BSD code.  For sites with most machines on
+	Ethernets or Pronets behind a gateway to the ARPANET, this code
+	will not make any difference.  For sites communicating directly 
+	over devices with an MTU < 1064 bytes, (ARPANET, PRNET, etc),
+	this code will prevent TCP from constructing IP packets bigger
+	than the MTU, thus saving the CPU and network overhead associated
+	with IP fragmentation/reassembly.
+
+	Because of (a) the decreased reliability of TCP segment delivery
+	when IP fragmentation is present (due to total non-delivery of the
+	TCP segment if any IP fragment is lost in transit), and (b) the
+	fact that most network interfaces have a constant "per-packet"
+	cost, rather than a "per byte" cost, decreasing the number of
+	packets being sent by nearly 50% on bulk data connections
+	has a dual benefit of substantial magnitude.
+
+	In my opinion, this new code should be mandatory for all 4.2 BSD
+	systems directly attached to an IMP.
+	
+
+2)  Choose local address in IP packets based upon route and interface
+    being used to send packets.
+
+	For background, I quote "A 4.2BSD Interprocess Communication Primer":
+
+Internet address binding
+
+Local address binding by the system is currently done somewhat haphazardly
+when a host is on multiple networks.  Logically, one would expect the system
+to bind the local address associated with the network through which a peer
+was communicating.  For instance, if the local host is connected to networks
+46 and 10 and the foreign host is on network 32, and traffic from network 32
+were arriving via network 10, the local address to be bound would be the
+host's address on network 10, not network 46.  This unfortunately, is not
+always the case.  For reasons too complicated to discuss here, the local
+address bound may be appear to be chosen at random.  This property of local
+address binding will normally be invisible to users unless the foreign host
+does not understand how to reach the address selected.  For example, if
+network 46 were unknown to the host on network 32, and the local address
+were bound to that located on network 46, then even though a route between
+the two hosts existed through network 10, a connection would fail.
+
+	By calling in_getif() in in_pcbconnect() early on in the
+	establishment of the TCP connection, the correct local IP address
+	can now be assigned to the connection.
+
+	This has important implications for traffic routing.
+
+Repeat-By:
+1)	Connect to various sites with different mtu or max seg options,
+	and look at the tcpcb's with adb. Of particular interest are
+	sites which have very small mtu networks attached.
+
+2)	Default route all your packets through your second interface;
+	use "netstat -i" to see where they leave and return...
+	For example:  default route all packets via second interface (from
+	"netstat -i" listing).  Packets will leave on that interface,
+	but will return via the first interface.  If this configuration
+	is elected because of difficulties with the first path,
+	you loose.
+
+Fix:
+	The fix consists of several pieces. Two new routines are introduced:
+	in_getif(), and tcp_bestmss().  in_getif() returns a pointer to the
+	interface being used for this connection.  If a route has not yet
+	been allocated for the connection, the route is allocated, and
+	stored in the inpcb.  By storing the route in the inpcb,
+	unnecessary later calls to rtalloc() are avoided, and the route
+	is known early enough to affect choices of maxsegsize and local addr.
+
+	When initiating an outgoing TCP connection, tcp_bestmss() is called
+	to find the maximum permissible maxsegsize we can offer.
+
+	When a LISTENing connection is probed by a SYN packet, we can't
+	process the incoming options until a tcpcb has been allocated,
+	or the process of allocation will overwrite the processed
+	options with the default values.
+
+	Whenever a connection finally enters the ESTABLISHED state, 
+	compare the current value of t_maxseg to the mtu of the 
+	interface being used and adjust it downward if necessary.
+
+	These fixes are refined versions of the fixes from Chris Kent,
+	who based his work on that of Bob Gilligan.
+
+Best,
+ -Mike Muuss
+
+(301)-278-6678
+  AV  283-6678
+  FTS 939-6678
+
+ArpaNet:  Mike @ BRL
+UUCP:     ...!{decvax,cbosgd}!brl-bmd!mike
+Postal:
+  Mike Muuss
+  Leader, Advanced Computer Systems Team
+  Computer Techniques and Analysis Branch
+  Systems Engineering and Concepts Analysis Division
+  U.S. Army Ballistic Research Laboratory
+  Attn: AMXBR-SECAD (Muuss)
+  APG, MD  21005
+
+********************* /sys/netinet/in_pcb.c
+
+*** 121,136
+  	if (sin->sin_addr.s_addr == INADDR_ANY || sin->sin_port == 0)
+  		return (EADDRNOTAVAIL);
+  	if (inp->inp_laddr.s_addr == INADDR_ANY) {
+  		ifp = if_ifonnetof(in_netof(sin->sin_addr));
+  		if (ifp == 0) {
+! 			/*
+! 			 * We should select the interface based on
+! 			 * the route to be used, but for udp this would
+! 			 * result in two calls to rtalloc for each packet
+! 			 * sent; hardly worthwhile...
+!  			 */
+!  			ifp = if_ifwithaf(AF_INET);
+  			if (ifp == 0)
+  				return (EADDRNOTAVAIL);
+  		}
+  		ifaddr = (struct sockaddr_in *)&ifp->if_addr;
+
+--- 125,131 -----
+  	if (sin->sin_addr.s_addr == INADDR_ANY || sin->sin_port == 0)
+  		return (EADDRNOTAVAIL);
+  	if (inp->inp_laddr.s_addr == INADDR_ANY) {
++ 		inp->inp_faddr = sin->sin_addr;		/* for in_getif() */
+  		ifp = if_ifonnetof(in_netof(sin->sin_addr));
+  		if (ifp == 0) {
+! 			extern struct ifnet *in_getif();
+! 
+! 			/* If route is known or can be allocated now,
+! 			 * our src addr is taken from the i/f, else punt.
+!  			 */
+!  			ifp = in_getif(inp);
+!  			if (ifp == 0)
+!  				ifp = if_ifwithaf(AF_INET);
+  			if (ifp == 0)
+***************
+--- 286,315 -----
++ 
++ /* 
++  * Given an inpcb, return a pointer to the interface to be used.
++  * If route is already allocated, this is fairly simple, otherwise,
++  * acquire the route and store it in the inpcb, then return
++  * the interface assigned (if any).
++  */
++ struct ifnet *
++ in_getif(inp)
++ 	register struct inpcb *inp;
++ {
++ 	register struct route *ro;
++ 	register struct ifnet *ifp;
++ 
++ 	ro = &inp->inp_route;
++ 	if ((ro->ro_rt != (struct rtentry *)0) &&
++ 	    (ifp = ro->ro_rt->rt_ifp) != (struct ifnet *)0)
++ 		return(ifp);
++ 
++ 	/* No route yet, so try to acquire one */
++ 	bzero((caddr_t)ro, sizeof(*ro));
++ 	ro->ro_dst.sa_family = AF_INET;
++ 	if (inp->inp_faddr.s_addr == INADDR_ANY)
++ 		return ((struct ifnet *)0);
++ 	((struct sockaddr_in *) &ro->ro_dst)->sin_addr = inp->inp_faddr;
++ 	rtalloc(ro);
++ 	if ((ro->ro_rt == 0) || (ifp = ro->ro_rt->rt_ifp) == 0)
++ 		return ((struct ifnet *)0);
++ 	return (ifp);
++  }
+
+
+***************  /sys/netinet/tcp_input.c
+
+*** 183,189
+  	tp->t_timer[TCPT_KEEP] = TCPTV_KEEP;
+  
+  	/*
+! 	 * Process options.
+  	 */
+! 	if (om) {
+! 		tcp_dooptions(tp, om);
+  		om = 0;
+  	}
+
+--- 183,189 -----
+  	tp->t_timer[TCPT_KEEP] = TCPTV_KEEP;
+  
+  	/*
+! 	 * Process options if not in LISTEN state, else do it below.
+  	 */
+! 	if (om && tp->t_state != TCPS_LISTEN) {
+! 		tcp_dooptions(tp, om, ti);
+  		om = 0;
+  	}
+  
+***************
+*** 246,251
+  			tp = 0;
+  			goto drop;
+  		}
+  		tp->iss = tcp_iss; tcp_iss += TCP_ISSINCR/2;
+  		tp->irs = ti->ti_seq;
+  		tcp_sendseqinit(tp);
+
+--- 246,255 -----
+  			tp = 0;
+  			goto drop;
+  		}
++ 		if (om) {
++ 			tcp_dooptions(tp, om, ti);
++ 			om = 0;
++ 		}
+  		tp->iss = tcp_iss; tcp_iss += TCP_ISSINCR/2;
+  		tp->irs = ti->ti_seq;
+  		tcp_sendseqinit(tp);
+***************
+*** 291,296
+  		if (SEQ_GT(tp->snd_una, tp->iss)) {
+  			soisconnected(so);
+  			tp->t_state = TCPS_ESTABLISHED;
+  			(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		} else
+  			tp->t_state = TCPS_SYN_RECEIVED;
+
+--- 295,301 -----
+  		if (SEQ_GT(tp->snd_una, tp->iss)) {
+  			soisconnected(so);
+  			tp->t_state = TCPS_ESTABLISHED;
++ 			tp->t_maxseg = MIN(tp->t_maxseg, tcp_bestmss(tp));
+  			(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		} else
+  			tp->t_state = TCPS_SYN_RECEIVED;
+***************
+*** 451,456
+  		tp->t_timer[TCPT_REXMT] = 0;
+  		soisconnected(so);
+  		tp->t_state = TCPS_ESTABLISHED;
+  		(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		tp->snd_wl1 = ti->ti_seq - 1;
+  		/* fall into ... */
+
+--- 456,462 -----
+  		tp->t_timer[TCPT_REXMT] = 0;
+  		soisconnected(so);
+  		tp->t_state = TCPS_ESTABLISHED;
++ 		tp->t_maxseg = MIN(tp->t_maxseg, tcp_bestmss(tp));
+  		(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		tp->snd_wl1 = ti->ti_seq - 1;
+  		/* fall into ... */
+***************
+*** 530,535
+  				if (so->so_state & SS_CANTRCVMORE)
+  					soisdisconnected(so);
+  				tp->t_state = TCPS_FIN_WAIT_2;
+  			}
+  			break;
+  
+
+--- 536,542 -----
+  				if (so->so_state & SS_CANTRCVMORE)
+  					soisdisconnected(so);
+  				tp->t_state = TCPS_FIN_WAIT_2;
++ 				tp->t_timer[TCPT_2MSL] = 2 * TCPTV_MSL;
+  			}
+  			break;
+  
+***************
+*** 759,765
+  	return;
+  }
+  
+! tcp_dooptions(tp, om)
+  	struct tcpcb *tp;
+  	struct mbuf *om;
+  {
+  	register u_char *cp;
+  	int opt, optlen, cnt;
+
+--- 766,772 -----
+  	return;
+  }
+  
+! tcp_dooptions(tp, om, ti)
+  	struct tcpcb *tp;
+  	struct mbuf *om;
++  	struct tcpiphdr *ti;
+  {
+  	register u_char *cp;
+  	int opt, optlen, cnt;
+***************
+*** 787,792
+  		case TCPOPT_MAXSEG:
+  			if (optlen != 4)
+  				continue;
+  			tp->t_maxseg = *(u_short *)(cp + 2);
+  			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
+  			break;
+  		}
+  	}
+
+--- 795,802 -----
+  		case TCPOPT_MAXSEG:
+  			if (optlen != 4)
+  				continue;
++ 			if ( !(ti->ti_flags & TH_SYN) )
++ 				continue;
+  			tp->t_maxseg = *(u_short *)(cp + 2);
+  			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
++  			tp->t_maxseg = MIN(tp->t_maxseg, tcp_bestmss(tp));
+  			break;
+  		}
+  	}
+***************
+--- 945,967 -----
++ 
++ /*
++  *  Determine the largest value for maxseg size that can be handled
++  *  on the given interface without forcing IP to fragment.
++  *  If bigger than a page (1024), round down to nearest pagesize
++  *  to utilize pagesize mbufs.
++  *  If interface pointer is unavailible, claim 1024 for size.
++  */
++ tcp_bestmss(tp)
++ register struct tcpcb *tp;
++ {
++ 	struct ifnet *in_getif();
++ 	struct ifnet *ifp;
++ 	int mss;
++ 
++ 	ifp = in_getif(tp->t_inpcb);
++ 	if (ifp == (struct ifnet *) 0)
++ 		return(1024);
++ 	mss = ifp->if_mtu - sizeof(struct tcpiphdr);
++ 	if (mss > CLBYTES)
++ 		mss &= ~(CLBYTES-1);
++ 	return(mss);
+  }
+
+
+*************** /sys/netinet/tcp_output.c
+
+*** 172,178
+  			goto noopt;
+  		opt = tcp_initopt;
+  		optlen = sizeof (tcp_initopt);
+! 		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, 1024);
+  		*(u_short *)(opt + 2) = htons(*(u_short *)(opt + 2));
+  	} else {
+  		if (tp->t_tcpopt == 0)
+
+--- 172,178 -----
+  			goto noopt;
+  		opt = tcp_initopt;
+  		optlen = sizeof (tcp_initopt);
+! 		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, tcp_bestmss(tp));
+  		*(u_short *)(opt + 2) = htons(*(u_short *)(opt + 2));
+  	} else {
+  		if (tp->t_tcpopt == 0)
+
+************ end

@@ -1,0 +1,82 @@
+Return-Path: <conrad@cgl.ucsf.edu>
+Date: Mon, 13 Oct 86 13:36:15 PDT
+From: conrad@cgl.ucsf.edu
+Subject: lprm does not work with remote printers
+Index: 	usr.lib/rmjob.c 4.3BSD
+
+Description:
+	When the printcap entry for a printer contains both the lp
+	and rm fields for a remote printer, lprm will not remove
+	jobs from the remote printer queue.
+Repeat-By:
+	Create a printcap entry with both lp and rm defined, e.g.
+
+	qms|ps|postscript|PostScript|qms1200a PostScript printer:\
+		:lp=/dev/qms:rm=cgl.ucsf.edu:rp=qms:\
+		:br#9600:rw:fc#0000374:fs#0000003:xc#0:xs#0040040:mx#0:sf:sb:\
+		:sd=/usr/spool/qms:\
+		:if=/usr/local/lib/ps/psif:\
+		:of=/usr/local/lib/ps/psof:\
+		:gf=/usr/local/lib/ps/psgf:\
+		:tf=/usr/local/lib/ps/pstf:\
+		:nf=/usr/local/lib/ps/psnf:\
+		:af=/usr/adm/qms-acct:\
+		:lf=/usr/adm/qms-errs:
+
+	Login to any machine other than cgl.ucsf.edu.  Submit a job to
+	the qms queue, and try removing it.
+Fix:
+	Add the same code that appears in printjob.c into rmjob.c.  A
+	context diff follows:
+
+	RCS file: RCS/rmjob.c,v
+	retrieving revision 1.1
+	diff -c -r1.1 rmjob.c
+	*** /tmp/,RCSt1023168	Mon Oct 13 13:31:12 1986
+	--- rmjob.c	Mon Oct 13 13:28:08 1986
+	***************
+	*** 49,54
+		if ((RP = pgetstr("rp", &bp)) == NULL)
+			RP = DEFLP;
+		RM = pgetstr("rm", &bp);
+	  
+		/*
+		 * If the format was `lprm -' and the user isn't the super-user,
+
+	--- 49,84 -----
+		if ((RP = pgetstr("rp", &bp)) == NULL)
+			RP = DEFLP;
+		RM = pgetstr("rm", &bp);
+	+ 	/*
+	+ 	 * Figure out whether the local machine is the same as the remote 
+	+ 	 * machine entry (if it exists).  If not, then ignore the local
+	+ 	 * queue information.
+	+ 	 */
+	+ 	 if (RM != (char *) NULL) {
+	+ 		char name[256];
+	+ 		struct hostent *hp;
+	+ 
+	+ 		/* get the standard network name of the local host */
+	+ 		gethostname(name, sizeof(name));
+	+ 		name[sizeof(name)-1] = '\0';
+	+ 		hp = gethostbyname(name);
+	+ 		if (hp == (struct hostent *) NULL) {
+	+ 		    printf("unable to get network name for local machine %s",
+	+ 			name);
+	+ 		    goto localcheck_done;
+	+ 		} else strcpy(name, hp->h_name);
+	+ 
+	+ 		/* get the standard network name of RM */
+	+ 		hp = gethostbyname(RM);
+	+ 		if (hp == (struct hostent *) NULL) {
+	+ 		    printf("unable to get hostname for remote machine %s", RM);
+	+ 		    goto localcheck_done;
+	+ 		}
+	+ 
+	+ 		/* if printer is not on local machine, ignore LP */
+	+ 		if (strcmp(name, hp->h_name) != 0) *LP = '\0';
+	+ 	}
+	+ localcheck_done:
+	  
+		/*
+		 * If the format was `lprm -' and the user isn't the super-user,

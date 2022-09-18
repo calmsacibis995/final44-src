@@ -1,0 +1,100 @@
+Date: Thu, 9 Mar 89 21:53:23 EST
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+To: sunbugs@sun.com
+Subject: rshd leaves file descriptor 6/7 open (with fix)
+Index: etc/rshd.c 4.3BSD
+
+This item was addressed to sunbugs@sun.com.  No reply from Sun is necessary.
+
+Workstation-model:
+	3/60		3/110		3/280		386i/150
+
+Serial-Number:
+	838F0353	827E1216	835E1456	851G0260
+
+Sun-Software-Release-Number:
+	<---SunOS 4.0 plus "General-Hy patch"-->	SunOS 4.0.1
+
+My-Name:
+	Arthur David Olson
+
+Phone-Number:
+	+1 (301) 496-5688
+
+Electronic-Mail-Address:
+	ado@ncifcrf.gov
+
+Company-Or-Organization-Name-And-Address:
+	National Institutes of Health
+	Building 37, Room 3B03
+	Bethesda, MD  20892
+
+Description:
+	/usr/etc/in.rshd leaves a superfluous file descriptor open when it
+	executes commands on behalf of rsh.  Whatever other problems this
+	may cause, it has the unfortunate side effect of meaning that you can't
+		rsh -n remotehost "whatever <in >out 2>err &"
+	to run a lengthy command on a remote host without having the local
+	invocation of rsh lurk (in either foreground or background) awaiting
+	its completion.
+
+	This is a problem with SunOS 4.0, SunOS 4.0.1, and the version of
+	MORE/bsd we run on our VAX.
+
+Repeat-By:
+	Script started on Thu Mar  9 21:38:56 1989
+	elsie$ cat descrips.c
+	#include <stdio.h>
+	#include <sys/types.h>
+	#include <sys/stat.h>
+
+	main()
+	{
+		int		i;
+		struct stat	s;
+
+		for (i = 0; i < 100; ++i)
+			if (fstat(i, &s) == 0)
+				(void) printf("%d\n", i);
+	}
+	elsie$ cc descrips.c -o descrips
+	elsie$ descrips
+	0
+	1
+	2
+	elsie$ rsh elsie descrips
+	0
+	1
+	2
+	6
+	elsie$ exit
+
+	script done on Thu Mar  9 21:39:36 1989
+
+	(On our Sun386i under SunOS 4.0.1, it's file descriptor seven that's
+	left open rather than file descriptor 6.)
+
+Fix:
+	For those in the audience running code akin to BSD 4.3--inelegant
+	and utterly effective:
+
+		*** 1.1/rshd.c	Thu Mar  9 21:40:24 1989
+		--- 1.2/rshd.c	Thu Mar  9 21:40:24 1989
+		***************
+		*** 233,238 ****
+		--- 233,244 ----
+				cp++;
+			else
+				cp = pwd->pw_shell;
+		+ 	{
+		+ 		register int	i;
+		+ 
+		+ 		for (i = 3; i < 64; ++i)
+		+ 			(void) close(i);
+		+ 	}
+			execl(pwd->pw_shell, cp, "-c", cmdbuf, 0);
+			perror(pwd->pw_shell);
+			exit(1);
+-- 
+	Arthur David Olson    ado@ncifcrf.gov    ADO is a trademark of Ampex.
+

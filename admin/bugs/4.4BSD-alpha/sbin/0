@@ -1,0 +1,82 @@
+From sanders@BSDI.COM Tue Mar  2 19:53:06 1993
+To: donn@bsdi.com (Donn Seeley)
+Cc: bostic@bsdi.com
+Subject: Re: fsck bugs 
+In-Reply-To: Your message of Tue, 02 Mar 93 22:19:18 EST.
+Errors-To: sanders@BSDI.COM
+Reply-To: sanders@bsdi.com
+Organization: Berkeley Software Design, Inc.
+Date: Tue, 02 Mar 1993 21:52:26 -0600
+From: Tony Sanders <sanders@BSDI.COM>
+Index: sbin/fsck 4.4BSD-alpha
+
+Here are some bugs with fsck someone might want to look at:
+
+
+BUG #1:
+
+Lately I've been playing around with the raw filesystem devices, and I 
+purposely modified the name of a file in a directory by simply changing
+its filename with my editor and then writing this back to the device.
+
+As expected, no problems appeared initially, and the filename was not yet 
+updated in the directory entry; 'ls' still showed the old filename, though
+my editor confirmed that the change had been made.  The next step was to
+test what effect this change would have, so I shut down and rebooted.
+
+Naturally, 'fsck' didn't like it, and forced me to run 'fsck' manually on that
+filesystem.  Here is where 'fsck' choked:
+
+Phase 2 - Check Pathnames
+
+DIRECTORY CORRUPTED  I=57549  OWNER=test MODE=40775
+SIZE=512 MTIME=Aug 18 15:42 1992
+DIR=/users/test
+
+SALVAGE? [yn] n
+Memory Fault
+
+Responding 'y' to SALVAGE? does not have this problem.  It's when you
+respond with 'n' that you get a crash.  I thought this was kind of
+serious, because I purposely did not want it salvaged -- when I went back
+to my editor and returned the modified filename to its original name,
+the filesystem returned to normal health.
+
+================================================================================
+BUG #2:
+
+Subject: minor: fsck error when trying to abort from checking non-filesystem
+I did fsck on a floppy that didn't have a file system, and got this:
+
+% fsck /dev/rfd1a
+** /dev/rfd1a
+BAD SUPER BLOCK: MAGIC NUMBER WRONG
+
+LOOK FOR ALTERNATE SUPERBLOCKS? [yn] ^C
+(core dumped)
+
+================================================================================
+BUG #3:
+
+...
+I ended up with /dev being a corrupted directory, and /usr/sbin/accton 
+appearing to be a corrupted directory.
+
+On the / partition, fsck (boot floppy, mount cdrom as root, work on disks that
+way) dumped core after asking if I wanted to salvage the corrupted directory,
+regardless of whether I said yes or no.  On the /usr partition, fsck would
+ask me if I wanted to salvage the "directory", and regardless of how I answered
+would appear to do the right things, but a subsequent run of fsck would give
+exactly the same errors... and this is a class of error that prevents a normal
+boot.
+
+I wrote a quick hack to make unlink calls on specified pathnames, and tried to
+unlink the two corrupt "directories".  That worked, but the fsck's still got
+confused.  On neither partition could I get a clean filesystem.
+
+Luckily I have a DAT drive.  I tar'ed the contents of the whole 660meg drive 
+to tape, ran newfs on both partitions, mounted them on the CD again, and 
+unpacked my tars.  Plus or minus the permissions of /tmp and /var/tmp which
+came out weird, the machine is basically functional again.
+....
+

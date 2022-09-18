@@ -1,0 +1,233 @@
+From jik@PIT-MANAGER.MIT.EDU  Wed Jun 20 07:15:11 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA26865; Wed, 20 Jun 90 07:15:11 -0700
+Received: from PIT-MANAGER.MIT.EDU by ucbvax.Berkeley.EDU (5.63/1.41)
+	id AA19354; Wed, 20 Jun 90 07:15:20 -0700
+Received:  by PIT-MANAGER.MIT.EDU (5.61/2.0JIK) id <AA23726@PIT-MANAGER.MIT.EDU>; Wed, 20 Jun 90 10:15:11 -0400
+Date: Wed, 20 Jun 90 10:15:11 -0400
+Message-Id: <9006201415.AA23726@PIT-MANAGER.MIT.EDU>
+From: "Jonathan I. Kamens" <jik@pit-manager.MIT.EDU>
+Sender: jik@PIT-MANAGER.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: notes doesn't understand ioctl window sizes
+Index: new 4.3BSD-tahoe
+
+
+
+Description:
+	Notes doesn't know how to use ioctls to find out the window
+	size when it starts up.  Furthermore, it doesn't know what to
+	do if the window size changes while it is running.
+
+Repeat-By:
+	Set your termcap so that its li and ci fields don't represent
+	the true size of your screen, and run notes, and note how it
+	obeys termcap instead of doing an ioctl.  Resize your screen
+	while notes is running, and note how it doesn't resize to
+	match.
+
+Fix:
+	The patch below fixes this problem.  Credit for this patch
+	goes to Jonathan Kamens (jik@athena.mit.edu) and Ezra Peisach
+	(epeisach@athena.mit.edu).  Note that our notes sources were
+	significantly different from the ones in 4.3tahoe when we made
+	these patches to our sources, so I had to apply a lot of our
+	diffs by hand, so don't just assume that this patch is correct
+	-- you should read it through and run it for a while to make
+	sure it does the right thing on your sources like it does on
+	ours.
+
+Jonathan Kamens			              USnail:
+MIT Project Athena				11 Ashford Terrace
+jik@Athena.MIT.EDU				Allston, MA  02134
+Office: 617-253-8495			      Home: 617-782-0710
+
+*** /mit/4.3tahoe/new/notes/src/cursor.c	Tue Oct 29 20:50:39 1985
+--- cursor.c	Wed Jun 20 10:03:59 1990
+***************
+*** 1,5 ****
+--- 1,6 ----
+  #include "parms.h"
+  #include "structs.h"
++ #include <sys/ioctl.h>
+  
+  #ifdef	RCSIDENT
+  static char rcsid[] = "$Header: cursor.c,v 1.7 85/01/18 15:07:42 notes Rel $";
+***************
+*** 146,152 ****
+      register int    i;					/* rows, cols */
+      char    bp[1024];					/* termcap stuff */
+  /*	bp made dynamic to give the pdp-11 breathing room */
+! 
+      ttyinit = 1;					/* say we got it */
+  /*
+   *	ttyinit set now so don't loop on ttystop/cmstop/cursget/ttystop...
+--- 147,156 ----
+      register int    i;					/* rows, cols */
+      char    bp[1024];					/* termcap stuff */
+  /*	bp made dynamic to give the pdp-11 breathing room */
+! #ifdef TIOCGWINSZ
+!     struct winsize sizes;
+! #endif
+!     
+      ttyinit = 1;					/* say we got it */
+  /*
+   *	ttyinit set now so don't loop on ttystop/cmstop/cursget/ttystop...
+***************
+*** 181,194 ****
+      UP = tgetstr ("up", &q);				/* cursor up */
+      BC = tgetstr ("bc", &q);				/* cursor left */
+      ce = tgetstr ("ce", &q);				/* clear to eol */
+!     if ((i = tgetnum ("li")) != -1)
+! 	nrows = i;					/* rows on screen */
+!     if (nrows != 24)					/* different screen size */
+!     {
+! 	Nindex = nrows - 12;				/* header, trailer, prompt */
+      }
+!     if ((i = tgetnum ("co")) != -1)
+! 	ncols = i;					/* cols on screen */
+  }
+  
+  /*
+--- 185,207 ----
+      UP = tgetstr ("up", &q);				/* cursor up */
+      BC = tgetstr ("bc", &q);				/* cursor left */
+      ce = tgetstr ("ce", &q);				/* clear to eol */
+! #ifdef TIOCGWINSZ
+!     ioctl(0, TIOCGWINSZ, &sizes);
+!     if ((sizes.ws_row > 0) && (sizes.ws_col > 0)) {
+! 	 nrows = sizes.ws_row;
+! 	 ncols = sizes.ws_col;
+      }
+!     else {
+! #endif
+! 	 if ((i = tgetnum ("li")) != -1)
+! 	      nrows = i;			/* rows on screen */
+! 	 if ((i = tgetnum ("co")) != -1)
+! 	      ncols = i;			/* cols on screen */
+! #ifdef TIOCGWINSZ
+!     }
+! #endif
+! 	 if (nrows != 24)			/* different screen size */
+! 	      Nindex = nrows - 12;		/* header, trailer, prompt */
+  }
+  
+  /*
+*** /mit/4.3tahoe/new/notes/src/miscio.c	Tue Oct 29 20:50:58 1985
+--- miscio.c	Wed Jun 20 10:09:54 1990
+***************
+*** 53,58 ****
+--- 53,61 ----
+  
+  ttystrt ()
+  {
++ #ifdef SIGWINCH
++      struct winsize sizes;
++ #endif
+  #if	defined(BSD2x)
+      int     localbits;					/* 2.8 Bsd uses 16 bits */
+  #endif	defined(BSD2x)
+***************
+*** 147,152 ****
+--- 150,167 ----
+  #endif	defined(BSD4x) || defined(BSD2x)
+  
+      modeset = 1;
++ #ifdef SIGWINCH
++      ioctl(0, TIOCGWINSZ, &sizes);
++      if ((sizes.ws_row > 0) && (sizes.ws_col > 0)) {
++ 	  if ((nrows != sizes.ws_row || ncols != sies.ws_col))
++ 	       replot=1;
++ 	  nrows = sizes.ws_row;
++ 	  ncols = sizes.ws_col;
++ 	  nindex = NINDEX;
++ 	  if (nrows > 24)
++ 	       nindex += nrows - 24;
++      }
++ #endif /* SIGWINCH */
+      cmstart ();						/* so can cursor address reliably */
+  }
+  
+***************
+*** 183,189 ****
+              (*osigquit) ();				/* hold signal status */
+  #if	 defined(SIGTSTP)
+  static int  (*osigtstp) ();				/* control-z job stop */
+! #endif	defined(SIGTSTP)
+  
+  catchint ()
+  {
+--- 198,207 ----
+              (*osigquit) ();				/* hold signal status */
+  #if	 defined(SIGTSTP)
+  static int  (*osigtstp) ();				/* control-z job stop */
+! #endif	/* defined(SIGTSTP) */
+! #ifdef SIGWINCH
+! static int (*osigwinch)();
+! #endif
+  
+  catchint ()
+  {
+***************
+*** 227,234 ****
+      if (wasset)
+  	ttystrt ();					/* fix his tty */
+  }
+! #endif	defined(SIGTSTP)
+  
+  catchem ()
+  {
+      osigint = signal (SIGINT, catchint);		/* interrupts */
+--- 245,272 ----
+      if (wasset)
+  	ttystrt ();					/* fix his tty */
+  }
+! #endif /* defined(SIGTSTP) */
+  
++ #ifdef SIGWINCH
++ catchwinch()
++ {
++ {
++      struct winsize sizes;
++ 
++      signal(SIGWINCH, catchwinch);
++      ioctl(0, TIOCGWINSZ, &sizes);
++      if ((sizes.ws_row > 0) && (sizes.ws_col > 0)) {
++ 	  nrows = sizes.ws_row;
++ 	  ncols = sizes.ws_col;
++ 	  nindex = NINDEX;
++ 	  if (nrows > 24)
++ 	       nindex += nrows - 24;
++      }
++      replot=1;
++      longjmp(jenv);
++ }
++ #endif
++ 
+  catchem ()
+  {
+      osigint = signal (SIGINT, catchint);		/* interrupts */
+***************
+*** 238,243 ****
+--- 276,284 ----
+  #if	defined(SIGTSTP)
+      osigtstp = signal (SIGTSTP, catchz);		/* control Z */
+  #endif
++ #ifdef SIGWINCH
++ 	osigwinch = signal(SIGWINCH, catchwinch);
++ #endif
+  }
+  
+  uncatchem ()						/* restore signal status */
+***************
+*** 248,253 ****
+--- 289,297 ----
+  #endif	DEBUG
+  #if	defined(SIGTSTP)
+      signal (SIGTSTP, osigtstp);
++ #endif
++ #ifdef SIGWINCH
++     signal(SIGWINCH, osigwinch);
+  #endif
+  }
+  

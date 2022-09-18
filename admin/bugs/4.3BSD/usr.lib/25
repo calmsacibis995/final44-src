@@ -1,0 +1,72 @@
+Return-Path: <root@spool.wisc.edu>
+Date: Mon, 25 Aug 86 15:50:51 CDT
+Received: by spool.wisc.edu; Mon, 25 Aug 86 15:50:51 CDT
+From: Dave Cohrs <dave@rsch.wisc.edu>
+Subject: sendmail in daemon mode
+Index: 	usr.lib/sendmail/src/srvrsmtp.c 4.3BSD
+
+Description:
+	When sendmail runs in daemon mode, it attempts to set the "s" macro
+	to be the sender's hostname.  However, this value gets lost, so
+	the standard "Received" header line never lists which host it
+	received a message from.  This is due to the fact that the 
+	clearenvelope() routine changed between 4.2 and 4.3, but the
+	srvrsmtp code didn't change accordingly.
+
+Repeat-By:
+	Make sure the "Received" header line in /usr/lib/sendmail.cf is
+	defined as:
+
+	HReceived: $?sfrom $s $.by $j; $b
+
+	or something similar.  The "$?sfrom $s $." part is important.
+	Do a "sendmail -bz" and restart your daemon.  Send a message
+	to the host running the newly started daemon from another host.
+	The received line will be something like:
+
+	Received: by TESTHOST.DOMAIN; Mon, 25 Aug 86 14:56:49 CDT
+
+	but should be:
+
+	Received: from OTHERHOST.DOMAIN by TESTHOST.DOMAIN; Mon, 25 Aug 86 14:56:49 CDT
+
+Fix:
+	The problem is caused by a more thorough clearenvelope() routine in
+	the 4.3BSD sendmail.  The 4.2 version left all macros intact, while
+	the 4.3 version clears them all out at well.  The fix is to redefine
+	the "s" macro after the envelope has been cleared out.  The fix
+	is:
+
+*** /tmp/srvrsmtp.c	Mon Aug 25 10:33:49 1986
+--- srvrsmtp.c	Mon Aug 25 12:01:52 1986
+***************
+*** 217,225 ****
+--- 226,236 ----
+---------------
+  		  case CMDMAIL:		/* mail -- designate sender */
+  			SmtpPhase = "MAIL";
+  
+-<
+-<			/* force a sending host even if no HELO given */
+-<			if (RealHostName != NULL && macvalue('s', CurEnv) == NULL)
+-<				define('s', RealHostName, CurEnv);
+-<
+  
+  			/* check for validity of this command */
+  			if (hasmail)
+***************
+*** 239,244 ****
+--- 250,261 ----
+---------------
+  			initsys();
+  			setproctitle("%s %s: %s", CurEnv->e_id,
+  				CurHostName, inp);
++>
++>
++>			/* force a sending host even if no HELO given */
++>			if (RealHostName != NULL && macvalue('s', CurEnv) == NULL)
++>				define('s', RealHostName, CurEnv);
++>
+  
+  			/* child -- go do the processing */
+  			p = skipword(p, "from");

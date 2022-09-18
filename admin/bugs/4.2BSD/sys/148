@@ -1,0 +1,280 @@
+Return-Path: <@cmu-cs-pt.arpa:@:dave%CMU-ITC-LINUS@CMU-CS-PT.ARPACMU-ITC-LINUS>
+From: Dave Rosenthal <dave%CMU-ITC-LINUS@CMU-CS-PT.ARPA>
+Date: 16 Jan 1985 21:43-EST
+Subject: select on TIOCREMOTE pty never terminates
+Index: 	sys/sys/tty_pty.c 4.2BSD
+
+Description:
+A process select()-ing on a descriptor for the slave side of a
+pseudo-teletype in TIOCREMOTE mode will never be awakened.
+
+Repeat-By:
+
+Following program hangs if -t argument given.
+
+#include	<stdio.h>
+#include	<sys/types.h>
+#include	<sys/socket.h>
+#include	<sys/ioctl.h>
+#include	<netinet/in.h>
+#include	<signal.h>
+#include	<errno.h>
+#include	<netdb.h>
+
+main(argc,argv)
+int	argc;
+char	**argv;
+{
+    int     PtyNumber = 6;
+    int     SubChannel, fd, pid;
+    int     RemoteMode = 0, NoSelect = 0;
+    char    ptcname[128];
+    char    ptyname[128];
+
+    while (--argc && **++argv == '-')
+	switch (*++*argv) {
+	    case 't': 
+		RemoteMode++;
+		break;
+	    case 's':
+	        NoSelect++;
+		break;
+	    default: 
+		fprintf(stderr, "Bad option -%c\n", **argv);
+	}
+    while (PtyNumber++ < 16) {
+	sprintf(ptcname, "/dev/ptyp%c", PtyNumber < 10 ? PtyNumber + '0' : PtyNumber + 'a' - 10);
+	if ((SubChannel = open(ptcname, 2)) >= 0)
+	    break;
+    }
+    if (SubChannel < 0) {
+	fprintf(stderr, "Can't connect subchannel\n");
+	exit(0);
+    }
+    sprintf(ptyname, "/dev/ttyp%c", PtyNumber < 10 ? PtyNumber + '0' : PtyNumber + 'a' - 10);
+    fprintf(stderr, "%s\n", ptyname);
+    if (RemoteMode) {
+	int     ON = 1;
+
+	fprintf(stderr, "TIOCREMOTE\n");
+	ioctl(SubChannel, TIOCREMOTE, &ON);
+    }
+    ioctl(SubChannel, FIOCLEX, 0);
+    if ((fd = open(ptyname, 2)) < 0) {
+	perror(ptyname);
+	exit(1);
+    }
+    if ((pid = fork()) == 0) {
+	do {
+	    int     rmask = 1 << fd;
+	    int     res = 1;
+	    int     nfds = getdtablesize ();
+
+	    if (!NoSelect) fprintf(stderr, "About to select()\n");
+	    if (!NoSelect && (res = select(nfds, &rmask, 0, 0, 0)) < 0) {
+		perror("select()");
+		exit(1);
+	    }
+	    else
+		if (res == 0) {
+		    fprintf(stderr, "select == 0\n");
+		    exit(2);
+		}
+	    else {
+		char    c;
+
+		if (read(fd, &c, 1) < 1) {
+		    fprintf(stderr, "EOF\n");
+		    exit(0);
+		}
+		else {
+		    putchar(c);
+		}
+	    }
+	} while (1);
+    }
+    else {
+	char *word = "Hello Sailor!\n";
+
+	close(fd);
+	for (; *word; word++) {
+	    fprintf(stderr, "[%c]\n", *word);
+	    write(SubChannel, word, 1);
+	    sleep(2);
+	}
+    }
+}
+
+Fix:
+
+The essence of the problem is that ttnread() in tty.c examines the canq
+always,  but the rawq only if the tty is in RAW or CBREAK.  If a PTY is
+in TIOCREMOTE mode,  RAW or CBREAK are irrelevant.  The distributed
+system uses only the raw queue in TIOCREMOTE.  When the select calls
+ttnread(),  it examines the canq,  and always finds it empty.  So the
+fix is to use the canq not the rawq to ship the bytes in TIOCREMOTE.
+Its also necessary to ttwakeup on writes to the controller,  even in
+TIOCREMOTE.
+
+WARNING - line numbers somewhat bogus.  This fix overlaps with an
+earlier one I submitted about TIOCREMOTE mode.
+
+*** tty_pty.c.private	Sat Jan 12 17:03:21 1985
+--- tty_pty.c	Wed Jan 16 21:17:21 1985
+***************
+*** 129,135
+  			sleep((caddr_t)&lbolt, TTIPRI);
+  		}
+  #undef	bit
+! 		if (tp->t_rawq.c_cc == 0) {
+  			/*
+  			 *  If the controller has vanished get EOF
+  			 */
+
+--- 120,126 -----
+  			sleep((caddr_t)&lbolt, TTIPRI);
+  		}
+  #undef	bit
+! 		if (tp->t_canq.c_cc == 0) {
+  			/*
+  			 *  If the controller has vanished get EOF
+  			 */
+***************
+*** 140,147
+  			sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  			goto again;
+  		}
+! 		while (tp->t_rawq.c_cc > 1 && uio->uio_resid > 0)
+! 			if (ureadc(getc(&tp->t_rawq), uio) < 0) {
+  				error = EFAULT;
+  				break;
+  			}
+
+--- 131,138 -----
+  			sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  			goto again;
+  		}
+! 		while (tp->t_canq.c_cc > 1 && uio->uio_resid > 0)
+! 			if (ureadc(getc(&tp->t_canq), uio) < 0) {
+  				error = EFAULT;
+  				break;
+  			}
+***************
+*** 145,153
+  				error = EFAULT;
+  				break;
+  			}
+! 		if (tp->t_rawq.c_cc == 1)
+! 			(void) getc(&tp->t_rawq);
+! 		if (tp->t_rawq.c_cc)
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+
+--- 136,144 -----
+  				error = EFAULT;
+  				break;
+  			}
+! 		if (tp->t_canq.c_cc == 1)
+! 			(void) getc(&tp->t_canq);
+! 		if (tp->t_canq.c_cc)
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+***************
+*** 353,359
+  		break;
+  
+  	case FWRITE:
+! 		if ((pti->pt_flags & PF_REMOTE) == 0 || tp->t_rawq.c_cc == 0) {
+  			splx(s);
+  			return (1);
+  		}
+
+--- 344,350 -----
+  		break;
+  
+  	case FWRITE:
+! 		if ((pti->pt_flags & PF_REMOTE) == 0 || tp->t_canq.c_cc == 0) {
+  			splx(s);
+  			return (1);
+  		}
+***************
+*** 388,395
+  			break;
+  		iov = uio->uio_iov;
+  		if (iov->iov_len == 0) {
+! 			while ((pti->pt_flags&PF_REMOTE) && tp->t_rawq.c_cc!=0)
+! 				sleep((caddr_t)&tp->t_rawq.c_cf, TTOPRI);
+  			if (pti->pt_flags & PF_REMOTE) {
+  				(void) putc(0, &tp->t_rawq);
+  				wakeup((caddr_t)&tp->t_rawq);
+
+--- 379,387 -----
+  			break;
+  		iov = uio->uio_iov;
+  		if (iov->iov_len == 0) {
+! 			/* If we're PF_REMOTE - this generates an EOF */
+! 			while ((pti->pt_flags&PF_REMOTE) && tp->t_canq.c_cc!=0)
+! 				sleep((caddr_t)&tp->t_canq.c_cf, TTOPRI);
+  			if (pti->pt_flags & PF_REMOTE) {
+  				(void) putc(0, &tp->t_canq);
+  				wakeup((caddr_t)&tp->t_rawq);
+***************
+*** 391,397
+  			while ((pti->pt_flags&PF_REMOTE) && tp->t_rawq.c_cc!=0)
+  				sleep((caddr_t)&tp->t_rawq.c_cf, TTOPRI);
+  			if (pti->pt_flags & PF_REMOTE) {
+! 				(void) putc(0, &tp->t_rawq);
+  				wakeup((caddr_t)&tp->t_rawq);
+  			}
+  			uio->uio_iovcnt--;	
+
+--- 383,389 -----
+  			while ((pti->pt_flags&PF_REMOTE) && tp->t_canq.c_cc!=0)
+  				sleep((caddr_t)&tp->t_canq.c_cf, TTOPRI);
+  			if (pti->pt_flags & PF_REMOTE) {
+! 				(void) putc(0, &tp->t_canq);
+  				wakeup((caddr_t)&tp->t_rawq);
+  			}
+  			uio->uio_iovcnt--;	
+***************
+*** 408,414
+  		ce = cp + cc;
+  again:
+  		if (pti->pt_flags & PF_REMOTE) {
+! 			if (tp->t_rawq.c_cc) {
+  				if (pti->pt_flags & PF_NBIO) {
+  					iov->iov_base -= ce - cp;
+  					iov->iov_len += ce - cp;
+
+--- 400,406 -----
+  		ce = cp + cc;
+  again:
+  		if (pti->pt_flags & PF_REMOTE) {
+! 			if (tp->t_canq.c_cc) {
+  				if (pti->pt_flags & PF_NBIO) {
+  					iov->iov_base -= ce - cp;
+  					iov->iov_len += ce - cp;
+***************
+*** 419,427
+  				sleep((caddr_t)&tp->t_rawq.c_cf, TTOPRI);
+  				goto again;
+  			}
+! 			(void) b_to_q(cp, cc, &tp->t_rawq);
+! 			(void) putc(0, &tp->t_rawq);
+! 			wakeup((caddr_t)&tp->t_rawq);
+  			return (0);
+  		}
+  		while (cp < ce) {
+
+--- 411,419 -----
+  				sleep((caddr_t)&tp->t_rawq.c_cf, TTOPRI);
+  				goto again;
+  			}
+! 			(void) b_to_q(cp, cc, &tp->t_canq);
+! 			(void) putc(0, &tp->t_canq);
+! 			ttwakeup(tp);
+  			return (0);
+  		}
+  		while (cp < ce) {

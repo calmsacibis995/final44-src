@@ -1,0 +1,83 @@
+From steve@gyre.umd.edu  Mon Mar 27 08:53:38 1989
+Date: Mon, 27 Mar 89 11:51:20 EST
+From: Steve D. Miller <steve@gyre.umd.edu>
+To: 4bsd-bugs@okeeffe.Berkeley.EDU
+Subject: $[ and $] don't work properly in sendmail 5.61 [FIX]
+Index: usr.lib/sendmail/src/parseaddr.c 4.3BSD
+
+Description:
+	When used to canonicalize hostnames (as opposed to turning IP
+	addresses into hostnames), the $[ and $] operators fail to use the
+	domain search features of the resolver.  This problem occurs only
+	when sendmail is acting as a SMTP client; these operators function
+	properly in test mode (-bt).
+
+Repeat-By:
+	Use a sendmail config file that tries to canonicalize hostnames.
+	Run some addresses through it, and note that they seem to be
+	canonicalized properly.  Try to deliver to those same addresses,
+	and watch the canonicalization fail.
+
+	Alternatively, read the code in deliver.c and domain.c.  Just below
+	the 'Call the mailer' comment, we turn off RES_DEFNAMES and
+	RES_DNSRCH.  When we call smtpdata (and send the header), we may end
+	up going through rules that use $[ and $], and thus call
+	maphostname.  Because the default domain and domain search flags are
+	still off, maphostname won't actually do anything useful with
+	anything other than an IP address.
+
+Fix:
+	Two possibilities come to mind.  First, RES_DEFNAMES and RES_DNSRCH
+	could be turned on before smtpdata is called.  Alternatively,
+	maphostname could force these flags to be on, and turn them off again
+	if necessary.  I've chosen the latter approach, as it seems to me
+	(though I have not thought about it too hard) that we always want
+	these flags to be on when trying to canonicalize.  Diffs for this
+	change are below.  Your line numbers will probably vary.
+
+	-Steve
+
+Spoken: Steve Miller    Domain: steve@mimsy.umd.edu    UUCP: uunet!mimsy!steve
+Phone: +1-301-454-1516  USPS: UMIACS, Univ. of Maryland, College Park, MD 20742
+
+*** old parseaddr.c	Mon Mar 27 11:41:39 1989
+--- new parseaddr.c	Mon Mar 27 11:41:41 1989
+***************
+*** 22,27 ****
+--- 22,30 ----
+  
+  # include "sendmail.h"
+  
++ #include <arpa/nameser.h>
++ #include <resolv.h>
++ 
+  /*
+  **  PARSEADDR -- Parse an address
+  **
+***************
+*** 820,825 ****
+--- 823,829 ----
+  			char **hbrvp;
+  			char **xpvp;
+  			int trsize;
++ 			long resopts;
+  			char *olddelimchar;
+  			char buf[MAXNAME + 1];
+  			char *pvpb1[MAXATOM + 1];
+***************
+*** 849,855 ****
+--- 853,866 ----
+  
+  			/* look it up */
+  			cataddr(++hbrvp, buf, sizeof buf);
++ #ifdef NAMED_BIND
++ 			resopts = (_res.options & (RES_DEFNAMES | RES_DNSRCH));
++ 			_res.options |= (RES_DEFNAMES | RES_DNSRCH);
++ #endif
+  			maphostname(buf, sizeof buf);
++ #ifdef NAMED_BIND
++ 			_res.options |= (resopts & (RES_DEFNAMES | RES_DNSRCH));
++ #endif
+  
+  			/* scan the new host name */
+  			olddelimchar = DelimChar;

@@ -1,0 +1,136 @@
+Return-Path: <ihnp4!alberta!calgary!dave>
+Date: Sat, 16 Feb 85 15:46:41 mst
+From: Dave Mason <ihnp4!alberta!calgary!dave>
+Subject: System halts with "panic: sleep" or "panic: trap" (4.[12] BSD)
+
+Index:	sys/vax/locore.s 4.2BSD
+
+Description:
+	The system halts with a panic: sleep or panic: trap. If it halts
+	with "panic: trap" the PC will be pointing either to the ldpctx
+	instruction or the rei instrution in the _Resume subroutine
+	in vax/locore.s
+
+Repeat-By:
+	Run some big processes, enough that will cause your system to swap.
+	Run another small program that continually forks. Eventually
+	the system will crash.
+
+Fix:
+	This bug has more to do with the way space allocation is handled
+	with the generalized mapping routines rmalloc() and rmfree().
+	Rmalloc() dispenses items in units the caller understands, returning
+	an index to the newly allocated space. Because 0 is used as
+	a delimiter by these routines, a 0 index is never returned.
+
+	The routines that allocate pages for user page tables use rmalloc()
+	to find free space in Usrptmap. The value returned by rmalloc()
+	is used to directly index into Usrptmap. This map is initialized
+	to contain USRPTSIZE entries starting at index 1, since starting at
+	index 0 causes problems as noted above. All is fine until the
+	last map entry is allocated for use, whose index happens to be
+	USRPTSIZE+1. &Usrptmap[USRPTSIZE+1] also happens to be &Forkmap.
+	If a process happens to be forking while Usrptmap[USRPTSIZE+1] is
+	in use, the mapping for the process using it is lost. When that
+	process is run again you either get panic: trap or panic: sleep.
+
+	The easiest way to fix this is to extend the size of Usrptmap in
+	the system page table. Care must be taken that it is extended
+	by an even number, if it is extended by an odd number then things
+	don't line up properly for mbuf page clusters. Since mbuf clusters
+	are also mapped the same way, the page table for them should also
+	be extended by an even number.
+
+	I think the "proper" way to fix this is to fix rmalloc() so that a
+	a 0 index is a legitimate value, using -1 as a delimiter.
+	Of course this would mean that the system page table would have
+	to line up on a mod CLSIZE boundary which it doesn't do right
+	now. (If it did it wouldn't work!). This bug is/was also present
+	in 4.1BSD.
+
+	Below is the diff for the fix to locore.s. The line numbers
+	are probably way off.
+
+*** locore.s.old	Sat Feb 16 14:10:08 1985
+--- locore.s.new	Sat Feb 16 14:10:34 1985
+***************
+*** 932,937
+   * System page table
+   */ 
+  #define	vaddr(x)	((((x)-_Sysmap)/4)*NBPG+0x80000000)
+  #define	SYSMAP(mname, vname, npte)			\
+  _/**/mname:	.globl	_/**/mname;		\
+  	.space	npte*4;				\
+
+--- 932,941 -----
+   * System page table
+   */ 
+  #define	vaddr(x)	((((x)-_Sysmap)/4)*NBPG+0x80000000)
++ /*
++  * Page table entries below for &Mbmap[1] and &Usrptmap[1] MUST be on
++  * mod CLSIZE boundaries
++  */
+  #define	SYSMAP(mname, vname, npte)			\
+  _/**/mname:	.globl	_/**/mname;		\
+  	.space	(npte)*4;				\
+***************
+*** 934,940
+  #define	vaddr(x)	((((x)-_Sysmap)/4)*NBPG+0x80000000)
+  #define	SYSMAP(mname, vname, npte)			\
+  _/**/mname:	.globl	_/**/mname;		\
+! 	.space	npte*4;				\
+  	.globl	_/**/vname;			\
+  	.set	_/**/vname,vaddr(_/**/mname)
+  
+
+--- 938,944 -----
+   */
+  #define	SYSMAP(mname, vname, npte)			\
+  _/**/mname:	.globl	_/**/mname;		\
+! 	.space	(npte)*4;				\
+  	.globl	_/**/vname;			\
+  	.set	_/**/vname,vaddr(_/**/mname)
+  
+***************
+*** 945,951
+  	SYSMAP(Nexmap	,nexus		,16*MAXNNEXUS	)
+  	SYSMAP(UMEMmap	,umem		,512*NUBA	)
+  	SYSMAP(UMBAend	,umbaend	,0		)
+! 	SYSMAP(Usrptmap	,usrpt		,USRPTSIZE	)
+  	SYSMAP(Forkmap	,forkutl	,UPAGES		)
+  	SYSMAP(Xswapmap	,xswaputl	,UPAGES		)
+  	SYSMAP(Xswap2map,xswap2utl	,UPAGES		)
+
+--- 949,955 -----
+  	SYSMAP(Nexmap	,nexus		,16*MAXNNEXUS	)
+  	SYSMAP(UMEMmap	,umem		,512*NUBA	)
+  	SYSMAP(UMBAend	,umbaend	,0		)
+! 	SYSMAP(Usrptmap	,usrpt		,USRPTSIZE+2	)
+  	SYSMAP(Forkmap	,forkutl	,UPAGES		)
+  	SYSMAP(Xswapmap	,xswaputl	,UPAGES		)
+  	SYSMAP(Xswap2map,xswap2utl	,UPAGES		)
+***************
+*** 959,965
+  	SYSMAP(msgbufmap,msgbuf		,MSGBUFPTECNT	)
+  	SYSMAP(camap	,cabase		,16*CLSIZE	)
+  	SYSMAP(ecamap	,calimit	,0		)
+! 	SYSMAP(Mbmap	,mbutl		,NMBCLUSTERS*CLSIZE)
+  
+  eSysmap:
+  	.globl	_Syssize
+
+--- 963,969 -----
+  	SYSMAP(msgbufmap,msgbuf		,MSGBUFPTECNT	)
+  	SYSMAP(camap	,cabase		,16*CLSIZE	)
+  	SYSMAP(ecamap	,calimit	,0		)
+! 	SYSMAP(Mbmap	,mbutl		,NMBCLUSTERS*CLSIZE + 2)
+  
+  eSysmap:
+  	.globl	_Syssize
+
+
+
+						Dave Mason
+
+						University of Calgary
+						..!ihnp4!alberta!calgary!dave

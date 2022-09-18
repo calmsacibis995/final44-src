@@ -1,0 +1,247 @@
+From mtxinu!slatteng@ucbvax.Berkeley.EDU  Thu Jan 15 17:18:33 1987
+Date: Thu, 15 Jan 87 16:51:03 PST
+From: mtxinu!slatteng@ucbvax.Berkeley.EDU (Dave Slattengren)
+Subject: MicroVAX emulation code bug fixes
+Index: sys/vax/emulate.s 4.3BSD
+
+Description:
+	The MicroVAX emulation code for unimplemented instructions has
+	a few bugs that show themselves at the limits of "printf"s.
+	Also, there are numerous places where separate increment and
+	test instructions can be combined into one "sob" instruction.
+Repeat-By:
+	On a uVAX-II running 4.3:
+		printf("%.0f\n", 0.9);
+	produces
+		0
+	And, in some cases, "df" will produce a capacity of 00% when
+	it should be 100%.  Other mysterious things can happen to code
+	written by those strange folk who program in assembly.
+Fix:
+	A diff of emulate.s follows:
+58,61c56,57
+< 	toarg(r8,1)		# save r8 in arg1 spot
+< 	argl(4,r8)		# (4) source address == r8
+< 	toarg(r1,4)		# save r1 in arg4 spot
+< 	tstl	arg3		# (3) source length == "arg3"
+---
+> 	argl(4,r3)		# (4) source address == r3
+> 	arguw(3,r2)		# (3) source length == r2
+64c60
+< 	xorb2	(r8)+,r0
+---
+> 	xorb2	(r3)+,r0
+71,72c67
+< 	decl	arg3
+< 	jneq	Lcrc_loop
+---
+> 	sobgtr	r2,Lcrc_loop
+76,77c71
+< 	argl(1,r8)
+< 	argl(4,r1)
+---
+> 	clrl	r1
+97,99c91,92
+< 	decl	r4
+< 	jeql	Lmovtc_out
+< 	jbr	Lmovtc_loop
+---
+> 	sobgtr	r4,Lmovtc_loop
+> 	jbr	Lmovtc_out
+102,103c95
+< 	decl	r4
+< 	jneq	Lmovtc_2loop
+---
+> 	sobgtr	r4,Lmovtc_2loop
+131,132c123
+< 	decl	r4
+< 	jneq	Lmovtuc_loop
+---
+> 	sobgtr	r4,Lmovtuc_loop
+163,164c154
+< 	decl	r2
+< 	jneq	Lmatchc_loop
+---
+> 	sobgtr	r2,Lmatchc_loop
+168a159
+> 	movl	r1,r3
+180d170
+< 	argl(3,r3)		# (3) table address == r3
+181a172
+> 	argl(3,r3)		# (3) table address == r3
+190,191c181
+< 	decl	r0
+< 	jneq	Lspanc_loop
+---
+> 	sobgtr	r0,Lspanc_loop
+202d191
+< 	argl(3,r3)		# (3) table address == r3
+203a193
+> 	argl(3,r3)		# (3) table address == r3
+212,213c202
+< 	decl	r0
+< 	jneq	Lscanc_loop
+---
+> 	sobgtr	r0,Lscanc_loop
+226c215
+< 	incl	r0
+---
+> 	jeql	Lskpc_out	# forget zero length strings
+228,233c217,220
+< 	decl	r0
+< 	jeql	Lskpc_out
+< 	cmpb	(r1)+,r11
+< 	jeql	Lskpc_loop
+< 	decl	r1
+< 	tstl	r0
+---
+> 	cmpb	(r1),r11
+> 	jneq	Lskpc_out
+> 	incl	r1
+> 	sobgtr	r0,Lskpc_loop
+234a222
+> 	tstl	r0		# be sure of condition codes
+245c233
+< 	incl	r0
+---
+> 	jeql	Lskpc_out	# forget zero length strings
+247c235
+< 	decl	r0
+---
+> 	cmpb	(r1),r11
+249,252c237,238
+< 	cmpb	(r1)+,r11
+< 	jneq	Llocc_loop
+< 	decl	r1
+< 	tstl	r0
+---
+> 	incl	r1
+> 	sobgtr  r0,Llocc_loop
+253a240
+> 	tstl	r0		# be sure of condition codes
+270,271c257
+< 	decl	r0
+< 	jneq	Lcmpc3_loop
+---
+> 	sobgtr	r0,Lcmpc3_loop
+295,296c281
+< 	decl	r0
+< 	jneq	Lcmpc5_loop
+---
+> 	sobgtr	r0,Lcmpc5_loop
+304,305c289
+< 	decl	r2
+< 	jneq	Lcmpc5_str2loop
+---
+> 	sobgtr	r2,Lcmpc5_str2loop
+311,312c295
+< 	decl	r0
+< 	jneq	Lcmpc5_str1loop
+---
+> 	sobgtr	r0,Lcmpc5_str1loop
+514,515c497
+< 	decl	r11		# while (--source length)
+< 	jneq	Laddp4_same_loop
+---
+> 	sobgtr	r11,Laddp4_same_loop	# while (--source length)
+583,584c565
+< 	decl	r11		# loop for length of source
+< 	jneq	Lmovp_copy
+---
+> 	sobgtr	r11,Lmovp_copy	# loop for length of source
+797,798c778
+< 	decl	r11
+< 	jneq	L200
+---
+> 	sobgtr	r11,L200
+830,831c810
+< 	decl	r1
+< 	jneq	Le_fill_loop
+---
+> 	sobgtr	r1,Le_fill_loop
+856,857c835
+< 	decl	r1
+< 	jneq	L214
+---
+> 	sobgtr	r1,L214
+885,886c863
+< 	decl	r1
+< 	jneq	L221
+---
+> 	sobgtr	r1,L221
+901a879
+> 			# arg2 holds "even or odd" destination length
+918,919c896,901
+< L245:				# r3<0> counts digits going into destination
+< 	bisl2	$1,r3		#	and is flip-flop for which nibble to
+---
+> L245:
+> 	clrl	arg2		# arg2 is 1 if dstlen is even, 0 if odd
+> 	blbs	r3,L246
+> 	incl	arg2
+> 	bisl2	$1,r3		# r3<0> counts digits going into destination
+> L246:				#	and is flip-flop for which nibble to
+946,948c928,929
+< 	decl	r3		# move to next nibble in destination, but
+< 	jneq	L258		#	don't go beyond the end.
+< 	incl	r3
+---
+> 	sobgtr	r3,L258		# move to next nibble in destination, but
+> 	incl	r3		#	don't go beyond the end.
+959c940
+< 	jeql	Lashp_sethigh
+---
+> 	jeql	Lashp_round
+981,984c962,966
+< 	jgeq	Lashp_noovfl	# if we've moved passed destination limits
+< 	clrl	r3		#	test the result for possible overflow
+< 	tstl	arg5		#	ignore zero nibbles
+< 	jeql	L265		#	if the nibble was non-zero, overflow
+---
+> 	cmpl	r3,arg2		# if we've moved passed destination limits
+> 	jgeq	Lashp_noovfl	#	test the result for possible overflow
+> 	movl	arg2,r3		#	ignore zero nibbles
+> 	tstl	arg5		#	if the nibble was non-zero, overflow
+> 	jeql	L265
+991,992c973
+< 	decl	r6
+< 	insv	arg5,$0,$4,(r6)
+---
+> 	movb	arg5,-(r6)
+994,995c975
+< 	decl	r10		# loop for length of source
+< 	jneq	Lashp_shloop
+---
+> 	sobgtr	r10,Lashp_shloop	# loop for length of source
+997,1000c977,985
+< Lashp_sethigh:
+< 	jlbc	r3,L266		# if we haven't set the high nibble,
+< 	insv	r2,$4,$4,(r6)	# carry the round into the high nibble
+< 	clrl	r2
+---
+> Lashp_round:
+> 	tstl	r2		# take care of round out of high nibble
+> 	jeql	Lashp_zeroround
+> 	decl	r3
+> 	cmpl	r3,arg2		# if we've moved passed destination limits
+> 	jlss	Lashp_overfl	#	then overflow
+> 	jlbs	r3,L266
+> 	insv	arg5,$4,$4,(r6)	# put the round into destination (high or low)
+> 	jbr	Lashp_zeroround
+1001a987,989
+> 	movb	arg5,-(r6)
+> 
+> Lashp_zeroround:
+1008,1009c996
+< 	cvtlb	r2,-(r6)	# fill up MSNs of destination with carry or zero
+< 	clrl	r2
+---
+> 	clrb	-(r6)		# fill up MSNs of destination with zeros
+1013,1014d999
+< 	tstl	r2		# if carry beyond destination, overflow
+< 	jneq	Lashp_overfl
+1102,1103c1087
+< 	decl	r11
+< 	jneq	Lcvtpl_loop
+---
+> 	sobgtr	r11,Lcvtpl_loop

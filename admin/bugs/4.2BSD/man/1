@@ -1,0 +1,433 @@
+Return-Path: <cbosgd!utcs!geoff@ucbvax.berkeley.edu>
+Date: Sat, 30 Nov 85 09:19:28 est
+From: utcs!geoff@ucbvax.berkeley.edu (Geoff Collyer)
+Subject: 4.2BSD newfs's special file name restriction lifted; mkfs(8) completed
+Newsgroups: net.unix-wizards,net.bugs.4bsd
+
+Index:	etc/newfs.c 4.2BSD
+Index:	man/man8/mkfs.8 4.2BSD
+
+Description:
+	Newfs used to require that the special file name argument be of
+	the form /dev/ra6t, which is unnecessarily and offensively
+	restrictive.  We have links, bearing the names of the file
+	systems which live upon them, to the special files of the form
+	/dev/ra7q and normally use the mnemonic names, such as
+	/dev/usr.  Our machines have varying disk layouts and models of
+	disk and it is highly inconvenient to have to determine the
+	other name of /dev/tmp if we want to newfs it, the moreso since
+	newfs is the only program so afflicted.
+
+	mkfs(8) didn't document its final parameter, bytes per i-node,
+	nor that it silently limits certain values.
+
+	installboot used to be undocumented.
+Repeat-By:
+	Try to "newfs /dev/tmp ra81" and watch it fail.
+
+	Read mkfs(8); note the absence of a description of the parameter
+	following rps and the stunning silence regarding its sullen
+	misbehaviour when given extreme values.
+
+	Type "man installboot"; note the lack of a manual page.
+Fix:
+	Apply the patches below to newfs.c and mkfs.8 respectively.
+	The patch to newfs means that it will not install a boot
+	program on a root partition, since this is now very difficult
+	for newfs.  This never belonged in newfs to start with and on
+	the rare occasions that it is needed, can be done trivially by
+	the undocumented /usr/mdec/installboot (source and de facto
+	documentation in /sys/mdec/installboot.c).  Connoisseurs of
+	poor coding practices may note that the installboot function of
+	newfs almost, but not quite, exactly duplicates the source of
+	/sys/mdec/installboot.c, courtesy of code sharing via the
+	editor.
+
+	A brand-new, shiny installboot(8) is included.
+
+*** /tmp/,RCSt1009574	Sat Nov 30 08:33:49 1985
+--- /tmp/,RCSt2009574	Sat Nov 30 08:33:51 1985
+***************
+*** 38,44
+  char	a8[20];
+  char	a9[20];
+  char	a10[20];
+- char	device[MAXPATHLEN];
+  char	cmd[BUFSIZ];
+  
+  char *index();
+
+--- 38,43 -----
+  char	a8[20];
+  char	a9[20];
+  char	a10[20];
+  char	cmd[BUFSIZ];
+  
+  char *index();
+***************
+*** 53,58
+  	register struct disktab *dp;
+  	register struct partition *pp;
+  	register int i;
+  	char *cp, *special;
+  	int status;
+  	struct stat st;
+
+--- 52,58 -----
+  	register struct disktab *dp;
+  	register struct partition *pp;
+  	register int i;
++ 	int status, part = -1;
+  	char *cp, *special;
+  	struct stat st;
+  
+***************
+*** 54,60
+  	register struct partition *pp;
+  	register int i;
+  	char *cp, *special;
+- 	int status;
+  	struct stat st;
+  
+  	argc--, argv++;
+
+--- 54,59 -----
+  	register int i;
+  	int status, part = -1;
+  	char *cp, *special;
+  	struct stat st;
+  
+  	argc--, argv++;
+***************
+*** 175,180
+  		(void) fprintf(stderr, "\t-i number of bytes per inode\n");
+  		exit(1);
+  	}
+  	special = argv[0];
+  	cp = rindex(special, '/');
+  	if (cp != 0)
+
+--- 174,186 -----
+  		(void) fprintf(stderr, "\t-i number of bytes per inode\n");
+  		exit(1);
+  	}
++ 
++ 	/*
++ 	 * If special file is a block device, try to use the raw device.
++ 	 * Glue "/dev/r" onto the front of the last component of the
++ 	 * special file name and hope for the best.  The result must
++ 	 * be a character special file or newfs quits.
++ 	 */
+  	special = argv[0];
+  	if (stat(special, &st) >= 0 && (st.st_mode&S_IFMT) == S_IFBLK) {
+  		static char device[MAXPATHLEN];
+***************
+*** 176,187
+  		exit(1);
+  	}
+  	special = argv[0];
+! 	cp = rindex(special, '/');
+! 	if (cp != 0)
+! 		special = cp + 1;
+! 	if (*special == 'r' && special[1] != 'a' && special[1] != 'b')
+! 		special++;
+! 	special = sprintf(device, "/dev/r%s", special);
+  	if (stat(special, &st) < 0) {
+  		(void) fprintf(stderr, "newfs: "); perror(special);
+  		exit(2);
+
+--- 182,196 -----
+  	 * be a character special file or newfs quits.
+  	 */
+  	special = argv[0];
+! 	if (stat(special, &st) >= 0 && (st.st_mode&S_IFMT) == S_IFBLK) {
+! 		static char device[MAXPATHLEN];
+! 
+! 		cp = rindex(special, '/');
+! 		if (cp != NULL)			/* name contains a slash */
+! 			special = cp + 1;	/* point at last component */
+! 		(void) sprintf(device, "/dev/r%s", special);
+! 		special = device;
+! 	}
+  	if (stat(special, &st) < 0) {
+  		(void) fprintf(stderr, "newfs: ");
+  		perror(special);
+***************
+*** 183,189
+  		special++;
+  	special = sprintf(device, "/dev/r%s", special);
+  	if (stat(special, &st) < 0) {
+! 		(void) fprintf(stderr, "newfs: "); perror(special);
+  		exit(2);
+  	}
+  	if ((st.st_mode & S_IFMT) != S_IFCHR)
+
+--- 192,199 -----
+  		special = device;
+  	}
+  	if (stat(special, &st) < 0) {
+! 		(void) fprintf(stderr, "newfs: ");
+! 		perror(special);
+  		exit(2);
+  	}
+  	if ((st.st_mode & S_IFMT) != S_IFCHR)
+***************
+*** 188,193
+  	}
+  	if ((st.st_mode & S_IFMT) != S_IFCHR)
+  		fatal("%s: not a character device", special);
+  	dp = getdiskbyname(argv[1]);
+  	if (dp == 0)
+  		fatal("%s: unknown disk type", argv[1]);
+
+--- 198,211 -----
+  	}
+  	if ((st.st_mode & S_IFMT) != S_IFCHR)
+  		fatal("%s: not a character device", special);
++ 	/*
++ 	 * Compute disk partition from minor device number.
++ 	 * This is arguably something that user code should not know
++ 	 * but it's far cleaner than the previous algorithm.
++ 	 */
++ 	part = minor(st.st_rdev) % 8;
++ 
++ 	/* Grub up the disktab entry */
+  	dp = getdiskbyname(argv[1]);
+  	if (dp == 0)
+  		fatal("%s: unknown disk type", argv[1]);
+***************
+*** 191,200
+  	dp = getdiskbyname(argv[1]);
+  	if (dp == 0)
+  		fatal("%s: unknown disk type", argv[1]);
+! 	cp = index(argv[0], '\0') - 1;
+! 	if (cp == 0 || *cp < 'a' || *cp > 'h')
+! 		fatal("%s: can't figure out file system partition", argv[0]);
+! 	pp = &dp->d_partitions[*cp - 'a'];
+  	if (fssize == 0) {
+  		fssize = pp->p_size;
+  		if (fssize < 0)
+
+--- 209,217 -----
+  	dp = getdiskbyname(argv[1]);
+  	if (dp == 0)
+  		fatal("%s: unknown disk type", argv[1]);
+! 
+! 	pp = &dp->d_partitions[part];
+! 
+  	if (fssize == 0) {
+  		fssize = pp->p_size;
+  		if (fssize < 0)
+***************
+*** 234,239
+  			fatal("%s: no default revolutions/minute value",
+  				argv[1]);
+  	}
+  	if (density <= 0)
+  		density = 2048;
+  	if (minfree < 0)
+
+--- 251,261 -----
+  			fatal("%s: no default revolutions/minute value",
+  				argv[1]);
+  	}
++ 
++ 	/*
++ 	 * Almost all the useful work of newfs is done here.
++ 	 * The getdiskbyname above is the rest of it.
++ 	 */
+  	if (density <= 0)
+  		density = 2048;
+  	if (minfree < 0)
+***************
+*** 240,245
+  		minfree = 10;
+  	if (cpg == 0)
+  		cpg = 16;
+  	i = 0;
+  	av[i++] = sprintf(a2, "%d", fssize);
+  	av[i++] = sprintf(a3, "%d", nsectors);
+
+--- 262,271 -----
+  		minfree = 10;
+  	if (cpg == 0)
+  		cpg = 16;
++ 
++ 	/*
++ 	 * This code is broken; ANSI & Uglix sprintf's return ints.
++ 	 */
+  	i = 0;
+  	av[i++] = sprintf(a2, "%d", fssize);
+  	av[i++] = sprintf(a3, "%d", nsectors);
+***************
+*** 260,266
+  		(void) printf("%s\n", cmd);
+  	if (status = system(cmd))
+  		exit(status);
+! 	if (*cp == 'a' && !noboot) {
+  		char type[3];
+  		struct stat sb;
+  
+
+--- 286,294 -----
+  		(void) printf("%s\n", cmd);
+  	if (status = system(cmd))
+  		exit(status);
+! 
+! 	if (part == 0 && !noboot) {		/* root partition & okay */
+! #ifdef notdef					/* would be nice, but needs AI */
+  		char type[3];
+  		struct stat sb;
+  
+***************
+*** 268,275
+  		if (cp == NULL)
+  			fatal("%s: can't figure out disk type from name",
+  				special);
+! 		if (stat(special, &sb) >= 0 && (sb.st_mode & S_IFMT) == S_IFCHR)
+! 			cp++;
+  		type[0] = *++cp;
+  		type[1] = *++cp;
+  		type[2] = '\0';
+
+--- 296,312 -----
+  		if (cp == NULL)
+  			fatal("%s: can't figure out disk type from name",
+  				special);
+! 		/* If special is a character (raw) device, */
+! 		if (stat(special, &sb) >= 0 && (sb.st_mode&S_IFMT) == S_IFCHR)
+! 			cp++;			/* use the block device */
+! 		/*
+! 		 * Copy 0002 characters for installboot.
+! 		 * This simple-minded copy assumes that the special file
+! 		 * name is of the form .../rra7q; this is unacceptable,
+! 		 * since it requires one to know the mapping from /dev/usr
+! 		 * to /dev/rra6t, which is error-prone and varies from
+! 		 * machine to machine.
+! 		 */
+  		type[0] = *++cp;
+  		type[1] = *++cp;
+  		type[2] = '\0';
+***************
+*** 274,279
+  		type[1] = *++cp;
+  		type[2] = '\0';
+  		installboot(special, type);
+  	}
+  	exit(0);
+  }
+
+--- 311,319 -----
+  		type[1] = *++cp;
+  		type[2] = '\0';
+  		installboot(special, type);
++ #else
++ 		fatal("no boot program installed; use /usr/mdec/installboot");
++ #endif
+  	}
+  	exit(0);
+  }
+
+
+*** /usr/man/man8/mkfs.8	Mon Apr  4 07:08:32 1983
+--- mkfs.8	Sat Nov 30 08:20:08 1985
+***************
+*** 12,17
+  [ ncpg ]
+  [ minfree ]
+  [ rps ]
+  .SH DESCRIPTION
+  .B N.B.:
+  file system are normally created with the
+
+--- 12,18 -----
+  [ ncpg ]
+  [ minfree ]
+  [ rps ]
++ [ bpino ]
+  .SH DESCRIPTION
+  .B N.B.:
+  file system are normally created with the
+***************
+*** 61,66
+  If a disk does not revolve at 60 revolutions per second, the
+  .B rps
+  parameter may be specified.
+  Users with special demands for their file systems are referred to
+  the paper cited below for a discussion of the tradeoffs in using
+  different configurations.
+
+--- 62,74 -----
+  If a disk does not revolve at 60 revolutions per second, the
+  .I rps
+  parameter may be specified.
++ .I Bpino
++ is the number of data bytes per i-node:
++ an i-node will be allocated for every
++ .I bpino
++ bytes allocated to data,
++ subject to the BUGS below.
++ .PP
+  Users with special demands for their file systems are referred to
+  the paper cited below for a discussion of the tradeoffs in using
+  different configurations.
+***************
+*** 76,78
+  TR #7, September 1982.
+  .SH BUGS
+  There should be some way to specify bad blocks.
+
+--- 84,99 -----
+  TR #7, September 1982.
+  .SH BUGS
+  There should be some way to specify bad blocks.
++ .br
++ .I Mkfs
++ silently imposes upper and lower limits on various values.
++ It should tell its invoker what limits have been imposed.
++ In particular,
++ decreasing
++ .I bpino
++ to give a filesystem more i-nodes may exceed the limit on the
++ number of i-nodes per cylinder group (MAXIPG in <sys/fs.h>);
++ in such a case,
++ try decreasing
++ .I ncpg
++ too.
+
+
+.TH INSTALLBOOT 8 local
+.DA 30 Nov 1985
+.SH NAME
+installboot \- installs a boot program in a file system
+.SH SYNOPSIS
+.B /usr/mdec/installboot
+bootblock bootprog special
+.SH DESCRIPTION
+.I Installboot
+concatentates
+.I bootblock
+and
+.I bootprog
+and writes at most BBSIZE bytes (from <sys/fs.h>)
+of them on the first bytes of
+.IR special .
+.SH FILES
+/usr/mdec/??boot	boot blocks
+.br
+/usr/mdec/boot??	boot programs
+.SH SEE ALSO
+newfs(8), dd(1)
+.SH EXAMPLES
+cd /usr/mdec
+.br
+installboot raboot bootra /dev/ra0a
+.SH HISTORY
+.I Installboot
+comes undocumented with 4.2BSD.
+This manual page was written by Geoff Collyer.
+.SH BUGS
+There is no convenient way to determine the names of the boot blocks
+and boot programs without
+.I "a priori"
+knowledge of one's make of disk.

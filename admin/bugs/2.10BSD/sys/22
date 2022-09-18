@@ -1,0 +1,64 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Jul 26 21:36:56 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA20245; Wed, 26 Jul 89 21:36:56 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA27100; Wed, 26 Jul 89 21:36:49 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA00788; Wed, 26 Jul 89 21:34:42 -0700
+Date: Wed, 26 Jul 89 21:34:42 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8907270434.AA00788@WLV.IMSD.CONTEL.COM>
+Subject: shutdown(2) crashes system
+Index: 	sys/uipc_sys.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	shutdown(fd, how) on a file descriptor which is not valid (either
+	fd >= NFILE or fd is not open) can crash your system.
+
+	In general, ANY socket related syscall (bind, accept, listen, connect,
+	send, etc) will exhibit this behaviour because a common routine
+	is called to validate fd.
+
+Repeat-By:
+	Compile and run this program:
+
+	main()
+		{
+
+		sync();
+		shutdown(15, 2);
+		}
+
+	If the bug is present in your system it will crash with a "netcrash"
+	panic.
+
+Fix:
+	Install the following patch.  The problem was that the GETF macro
+	can NOT be used because it can return prematurely with a garbage
+	value (what ever happened to be in r0 at the time).
+
+	Arguably, an alternate fix for the bug would have been to
+	fix GETF to return 0 when a file descriptor was invalid.  The
+	fix below implements the 4.3BSD approach (although GETF should
+	still be fixed i believe).
+
+*** uipc_sys.c.old	Wed Jul 26 16:05:58 1989
+--- uipc_sys.c	Wed Jul 26 16:09:36 1989
+***************
+*** 712,718 ****
+  {
+  	register struct file *fp;
+  
+! 	GETF(fp, fdes);
+  	if (fp == NULL)
+  		return (0);
+  	if (fp->f_type != DTYPE_SOCKET) {
+--- 712,718 ----
+  {
+  	register struct file *fp;
+  
+! 	fp = getf(fdes);
+  	if (fp == NULL)
+  		return (0);
+  	if (fp->f_type != DTYPE_SOCKET) {

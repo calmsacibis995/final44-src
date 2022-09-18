@@ -1,0 +1,115 @@
+From bostic@okeeffe.Berkeley.EDU  Mon Oct 19 18:18:58 1987
+Date: Mon, 19 Oct 87 18:18:32 PDT
+From: bostic@okeeffe.Berkeley.EDU (Keith Bostic)
+Subject: mktemp is broken
+Index: lib/libc/gen/mktemp.c 2.10BSD
+
+Description:
+	mktemp(3), as distributed with 2.10BSD will fail if used
+	with setuid programs.
+Repeat-By:
+	Try to create a temporary file in a directory that is writeable
+	not by the user, but by the setuid program.
+Fix:
+	Unshar the attached file and replace lib/libc/gen/mktemp.c.
+
+echo x - mktemp.c
+sed 's/^X//' >mktemp.c << 'END-of-mktemp.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)mktemp.c	5.4 (Berkeley) 9/14/87";
+X#endif LIBC_SCCS and not lint
+X
+X#include <sys/types.h>
+X#include <sys/file.h>
+X#include <sys/stat.h>
+X#include <errno.h>
+X#include <stdio.h>
+X#include <ctype.h>
+X
+X#define	YES	1
+X#define	NO	0
+X
+Xmkstemp(as)
+X	char	*as;
+X{
+X	int	fd;
+X
+X	return (_gettemp(as, &fd) ? fd : -1);
+X}
+X
+Xchar *
+Xmktemp(as)
+X	char	*as;
+X{
+X	return(_gettemp(as, (int *)NULL) ? as : (char *)NULL);
+X}
+X
+Xstatic
+X_gettemp(as, doopen)
+X	char	*as;
+X	register int	*doopen;
+X{
+X	extern int	errno;
+X	register char	*start, *trv;
+X	struct stat	sbuf;
+X	u_int	pid;
+X
+X	pid = getpid();
+X
+X	/* extra X's get set to 0's */
+X	for (trv = as; *trv; ++trv);
+X	while (*--trv == 'X') {
+X		*trv = (pid % 10) + '0';
+X		pid /= 10;
+X	}
+X
+X	/*
+X	 * check for write permission on target directory; if you have
+X	 * six X's and you can't write the directory, this will run for
+X	 * a *very* long time.
+X	 */
+X	for (start = ++trv; trv > as && *trv != '/'; --trv);
+X	if (*trv == '/') {
+X		*trv = '\0';
+X		if (stat(as, &sbuf) || !(sbuf.st_mode & S_IFDIR))
+X			return(NO);
+X		*trv = '/';
+X	}
+X	else if (stat(".", &sbuf) == -1)
+X		return(NO);
+X
+X	for (;;) {
+X		if (doopen) {
+X		    if ((*doopen = open(as, O_CREAT|O_EXCL|O_RDWR, 0600)) >= 0)
+X			return(YES);
+X		    if (errno != EEXIST)
+X			return(NO);
+X		}
+X		else if (stat(as, &sbuf))
+X			return(errno == ENOENT ? YES : NO);
+X
+X		/* tricky little algorithm for backward compatibility */
+X		for (trv = start;;) {
+X			if (!*trv)
+X				return(NO);
+X			if (*trv == 'z')
+X				*trv++ = 'a';
+X			else {
+X				if (isdigit(*trv))
+X					*trv = 'a';
+X				else
+X					++*trv;
+X				break;
+X			}
+X		}
+X	}
+X	/*NOTREACHED*/
+X}
+END-of-mktemp.c
+exit

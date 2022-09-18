@@ -1,0 +1,70 @@
+Return-Path: <RWS@MIT-XX>
+Date: 2 Nov 1983 1707-EST
+From: RWS@MIT-XX
+Subject: sundry 4.2 bugs
+Index: lib 4.2BSD
+
+Despite claims to the contrary, the block number sign extension problem still
+exists.  Berkeley put in a fix that should have worked, but a C compiler bug
+apparently keeps it from working.  In /sys/sys/vm_mem.c in memall() the code
+      swapdev : mount[c->c_mdev].m_dev, (daddr_t)(u_long)c->c_blkno
+should be changed to
+      swapdev : mount[c->c_mdev].m_dev, c->c_blkno
+and in /sys/vax/vm_machdep.c in chgprot() the code
+	munhash(mount[c->c_mdev].m_dev, (daddr_t)(u_long)c->c_blkno);
+should be changed to
+	munhash(mount[c->c_mdev].m_dev, c->c_blkno);
+because the C compiler apparently incorrectly folds the (daddr_t) and (u_long)
+together and sign extends anyway.  Simply taking out the (daddr_t)(u_long)
+works, although lint will probably complain about it.
+
+There is a magic number (0x3ffff8) representing USRSTACK/NBPG built in to
+Fastreclaim in /sys/vax/locore.s.  However, USRSTACK depends on UPAGES,
+so this magic number has UPAGES=8 built in, which is bogus.  If you change
+UPAGES, your system will panic: trap.  The fix
+is to change
+	subl3	P_SSIZE(r5),$0x3ffff8,r0
+to
+	subl3	P_SSIZE(r5),$(0x400000-UPAGES),r0
+and to change
+	subl2	$(0x3ffff8+UPAGES),r4
+to
+	subl2	$0x400000,r4
+
+UDP checksumming is turned off, and with good cause, since bad checksums
+are produced on output.  In /sys/netinet/udp_usrreq.c in udp_output(),
+the code
+	ui->ui_ulen = htons((u_short)ui->ui_len);
+should be changed to
+	ui->ui_len = htons((u_short)ui->ui_len);
+	ui->ui_ulen = ui->ui_len;
+Then
+	int	udpcksum;
+can be changed to
+	int	udpcksum = 1;
+
+
+In /sys/netinet/tcp_input.c in tcp_intput(), the code
+		sbdrop(&so->so_snd, so->so_snd.sb_cc);
+		tp->snd_wnd -= so->so_snd.sb_cc;
+should be
+		tp->snd_wnd -= so->so_snd.sb_cc;
+		sbdrop(&so->so_snd, so->so_snd.sb_cc);
+
+In /sys/netinet/tcp_output.c in tcp_output() the code
+	if (SEQ_GT(tp->snd_nxt, tp->snd_max))
+		tp->snd_max = tp->snd_nxt;
+	if (SEQ_GT(tp->snd_nxt, tp->snd_max) && tp->t_rtt == 0) {
+		tp->t_rtt = 1;
+		tp->t_rtseq = tp->snd_nxt - len;
+	}
+should be
+	if (SEQ_GT(tp->snd_nxt, tp->snd_max)) {
+		tp->snd_max = tp->snd_nxt;
+		if (tp->t_rtt == 0) {
+			tp->t_rtt = 1;
+			tp->t_rtseq = tp->snd_nxt - len;
+		}
+	}
+
+-------

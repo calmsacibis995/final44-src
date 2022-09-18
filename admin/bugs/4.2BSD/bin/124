@@ -1,0 +1,183 @@
+Date:  4 Feb 1983 1650-PST (Friday)
+From: mosher
+Subject: core dumps
+Index: bin/lint 4.2BSD
+Date:  4 Feb 1983 1059-PST (Friday)
+From: fabry
+Subject: lint bug
+To: mosher
+
+lint core dumps when run on the following file:
+/*
+ * The buffer queue module:
+ * BQINIT:  Initialize a buffer queue.
+ * BGET:  Get buffer from front of a buffer queue.
+ * BPUT:  Put buffer at end of a buffer queue.
+ * TRACEB:  Turn buffer tracing on or off.
+ */
+#include "buf.h"                        /* use buffers and buffer queues */
+#include "sem.h"                        /* use semaphores */
+#include <stdio.h>                      /* use standard I/O library */
+#define NIL (BUF *) 020000000000             /* undefined buffer pointer */
+extern char *calloc();                  /* storage allocation function */
+short btflag;                           /* give buffer trace if non-zero */
+
+struct bqueue {                         /* buffer queue structure */
+    SEM *count;                             /* number of buffers on queue */
+    SEM *mutex;                             /* for exclusive access to queue */
+    BUF *head;                              /* first buffer on queue */
+    BUF *tail;                              /* last buffer on queue */
+    char *name;                             /* pointer to queue name */
+    char cname[20];                         /* name for count semaphore */
+    char mname[20];                         /* name for mutex semaphore */
+};
+
+BQUEUE *bqinit(n, string)               /* BQINIT: */
+short n;                                /* initial number of buffers */
+char *string;                           /* queue name */
+{
+    BQUEUE *bq;                             /* buffer queue */
+    short i;                                /* counts buffers */
+    BUF *buf;                               /* buffer to be added */
+
+    bq = (BQUEUE *)
+        calloc (1, sizeof(BQUEUE));         /* allocate queue structure */
+    sprintf (bq->cname, "%.12s->count",
+	string);                            /* initialize semaphore names */
+    sprintf (bq->mname, "%.12s->mutex",
+	string);
+    bq->count = seminit(0, bq->cname);      /* set count sem to zero */
+    bq->mutex = seminit(1, bq->mname);      /* set mutex sem to unlocked */
+    bq->head = bq->tail = NIL;              /* set pointers to NIL */
+    bq->name = string;                      /* copy name pointer */
+    for (i = 0; i < n; i++) {               /* do N times */
+        buf = (BUF *) calloc(1, sizeof(BUF));   /* allocate new buffer */
+	buf->ch[0] = '\0';                      /* clear it */
+        bput(bq, buf);                          /* put it on queue */
+    }
+    return (bq);                            /* return pointer of bogus type */
+}
+
+BUF *bget(bq)                           /* BGET: */
+BQUEUE *bq;                             /* buffer queue */
+{
+    BUF *buf;                               /* buffer to be removed */
+
+    p(bq->count);                           /* wait if buffer count is zero */
+    p(bq->mutex);                           /* get exclusive access to queue */
+    if (bq->head == NIL)                    /* if no buffers on queue */
+        error("Bget--Bad queue count.");        /* module's error */
+    buf = bq->head;                         /* find first buffer on queue */
+    bq->head = buf->blink;                  /* make head point to successor */
+                                            /* (NIL if none) */
+    if (bq->head == NIL)                    /* if no successor */
+        bq->tail = NIL;                         /* make tail NIL */
+    v(bq->mutex);                           /* release exclusive access */
+    buf->blink = NIL;                       /* make link NIL (safety) */
+    if (btflag) {                           /* if buffer trace is on */
+        printf("bget(%s): \"%s\"\n",            /* print trace line */
+	    bq->name, buf->ch);
+	fflush(stdout);                         /* empty stdio output buffer */
+    }
+    return (buf);                           /* return pointer to buffer */
+}
+
+bput(bq, buf)                           /* BPUT: */
+BQUEUE *bq;                             /* buffer queue */
+BUF *buf;                               /* buffer to place on queue */
+{
+
+    if (buf == NIL || buf == 0)             /* if BUF not valid */
+        error("Bput--Bad argument.");           /* caller's error */
+    if (btflag) {                           /* if buffer trace is on */
+        printf("bput(%s, \"%s\")\n",            /* print trace line */
+	    bq->name, buf->ch);
+	fflush(stdout);                         /* empty stdio output buffer */
+    }
+    p(bq->mutex);                           /* get exclusive access to queue */
+    if (bq->head == NIL)                    /* if queue was empty */
+        bq->head = buf;                         /* put new buffer at head */
+    else                                    /* else */
+        bq->tail->blink = buf;                  /* link it after last buffer */
+    bq->tail = buf;                         /* set tail to new buffer */
+    buf->blink = NIL;                       /* make buffer's link NIL */
+    v(bq->mutex);                           /* release exclusive access */
+    v(bq->count);                           /* count another buffer in queue */
+}
+
+traceb(flag)                            /* TRACEB: */
+int flag;                               /* new value for buffer trace flag */
+{
+    btflag = flag;                          /* set buffer trace flag */
+}
+/*
+ * Information for users of buffers and buffer queues
+ */
+#define BUFSIZE 57                      /* 56 characters plus end of string */
+#define END 0                           /* ch[0] value to mark end of file */
+
+typedef struct buf {                    /* a buffer contains: */
+        struct buf *blink;                  /* field for chaining on queues */
+        char ch[BUFSIZE];                   /* one input or output line */
+} BUF;
+
+typedef struct bqueue BQUEUE;           /* buffer queue */
+
+extern BQUEUE *bqinit();                /* initialize new buffer queue */
+extern BUF *bget();                     /* get buffer from buffer queue */
+/*
+ * The system statistics utility module:
+ * SYSSTAT:  Put statistics for batch in buffers.
+ * LOGTA:  Log the turnaround time for one job.
+ */
+#include "buf.h"                        /* use buffers and buffer queues */
+#include "hardware.h"                   /* use hardware or constants */
+
+short njobs;                            /* number of logged jobs */
+short tasum;                            /* sum of turnaround their times */
+
+sysstat(epbq, fpbq)                     /* SYSSTAT: */
+BQUEUE *epbq;                           /* empty print buffer queue */
+BQUEUE *fpbq;                           /* full print buffer queue */
+{
+    short sclock;                           /* snapshot of clock */
+    short scpu[3];                          /* snapshot of cpu stats */
+    short sio[NDEV];                        /* snapshot of i/o stats */
+    short i;                                /* index of stat entry */
+    BUF *buf;                               /* output line buffer */
+
+    sclock = clock;                         /* make copy of clock */
+    for (i = 0; i < 3; i++)                 /* and cpu statistics */
+        scpu[i] = cpustat[i];
+    for (i = 0; i < NDEV; i++)              /* and i/o statistics */
+        sio[i] = iostat[i];                 /* for consistency */
+    buf = bget(epbq);                       /* get empty buffer */
+    sprintf(buf->ch, " ");                  /* fill with blank line */
+    bput(fpbq, buf);                        /* send buffer to PRINTER */
+    buf = bget(epbq);                       /* get empty buffer */
+    sprintf(buf->ch,
+        "System closed at %d; average turnaround=%d.",
+        sclock, tasum / njobs);             /* fill with times */
+    bput(fpbq, buf);                        /* send buffer to PRINTER */
+    buf = bget(epbq);                       /* get empty buffer */
+    sprintf(buf->ch,
+        "Processor time: User=%d; Super=%d; Idle=%d.",
+        scpu[USER], scpu[SUPER],
+        scpu[IDLE]);                        /* fill with cpu statistics */
+    bput(fpbq, buf);                        /* send buffer to PRINTER */
+    buf = bget(epbq);                       /* get empty buffer */
+    sprintf(buf->ch,
+        "I/O time: Drum=%d; Reader=%d; Printer=%d.",
+        sio[DR], sio[CR], sio[PR]);         /* fill with i/o statistics */
+    bput(fpbq, buf);                        /* send buffer to PRINTER */
+    buf = bget(epbq);                       /* get empty buffer */
+    buf->ch[0] = END;                       /* fill with end of output flag */
+    bput(fpbq, buf);                        /* send buffer to PRINTER */
+}
+
+logta(tatime)                           /* LOGTA: */
+short tatime;                           /* turnaround time to be logged */
+{
+    tasum += tatime;                        /* accumulate turnaround time */
+    njobs++;                                /* count this job */
+}

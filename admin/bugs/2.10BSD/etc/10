@@ -1,0 +1,465 @@
+From sms@WLV.IMSD.CONTEL.COM  Thu Oct  5 16:03:13 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA00739; Thu, 5 Oct 89 16:03:13 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA28166; Thu, 5 Oct 89 16:03:01 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA14657; Thu, 5 Oct 89 16:02:51 -0700
+Date: Thu, 5 Oct 89 16:02:51 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8910052302.AA14657@WLV.IMSD.CONTEL.COM>
+Subject: mkhosts and multiple addresses per host
+Index: 	etc/mkhosts.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The /etc/mkhosts program does not correctly handle the
+	case where a host has more than one address - only the
+	first is returned when a gethostbyaddr() is performed.
+
+Repeat-By:
+	Do a gethostbyname() on a host with multiple addresses, print the
+	addresses returned in h_addr_list, note there will be only one.
+
+Fix:
+	Apply the patches below to mkhosts.c and gethnamadr.c, replace
+	gethnamadr.o in libc.a and libc_p.a, recompile mkhosts.c and
+	install in /etc.
+
+	The changes below to /etc/mkhosts program and the gethnamadr.c
+	module of the C library will cause the array h_addr_list
+	to be filled in with up to 10 addresses for a host.  The
+	order that the entries are in the text file being scanned
+	IS preserved.
+
+	The new dbm files ARE COMPATIBLE with old binaries, the old
+	programs will continue to only be returned a single address.
+	Programs relinked with the new library module will receive
+	the list of addresses for a host.
+
+	There are two patch files, the first is applied to 
+	/usr/src/lib/libc/net/hosttable/gethnamadr.c, the 
+	second to /usr/src/etc/mkhosts.c.  A test program x.c
+	is included to use in testing the new hosts database.
+
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	patch1
+#	patch2
+#	x.c
+# This archive created: Thu Oct  5 18:47:25 1989
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f 'patch1'
+then
+	echo shar: "will not over-write existing file 'patch1'"
+else
+sed 's/^X//' << \SHAR_EOF > 'patch1'
+X*** gethnamadr.old	Tue Aug 23 14:45:14 1988
+X--- gethnamadr.c	Thu Oct  5 17:18:17 1989
+X***************
+X*** 16,26 ****
+X  #include <ctype.h>
+X  
+X  #define	MAXALIASES	35
+X  
+X  static struct hostent host;
+X  static char *host_aliases[MAXALIASES];
+X! static char hostbuf[256+1];
+X! static char *host_addrs[2];
+X  
+X  int h_errno;
+X  
+X--- 16,26 ----
+X  #include <ctype.h>
+X  
+X  #define	MAXALIASES	35
+X+ #define	MAXADDRS	10
+X  
+X  static struct hostent host;
+X  static char *host_aliases[MAXALIASES];
+X! static char *host_addrs[MAXADDRS];
+X  
+X  int h_errno;
+X  
+X***************
+X*** 35,41 ****
+X  fetchhost(key)
+X  	datum key;
+X  {
+X!         register char *cp, *tp, **ap;
+X  	int naliases;
+X  
+X          if (key.dptr == 0)
+X--- 35,42 ----
+X  fetchhost(key)
+X  	datum key;
+X  {
+X!         register char *cp, **ap;
+X! 	register int naddrs;
+X  	int naliases;
+X  
+X          if (key.dptr == 0)
+X***************
+X*** 44,57 ****
+X  	if (key.dptr == 0)
+X                  return ((struct hostent *)NULL);
+X          cp = key.dptr;
+X! 	tp = hostbuf;
+X! 	host.h_name = tp;
+X! 	while (*tp++ = *cp++)
+X  		;
+X  	bcopy(cp, (char *)&naliases, sizeof(int)); cp += sizeof (int);
+X  	for (ap = host_aliases; naliases > 0; naliases--) {
+X! 		*ap++ = tp;
+X! 		while (*tp++ = *cp++)
+X  			;
+X  	}
+X  	*ap = (char *)NULL;
+X--- 45,57 ----
+X  	if (key.dptr == 0)
+X                  return ((struct hostent *)NULL);
+X          cp = key.dptr;
+X! 	host.h_name = cp;
+X! 	while (*cp++)
+X  		;
+X  	bcopy(cp, (char *)&naliases, sizeof(int)); cp += sizeof (int);
+X  	for (ap = host_aliases; naliases > 0; naliases--) {
+X! 		*ap++ = cp;
+X! 		while (*cp++)
+X  			;
+X  	}
+X  	*ap = (char *)NULL;
+X***************
+X*** 61,68 ****
+X  	bcopy(cp, (char *)&host.h_length, sizeof (int));
+X  	cp += sizeof (int);
+X  	host.h_addr_list = host_addrs;
+X! 	host.h_addr = tp;
+X! 	bcopy(cp, tp, host.h_length);
+X          return (&host);
+X  }
+X  
+X--- 61,74 ----
+X  	bcopy(cp, (char *)&host.h_length, sizeof (int));
+X  	cp += sizeof (int);
+X  	host.h_addr_list = host_addrs;
+X! 	naddrs = (key.dsize - (cp - key.dptr)) / host.h_length;
+X! 	if (naddrs > MAXADDRS)
+X! 		naddrs = MAXADDRS;
+X! 	for (ap = host_addrs; naddrs; naddrs--) {
+X! 		*ap++ = cp;
+X! 		cp += host.h_length;
+X! 	}
+X! 	*ap = (char *)NULL;
+X          return (&host);
+X  }
+X  
+SHAR_EOF
+fi
+if test -f 'patch2'
+then
+	echo shar: "will not over-write existing file 'patch2'"
+else
+sed 's/^X//' << \SHAR_EOF > 'patch2'
+X*** mkhosts.c.old	Sun Feb 15 23:51:18 1987
+X--- mkhosts.c	Thu Oct  5 17:17:40 1989
+X***************
+X*** 11,17 ****
+X  #endif not lint
+X  
+X  #ifndef lint
+X! static char sccsid[] = "@(#)mkhosts.c	5.1 (Berkeley) 5/28/85";
+X  #endif not lint
+X  
+X  #include <sys/file.h>
+X--- 11,18 ----
+X  #endif not lint
+X  
+X  #ifndef lint
+X! /* static char sccsid[] = "@(#)mkhosts.c	5.1 (Berkeley) 5/28/85"; */
+X! static char sccsid[] = "@(#)mkhosts.c	1.1 (2.10BSD) 10/04/89";
+X  #endif not lint
+X  
+X  #include <sys/file.h>
+X***************
+X*** 26,35 ****
+X  {
+X  	DBM *dp;
+X  	register struct hostent *hp;
+X  	datum key, content;
+X  	register char *cp, *tp, **sp;
+X  	register int *nap;
+X! 	int naliases;
+X  	int verbose = 0, entries = 0, maxlen = 0, error = 0;
+X  	char tempname[BUFSIZ], newname[BUFSIZ];
+X  
+X--- 27,37 ----
+X  {
+X  	DBM *dp;
+X  	register struct hostent *hp;
+X+ 	struct hostent *hp2;
+X  	datum key, content;
+X  	register char *cp, *tp, **sp;
+X  	register int *nap;
+X! 	int naliases, naddrs;
+X  	int verbose = 0, entries = 0, maxlen = 0, error = 0;
+X  	char tempname[BUFSIZ], newname[BUFSIZ];
+X  
+X***************
+X*** 63,68 ****
+X--- 65,77 ----
+X  			;
+X  		nap = (int *)cp;
+X  		cp += sizeof (int);
+X+ 		key.dptr = hp->h_name;
+X+ 		key.dsize = strlen(hp->h_name);
+X+ 		hp2 = (struct hostent *)fetchhost(dp, key);
+X+ 		if (hp2) {
+X+ 			merge(hp, hp2);
+X+ 			hp = hp2;
+X+ 		}
+X  		naliases = 0;
+X  		for (sp = hp->h_aliases; *sp; sp++) {
+X  			tp = *sp;
+X***************
+X*** 75,89 ****
+X  		cp += sizeof (int);
+X  		bcopy((char *)&hp->h_length, cp, sizeof (int));
+X  		cp += sizeof (int);
+X! 		bcopy(hp->h_addr, cp, hp->h_length);
+X! 		cp += hp->h_length;
+X  		content.dptr = buf;
+X  		content.dsize = cp - buf;
+X  		if (verbose)
+X! 			printf("store %s, %d aliases\n", hp->h_name, naliases);
+X! 		key.dptr = hp->h_name;
+X! 		key.dsize = strlen(hp->h_name);
+X! 		if (dbm_store(dp, key, content, DBM_INSERT) < 0) {
+X  			perror(hp->h_name);
+X  			goto err;
+X  		}
+X--- 84,99 ----
+X  		cp += sizeof (int);
+X  		bcopy((char *)&hp->h_length, cp, sizeof (int));
+X  		cp += sizeof (int);
+X! 		for (naddrs = 0, sp = hp->h_addr_list; *sp; sp++) {
+X! 			bcopy(*sp, cp, hp->h_length);
+X! 			cp += hp->h_length;
+X! 			naddrs++;
+X! 		}
+X  		content.dptr = buf;
+X  		content.dsize = cp - buf;
+X  		if (verbose)
+X! 			printf("store %s, %d aliases %d addresses\n", hp->h_name, naliases, naddrs);
+X! 		if (dbm_store(dp, key, content, DBM_REPLACE) < 0) {
+X  			perror(hp->h_name);
+X  			goto err;
+X  		}
+X***************
+X*** 90,105 ****
+X  		for (sp = hp->h_aliases; *sp; sp++) {
+X  			key.dptr = *sp;
+X  			key.dsize = strlen(*sp);
+X! 			if (dbm_store(dp, key, content, DBM_INSERT) < 0) {
+X  				perror(*sp);
+X  				goto err;
+X  			}
+X  		}
+X! 		key.dptr = hp->h_addr;
+X! 		key.dsize = hp->h_length;
+X! 		if (dbm_store(dp, key, content, DBM_INSERT) < 0) {
+X! 			perror("dbm_store host address");
+X! 			goto err;
+X  		}
+X  		entries++;
+X  		if (cp - buf > maxlen)
+X--- 100,117 ----
+X  		for (sp = hp->h_aliases; *sp; sp++) {
+X  			key.dptr = *sp;
+X  			key.dsize = strlen(*sp);
+X! 			if (dbm_store(dp, key, content, DBM_REPLACE) < 0) {
+X  				perror(*sp);
+X  				goto err;
+X  			}
+X  		}
+X! 		for (sp = hp->h_addr_list; *sp; sp++) {
+X! 			key.dptr = *sp;
+X! 			key.dsize = hp->h_length;
+X! 			if (dbm_store(dp, key, content, DBM_REPLACE) < 0) {
+X! 				perror("dbm_store host address");
+X! 				goto err;
+X! 			}
+X  		}
+X  		entries++;
+X  		if (cp - buf > maxlen)
+X***************
+X*** 128,131 ****
+X--- 140,233 ----
+X  	sprintf(tempname, "%s.new.dir", argv[1]);
+X  	unlink(tempname);
+X  	exit(1);
+X+ }
+X+ 
+X+ /* following code lifted from libc/net/hosttable/gethnamadr.c */
+X+ 
+X+ #define	MAXALIASES	35
+X+ #define	MAXADDRS	10
+X+ 
+X+ static	struct	hostent	host2;
+X+ static	char	*hstaliases[MAXALIASES];
+X+ static	char	*hstaddrs[MAXADDRS];
+X+ static	char	buf2[BUFSIZ];
+X+ 
+X+ static struct hostent *
+X+ fetchhost(dp, key)
+X+ 	DBM	*dp;
+X+ 	datum key;
+X+ {
+X+         register char *cp, **ap;
+X+ 	register int naddrs;
+X+ 	int naliases;
+X+ 
+X+ 	key = dbm_fetch(dp, key);
+X+ 	if (key.dptr == 0)
+X+                 return ((struct hostent *)NULL);
+X+ 	bcopy(key.dptr, buf2, key.dsize);
+X+         cp = buf2;
+X+ 	host2.h_name = cp;
+X+ 	while (*cp++)
+X+ 		;
+X+ 	bcopy(cp, (char *)&naliases, sizeof(int));
+X+ 	cp += sizeof (int);
+X+ 	for (ap = hstaliases; naliases > 0; naliases--) {
+X+ 		*ap++ = cp;
+X+ 		while (*cp++)
+X+ 			;
+X+ 	}
+X+ 	*ap = (char *)NULL;
+X+ 	host2.h_aliases = hstaliases;
+X+ 	bcopy(cp, (char *)&host2.h_addrtype, sizeof (int));
+X+ 	cp += sizeof (int);
+X+ 	bcopy(cp, (char *)&host2.h_length, sizeof (int));
+X+ 	cp += sizeof (int);
+X+ 	host2.h_addr_list = hstaddrs;
+X+ 	naddrs = (key.dsize - (cp - buf2)) / host2.h_length;
+X+ 	if (naddrs > MAXADDRS)
+X+ 		naddrs = MAXADDRS;
+X+ 	for (ap = hstaddrs; naddrs; naddrs--) {
+X+ 		*ap++ = cp;
+X+ 		cp += host2.h_length;
+X+ 	}
+X+ 	*ap = (char *)NULL;
+X+         return (&host2);
+X+ }
+X+ 
+X+ merge(hp2, hp)
+X+ 	struct	hostent	*hp2, *hp;
+X+ {
+X+ register char	**sp, **sp2;
+X+ 	char	**endalias, **endadr, **hp2ali, **hp2adr;
+X+ 	long	l;
+X+ 
+X+ 	hp2ali = &hp2->h_aliases[0];
+X+ 	hp2adr = &hp2->h_addr_list[0];
+X+ 
+X+ 	for (sp = hp->h_addr_list; *sp; sp++)
+X+ 		;
+X+ 	endadr = sp;
+X+ 	for (sp = hp->h_aliases; *sp; sp++)
+X+ 		;
+X+ 	endalias = sp;
+X+ 	for (sp = hp->h_aliases; *sp && *hp2ali; sp++) {
+X+ 		for (sp2 = hp2ali; *sp2; sp2++) {
+X+ 			if (!strcmp(*sp2, *sp))
+X+ 				break;
+X+ 		}
+X+ 		if (*sp2 == (char *)NULL) {
+X+ 			*endalias++ = *hp2ali++;
+X+ 			*endalias = (char *)NULL;
+X+ 		}
+X+ 	}
+X+ 	for (sp = hp->h_addr_list; *sp && *hp2adr; sp++) {
+X+ 		for (sp2 = hp2adr; *sp2; sp2++) {
+X+ 			if (!bcmp(*sp2, *sp, hp->h_length))
+X+ 				break;
+X+ 		}
+X+ 		if (*sp2 == (char *)NULL) {
+X+ 			*endadr++ = *hp2adr++;
+X+ 			*endadr = (char *)NULL;
+X+ 		}
+X+ 	}
+X  }
+SHAR_EOF
+fi
+if test -f 'x.c'
+then
+	echo shar: "will not over-write existing file 'x.c'"
+else
+sed 's/^X//' << \SHAR_EOF > 'x.c'
+X#include	<stdio.h>
+X#include	<netdb.h>
+X#include	<sysexits.h>
+X#include	<sys/types.h>
+X#include	<sys/socket.h>
+X
+X	struct	hostent	*hp;
+X	long	l, addr[10], *lp;
+X
+Xmain(argc, argv)
+X	int	argc;
+X	char	**argv;
+X	{
+X
+X	if	(argc != 2)
+X		{
+X		fputs("Usage: program hostname\n", stderr);
+X		exit(EX_USAGE);
+X		}
+X	hp = gethostbyname(argv[1]);
+X	if	(!hp)
+X		{
+X		printf("no such host %s\n", argv[1]);
+X		exit(EX_NOHOST);
+X		}
+X	lp = addr;
+X	while	(hp->h_addr_list[0])
+X		{
+X		bcopy(hp->h_addr_list[0], &l, sizeof (long));
+X		bcopy(&l, lp++, sizeof (long));
+X		printf("%s Address: %s\n", argv[1], inet_ntoa(l));
+X		hp->h_addr_list++;
+X		}
+X	while	(hp->h_aliases[0])
+X		{
+X		printf("%s Alias: %s\n", argv[1], hp->h_aliases[0]);
+X		hp->h_aliases++;
+X		}
+X	printf("Doing gethostbyaddr\n");
+X	for	(lp = addr; *lp; lp++)
+X		{
+X		hp = gethostbyaddr(lp, sizeof (long), AF_INET);
+X		if	(!hp)
+X			{
+X			printf("gethostbyaddr(0x%lx) failed\n", *lp);
+X			continue;
+X			}
+X		while	(hp->h_addr_list[0])
+X			{
+X			bcopy(hp->h_addr_list[0], &l, sizeof (long));
+X			printf("%s Address: %s\n", argv[1], inet_ntoa(l));
+X			hp->h_addr_list++;
+X			}
+X		while	(hp->h_aliases[0])
+X			{
+X			printf("%s Alias: %s\n", argv[1], hp->h_aliases[0]);
+X			hp->h_aliases++;
+X			}
+X		}
+X	}
+SHAR_EOF
+fi
+exit 0
+#	End of shell archive

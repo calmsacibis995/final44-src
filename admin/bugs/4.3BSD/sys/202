@@ -1,0 +1,103 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:02:10 1988
+Date: Mon, 18 Apr 88 13:17:26 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 exec() misdoes argv[0] on "#!" executables
+Index: sys/kern_exec.c 4.3BSD
+
+Description:
+	The MORE/bsd 4.3 exec() system call misfills argv[0] when handling
+	"#!" executables.
+
+Repeat-By:
+	Script started on Mon Apr 27 16:36:16 1987
+	$ cd /tmp
+	$ cat ko
+	#! /tmp/try
+	$ chmod +x ko
+	$ cat try.c
+	main(argc, argv)
+	char *	argv[];
+	{
+		int	i;
+
+		for (i = 0; i < argc; ++i)
+			(void) printf("argv[%d]: \"%s\"\n", i, argv[i]);
+	}
+	$ cc try.c -o try
+	$ try 1 2 3
+	argv[0]: "try"
+	argv[1]: "1"
+	argv[2]: "2"
+	argv[3]: "3"
+	$ ko 1 2 3
+	argv[0]: ""
+	argv[1]: "./ko"
+	argv[2]: "1"
+	argv[3]: "2"
+	argv[4]: "3"
+	$ ko 1 2 3 > results
+	$ cat results
+	argv[0]: ","
+	argv[1]: "./ko"
+	argv[2]: "1"
+	argv[3]: "2"
+	argv[4]: "3"
+
+	Now ask yourself--how did argv[0] become "" and ","?
+
+Fix:
+	Well. . .it's a fix I hesitate to make without some sound advice.
+	The problem is that when "#!" executables are executed, argv[0] is
+	filled from a variable named "cfname".  Let's check out the references
+	to this variable in "/sys/sys/kern_exec.c":
+
+	...
+	execve()
+	{
+	...
+>>>	char cfname[MAXCOMLEN + 1];
+	...
+		/*
+		 * Copy arguments into file in argdev area.
+		 */
+		if (uap->argp) for (;;) {
+			ap = NULL;
+			sharg = NULL;
+			if (indir && na == 0) {
+>>>				sharg = cfname;
+				ap = (int)sharg;
+				uap->argp++;		/* ignore argv[0] */
+			} else if (indir && (na == 1 && cfarg[0])) {
+				sharg = cfarg;
+				ap = (int)sharg;
+			} else if (indir && (na == 1 || na == 2 && cfarg[0]))
+				ap = (int)uap->fname;
+			else if (uap->argp) {
+				ap = fuword((caddr_t)uap->argp);
+				uap->argp++;
+			}
+	...
+
+	After the above code is executed, "sharg" is used as a pointer to
+	an array from which an argv element is copied.  And the problem is
+	obvious:  we're copying stuff out of cfname, even though we've never
+	copied anything into cfname.
+
+	But. . .digging into /sys/sys/SCCS/s.vaxuba.c, we find that in its
+	version 2.1 incarnation execve *did* fill cfname:
+
+	...
+	execve()
+	{
+	...
+		char cfname[MAXCOMLEN + 1];
+	...
+			bcopy((caddr_t)u.u_dent.d_name, (caddr_t)cfname,
+			    (unsigned)(u.u_dent.d_namlen + 1));
+			cfname[MAXCOMLEN] = 0;
+	...
+
+	So I'm loathe to put in a bug fix that would essentially involve
+	just putting the above code back in, since there was surely a good
+	reason for taking it out.
+

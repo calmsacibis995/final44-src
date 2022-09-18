@@ -1,0 +1,3355 @@
+/*
+ *  $Header: /users/jch/src/gated/src/RCS/krt.c,v 2.0 90/04/16 16:52:47 jch Exp Locker: jch $
+ */
+
+/*%Copyright%*/
+
+
+/* krt.c
+ *
+ * Kernel routing table interface routines
+ */
+
+#define	INCLUDE_NLIST
+#define	INCLUDE_IOCTL
+#define	INCLUDE_FILE
+#define	INCLUDE_KINFO
+#define	INCLUDE_KVM
+#define	INCLUDE_NETOPT_IBMR2
+
+#define	INCLUDE_ROUTE
+
+#include "include.h"
+#include "krt.h"
+#ifdef	IBM_6611
+#include "scram.h"
+#endif	/* IBM_6611 */
+
+/* What flags mean it should not be installed in the kernel */
+#ifdef	RTF_REJECT
+#define	RTS_DONTINSTALL	RTS_NOTINSTALL
+#else	/* RTF_REJECT */
+#define	RTS_DONTINSTALL	(RTS_REJECT|RTS_NOTINSTALL)
+#endif	/* RTF_REJECT */
+
+/* What flags mean it was a redirect */
+#ifdef	RTF_MODIFIED
+#define	RTF_REDIRECT	(RTF_DYNAMIC|RTF_MODIFIED)
+#else	/* RTF_MODIFIED */
+#define	RTF_REDIRECT	RTF_DYNAMIC
+#endif	/* RTF_MODIFIED */
+
+
+/* Timers */
+#define	KRT_TIMER_IFCHECK	0	/* For checking interfaces */
+#ifdef	ROUTING_SOCKET
+#define	KRT_TIMER_TIMEOUT	1	/* For routing socket retries */
+#define	KRT_TIMER_MAX		2
+#else	/* ROUTING_SOCKET */
+#define	KRT_TIMER_MAX		1
+#endif	/* ROUTING_SOCKET */
+
+#ifdef	RTM_NEWADDR
+/* Scan less frequently because we should see notification */
+#define	KRT_T_IFCHECK	(time_t) 60
+#else	/* RTM_NEWADDR */
+/* Scan often so we notice changes quickly */
+#define	KRT_T_IFCHECK	(time_t) 15
+#endif	/* RTM_NEWADDR */
+#define	KRT_T_EXPIRE	(time_t) 180
+
+
+
+int krt_install = TRUE;			/* if TRUE install route in kernel */
+char *krt_version_kernel;		/* OS version of the kernel */
+
+static task *krt_task;			/* Task for kernel routing table */
+static gw_entry *krt_gwp_kernel;	/* Gateway structure for routes read from the kernel at startup */
+#ifdef	ROUTING_SOCKET
+static gw_entry *krt_gwp_krt;		/* Gateway pointer for routes learned from the socket */
+#endif	/* ROUTING_SOCKET */
+
+gw_entry *krt_gw_list;			/* List of gateways for static routes */
+
+
+#ifdef	KVM_TYPE_RENO
+#define	KVM_OPENFILES(nl, core, swap, flags, buf)	((kvm_openfiles(nl, core, swap) < 0) ? NULL : TRUE)
+#define	KVM_OPEN_DEFINE(buf)	
+#define	KVM_OPEN_ERROR(buf)	kvm_geterr()
+#endif	/* KVM_TYPE_RENO */
+
+#ifdef	KVM_TYPE_BSD44
+#define	KVM_OPENFILES(nl, core, swap, flags, buf)	kvm_openfiles(nl, core, swap, flags, buf)
+#define	KVM_OPEN_DEFINE(buf)	char buf[BUFSIZ] /* _POSIX2_LINE_MAX */
+#define	KVM_OPEN_ERROR(buf)	buf
+#define	KVM_WITH_KD
+#endif	/* KVM_TYPE_BSD44 */
+
+#ifdef	KVM_TYPE_SUNOS
+#define	KVM_OPENFILES(nl, core, swap, flags, buf)	kvm_open(nl, core, swap, flags, "kvm")
+#define	KVM_OPEN_DEFINE(buf)
+#define	KVM_OPEN_ERROR(buf)	"kvm_open error"
+#define	KVM_WITH_KD
+#endif	/* KVM_OPEN_SUNOS */
+
+#ifdef	KVM_TYPE_OTHER
+#define	KVM_OPENFILES(nl, core, swap, flags, buf)	kvm_openfiles(nl, core, swap, flags, buf)
+#define	KVM_OPEN_DEFINE(buf)	char buf[BUFSIZ]
+#define	KVM_OPEN_ERROR(buf)	buf
+#define	KVM_WITH_KD
+typedef struct __kvm kvm_t;
+
+PROTOTYPE(kvm_openfiles,
+	  extern kvm_t *,
+	  (char *,
+	   char *,
+	   char *,
+	   int,
+	   char *));
+PROTOTYPE(kvm_nlist,
+	  extern int,
+	  (kvm_t *,
+	   struct nlist *));
+PROTOTYPE(kvm_read,
+	  extern int,
+	  (kvm_t *,
+	   unsigned long,
+	   caddr_t,
+	   size_t));
+PROTOTYPE(kvm_write,
+	  extern int,
+	  (kvm_t *,
+	   off_t,
+	   caddr_t,
+	   int));
+PROTOTYPE(kvm_close,
+	  extern int,
+	  (kvm_t *));
+PROTOTYPE(kvm_geterr,
+	  extern char *,
+	  (kvm_t *));
+#endif	/* KVM_TYPE_OTHER */
+
+#ifdef	KVM_WITH_KD
+kvm_t	*kd;
+
+#define	KVM_NLIST(kd, nl)		kvm_nlist(kd, nl)
+#define	KVM_READ(kd, addr, buf, nbytes)	kvm_read(kd, addr, buf, nbytes)
+#define	KVM_CLOSE(kd)			kvm_close(kd)
+#define	KVM_GETERR(kd, string)		string
+#else	/* KVM_WITH_KD */
+int	kd;
+
+#define	KVM_NLIST(kd, nl)		kvm_nlist(nl)
+#define	KVM_READ(kd, addr, buf, nbytes)	kvm_read(addr, buf, nbytes)
+#define	KVM_CLOSE(kd)			kvm_close()
+#define	KVM_GETERR(kd, string)		kvm_geterr()
+#endif	/* KVM_WITH_KD */
+
+
+PROTOTYPE(krt_change,
+	  static int,
+	  (rt_entry *old_rt,
+	   sockaddr_un *old_router,
+	   rt_entry *new_rt));
+
+#ifndef	USE_KERNINFO
+static struct nlist *krt_rt[2];
+
+#define	KRT_RTHOST	0
+#define	KRT_RTNET	1
+static struct nlist *krt_rthashsize;
+#endif	/* USE_KERNINFO */
+
+static struct nlist *krt_ipforwarding;
+static struct nlist *krt_udpcksum;
+
+#ifndef	vax11c
+static struct nlist *krt_version;
+#else	/* vax11c */
+static struct nlist *krt_multinet_version;
+static struct nlist *krt_multinet_product_name;
+#endif	/* vax11c */
+
+#ifndef	KINFO_RT_IFLIST
+static struct nlist *krt_ifnet;
+
+#endif	/* KINFO_RT_IFLIST */
+
+static struct {
+    const char *nl_name;
+    struct nlist **nl_ptr;
+} nl_names[] = {
+#ifndef	USE_KERNINFO
+    {"_rthost", &krt_rt[KRT_RTHOST]},
+    {"_rtnet", &krt_rt[KRT_RTNET]},
+    {"_rthashsize", &krt_rthashsize},
+#endif	/* USE_KERNINFO */
+#ifndef	KINFO_RT_IFLIST
+    {"_ifnet", &krt_ifnet},
+#endif	/* KINFO_RT_IFLIST */
+#ifdef	SUNOS
+    {"_ip_forwarding", &krt_ipforwarding},
+    {"_udp_cksum", &krt_udpcksum},
+#else	/* SUNOS */
+    {"_ipforwarding", &krt_ipforwarding},
+    {"_udp_cksum", &krt_udpcksum},
+#endif	/* SUNOS */
+#ifndef	vax11c
+    {"_version", &krt_version},
+#else	/* vax11c */
+    {"_multinet_version", &krt_multinet_version},
+    {"_multinet_product_name", &krt_multinet_product_name},
+#endif	/* vax11c */
+    {NULL, NULL}
+};
+
+#define	NL_SIZE	(sizeof (nl_names)/sizeof (nl_names[0]))
+
+
+bits krt_flag_bits[] =
+{
+    {RTF_UP, "UP"},
+    {RTF_GATEWAY, "GW"},
+    {RTF_HOST, "HOST"},
+#ifdef	RTF_DYNAMIC
+    {RTF_DYNAMIC, "DYN"},
+#endif	/* RTF_DYNAMIC */
+#ifdef	RTF_MODIFIED
+    {RTF_MODIFIED, "MOD"},
+#endif	/* RTF_MODIFIED */
+#ifdef	RTF_DONE
+    {RTF_DONE, "DONE"},
+#endif	/* RTF_DONE */
+#ifdef	RTF_MASK
+    {RTF_MASK, "MASK"},
+#endif	/* RTF_MASK */
+#ifdef	RTF_CLONING
+    {RTF_CLONING, "CLONING"},
+#endif	/* RTF_CLONING */
+#ifdef	RTF_XRESOLVE
+    {RTF_XRESOLVE, "XRESOLVE"},
+#endif	/* RTF_XRESOLVE */
+#ifdef	RTF_LLINFO
+    {RTF_LLINFO, "LLINFO"},
+#endif	/* RTF_LLINFO */
+#ifdef	RTF_REJECT
+    {RTF_REJECT, "REJECT"},
+#endif	/* RTF_REJECT */
+#ifdef	RTF_STATIC
+    {RTF_STATIC, "STATIC"},
+#endif	/* RTF_STATIC */
+#ifdef	RTF_PROTO1
+    {RTF_PROTO1, "PROTO1"},
+    {RTF_PROTO2, "PROTO2"},
+#endif	/* RTF_PROTO1 */
+    {0}
+};
+
+
+static flag_t
+krt_flags_to_state __PF1(flags, flag_t)
+{
+    register flag_t state = 0;
+
+    if (BIT_TEST(flags, RTF_HOST)) {
+	BIT_SET(state, RTS_HOSTROUTE);
+    }
+    if (BIT_TEST(flags, RTF_GATEWAY)) {
+	BIT_SET(state, RTS_GATEWAY);
+    }
+#ifdef	RTF_REJECT
+    if (BIT_TEST(flags, RTF_REJECT)) {
+	BIT_SET(state, RTS_REJECT);
+    }
+#endif	/* RTF_REJECT */
+#ifdef	RTF_STATIC
+    if (BIT_TEST(flags, RTF_STATIC)) {
+	BIT_SET(state, RTS_STATIC);
+    }
+#endif	/* RTF_STATIC */
+
+    return state;
+}
+
+flag_t
+krt_state_to_flags __PF1(state, flag_t)
+{
+    register flag_t flags = 0;
+
+    if (BIT_TEST(state, RTS_HOSTROUTE)) {
+	BIT_SET(flags, RTF_HOST);
+    }
+    if (BIT_TEST(state, RTS_GATEWAY)) {
+	BIT_SET(flags, RTF_GATEWAY);
+    }
+#ifdef	RTF_REJECT
+    if (BIT_TEST(state, RTS_REJECT)) {
+	BIT_SET(flags, RTF_REJECT);
+    }
+#endif	/* RTF_REJECT */
+#ifdef	RTF_STATIC
+    if (BIT_TEST(state, RTS_STATIC)) {
+	BIT_SET(flags, RTF_STATIC);
+    }
+#endif	/* RTF_STATIC */
+
+    return flags;
+}
+
+
+/*
+ *		Convert kernel interface flags to gated interface flags
+ */
+static flag_t
+krt_if_flags __PF1(k_flags, int)
+{
+    flag_t flags = 0;
+
+    if (BIT_TEST(k_flags, IFF_UP)) {
+	BIT_SET(flags, IFS_UP);
+    }
+    if (BIT_TEST(k_flags, IFF_BROADCAST)) {
+	BIT_SET(flags, IFS_BROADCAST);
+    }
+    if (BIT_TEST(k_flags, IFF_POINTOPOINT)) {
+	BIT_SET(flags, IFS_POINTOPOINT);
+    }
+#ifdef	IFF_LOOPBACK
+    if (BIT_TEST(k_flags, IFF_LOOPBACK)) {
+	BIT_SET(flags, IFS_LOOPBACK);
+    }
+#endif	/* IFF_LOOPBACK */
+
+#ifdef	HAVE_MULTICAST
+    if (BIT_TEST(k_flags, IFF_MULTICAST)) {
+	BIT_SET(flags, IFS_MULTICAST);
+    }
+    BIT_SET(int_flags, IFS_MULTICAST);	/* Indicate system supports multicast */
+#endif	/* HAVE_MULTICAST */
+
+#ifdef	IFF_SIMPLEX
+    if (BIT_TEST(k_flags, IFF_SIMPLEX)) {
+	BIT_SET(flags, IFS_SIMPLEX);
+    }
+#endif	/* IFF_SIMPLEX */
+    return flags;
+}
+
+
+#ifdef	ROUTES_WO_MBUFS
+typedef struct rtentry krt_type;
+
+#define	krt_next	rt_next
+#define	krt_size	sizeof(krt_type)
+#define	krt_conv(ptr)	(&(ptr))
+#endif	/* ROUTES_WO_MBUFS */
+
+#ifdef	SYSV
+#ifdef	SYSVR4
+typedef	mblk_t krt_type;
+#else	/* SYSVR4 */
+typedef struct msgb krt_type;
+#endif	/* SYSVR4 */
+
+#define	krt_next	b_next
+#define	krt_size	sizeof (krt_type)
+#endif	/* SYSV */
+
+#if	!defined(krt_next) && !defined(USE_KERNINFO)
+typedef struct mbuf krt_type;
+
+#define	krt_next	m_next
+#define	krt_size	(MMINOFF + sizeof(struct rtentry))
+#define krt_conv(ptr)	mtod(&ptr, struct rtentry *)
+#endif	/* !defined(krt_next) && !defined(ROUTING_SOCKET) */
+
+/* A route has been installed that is already in the kernel.  Flag it as */
+/* being announced and remember this gateway */
+void
+krt_installed __PF1(installed_rt, rt_entry *)
+{
+    sockaddr_un *router;
+
+    rtbit_set(installed_rt, krt_task->task_rtbit);
+
+    /* Remember this route */
+    router = sockdup(installed_rt->rt_router);
+    rttsi_set(installed_rt->rt_head, krt_task->task_rtbit, (byte *) &router);
+}
+
+
+/*
+ * Verify that the specified address is OK
+ * Returns:
+ *	1 - Address OK
+ *	0 - Ignore this address
+ *     -1 - Delete this address
+ */
+static int
+krt_addrcheck __PF1(rtp, rt_parms *)
+{
+    switch (socktype(rtp->rtp_dest)) {
+    case AF_INET:
+	switch (inet_class_of_byte((byte *) &rtp->rtp_dest->in.sin_addr.s_addr)) {
+	case INET_CLASSC_A:
+	case INET_CLASSC_B:
+	case INET_CLASSC_C:
+	case INET_CLASSC_E:
+	case INET_CLASSC_C_SHARP:
+	    break;
+
+#ifdef	HAVE_MULTICAST
+	case INET_CLASSC_MULTICAST:
+	    if (BIT_TEST(rtp->rtp_state, RTS_HOSTROUTE)) {
+		/* This is probably a default interface specification for this group */
+		
+		BIT_SET(rtp->rtp_state, RTS_MULTICAST|RTS_NOADVISE);
+		BIT_RESET(rtp->rtp_state, RTS_HOSTROUTE);
+	    } else {
+		/* This is probably the default interface for multicasting, ignore it */
+
+		return 0;
+	    }
+	    break;
+#endif	/* HAVE_MULTICAST */
+
+	default:
+	    /* Bogus, delete it */
+	    return -1;
+	}
+	break;
+
+#ifdef	PROTO_ISO
+    case AF_ISO:
+	break;
+#endif	/* PROTO_ISO */
+
+    default:
+	/* Unknown address family */
+	return 0;
+    }
+
+    return 1;
+}
+
+
+/* Common routine to add kernel routes to the gated routing table */
+/*
+ * Returns:
+ *	0	Delete this route
+ *	1	OK
+ */
+static int
+krt_rtadd __PF2(rtp, rt_parms *,
+		flags, short)
+{
+    rt_entry *rt;
+    
+    if (BIT_TEST(flags, RTF_REDIRECT)) {
+	rtp->rtp_gwp = gw_timestamp(&redirect_gw_list,
+				    RTPROTO_REDIRECT,
+				    rt_task,
+				    (as_t) 0,
+				    (as_t) 0,
+				    RT_T_EXPIRE,
+				    (sockaddr_un *) 0);
+	rtp->rtp_preference = RTPREF_REDIRECT;
+	BIT_SET(rtp->rtp_state, RTS_NOADVISE);
+#ifdef	RTF_STATIC
+    } else if (BIT_TEST(rtp->rtp_state, RTS_STATIC)) {
+	rtp->rtp_gwp = krt_gwp_krt;
+	rtp->rtp_preference = RTPREF_KRT;
+	BIT_SET(rtp->rtp_state, RTS_NOAGE | RTS_RETAIN);	/* Don't age static routes */
+#endif	/* RTF_STATIC */
+    } else {
+	rtp->rtp_gwp = krt_gwp_kernel;
+	rtp->rtp_preference = RTPREF_KERNEL;
+	BIT_SET(rtp->rtp_state, RTS_NOADVISE);
+    }
+
+    /*
+     *	If Kernel route already exists, delete this one, the kernel uses the
+     *	first one
+     */
+    rt = rt_locate(rtp->rtp_state,
+		   rtp->rtp_dest,
+		   rtp->rtp_dest_mask,
+		   RTPROTO_BIT(rtp->rtp_gwp->gw_proto));
+    if (rt && !BIT_TEST(rt->rt_state, RTS_DELETE)) {
+	return 0;
+    }
+    /*
+     *	If there was a problem adding the route, delete the kernel route
+     */
+    rt = rt_add(rtp);
+    if (!rt) {
+	/* Could not add */
+
+	return 0;
+    } else if (rt != rt->rt_active) {
+	/* Already a better route (probably an interface) */
+	rt_head *rth = rt->rt_head;
+
+	/* Delete our route */
+	rt_delete(rt);
+
+	/* Remember the active route */
+	rt = rth->rth_active;
+
+	if (BIT_TEST(rt->rt_state, RTS_DONTINSTALL)) {
+	    /* Should not be in kernel, delete it */
+
+	    return 0;
+	}
+    }
+
+    /* Indicate it is installed in the kernel */
+    krt_installed(rt);
+
+    return 1;
+}
+
+
+#if	defined(krt_next)
+ /*  Read the kernel's routing table.			*/
+static int
+krt_rtread __PF1(skip, int)
+{
+    int i, hashsize = 0, krt_table;
+    size_t rtbufsize;
+    struct rtentry *krt;
+    krt_type *next, m_buf, **base;
+    rt_parms rtparms;
+
+    bzero((caddr_t) &rtparms, sizeof (rtparms));
+    rtparms.rtp_n_gw = 1;
+
+    if (skip) {
+	return skip;
+    }
+
+    trace(TR_KRT, 0, NULL);
+    trace(TR_KRT, 0, "krt_rtread: Initial routes read from kernel:");
+
+    if ((krt_rt[KRT_RTHOST]->n_value == 0) || (krt_rt[KRT_RTNET]->n_value == 0)) {
+	trace(TR_ALL, 0, "krt_rtread: rthost=%s rtnet=%s", krt_rt[KRT_RTHOST]->n_name, krt_rt[KRT_RTNET]->n_name);
+	trace(TR_ALL, LOG_ERR, "krt_rtread: rthost and/or rtnet not in namelist");
+
+	return ESRCH;
+    }
+    if (krt_rthashsize->n_value != 0) {
+	if (KVM_READ(kd,
+		     krt_rthashsize->n_value,
+		     (caddr_t) &hashsize,
+		     sizeof(hashsize)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_rtread: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return EINVAL;
+	}
+    }
+    if (!hashsize) {
+	trace(TR_ALL, LOG_ERR, "krt_rtread: rthashsize not in namelist");
+	return ESRCH;
+    }
+    /* set up to read table of net hash chains */
+
+    rtbufsize = hashsize * sizeof(krt_type *);
+    base = (krt_type **) task_block_malloc(rtbufsize);
+    for (krt_table = KRT_RTHOST; krt_table <= KRT_RTNET; krt_table++) {
+#ifdef	_IBMR2
+	off_t root;
+
+	if (KVM_READ(kd,
+		     krt_rt[krt_table]->n_value,
+		     (caddr_t) &root,
+		     sizeof (root)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_rtread: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return EINVAL;
+	}
+#else	/* _IBMR2 */
+#define	root	krt_rt[krt_table]->n_value
+#endif	/* _IBMR2 */
+
+	if (KVM_READ(kd,
+		     root,
+		     (caddr_t) base,
+		     rtbufsize) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_rtread: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return EINVAL;
+	}
+	for (i = 0; i < hashsize; i++) {
+	    if_entry *ifp;
+	    
+	    for (next = base[i]; next != NULL; next = m_buf.krt_next) {
+#ifdef	SYSV
+		struct rtentry krt_rtentry;
+#endif	/* SYSV */
+
+		if (KVM_READ(kd,
+			     (unsigned long) next,
+			     (caddr_t) &m_buf,
+			     krt_size) < 0) {
+		    trace(TR_ALL, LOG_ERR, "krt_rtread: %s",
+			  KVM_GETERR(kd, "kvm_read error"));
+		    return EINVAL;
+		}
+#ifdef	SYSV
+		if (KVM_READ(kd,
+			     (off_t) m_buf.b_rptr,
+			     (caddr_t) &krt_rtentry,
+			     sizeof (krt_rtenry)) < 0) {
+		    trace(TR_ALL, LOG_ERR, "krt_rtread: %s",
+			  KVM_GETERR(kd, "kvm_read error"));
+		    return EINVAL;
+		}
+		krt = &krt_rtentry;
+#else	/* SYSV */
+		krt = krt_conv(m_buf);
+#endif	/* SYSV */
+
+		rtparms.rtp_dest = sock2gated(&krt->rt_dst, unix_socksize(&krt->rt_dst));
+		rtparms.rtp_router = sock2gated(&krt->rt_gateway, unix_socksize(&krt->rt_gateway));
+		rtparms.rtp_state = krt_flags_to_state((flag_t) krt->rt_flags);
+
+		switch (krt_addrcheck(&rtparms)) {
+		case 1:
+		    /* Address is OK */
+		    break;
+
+		case 0:
+		    /* Ignore it */
+		    continue;
+
+		case -1:
+		    /* Delete it */
+		    goto Delete;
+		}
+
+		/* Determine netmask and interior/exterior flags */
+		if (BIT_TEST(rtparms.rtp_state, RTS_HOSTROUTE)) {
+		    rtparms.rtp_dest_mask = (sockaddr_un *) 0;
+#ifdef	HAVE_MULTICAST
+		} else if (BIT_TEST(rtparms.rtp_state, RTS_MULTICAST)) {
+		    rtparms.rtp_dest_mask = (sockaddr_un *) 0;
+#endif	/* HAVE_MULTICAST */
+		} else if (ifp = if_withnet(rtparms.rtp_dest)) {
+		    BIT_SET(rtparms.rtp_state, RTS_INTERIOR);
+		    rtparms.rtp_dest_mask = ifp->int_subnetmask;
+		} else {
+		    /* Route is interior if we have an interface to it or a subnet of it */
+		    BIT_SET(rtparms.rtp_state, RTS_EXTERIOR);
+		    rtparms.rtp_dest_mask = inet_mask_natural(rtparms.rtp_dest);
+		}
+
+		/* Add route to our routing table */
+		if (!krt_rtadd(&rtparms, krt->rt_flags)) {
+		    /* We don't want it around, delete it */
+
+		Delete:
+		    krt_delete_dst(krt_task,
+				   (rt_entry *) 0,
+				   &rtparms,
+				   (sockaddr_un *) 0);
+		}
+	    }
+	}
+    }
+    task_block_reclaim(rtbufsize, (caddr_t) base);
+
+    return 0;
+}
+
+#endif				/* defined(krt_next) */
+
+
+#if	defined(ROUTING_SOCKET) || defined(USE_KERNINFO)
+/*
+ *	Support code for use with the getkerninfo() call and the routing socket.
+ */
+
+#ifndef	RTAX_DST
+/*
+ * Index offsets for sockaddr array for alternate internal encoding.
+ */
+#define RTAX_DST	0	/* destination sockaddr present */
+#define RTAX_GATEWAY	1	/* gateway sockaddr present */
+#define RTAX_NETMASK	2	/* netmask sockaddr present */
+#define RTAX_GENMASK	3	/* cloning mask sockaddr present */
+#define RTAX_IFP	4	/* interface name sockaddr present */
+#define RTAX_IFA	5	/* interface addr sockaddr present */
+#define RTAX_AUTHOR	6	/* sockaddr for author of redirect */
+#define	RTAX_BRD	7	/* broadcast address */
+#define RTAX_MAX	8	/* size of array to allocate */
+#endif	/* RTAX_DST */
+
+typedef struct {
+	flag_t rti_addrs;
+	sockaddr_un *rti_info[RTAX_MAX];
+} krt_addrinfo;
+
+#define	RTAX_LIST(i)	for (i = 0; i < RTAX_MAX; i++)
+#define	RTAX_LIST_END(i)
+
+#define	RTM_ADDR(ap)	ap = (struct sockaddr *) \
+    ((caddr_t) ap + (ap->sa_len ? ROUNDUP(ap->sa_len, sizeof (u_long)) : sizeof(u_long)))
+
+
+static bits rtm_type_bits[] =
+{
+    {RTM_ADD, "ADD"},
+    {RTM_DELETE, "DELETE"},
+    {RTM_CHANGE, "CHANGE"},
+    {RTM_GET, "GET"},
+    {RTM_LOSING, "LOSING"},
+    {RTM_REDIRECT, "REDIRECT"},
+    {RTM_MISS, "MISS"},
+    {RTM_LOCK, "LOCK"},
+    {RTM_OLDADD, "OLDADD"},
+    {RTM_OLDDEL, "OLDDEL"},
+    {RTM_RESOLVE, "RESOLVE"},
+#ifdef	RTM_NEWADDR
+    {RTM_NEWADDR,	"NEWADDR"},
+#endif	/* RTM_NEWADDR */
+#ifdef	RTM_DELADDR
+    {RTM_DELADDR,	"DELADDR"},
+#endif	/* RTM_DELADDR */
+#ifdef	RTM_IFINFO
+    {RTM_IFINFO,	"IFINFO"},
+#endif	/* RTM_IFINFO */
+    {0, NULL}
+};
+
+static bits rtm_lock_bits[] =
+{
+    {RTV_MTU, "MTU"},
+    {RTV_HOPCOUNT, "HOPCOUNT"},
+    {RTV_EXPIRE, "EXPIRE"},
+    {RTV_RPIPE, "RPIPE"},
+    {RTV_SPIPE, "SPIPE"},
+    {RTV_SSTHRESH, "SSTHRESH"},
+    {RTV_RTT, "RTT"},
+    {RTV_RTTVAR, "RTTVAR"},
+    {0, NULL}
+};
+
+static bits rtm_sock_bits[] =
+{
+    {RTA_DST, "DST"},
+    {RTA_GATEWAY, "GATEWAY"},
+    {RTA_NETMASK, "NETMASK"},
+    {RTA_GENMASK, "GENMASK"},
+    {RTA_IFP, "IFP"},
+    {RTA_IFA, "IFA"},
+    {RTA_AUTHOR, "AUTHOR"},
+#ifdef	RTA_BRD
+    {RTA_BRD, "Broadcast"},
+#endif	/* RTA_BRD */
+    {0, NULL}
+};
+
+
+#ifdef	RTM_IFINFO
+static bits krt_if_flag_bits[] =
+{
+    {IFF_UP,		"UP" },
+    {IFF_BROADCAST,	"BROADCAST" },
+    {IFF_DEBUG,		"DEBUG" },
+    {IFF_LOOPBACK,	"LOOPBACK" },
+    {IFF_POINTOPOINT,	"POINTOPOINT" },
+    {IFF_NOTRAILERS,	"NOTRAILERS" },
+    {IFF_RUNNING,	"RUNNING" },
+    {IFF_NOARP,		"NOARP" },
+    {IFF_PROMISC,	"PROMISC" },
+    {IFF_ALLMULTI,	"ALLMULTI" },
+    {IFF_OACTIVE,	"OACTIVE" },
+    {IFF_SIMPLEX,	"SIMPLEX" },
+#ifdef	IFF_LINK0
+    {IFF_LINK0,		"LINK0" },
+    {IFF_LINK1,		"LINK1" },
+    {IFF_LINK2,		"LINK2" },
+#endif	/* IFF_LINK0 */
+    {0, NULL}
+};
+#endif	/* RTM_IFINFO */
+
+
+/*
+ * Pickup all the address from the message
+ */
+static krt_addrinfo *
+krt_xaddrs __PF2(rtp, register struct rt_msghdr *,
+		 len, size_t)
+{
+    register int i;
+    register int family = AF_UNSPEC;
+    register struct sockaddr *ap;
+    caddr_t limit = (caddr_t) rtp + len;
+    static krt_addrinfo addrinfo;
+
+    if (rtp->rtm_msglen != len) {
+	trace(TR_ALL, LOG_ERR, "krt_xaddrs: length mismatch!  Reported: %d, actual %d",
+	      rtp->rtm_msglen,
+	      len);
+	return (krt_addrinfo *) 0;
+    }
+    
+    if (rtp->rtm_version != RTM_VERSION) {
+	trace(TR_ALL, LOG_ERR, "krt_xaddrs: version mismatch!  Expected %d, received %d",
+	      RTM_VERSION,
+	      rtp->rtm_version);
+	return (krt_addrinfo *) 0;
+    }
+
+    /* Locate address bits and start of addresses */
+    switch (rtp->rtm_type) {
+    case RTM_ADD:
+    case RTM_DELETE:
+    case RTM_CHANGE:
+    case RTM_GET:
+    case RTM_LOSING:
+    case RTM_REDIRECT:
+    case RTM_MISS:
+    case RTM_LOCK:
+    case RTM_OLDADD:
+    case RTM_OLDDEL:
+    case RTM_RESOLVE:
+	ap = (struct sockaddr *) (rtp + 1);
+	addrinfo.rti_addrs = rtp->rtm_addrs;
+	break;
+
+#ifdef	RTM_IFINFO
+    case RTM_IFINFO:
+	ap = (struct sockaddr *) (((struct if_msghdr *) rtp) + 1);
+	addrinfo.rti_addrs = ((struct if_msghdr *) rtp)->ifm_addrs;
+	break;
+#endif	/* RTM_IFINFO */
+
+#ifdef	RTM_NEWADDR
+    case RTM_NEWADDR:
+    case RTM_DELADDR:
+	ap = (struct sockaddr *) (((struct ifa_msghdr *) rtp) + 1);
+	addrinfo.rti_addrs = ((struct ifa_msghdr *) rtp)->ifam_addrs;
+	break;
+#endif	/* RTM_NEWADDR */
+
+    default:
+	return (krt_addrinfo *) 0;
+    }
+
+
+    /* Grab all the addresses */
+    RTAX_LIST(i) {
+	if (BIT_TEST(addrinfo.rti_addrs, 1 << i)) {
+	    if ((caddr_t) ap >= limit) {
+		trace(TR_ALL, LOG_ERR, "krt_xaddrs: out of data fetching %s address",
+		      trace_state(rtm_sock_bits, i));
+		return (krt_addrinfo *) 0;
+	    }
+	    
+	    switch (i) {
+	    case RTAX_DST:
+	    case RTAX_IFA:
+		family = ap->sa_family;
+		/* Fall through */
+		
+	    case RTAX_GATEWAY:
+	    case RTAX_IFP:
+	    case RTAX_AUTHOR:
+	    case RTAX_BRD:
+		if (ap->sa_len) {
+		    addrinfo.rti_info[i] = sock2gated(ap, ap->sa_len);
+		}
+		break;
+
+	    case RTAX_NETMASK:
+	    case RTAX_GENMASK:
+		addrinfo.rti_info[i] = (sockaddr_un *) ap;
+		break;
+	    }
+
+	    RTM_ADDR(ap);
+	} else {
+	    addrinfo.rti_info[i] = (sockaddr_un *) 0;
+	}
+    } RTAX_LIST_END(i) ;
+
+    /* Now that we have the family, convert the masks */
+    for (i = RTAX_NETMASK; i <= RTAX_GENMASK; i++) {
+	if (ap = (struct sockaddr *) addrinfo.rti_info[i]) {
+	    if (ap->sa_len < 2) {
+		ap->sa_len = 2;	/* Length and family */
+	    }
+	    ap->sa_family = family;
+	    addrinfo.rti_info[i] = sock2gated(ap, ap->sa_len);
+	}
+    }
+
+    return &addrinfo;
+}
+
+
+/*
+ * Common logic for controling routes
+ */
+static int
+krt_rtaddrs __PF4(adip, krt_addrinfo *,
+		  rtp, rt_parms *,
+		  author, sockaddr_un **,
+		  flags, flag_t)    
+{
+    rtp->rtp_state = krt_flags_to_state(flags);
+
+    if (BIT_TEST(flags, RTF_LLINFO) || 
+	BIT_MATCH(flags, RTF_CLONING|RTF_GATEWAY)) {
+	/* Skip ARP cache entries and cloning masks that are not interface routes */
+	return 1;
+    }
+
+    rtp->rtp_dest = adip->rti_info[RTAX_DST];
+    if (!rtp->rtp_dest) {
+	return 1;
+    }
+
+    /* Check to see if the address is valid */
+    switch (krt_addrcheck(rtp)) {
+    case 1:
+	/* Address is OK */
+	break;
+
+    case 0:
+	/* Ignore it */
+	return 1;
+
+    case -1:
+	/* Bogus, delete it */
+	return -1;
+    }
+
+    rtp->rtp_router = adip->rti_info[RTAX_GATEWAY];
+    if (rtp->rtp_router) {
+	/*
+	 * Kernel gateway is possibly an AF_LINK.  If so, look up the interface
+	 * with the destination address and figure out the gateway from there.
+	 * When installing the interface route the kernel is supposed to put what
+	 * it wants so we can just keep it as the gateway.
+	 */
+	switch (socktype(rtp->rtp_router)) {
+	    register if_entry *ifp;
+
+	case AF_LINK:
+	    ifp = if_withsubnet(rtp->rtp_dest);
+	    
+	    if (ifp->int_index == rtp->rtp_router->dl.sdl_index) {
+		rtp->rtp_router = ifp->int_addr;
+	    }
+	    break;
+		
+	default:
+	    break;
+	}
+    }
+
+    rtp->rtp_dest_mask = adip->rti_info[RTAX_NETMASK];
+    if (rtp->rtp_dest_mask) {
+	/* Have a netmask */
+	
+	rtp->rtp_dest_mask = mask_locate(rtp->rtp_dest_mask);
+	if (BIT_TEST(rtp->rtp_state, RTS_HOSTROUTE)) {
+	    rtp->rtp_dest_mask = (sockaddr_un *) 0;
+#ifdef	HAVE_MULTICAST
+	} else if (BIT_TEST(rtp->rtp_state, RTS_MULTICAST)) {
+	    rtp->rtp_dest_mask = (sockaddr_un *) 0;
+#endif	/* HAVE_MULTICAST */
+	} else if (!rtp->rtp_dest_mask) {
+	    rtp->rtp_dest_mask = inet_mask_natural(rtp->rtp_dest);
+	}
+    }
+	
+    *author = adip->rti_info[RTAX_AUTHOR];
+
+    if (!BIT_TEST(rtp->rtp_state, RTS_HOSTROUTE)) {
+	if (if_withnet(rtp->rtp_dest)) {
+	    BIT_SET(rtp->rtp_state, RTS_INTERIOR);
+	} else {
+	    BIT_SET(rtp->rtp_state, RTS_EXTERIOR);
+	}
+    }
+
+    return 0;
+}
+
+ 
+inline static rt_entry *
+krt_not_installed __PF1(installed_rt, rt_entry *)
+{
+    sockaddr_un *router;
+    
+    /* Get the installed router address */
+    rttsi_get(installed_rt->rt_head, krt_task->task_rtbit, (byte *) &router);
+    sockfree(router);
+
+    /* Free the route */
+    if (!rtbit_reset(installed_rt, krt_task->task_rtbit)) {
+	/* Route no longer exists */
+
+	return (rt_entry *) 0;
+    }
+    
+    /* Head still exists, reset router */
+    rttsi_reset(installed_rt->rt_head, krt_task->task_rtbit);
+
+    return installed_rt;
+}
+
+
+/* Trace a routing socket packet */
+/*ARGSUSED*/
+static void
+krt_trace __PF6(tp, task *,
+		direction, const char *,
+		rtp, struct rt_msghdr *,
+		len, size_t,
+		adip, krt_addrinfo *,
+		pri, int)
+{
+    if (!adip) {
+	adip = krt_xaddrs(rtp, len);
+	if (!adip) {
+	    /* Could not parse message */
+	    return;
+	}
+    }
+
+    if (BIT_TEST(trace_flags, TR_UPDATE)) {
+	/* Long form */
+	tracef("KRT %s len %d ver %d type %s(%d)",
+	       direction,
+	       rtp->rtm_msglen,
+	       rtp->rtm_version,
+	       trace_state(rtm_type_bits, rtp->rtm_type - 1),
+	       rtp->rtm_type);
+    } else {
+	/* Short form */
+	    tracef("KRT %s type %s(%d)",
+		   direction,
+		   trace_state(rtm_type_bits, rtp->rtm_type - 1),
+		   rtp->rtm_type);
+    }
+
+    switch (rtp->rtm_type) {
+    case RTM_ADD:
+    case RTM_DELETE:
+    case RTM_CHANGE:
+    case RTM_GET:
+    case RTM_LOSING:
+    case RTM_REDIRECT:
+    case RTM_MISS:
+    case RTM_LOCK:
+    case RTM_OLDADD:
+    case RTM_OLDDEL:
+    case RTM_RESOLVE:
+	if (BIT_TEST(trace_flags, TR_UPDATE)) {
+	    /* Long form */
+	    tracef("addrs %s(%x) pid %d seq %d",
+		   trace_bits(rtm_sock_bits, (flag_t) rtp->rtm_addrs),
+		   rtp->rtm_addrs,
+		   rtp->rtm_pid,
+		   rtp->rtm_seq);
+	    if (rtp->rtm_errno) {
+		errno = rtp->rtm_errno;
+		trace(TR_KRT, pri, " error %d: %m",
+		      rtp->rtm_errno);
+	    } else {
+		trace(TR_KRT, pri, NULL);
+	    }
+
+	    tracef("KRT %s flags %s(%x)",
+		   direction,
+		   trace_bits(krt_flag_bits, (flag_t) rtp->rtm_flags),
+		   rtp->rtm_flags & 0xffff);
+	    if (rtp->rtm_rmx.rmx_locks) {
+		tracef("  locks %s(%x)",
+		       trace_bits(rtm_lock_bits, rtp->rtm_rmx.rmx_locks),
+		       rtp->rtm_rmx.rmx_locks);
+	    }
+	    if (rtp->rtm_inits) {
+		tracef(" inits %s(%x)",
+		       trace_bits(rtm_lock_bits, rtp->rtm_inits),
+		       rtp->rtm_inits);
+	    }
+	    trace(TR_KRT, pri, NULL);
+
+	    /* Display metrics */
+	    switch (rtp->rtm_type) {
+	    case RTM_ADD:
+	    case RTM_CHANGE:
+	    case RTM_GET:
+	    case RTM_LOCK:
+		if (BIT_TEST(rtp->rtm_rmx.rmx_locks|rtp->rtm_inits, RTV_MTU|RTV_HOPCOUNT|RTV_EXPIRE|RTV_SSTHRESH)) {
+		    trace(TR_KRT, pri, "KRT %s mtu %d hopcount %d expire %#T ssthresh %d",
+			  direction,
+			  rtp->rtm_rmx.rmx_mtu,
+			  rtp->rtm_rmx.rmx_hopcount,
+			  rtp->rtm_rmx.rmx_expire,
+			  rtp->rtm_rmx.rmx_ssthresh);
+		}
+		if (BIT_TEST(rtp->rtm_rmx.rmx_locks|rtp->rtm_inits, RTV_RPIPE|RTV_SPIPE|RTV_RTT|RTV_RTTVAR)) {
+		    trace(TR_KRT, pri, "KRT %s recvpipe %d sendpipe %d rtt %d rttvar %d",
+			  direction,
+			  rtp->rtm_rmx.rmx_recvpipe,
+			  rtp->rtm_rmx.rmx_sendpipe,
+			  rtp->rtm_rmx.rmx_rtt,
+			  rtp->rtm_rmx.rmx_rttvar);
+		}
+		break;
+	    }
+	} else {
+	    /* Short form */
+	    tracef("flags %s(%x) error %d",
+		   trace_bits(krt_flag_bits, (flag_t) rtp->rtm_flags),
+		   rtp->rtm_flags & 0xffff,
+		   rtp->rtm_errno);
+	    if (rtp->rtm_errno) {
+		errno = rtp->rtm_errno;
+		trace(TR_KRT, pri, ": %m");
+	    } else {
+		trace(TR_KRT, pri, NULL);
+	    }
+	}
+	break;
+
+#ifdef	RTM_IFINFO
+    case RTM_IFINFO:
+        {
+	    struct if_msghdr *ifp = (struct if_msghdr *) rtp;
+	    
+	    trace(TR_KRT, pri, " index %d flags <%s>%x mtu %d metric %d",
+		  ifp->ifm_index,
+		  trace_bits(krt_if_flag_bits, ifp->ifm_flags),
+		  ifp->ifm_flags,
+		  ifp->ifm_data.ifi_mtu,
+		  ifp->ifm_data.ifi_metric);
+	}
+	break;
+#endif	/* RTM_IFINFO */
+
+#ifdef	RTM_NEWADDR
+    case RTM_NEWADDR:
+    case RTM_DELADDR:
+        {
+	    struct ifa_msghdr *ifap = (struct ifa_msghdr *) rtp;
+	    
+	    trace(TR_KRT, pri, " index %d flags <%s>%x metric %d",
+		  ifap->ifam_index,
+		  trace_bits(krt_flag_bits, ifap->ifam_flags),
+		  ifap->ifam_flags,
+		  ifap->ifam_metric);
+	}
+	break;
+#endif	/* RTM_NEWADDR */
+
+    default:
+	return;
+    }
+    
+    /* Display addresses */
+    if (adip->rti_addrs) {
+	register int i;
+
+	tracef("KRT %s", direction);
+
+	RTAX_LIST(i) {
+	    register sockaddr_un *ap = adip->rti_info[i];
+
+	    if (ap) {
+		tracef(" %s %A",
+		       gd_lower(trace_state(rtm_sock_bits, i)),
+		       ap);
+	    }
+	} RTAX_LIST_END(i);
+
+	trace(TR_KRT, pri, NULL);
+    }
+
+    trace(TR_KRT, pri, NULL);
+}
+#endif	/* defined(ROUTING_SOCKET) || defined(USE_KERNINFO) */
+
+
+/* Read interfaces from kernel */
+
+#ifdef	RTM_NEWADDR
+static void
+krt_ifaddr __PF4(tp, task *,
+		 ifap, struct ifa_msghdr *,
+		 adip, krt_addrinfo *,
+		 iflp, if_link *)
+{
+    int family = AF_UNSPEC;
+    sockaddr_un *ap;
+    if_info ifi;
+    int addrs;
+
+    if (!iflp) {
+	/* No link level interface association */
+    }
+
+    bzero((caddr_t) &ifi, sizeof (ifi));
+
+    ifi.ifi_link = iflp;
+    ifi.ifi_metric = ifap->ifam_metric;
+    ifi.ifi_rtflags = ifap->ifam_flags;
+
+    switch (BIT_TEST(iflp->ifl_state, IFS_POINTOPOINT|IFS_LOOPBACK|IFS_BROADCAST)) {
+    case IFS_POINTOPOINT:
+	addrs = 2;
+	break;
+
+    case IFS_LOOPBACK:
+	addrs = 1;
+	break;
+
+    case IFS_BROADCAST:
+	addrs = 3;
+	break;
+
+    default:
+	/* NBMA */
+	addrs = 2;
+	break;
+    }
+    
+    if (ap = adip->rti_info[RTAX_IFA]) {
+	/* Interace address */
+
+	if (BIT_TEST(iflp->ifl_state, IFS_POINTOPOINT)) {
+	    ifi.ifi_lcladdr = sockdup(ap);
+	} else {
+	    ifi.ifi_lcladdr = ifi.ifi_addr = sockdup(ap);
+	}
+	addrs--;
+    }
+    if (ap = adip->rti_info[RTAX_BRD]) {
+	/* Remote or broadcast address */
+
+	if (BIT_TEST(iflp->ifl_state, IFS_POINTOPOINT)) {
+	    ifi.ifi_addr = sockdup(ap);
+	} else {
+	    ifi.ifi_broadaddr = sockdup(ap);
+	}
+	addrs--;
+    }
+    if (ap = adip->rti_info[RTAX_NETMASK]) {
+	/* Subnet mask */
+
+	ifi.ifi_subnetmask = mask_locate(ap);
+	addrs--;
+    }
+
+    if (addrs <= 0) {
+	/* We have enough addresses */
+
+	if (ifap->ifam_type == RTM_NEWADDR) {
+	    if_conf_addaddr(krt_task, &ifi);
+	} else {
+	    if_conf_deladdr(krt_task, &ifi);
+	}
+    }
+}
+#endif	/* RTM_NEWADDR */
+
+
+#ifdef	KINFO_RT_IFLIST
+static int
+krt_ifread __PF2(skip, int,
+		 save_task_state, flag_t)
+{
+    size_t size, alloc_size;
+    caddr_t kbuf, cp, limit;
+    struct if_msghdr *ifp;
+    if_link *iflp = (if_link *) 0;
+    
+    if (skip) {
+	return EINVAL;
+    }
+
+    trace(TR_KRT, 0, NULL);
+    trace(TR_KRT, 0, "krt_ifread: Read kernel interface list");
+
+    if ((alloc_size = getkerninfo(KINFO_RT_IFLIST, (caddr_t) 0, (int *) 0, 0)) < 0) {
+	trace(TR_ALL, LOG_ERR, "krt_ifread: getkerninfo(KINFO_RT_IFLIST) estimate: %m");
+	return errno;
+    }
+    if (BIT_TEST(trace_flags, TR_PROTOCOL)) {
+	trace(TR_KRT, 0, "krt_ifread: getkerninfo(KINFO_RT_IFLIST) estimates %d bytes needed",
+	      alloc_size);
+    }
+    size = alloc_size = ROUNDUP(alloc_size, task_pagesize);
+    kbuf = (caddr_t) task_block_malloc(alloc_size);
+    if (getkerninfo(KINFO_RT_IFLIST, kbuf, (int *) &size, 0) < 0) {
+	trace(TR_ALL, LOG_ERR, "krt_ifread: getkerninfo(KINFO_RT_IFLIST): %m");
+	return errno;
+    }
+    limit = kbuf + size;
+
+    /* Tell the IF code that we are passing complete knowledge */
+    if_conf_open(krt_task, TRUE);
+    
+    for (cp = kbuf; cp < limit; cp += ifp->ifm_msglen) {
+	krt_addrinfo *adip;
+	
+	ifp = (struct if_msghdr *) cp;
+
+	/* Pick out the addresses */
+	adip = krt_xaddrs((struct rt_msghdr *) ifp, ifp->ifm_msglen);
+	if (!adip) {
+	    /* Try the next message */
+	    continue;
+	}
+
+	/* Trace the message */
+	krt_trace(krt_task,
+		  "IFINFO",
+		  (struct rt_msghdr *) ifp,
+		  ifp->ifm_msglen,
+		  adip,
+		  0);
+
+	switch (ifp->ifm_type) {
+	    sockaddr_un *ap;
+
+	case RTM_IFINFO:
+	    {
+		/* New interface */
+
+		iflp = (if_link *) 0;
+
+		if (ap = adip->rti_info[RTAX_IFP]) {
+		    /* Link level info */
+
+		    iflp = ifl_addup(krt_task,
+				     krt_if_flags(ifp->ifm_flags),
+				     ifp->ifm_data.ifi_metric,
+				     ifp->ifm_data.ifi_mtu,
+				     ap);
+				    
+		}
+	    }
+	    break;
+
+	case RTM_NEWADDR:
+	    krt_ifaddr(krt_task,
+		       (struct ifa_msghdr *) ifp,
+		       adip,
+		       iflp);
+	    break;
+
+	default:
+	    trace(TR_ALL, LOG_ERR, "krt_ifread: ignoring unknown message type: %s (%d)",
+		  trace_state(rtm_type_bits, ifp->ifm_type),
+		  ifp->ifm_type);
+	    continue;
+	}
+    }
+
+    if_conf_close(krt_task);
+
+    task_block_reclaim(alloc_size, kbuf);
+
+    return 0;
+}
+
+
+#else	/* KINFO_RT_IFLIST */
+
+static int
+krt_ifread __PF2(skip, int,
+		 save_task_state, flag_t)
+{
+#ifndef	SOCKADDR_DL
+    int indx = 0;
+#endif	/* SOCKADDR_DL */
+    caddr_t limit;
+    static struct ifconf *ifconf_req;
+    struct ifreq *ifrp;
+    if_link *iflp = (if_link *) 0;
+#ifdef	PROTO_ISO
+    static struct ifreq iso_ifreq;
+    static struct ifreq *ifr = (struct ifreq *) &iso_ifreq;
+#else	/* PROTO_ISO */
+    static struct ifreq ifreq;
+    static struct ifreq *ifr = &ifreq;
+#endif	/* PROTO_ISO */
+    register task *tp = krt_task;
+    static int s_in = -1;
+#ifdef	ISOPROTO_RAW
+    static int s_iso = -1;
+#endif	/* ISOPROTO_RAW */
+
+    if (skip) {
+	return EINVAL;
+    }
+
+    trace(TR_KRT, 0, NULL);
+    trace(TR_KRT, 0, "krt_ifread: Read kernel interface list");
+
+    /*
+     * get interface configuration.
+     */
+    if (!ifconf_req) {
+	/* We repeat this all this time so we never free the buffer */
+
+#define	IFCONF_BUFSIZE	(40 * sizeof(struct ifreq) + 1)		/* ioctl assumes > size ifreq */
+
+	ifconf_req = (struct ifconf *) task_block_malloc(IFCONF_BUFSIZE + sizeof (struct ifconf));
+	ifconf_req->ifc_buf = (caddr_t) (ifconf_req + 1);
+    }
+    ifconf_req->ifc_len = IFCONF_BUFSIZE;
+
+    if (task_ioctl(tp->task_socket,
+		   SIOCGIFCONF,
+#ifdef	SYSVR4
+		   (caddr_t) ifconf_req->ifc_buf,
+#else	/* SYSVR4 */
+		   (caddr_t) ifconf_req,
+#endif	/* SYSVR4 */
+		   ifconf_req->ifc_len) < 0) {
+	trace(TR_ALL, LOG_ERR, "krt_ifread: ioctl SIOCGIFCONF: %m");
+	return errno;
+    }
+
+    /* Tell the IF code that we are passing complete knowledge */
+    if_conf_open(tp, TRUE);
+    
+#define	ifrpsize(x) ((unix_socksize(&(x)->ifr_addr) > sizeof((x)->ifr_addr)) ? \
+    	sizeof(*(x)) + unix_socksize(&(x)->ifr_addr) - sizeof((x)->ifr_addr) : sizeof(*(x)))
+
+    limit = ifconf_req->ifc_buf + ifconf_req->ifc_len;
+    for (ifrp = ifconf_req->ifc_req;
+	 (caddr_t) ifrp < limit;
+	 ifrp = (struct ifreq *) ((void_t) ((caddr_t) ifrp + ifrpsize(ifrp)))) {
+	if_info ifi;
+
+	int s = -1;
+	u_int siocgifdstaddr = 0;
+#ifdef	SIOCGIFNETMASK
+	u_int siocgifnetmask = 0;
+#endif	/* SIOCGIFNETMASK */
+	u_int siocgifbrdaddr = 0;
+
+
+#ifdef	SYSVR4
+	if (!*ifrp->ifr_name) {
+	    continue;
+	}
+#endif	/* SYSVR4 */
+
+	if (
+#ifdef	SOCKADDR_DL
+	    ifrp->ifr_addr.sa_family == AF_LINK
+#else	/* SOCKADDR_DL */
+	    !iflp || strncmp(ifrp->ifr_name, iflp->ifl_name, IFNAMSIZ)
+#endif	/* SOCKADDR_DL */
+	    ) {
+	    flag_t state;
+	    metric_t metric;
+	    mtu_t mtu;
+#ifdef	SOCKADDR_DL
+	    trace(TR_KRT, 0, "krt_ifread: %s: link level info: %A",
+		  ifrp->ifr_name,
+		  &ifrp->ifr_addr);
+#endif	/* SOCKADDR_DL */
+
+	    /* And save for ioctls */
+	    (void) strncpy(ifr->ifr_name, ifrp->ifr_name, IFNAMSIZ);
+
+	    /* Get interface flags */
+	    if (task_ioctl(tp->task_socket, SIOCGIFFLAGS, (char *) ifr, sizeof (ifr)) < 0) {
+		trace(TR_ALL, LOG_ERR, "krt_ifread: %s: ioctl SIOCGIFFLAGS: %m",
+		      ifr->ifr_name);
+		continue;
+	    }
+	    state = krt_if_flags(ifr->ifr_flags);
+
+	    /* Get interface metric */
+#if	defined(SIOCGIFMETRIC) && defined(ifr_metric)
+	    if (task_ioctl(tp->task_socket, SIOCGIFMETRIC, (caddr_t) ifr, sizeof (ifr)) < 0) {
+		trace(TR_ALL, LOG_ERR, "krt_ifread: %s: ioctl SIOCGIFMETRIC: %m",
+		      ifr->ifr_name);
+		continue;
+	    }
+	    metric = (ifr->ifr_metric >= 0) ? ifr->ifr_metric : 0;
+#else	/* defined(SIOCGIFMETRIC) && defined(ifr_metric) */
+	    metric = 0;
+#endif	/* defined(SIOCGIFMETRIC) && defined(ifr_metric) */
+
+	    /* Get interface MTU */
+	    /* First make an assumption */
+	    if (BIT_TEST(state, IFS_POINTOPOINT)) {
+		/* Compressed SLIP interfaces use 256, it can't really hurt to specify it */
+		/* too low. */
+		mtu = 256;
+	    } else if (BIT_TEST(state, IFS_LOOPBACK)) {
+		/* Loopback interfaces use more */
+		mtu = 1536;
+	    } else if (BIT_TEST(state, IFS_BROADCAST)) {
+		/* Assume an Ethernet */
+		mtu = 1500;
+	    } else {
+		/* Assume something safe */
+		mtu = 576;
+	    }
+#ifdef	SIOCGIFMTU
+#ifndef	ifr_mtu
+#define	ifr_mtu	ifr_metric
+#endif
+	    if (task_ioctl(tp->task_socket, SIOCGIFMTU, (char *) ifr, sizeof (ifr)) < 0) {
+		trace(0, 0, "krt_ifread: %s: ioctl SIOCGIFMTU: %m",
+		      ifr->ifr_name);
+	    } else {
+		mtu = ifr->ifr_mtu;
+	    }
+#endif	/* SIOCGIFMTU */
+
+	    iflp = ifl_addup(krt_task,
+			     state,
+			     metric,
+			     mtu,
+#ifdef	SOCKADDR_DL
+			     sock2gated(&ifrp->ifr_addr, unix_socksize(&ifrp->ifr_addr))
+#else	/* SOCKADDR_DL */
+			     sockbuild_dl(++indx,
+					  0,
+					  ifrp->ifr_name,
+					  IFNAMSIZ,
+					  (byte *) 0,
+					  0,
+					  (byte *) 0,
+					  0)
+#endif	/* SOCKADDR_DL */
+			     );
+	}
+
+
+	/* What we do next depends on the family */
+	switch (ifrp->ifr_addr.sa_family) {
+	case AF_INET:
+	    /* Specify the right socket for this family */
+	    if (s_in < 0) {
+		BIT_RESET(task_state, TASKS_INIT|TASKS_TEST);
+		s_in = task_get_socket(PF_INET, SOCK_DGRAM, 0);
+		task_state = save_task_state;
+	    }
+	    s = s_in;
+	    if (BIT_TEST(iflp->ifl_state, IFS_POINTOPOINT)) {
+		siocgifdstaddr = SIOCGIFDSTADDR;
+	    }
+#ifdef	SIOCGIFNETMASK
+	    if (!BIT_TEST(iflp->ifl_state, IFS_LOOPBACK)) {
+		siocgifnetmask = SIOCGIFNETMASK;
+#endif	/* SIOCGIFNETMASK */
+	    }
+	    if (BIT_TEST(iflp->ifl_state, IFS_BROADCAST)) {
+		siocgifbrdaddr = SIOCGIFBRDADDR;
+	    }
+	    break;
+
+#ifdef	PROTO_ISO
+	case AF_ISO:
+	    /* Specify the right socket for this family */
+	    if (s_iso < 0) {
+		BIT_RESET(task_state, TASKS_INIT|TASKS_TEST);
+		s_iso = task_get_socket(PF_ISO, SOCK_DGRAM, 0);
+		task_state = save_task_state;
+	    }
+	    s = s_iso;
+	    if (BIT_TEST(iflp.ifl_state, IFS_POINTOPOINT)) {
+		siocgifdstaddr = SIOCGIFDSTADDR_ISO;
+	    } else {
+		siocgifnetmask = SIOCGIFNETMASK_ISO;
+	    }
+	    break;
+#endif	/* PROTO_ISO */
+
+	default:
+	    continue;
+	}
+
+	bzero((caddr_t) &ifi, sizeof (ifi));
+	ifi.ifi_link = iflp;
+
+	/* Copy the interface address */
+	ifi.ifi_lcladdr = ifi.ifi_addr = sockdup(sock2gated(&ifrp->ifr_addr, unix_socksize(&ifrp->ifr_addr)));
+
+	if (siocgifdstaddr) {
+	    /* Get the destination address for point-to-point interfaces */
+
+	    if (task_ioctl(s, siocgifdstaddr, (caddr_t) ifr, sizeof (ifr)) < 0) {
+		trace(TR_ALL, LOG_ERR, "krt_ifread: %s: ioctl SIOCGIFDSTADDR: %m",
+		      ifr->ifr_name);
+		continue;
+	    }
+	    ifi.ifi_addr = sockdup(sock2gated(&ifr->ifr_dstaddr, unix_socksize(&ifr->ifr_dstaddr)));
+	}
+#ifdef	SIOCGIFNETMASK
+	if (siocgifnetmask) {
+	    if (task_ioctl(s, siocgifnetmask, (caddr_t) ifr, sizeof (ifr)) < 0) {
+		trace(TR_ALL, LOG_ERR, "krt_ifread: %s: ioctl SIOCGIFNETMASK: %m",
+		      ifr->ifr_name);
+		continue;
+	    }
+#ifdef	SOCKET_LENGTHS
+	    /* A zero mask would have a length of zero */
+	    if (ifr->ifr_addr.sa_len < 2) {
+		ifr->ifr_addr.sa_len = 2;	/* Enough for address and family */
+	    }
+	    /* Masks don't have an address family specified */
+	    if (ifr->ifr_addr.sa_family == AF_UNSPEC) {
+		ifr->ifr_addr.sa_family = socktype(ifi.ifi_addr);
+	    }
+#endif	/* SOCKET_LENGTHS */
+	    /* Convert the mask */
+	    ifi.ifi_subnetmask = sock2gated(&ifr->ifr_addr, unix_socksize(&ifr->ifr_addr));
+
+	    if (ifi.ifi_subnetmask) {
+		/* We have a mask, get pointer to right one */
+		ifi.ifi_subnetmask = mask_locate(ifi.ifi_subnetmask);
+	    }
+	}
+#else	/* SIOCGIFNETMASK */
+	ifi.ifi_subnetmask = (sockaddr_un *) 0;
+#endif	/* SIOCGIFNETMASK */
+
+	/* Get the broadcast address for broadcast interfaces */
+	if (siocgifbrdaddr) {
+#ifdef SIOCGIFBRDADDR
+/* Some systems (SunOS 3.x where x > 2) do not define ifr_broadaddr */
+#ifndef	ifr_broadaddr
+#define	ifr_broadaddr	ifr_addr
+#endif	/* ifr_broadaddr */
+	    if (task_ioctl(s, siocgifbrdaddr, (caddr_t) ifr, sizeof (ifr)) < 0) {
+		trace(TR_ALL, LOG_ERR, "krt_ifread: %s: ioctl SIOGIFBRDADDR: %m",
+		      ifr->ifr_name);
+		continue;
+	    }
+	    ifi.ifi_broadaddr = sockdup(sock2gated(&ifr->ifr_broadaddr, unix_socksize(&ifr->ifr_broadaddr)));
+#else	/* !SIOCGIFBRDADDR */
+	    /* Assume a 4.2 based system with a zeros broadcast */
+	    ifi.ifi_broadaddr = (sockaddr_un *) 0;
+#endif	/* SIOCGIFBRDADDR */
+	}
+
+	if (BIT_TEST(iflp->ifl_state, IFS_UP)) {
+	    if_conf_addaddr(tp, &ifi);
+	} else {
+	    if_conf_deladdr(tp, &ifi);
+	}
+    }
+
+    if_conf_close(tp);
+
+    return 0;
+}
+#endif	/* KINFO_RT_IFLIST */
+
+
+#ifdef	USE_KERNINFO
+/* Use the getkinfo() system call to read the routing table(s) */
+/*ARGSUSED*/
+static int
+krt_rtread __PF1(skip, int)
+{
+    size_t size, alloc_size;
+    caddr_t kbuf, cp, limit;
+    rt_parms rtparms;
+    struct rt_msghdr *rtp;
+
+    trace(TR_KRT, 0, NULL);
+    trace(TR_KRT, 0, "krt_rtread: Initial routes read from kernel:");
+
+    bzero((caddr_t) &rtparms, sizeof (rtparms));
+    rtparms.rtp_n_gw = 1;
+
+    if ((alloc_size = getkerninfo(KINFO_RT_DUMP, (caddr_t) 0, (int *) 0, 0)) == -1) {
+	trace(TR_ALL, LOG_ERR, "krt_rtread: getkerninfo(KINFO_RT_DUMP) estimate: %m");
+	return errno;
+    }
+    if (BIT_TEST(trace_flags, TR_PROTOCOL)) {
+	trace(TR_KRT, 0, "krt_rtread: getkerninfo(KINFO_RT_DUMP) estimates %d bytes needed",
+	      alloc_size);
+    }
+    size = alloc_size = ROUNDUP(alloc_size, task_pagesize);
+    kbuf = (caddr_t) task_block_malloc(alloc_size);
+    if (getkerninfo(KINFO_RT_DUMP, kbuf, (int *) &size, 0) < 0) {
+	trace(TR_ALL, LOG_ERR, "krt_rtread: getkerninfo(KINFO_RT_DUMP): %m");
+	return errno;
+    }
+    limit = kbuf + size;
+
+    for (cp = kbuf; cp < limit; cp += rtp->rtm_msglen) {
+	sockaddr_un *author;
+	krt_addrinfo *adip;
+
+	rtp = (struct rt_msghdr *) ((void_t) cp);
+
+	adip = krt_xaddrs(rtp, rtp->rtm_msglen);
+	if (!adip) {
+	    continue;
+	}
+
+	krt_trace(krt_task,
+		  "RTINFO",
+		  rtp,
+		  rtp->rtm_msglen,
+		  adip,
+		  0);
+
+	switch (krt_rtaddrs(adip, &rtparms, &author, (flag_t) rtp->rtm_flags)) {
+	case 0:
+	    break;
+
+	case 1:
+	    continue;
+
+	case -1:
+	    goto Delete;
+	}
+
+	if (!krt_rtadd(&rtparms, rtp->rtm_flags)) {
+	    /* We don't want it around */
+
+	Delete:
+	    krt_delete_dst(krt_task,
+			   (rt_entry *) 0,
+			   &rtparms,
+			   author);
+	}
+	
+    }
+
+    task_block_reclaim(alloc_size, kbuf);
+
+    return 0;
+}
+#endif	/* USE_KERNINFO */
+
+
+#ifdef	ROUTING_SOCKET
+
+/* Support for BSD4.4 route socket. */
+
+#define	KRT_TIMEOUT	2				/* Default initial timeout on a failure */
+#define	KRT_TIMER(tp)	TASK_TIMER(tp, KRT_TIMER_TIMEOUT)
+#define	KRT_BUMP(value)	value = value * 2		/* Action to take on sucessive failures */
+#define	KRT_RESET(value)	value = KRT_TIMEOUT	/* Reset timer */
+static time_t krt_waittime = KRT_TIMEOUT;		/* Length of time before a response is overdue */
+
+struct rtm_msg {
+    struct rtm_msg *rtm_forw;
+    struct rtm_msg *rtm_back;
+    /* How about some statistics */
+    struct rt_msghdr msghdr;
+};
+
+static struct rtm_msg rtm_head = {&rtm_head, &rtm_head};	/* Head of message queue */
+
+
+/* Issue a request */
+static inline int
+krt_send __PF2(ki_tp, task *,
+	       ki_rtp, struct rtm_msg *)
+{
+    int retry_type = 0;
+
+    if (!ki_rtp->msghdr.rtm_seq) {
+	ki_rtp->msghdr.rtm_seq = ++rtm_head.msghdr.rtm_seq;
+	ki_rtp->msghdr.rtm_version = RTM_VERSION;
+    }
+    ki_rtp->msghdr.rtm_pid = task_pid;
+    ki_rtp->msghdr.rtm_errno = 0;
+
+
+    while (TRUE) {
+	int pri = 0;
+	const char *sent = "SENT";
+
+	if (!BIT_TEST(task_state, TASKS_TEST) && krt_install) {
+	    errno = 0;
+	    if (write(ki_tp->task_socket, (caddr_t) &ki_rtp->msghdr, ki_rtp->msghdr.rtm_msglen) < 0) {
+		ki_rtp->msghdr.rtm_errno = errno;
+		trace(TR_ALL, LOG_ERR, "krt_send: write: %m");
+		sent = "*NOT SENT*";
+		pri = LOG_ERR;
+	    }
+	}
+
+	if (pri || BIT_TEST(trace_flags, TR_KRT)) {
+	    krt_trace(ki_tp,
+		      sent,
+		      &ki_rtp->msghdr,
+		      ki_rtp->msghdr.rtm_msglen,
+		      (krt_addrinfo *) 0,
+		      pri);
+	}
+
+	switch (ki_rtp->msghdr.rtm_errno) {
+	case ENOBUFS:
+	    /* Indicate request should be retried if the error is not fatal */
+	    ki_rtp->msghdr.rtm_pid = 0;
+	    break;
+
+	case EEXIST:
+	    /* What!  We must have missed a routing message. */
+	    switch (ki_rtp->msghdr.rtm_type) {
+	    case RTM_ADD:
+		/* Try to make it look the way we want it to */
+		ki_rtp->msghdr.rtm_type = RTM_CHANGE;
+		continue;
+	    }
+	    ki_rtp->msghdr.rtm_errno = 0;
+	    break;
+
+	case ESRCH:
+	    /* Asked to process a route that does not exist */
+	    switch (ki_rtp->msghdr.rtm_type) {
+	    case RTM_CHANGE:
+		/* Change a change into an add */
+		ki_rtp->msghdr.rtm_type = RTM_ADD;
+		continue;
+
+	    case RTM_DELETE:
+		/* Same result, do we really care how it happened? */
+		break;
+	    }
+	    ki_rtp->msghdr.rtm_errno = 0;
+	    break;
+	    
+	case EDQUOT:
+	    /* The new gateway address is longer than the old one. This */
+	    /* can only happen when we changed an RTM_ADD into an RTM_CHANGE */
+	    switch (ki_rtp->msghdr.rtm_type) {
+	    case RTM_CHANGE:
+		/* Do an ADD later */
+		retry_type = RTM_ADD;
+	    
+		/* But a delete now */
+		ki_rtp->msghdr.rtm_type = RTM_DELETE;
+		ki_rtp->msghdr.rtm_errno = 0;
+		continue;
+	    }
+	    /* Fall-Through */
+
+	default:
+	    task_quit(ki_rtp->msghdr.rtm_errno);
+	    /* Fall-Through */
+
+	case ETOOMANYREFS:
+	    break;
+		
+	case 0:
+	    break;
+	}
+
+	if (!ki_rtp->msghdr.rtm_errno && retry_type) {
+	    ki_rtp->msghdr.rtm_type = retry_type;
+	    retry_type = 0;
+	    continue;
+	}
+
+	break;
+    }
+    
+    return ki_rtp->msghdr.rtm_errno;
+}
+
+
+/* Process as many requests on the queue as possible */
+static inline int
+krt_runqueue __PF1(tp, task *)
+{
+    int error = 0;
+    struct rtm_msg *rtp, *rtpn;
+
+    for (rtp = rtm_head.rtm_forw; rtp != &rtm_head; rtp = rtpn) {
+	if (error = krt_send(tp, rtp)) {
+	    timer_set(KRT_TIMER(tp),
+		      krt_waittime,
+		      (time_t) 0);
+	    KRT_BUMP(krt_waittime);		/* Increase timeout value if it fails again */
+	    break;
+	}
+
+	/* Remove this element from the queue and free it */
+	remque((struct qelem *) rtp);
+	rtpn = rtp->rtm_forw;
+	task_block_reclaim(sizeof (struct rtm_msg) + rtp->msghdr.rtm_msglen - sizeof (struct rt_msghdr), (caddr_t) rtp);
+
+	timer_reset(KRT_TIMER(tp));		
+	KRT_RESET(krt_waittime);		/* Reset delay timer */
+    }
+
+    return error;
+}
+
+
+/* Fill in a request and enqueue it */
+static int
+krt_request __PF3(type, int,
+		  rt, rt_entry *,
+		  router, sockaddr_un *)
+{
+    size_t size;
+    int error = 0;
+    struct rtm_msg *rtp;
+    struct sockaddr *ap;
+    struct sockaddr *dest = sock2unix(rt->rt_dest, (int *) 0);
+    struct sockaddr *mask = (struct sockaddr *) 0;
+    struct sockaddr *gateway = sock2unix(router, (int *) 0);
+
+    if (BIT_TEST(trace_flags, TR_KRT)) {
+	tracef("KERNEL %-6s %-15A",
+	       trace_state(rtm_type_bits, type - 1),
+	       rt->rt_dest);
+
+	if (!BIT_TEST(rt->rt_state, RTS_HOSTROUTE|RTS_MULTICAST)) {
+	    tracef(" mask %-15A",
+		   rt->rt_dest_mask);
+	}
+
+	tracef(" gateway %-15A %s <%s>",
+	       router,
+	       trace_state(rt_proto_bits, rt->rt_gwp->gw_proto),
+	       trace_bits(rt_state_bits, rt->rt_state));
+    }
+
+    if (krt_install) {
+	size = sizeof(struct rt_msghdr) + dest->sa_len;
+	if (!BIT_TEST(rt->rt_state, RTS_HOSTROUTE|RTS_MULTICAST)) {
+	    mask = sock2unix(rt->rt_dest_mask, (int *) 0);
+	    size += mask->sa_len;
+	}
+	switch (type) {
+	case RTM_ADD:
+	case RTM_CHANGE:
+	    size += gateway->sa_len;
+	    break;
+
+	default:
+	    gateway = (struct sockaddr *) 0;
+	}
+
+	/* Allocate a block and clear it */
+	rtp = (struct rtm_msg *) task_block_malloc(size);
+	bzero((caddr_t) &rtp->msghdr, sizeof (rtp->msghdr));
+
+	rtp->msghdr.rtm_type = type;
+	rtp->msghdr.rtm_flags = krt_state_to_flags(rt->rt_state);
+	if (rt->rt_ifp && BIT_TEST(rt->rt_ifp->int_state, IFS_UP)) {
+	    BIT_SET(rtp->msghdr.rtm_flags, RTF_UP);
+	}
+#ifdef	RTM_NEWADDR
+	if (rt->rt_gwp->gw_proto == RTPROTO_DIRECT) {
+	    /* Set interface specific flags */
+	    rtp->msghdr.rtm_flags |= rt->rt_ifp->int_info.ifi_rtflags;
+	}
+#endif	/* RTM_NEWADDR */
+#ifdef	RTF_DYNAMIC
+	if (rt->rt_gwp->gw_proto == RTPROTO_REDIRECT) {
+	    BIT_SET(rtp->msghdr.rtm_flags, RTF_DYNAMIC);
+	}
+#endif	/* RTF_DYNAMIC */
+#ifdef	HAVE_MULTICAST
+	if (BIT_TEST(rt->rt_state, RTS_MULTICAST)) {
+	    BIT_SET(rtp->msghdr.rtm_flags, RTF_HOST);
+	}
+#endif	/* HAVE_MULTICAST */
+
+	rtp->msghdr.rtm_msglen = size;
+
+	/* XXX - set metrics */
+
+	ap = (struct sockaddr *) (rtp + 1);
+
+	bcopy((caddr_t) dest, (caddr_t) ap, dest->sa_len);
+	RTM_ADDR(ap);
+	BIT_SET(rtp->msghdr.rtm_addrs, RTA_DST);
+
+	if (gateway) {
+	    bcopy((caddr_t) gateway, (caddr_t) ap, gateway->sa_len);
+	    RTM_ADDR(ap);
+	    BIT_SET(rtp->msghdr.rtm_addrs, RTA_GATEWAY);
+	}
+
+	/* Provide a mask if this is not a host route */
+	if (mask) {
+	    /* Convert our netmask format into the kernel's netmask format. */
+	    /* The kernel does not want the address family nor trailing zeros. */
+	    register byte *sp = (byte *) mask;
+	    register byte *lp = (byte *) mask + mask->sa_len;
+	    register byte *dp = (byte *) ap;
+	    register byte *cp = (byte *) 0;
+
+	    mask->sa_len = mask->sa_family = 0;	/* OK to write here, it's a scratch buffer */
+
+	    /* Copy mask and keep track of last non-zero byte */
+	    while (sp < lp) {
+		if (*dp++ = *sp++) {
+		    /* We actually point to the first byte after last zero byte */
+		    cp = dp;
+		}
+	    }
+
+	    if (cp <= (byte *) &ap->sa_family) {
+		/* If the netmask is zero length, make sure there is at least a */
+		/* long word of zeros present */
+		*((u_long *) ap) = 0;
+	    } else {
+		ap->sa_len = cp - (byte *) ap;
+	    }
+		
+	    RTM_ADDR(ap);
+	    BIT_SET(rtp->msghdr.rtm_addrs, RTA_NETMASK);
+	}
+
+	rtp->msghdr.rtm_msglen = (caddr_t)ap - (caddr_t) &rtp->msghdr;
+
+	/* Insert at the end of the queue */
+	insque((struct qelem *) rtp, (struct qelem *) rtm_head.rtm_back);
+
+	/* If this is the first entry on the queue, run the queue */
+	if (rtm_head.rtm_forw == rtp) {
+	    trace(TR_KRT, 0, NULL);
+	    error = krt_runqueue(krt_task);
+	} else {
+	    trace(TR_KRT, 0, ": deferred");
+	}
+    } else {
+	trace(TR_KRT, 0, NULL);
+    }
+
+    return error;
+}
+
+
+/* Process an information routing socket request */
+static void
+krt_recv_rtinfo __PF3(tp, task *,
+		      rtp, struct rt_msghdr *,
+		      adip, krt_addrinfo *)
+{
+    switch (rtp->rtm_type) {
+    case RTM_LOSING:
+	trace(TR_KRT, 0, "krt_recv: kernel reports TCP lossage on route to %A/%A via %A",
+	      adip->rti_info[RTAX_DST],
+	      adip->rti_info[RTAX_NETMASK],
+	      adip->rti_info[RTAX_GATEWAY]);
+	break;
+
+    case RTM_MISS:
+	trace(TR_KRT, 0, "krt_recv: kernel can not find route to %A/%A",
+	       adip->rti_info[RTAX_DST],
+	       adip->rti_info[RTAX_NETMASK]);
+	break;
+	
+    case RTM_RESOLVE:
+	trace(TR_KRT, 0, "krt_recv: kernel resolution request for %A/%A",
+	       adip->rti_info[RTAX_DST],
+	       adip->rti_info[RTAX_NETMASK]);
+	break;
+
+    default:
+	assert(FALSE);
+    }
+}
+
+
+/* Process a route related routing socket request */
+static void
+krt_recv_route __PF3(tp, task *,
+		     rtp, struct rt_msghdr *,
+		     adip, krt_addrinfo *)
+{
+    int delete = FALSE;
+    sockaddr_un *author = (sockaddr_un *) 0;
+    rt_entry *rt;
+    rt_entry *prev_rt = (rt_entry *) 0;
+    rt_parms rtparms;
+
+    bzero((caddr_t) &rtparms, sizeof (rtparms));
+    rtparms.rtp_n_gw = 1;
+
+    switch (krt_rtaddrs(adip, &rtparms, &author, (flag_t) rtp->rtm_flags)) {
+    case 0:
+	break;
+
+    case 1:
+	return;
+
+    case -1:
+	return /* XXX - goto Delete */;
+    }
+
+    if (rtp->rtm_pid == task_pid) {
+	trace(TR_ALL, LOG_ERR, "krt_recv: received a response to my own request");
+	return;
+    }
+    
+    /* Ignore incomplete messages and responses in error */
+    if (!BIT_TEST(rtp->rtm_flags, RTF_DONE) || rtp->rtm_errno) {
+	return;
+    }
+
+    /* XXX - should protocol be different for interface routes? */
+    
+    /* XXX - This is a bloody mess!  REWRITE IT! */
+
+    switch (rtp->rtm_type) {
+    case RTM_CHANGE:
+	if (rtparms.rtp_dest_mask) {
+	    /* Reno interface routes may come through with host bits set */
+	    sockmask(rtparms.rtp_dest, rtparms.rtp_dest_mask);
+	}
+
+	rt_open(krt_task);
+
+	if (rt = rt_locate(RTS_HOSTROUTE | RTS_NETROUTE,
+			   rtparms.rtp_dest,
+			   rtparms.rtp_dest_mask,
+			   RTPROTO_BIT_ANY)) {
+	    /* There is a route */
+	    
+	    if (rt->rt_gwp == krt_gwp_krt) {
+		/* It is one of ours, change it */
+		
+		rt = rt_change(rt,
+			       (metric_t) 0,
+			       RTPREF_KRT,
+			       1, &rtparms.rtp_router);
+		if (!rt) {
+		    trace(TR_ALL, LOG_ERR, "krt_recv: error changing route to %A/%A via %A",
+			  rtparms.rtp_dest,
+			  rtparms.rtp_dest_mask,
+			  rtparms.rtp_router);
+		}
+		rt_close(krt_task, (gw_entry *) 0, 1, NULL);
+
+		break;
+	    } else if (rt == rt->rt_active) {
+		/* Not ours, remember to flag the old one as not installed */
+		prev_rt = rt;
+	    }
+	}
+	/* Add a new route */
+	goto add;
+
+    case RTM_DELETE:
+    case RTM_OLDDEL:
+	delete = TRUE;
+	/* Fall Thru */
+
+    case RTM_ADD:
+    case RTM_OLDADD:
+	if (!rtp->rtm_pid && !BIT_TEST(rtparms.rtp_state, RTS_GATEWAY)) {
+	    /* Interface being added or deleted */
+
+#ifndef	RTM_IFINFO
+	    /* See if we have any new interfaces */
+	    if_check(if_task);
+#endif
+	}
+
+	if (rtparms.rtp_dest_mask) {
+	    /* Reno interface routes may come through with host bits set */
+	    sockmask(rtparms.rtp_dest, rtparms.rtp_dest_mask);
+	}
+
+	rt_open(krt_task);
+	    
+	/* Delete existing route */
+	rt = rt_locate(RTS_HOSTROUTE | RTS_NETROUTE,
+		       rtparms.rtp_dest,
+		       rtparms.rtp_dest_mask,
+		       RTPROTO_BIT_ANY);
+	if (rt && !BIT_TEST(rt->rt_state, RTS_DELETE)) {
+	    switch (rt->rt_gwp->gw_proto) {
+	    case RTPROTO_KRT:
+	    case RTPROTO_REDIRECT:
+	    case RTPROTO_KERNEL:
+		if (rt == rt->rt_active) {
+		    /* Indicate it is not installed in the kernel */
+		    rt = krt_not_installed(rt);
+		}
+		if (rt) {
+		    rt_delete(rt);
+		}
+		break;
+
+	    default:
+		if (rt == rt->rt_active && !BIT_TEST(rt->rt_state, RTS_NOTINSTALL)) {
+		    /* Someone is fucking with an installed active route, put it back */
+		    krt_change((rt_entry *) 0, (sockaddr_un *) 0, rt);
+		}
+	    }
+	}
+
+	if (!delete) {
+	add:
+	    /* Add new route */
+	    BIT_SET(rtparms.rtp_state, RTS_NOAGE | RTS_RETAIN);
+	    
+	    if (BIT_TEST(rtparms.rtp_state, RTS_GATEWAY)) {
+		rtparms.rtp_gwp = krt_gwp_krt;
+		rtparms.rtp_preference = RTPREF_KRT;
+	    } else {
+		rtparms.rtp_gwp = int_rtparms.rtp_gwp;
+		rtparms.rtp_preference = RTPREF_DIRECT;
+	    }
+		
+	    rt = rt_add(&rtparms);
+	    if (rt) {
+		if (prev_rt && prev_rt != rt->rt_active) {
+		    /* Mark previous route as not installed */
+
+		    krt_not_installed(prev_rt);
+		}
+		if (rt == rt->rt_active) {
+		    krt_installed(rt);
+		    goto close;
+		} else {
+		    trace(TR_ALL, LOG_ERR, "krt_recv: kernel route not active %A/%A via %A flags %s",
+			  rtparms.rtp_dest,
+			  rtparms.rtp_dest_mask,
+			  rtparms.rtp_router,
+			  trace_bits(krt_flag_bits, (flag_t) rtp->rtm_flags));
+		}	
+	    } else {
+		/* Could not install route */
+		trace(TR_ALL, LOG_ERR, "krt_recv: error adding route to %A/%A via %A - deleting",
+		      rtparms.rtp_dest,
+		      rtparms.rtp_dest_mask,
+		      rtparms.rtp_router);
+	    }
+
+	    /* Delete bogus route */
+	    krt_delete_dst(krt_task,
+			   rt ? rt->rt_active : (rt_entry *) 0,
+			   &rtparms,
+			   author);
+	}
+
+    close:
+	rt_close(krt_task, (gw_entry *) 0, 1, NULL);
+	break;
+
+    case RTM_REDIRECT:
+	tracef("krt_recv: redirect to %A",
+	       rtparms.rtp_dest);
+	if (rtparms.rtp_dest_mask) {
+	    tracef("/%A ",
+		   rtparms.rtp_dest_mask);
+	}
+	trace(TR_KRT, 0, "via %A from %A",
+	      rtparms.rtp_router,
+	      author);
+	redirect(tp,
+		 rtparms.rtp_dest,
+		 rtparms.rtp_dest_mask,
+		 rtparms.rtp_router,
+		 author,
+		 BIT_TEST(rtparms.rtp_state, RTS_HOSTROUTE) ? TRUE : FALSE);
+	break;
+
+    default:
+	assert(FALSE);
+    }
+}
+
+
+/* Process a route socket response from the kernel */
+static void
+krt_recv __PF1(tp, task *)
+{
+    int n_packets = TASK_PACKET_LIMIT;
+    int size;
+
+    while (n_packets-- && !task_receive_packet(tp, &size)) {
+	struct rt_msghdr *rtp = (struct rt_msghdr *) task_recv_buffer;
+	krt_addrinfo *adip;
+
+	adip = krt_xaddrs(rtp, size);
+	if (!adip) {
+	    continue;
+	}
+
+	
+	if (BIT_TEST(trace_flags, TR_KRT)) {
+	    krt_trace(tp,
+		      "RECV",
+		      rtp,
+		      size,
+		      adip,
+		      0);
+	}
+
+	switch (rtp->rtm_type) {
+	case RTM_ADD:
+	case RTM_DELETE:
+	case RTM_CHANGE:
+	case RTM_OLDADD:
+	case RTM_OLDDEL:
+	    krt_recv_route(tp, rtp, adip);
+	    break;
+
+	case RTM_LOSING:
+	case RTM_MISS:
+	case RTM_RESOLVE:
+	    krt_recv_rtinfo(tp, rtp, adip);
+	    break;
+
+	case RTM_GET:
+	case RTM_LOCK:
+	    break;
+	    
+#ifdef	RTM_NEWADDR
+	case RTM_NEWADDR:
+	case RTM_DELADDR:
+	    {
+		struct ifa_msghdr *ifap = (struct ifa_msghdr *) rtp;
+
+		if_conf_open(tp, FALSE);
+		krt_ifaddr(tp,
+			   (struct ifa_msghdr *) rtp,
+			   adip,
+			   ifl_locate(ifap->ifam_index));
+		if_conf_close(tp);
+	    }
+	    break;
+	    
+	case RTM_IFINFO:
+            {
+		sockaddr_un *ap;
+		struct if_msghdr *ifp = (struct if_msghdr *) rtp;
+
+		if_conf_open(tp, FALSE);
+		(void) ifl_addup(tp,
+				 krt_if_flags(ifp->ifm_flags),
+				 ifp->ifm_data.ifi_metric,
+				 ifp->ifm_data.ifi_mtu,
+				 ap);
+		if_conf_close(tp);
+	    }
+	    break;
+#endif	/* RTM_NEWADDR */
+
+	default:
+	    break;
+	}
+    }
+}
+
+
+/* Retry a kernel socket request, it failed the first time */
+/*ARGSUSED*/
+static void
+krt_timeout __PF2(tip, timer *,
+		  interval, time_t)
+{
+    krt_runqueue(tip->timer_task);
+}
+
+
+/*
+ *	Dump the routing socket queue
+ */
+static void
+krt_dump __PF2(tp, task *,
+	       fd, FILE *)
+{
+    struct rtm_msg *rtp;
+
+    /*
+     * Dump the static gateways
+     */
+    if (rt_gw_list) {
+	(void) fprintf(fd, "\tGateways referenced by static routes:\n");
+
+	gw_dump(fd,
+		"\t\t",
+		rt_gw_list,
+		RTPROTO_KRT);
+
+	(void) fprintf(fd, "\n");
+    }
+
+    (void) fprintf(fd, "\tRoute socket queue:\n");
+
+    (void) fprintf(fd, "\t\tSequence:\t%d\n",
+		   rtm_head.msghdr.rtm_seq);
+
+    for (rtp = rtm_head.rtm_forw; rtp != &rtm_head; rtp = rtp->rtm_forw) {
+	krt_addrinfo *adip = krt_xaddrs(&rtp->msghdr, rtp->msghdr.rtm_msglen);
+
+	if (!adip) {
+	    /* Not parsable */
+	    continue;
+	}
+	
+	(void) fprintf(fd, "\t\t\tlength %u  version %u  type %s(%u)  addrs %s(%x)  pid %d  seq %d  error %d",
+		       rtp->msghdr.rtm_msglen,
+		       rtp->msghdr.rtm_version,
+		       trace_state(rtm_type_bits, rtp->msghdr.rtm_type - 1),
+		       rtp->msghdr.rtm_type,
+		       trace_bits(rtm_sock_bits, (flag_t) rtp->msghdr.rtm_addrs),
+		       rtp->msghdr.rtm_addrs,
+		       rtp->msghdr.rtm_pid,
+		       rtp->msghdr.rtm_seq,
+		       rtp->msghdr.rtm_errno);
+	if (rtp->msghdr.rtm_errno) {
+	    errno = rtp->msghdr.rtm_errno;
+	    (void) fprintf(fd, ": %m\n");
+	} else {
+	    (void) fprintf(fd, "\n");
+	}
+
+	(void) fprintf(fd, "\t\t\tflags %s(%x)",
+		       trace_bits(krt_flag_bits, (flag_t) rtp->msghdr.rtm_flags),
+		       rtp->msghdr.rtm_flags & 0xffff);
+	if (rtp->msghdr.rtm_rmx.rmx_locks) {
+	    (void) fprintf(fd, "  locks %s(%x)",
+			   trace_bits(rtm_lock_bits, rtp->msghdr.rtm_rmx.rmx_locks),
+			   rtp->msghdr.rtm_rmx.rmx_locks);
+	}
+	if (rtp->msghdr.rtm_inits) {
+	    (void) fprintf(fd, "  inits %s(%x)\n",
+			   trace_bits(rtm_lock_bits, rtp->msghdr.rtm_inits),
+			   rtp->msghdr.rtm_inits);
+	}
+
+	/* Display metrics */
+	switch (rtp->msghdr.rtm_type) {
+	case RTM_ADD:
+	case RTM_CHANGE:
+	case RTM_GET:
+	case RTM_LOCK:
+	    if (BIT_TEST(rtp->msghdr.rtm_rmx.rmx_locks|rtp->msghdr.rtm_inits, RTV_MTU|RTV_HOPCOUNT|RTV_EXPIRE|RTV_SSTHRESH)) {
+		(void) fprintf(fd, "\t\t\tmtu %u  hopcount %u  expire %u  ssthresh %u\n",
+			       rtp->msghdr.rtm_rmx.rmx_mtu,
+			       rtp->msghdr.rtm_rmx.rmx_hopcount,
+			       rtp->msghdr.rtm_rmx.rmx_expire,
+			       rtp->msghdr.rtm_rmx.rmx_ssthresh);
+	    }
+	    if (BIT_TEST(rtp->msghdr.rtm_rmx.rmx_locks|rtp->msghdr.rtm_inits, RTV_RPIPE|RTV_SPIPE|RTV_RTT|RTV_RTTVAR)) {
+		(void) fprintf(fd, "\t\t\trecvpipe %u  sendpipe %u  rtt %u  rttvar %u\n",
+			       rtp->msghdr.rtm_rmx.rmx_recvpipe,
+			       rtp->msghdr.rtm_rmx.rmx_sendpipe,
+			       rtp->msghdr.rtm_rmx.rmx_rtt,
+			       rtp->msghdr.rtm_rmx.rmx_rttvar);
+	    }
+		break;
+	}
+
+	/* Display addresses */
+	if (adip->rti_addrs) {
+	    register int i;
+
+	    fprintf(fd, "\t\t\t");
+
+	    RTAX_LIST(i) {
+		register sockaddr_un *ap = adip->rti_info[i];
+
+		if (ap) {
+		    fprintf(fd, " %s %A",
+			    gd_lower(trace_state(rtm_sock_bits, i)),
+			    ap);
+		}
+	    } RTAX_LIST_END(i);
+	}	
+
+	(void) fprintf(fd, "\n\n");
+    }
+}
+
+
+/*
+ *	Deal with an interface state change
+ */
+static void
+krt_ifchange __PF3(tp, task *,
+		   ifp, if_entry *,
+		   code, int)
+{
+    int changes = 0;
+    rt_list *rtl = rtlist_proto(AF_UNSPEC, RTPROTO_BIT(RTPROTO_KRT) | RTPROTO_BIT(RTPROTO_KERNEL));
+    
+    rt_entry *rt;
+
+    rt_open(tp);
+    
+    switch (code) {
+    case IFC_UP:
+	RT_LIST(rt, rtl, rt_entry) {
+	    if (rt->rt_ifp == ifp) {
+		/* Restore static routes by making their preference positive again */
+		if (rt->rt_preference < 0) {
+		    (void) rt_change(rt,
+				     rt->rt_metric,
+				     -rt->rt_preference,
+				     0, (sockaddr_un **) 0);
+		}
+	    }
+	} RT_LIST_END(rt, rtl, rt_entry) ;
+	break;
+
+    case IFC_ADD:
+	/* Don't believe the interface is up until we see packets from it */
+	break;
+
+    case IFC_DOWN:
+	RT_LIST(rt, rtl, rt_entry) {
+	    if (rt->rt_ifp == ifp) {
+		/* Hide any static routes by giving them negative preferences */
+		if (rt->rt_preference > 0) {
+		    (void) rt_change(rt,
+				     rt->rt_metric,
+				     -rt->rt_preference,
+				     0, (sockaddr_un **) 0);
+		}
+	    }
+	} RT_LIST_END(rt, rtl, rt_entry) ;
+	break;
+
+    case IFC_DELETE:
+	RT_LIST(rt, rtl, rt_entry) {
+	    if (rt->rt_ifp == ifp &&
+		!BIT_TEST(rt->rt_state, RTS_DELETE)) {
+		/* Delete any static routes we learned via this interface */
+		rt_delete(rt);
+	    }
+	} RT_LIST_END(rt, rtl, rt_entry) ;
+	break;
+    }
+
+    RTLIST_RESET(rtl);
+
+    rt_close(tp, (gw_entry *) 0, changes, NULL);
+
+}
+
+
+#else	/* ROUTING_SOCKET */
+
+#define	RTM_ADD		SIOCADDRT
+#define	RTM_DELETE	SIOCDELRT
+
+static inline int
+krt_request __PF3(type, u_int,
+		  rt, rt_entry *,
+		  router, sockaddr_un *)
+{
+    int request_error = 0;
+    int do_ioctl = !BIT_TEST(task_state, TASKS_TEST) && krt_install;
+    struct rtentry krt;
+
+    tracef("KERNEL %-6s %-15A",
+	   (type == RTM_ADD) ? "ADD" : "DELETE",
+	   rt->rt_dest);
+
+    if (!BIT_TEST(rt->rt_state, RTS_HOSTROUTE|RTS_MULTICAST)) {
+	tracef(" mask %-15A",
+	       rt->rt_dest_mask);
+    }
+
+    tracef(" gateway %-15A %s <%s>",
+	   router,
+	   trace_state(rt_proto_bits, rt->rt_gwp->gw_proto),
+	   trace_bits(rt_state_bits, rt->rt_state));
+
+    bzero((caddr_t) & krt, sizeof(krt));
+    krt.rt_dst = *sock2unix(rt->rt_dest, (int *) 0);	/* struct copy */
+    krt.rt_gateway = *sock2unix(router, (int *) 0);	/* struct copy */
+    krt.rt_flags = krt_state_to_flags(rt->rt_state);
+    if (rt->rt_ifp && BIT_TEST(rt->rt_ifp->int_state, IFS_UP)) {
+	BIT_SET(krt.rt_flags, RTF_UP);
+    }
+#ifdef	RTF_DYNAMIC
+    if (rt->rt_gwp->gw_proto == RTPROTO_REDIRECT) {
+	BIT_SET(krt.rt_flags, RTF_DYNAMIC);
+    }
+#endif	/* RTF_DYNAMIC */
+#ifdef	HAVE_MULTICAST
+    if (BIT_TEST(rt->rt_state, RTS_MULTICAST)) {
+	BIT_SET(krt.rt_flags, RTF_HOST);
+    }
+#endif	/* HAVE_MULTICAST */
+
+    if (do_ioctl && (task_ioctl(krt_task->task_socket, type, (caddr_t) &krt, sizeof (krt)) < 0)) {
+	request_error = errno;
+	trace(TR_ALL | TR_NOSTAMP, LOG_ERR, " SIOC%sRT: %m",
+	      (type == RTM_ADD) ? "ADD" : "DEL");
+    } else {
+	trace(TR_KRT | TR_NOSTAMP, 0, NULL);
+    }
+
+    return request_error;
+}
+
+#endif	/* ROUTING_SOCKET */
+
+
+#ifdef	IBM_6611
+static int
+krt_change __PF3(old_rt, rt_entry *,
+		 old_router, sockaddr_un *,
+		 new_rt, rt_entry *)
+{
+    int error = 0;
+
+    if (old_rt) {
+	error = krt_request(RTM_DELETE, old_rt, old_router);
+	if (!error) {
+	    scram_request(RTM_DELETE, old_rt);
+	}
+    }
+
+    if (!error && new_rt) {
+#ifdef	notdef
+	int i = new_rt->rt_n_gw;
+#endif	/* notdef */
+
+#ifdef	RTF_REJECT
+	if (BIT_TEST(new_rt->rt_state, RTS_REJECT)) {
+	    error = krt_request(RTM_ADD, new_rt, inet_addr_loopback);
+	} else 
+#endif	/* RTF_REJECT */
+#ifdef	notdef
+	    while (i-- && !error) {
+		error = krt_request(RTM_ADD, new_rt, new_rt->rt_routers[i]);
+	    }
+#endif	/* notdef */
+	error = krt_request(RTM_ADD, new_rt, new_rt->rt_router);
+	if (!error) {
+	    scram_request(RTM_ADD, new_rt);
+	}
+    }
+
+    return error;
+}
+
+#else	/* IBM_6611 */
+
+static int
+krt_change __PF3(old_rt, rt_entry *,
+		 old_router, sockaddr_un *,
+		 new_rt, rt_entry *)
+{
+    int error = 0;
+    sockaddr_un *new_router = (sockaddr_un *) 0;
+
+    if (new_rt) {
+#ifdef	RTF_REJECT
+	if (BIT_TEST(new_rt->rt_state, RTS_REJECT)) {
+	    /* Reject routes need to be installed via the loopback interface */
+	    new_router = inet_addr_loopback;
+	} else
+#endif	/* RTF_REJECT */
+	    new_router = new_rt->rt_router;
+    }
+
+    if (old_rt && new_rt) {
+	if (sockaddrcmp(old_router, new_router)) {
+	    /* Same router */
+	    
+	    if (new_rt->rt_ifp == old_rt->rt_ifp
+		&& BIT_MASK_MATCH(old_rt->rt_state, new_rt->rt_state, RTS_HOSTROUTE|RTS_GATEWAY|RTS_REJECT|RTS_STATIC)) {
+		/* If nothing has changed, there isn't anything to do */
+	    
+		return error;
+	    }
+
+	    /* Flags have changed, need to delete, then add */
+#ifdef	ROUTING_SOCKET
+	} else if (socksize(new_router) <= socksize(old_router)) {
+	    /* With the routing socket we can do a change, but only if the */
+	    /* length of the new gateway is equal to or less than the */
+	    /* length of the old one.  Otherwise we need a delete followed */
+	    /* by an add. */
+	    return krt_request(RTM_CHANGE, new_rt, new_router);
+#endif	/* ROUTING_SOCKET */
+	}
+
+	error = krt_request(RTM_DELETE, old_rt, old_router);
+	if (!error) {
+	    error = krt_request(RTM_ADD, new_rt, new_router);
+	}
+
+	return error;
+    }
+
+    if (new_rt) {
+	error = krt_request(RTM_ADD, new_rt, new_router);
+    }
+
+    if (!error && old_rt) {
+	error = krt_request(RTM_DELETE, old_rt, old_router);
+    }
+
+    return error;
+}
+#endif	/* IBM_6611 */
+
+
+/*	Delete a route given dest, gateway and flags	*/
+/* XXX - This is a hack, is there a better way? */
+/*ARGSUSED*/
+int
+krt_delete_dst __PF4(tp, task *,
+		     rt, rt_entry *,
+		     rtparms, rt_parms *,
+		     author, sockaddr_un *)
+{
+    int i;
+    rt_entry my_rt;
+    rt_head my_rth;
+
+    bzero((caddr_t) &my_rt, sizeof (my_rt));
+    bzero((caddr_t) &my_rth, sizeof (my_rth));
+    my_rt.rt_head = &my_rth;
+    my_rt.rt_dest = rtparms->rtp_dest;
+    my_rt.rt_dest_mask = rtparms->rtp_dest_mask;
+    my_rt.rt_n_gw = rtparms->rtp_n_gw;
+    for (i = 0; i < rtparms->rtp_n_gw; i++) {
+	my_rt.rt_routers[i] = rtparms->rtp_routers[i];
+    }
+    my_rt.rt_state = rtparms->rtp_state | RTS_GATEWAY;
+    my_rt.rt_gwp = gw_timestamp(&redirect_gw_list,
+				RTPROTO_REDIRECT,
+				rt_task,
+				(as_t) 0,
+				(as_t) 0,
+				RT_T_EXPIRE,
+				author);
+
+    (void) krt_change(&my_rt, rtparms->rtp_router, rt);
+    
+    return 0;
+}
+
+
+/* Process the change list generated by routing table changes. */
+void
+krt_flash __PF1(rtl, rt_list *)
+{
+    rt_head *rth;
+
+    /* Open the routing table in case we make a change */
+    rt_open(krt_task);
+    
+    RT_LIST(rth, rtl, rt_head) {
+	rt_entry *new_rt;
+	rt_entry *old_rt = (rt_entry *) 0;
+
+	/* See if we installed another route */
+	if (rth->rth_n_announce) {
+	    RT_ALLRT(old_rt, rth) {
+		if (rtbit_isset(old_rt, krt_task->task_rtbit)) {
+		    break;
+		}
+	    } RT_ALLRT_END(old_rt, rth) ;
+	}
+
+	if (new_rt = rth->rth_active) {
+	    /* There is an active route */
+
+	    if (!BIT_TEST(new_rt->rt_state, RTS_DONTINSTALL)) {
+		/* We are not announcing it, this will be our new route */
+
+#if	!defined(VARIABLE_MASKS)
+		if (BIT_TEST(new_rt->rt_state, RTS_SUBNET) && !if_withnet(rth->rth_dest)) {
+		    /* We can not install subnets of a network we do not have an interface on */
+		    trace(TR_KRT, LOG_INFO, "krt_flash: Can not install %A/%A gateway %A: varible subnet masks not supported",
+			  rth->rth_dest,
+			  rth->rth_dest_mask,
+			  new_rt->rt_router);
+		    goto no_announce;
+		}
+#endif	/* !defined(VARIABLE_MASKS) */
+
+		if (new_rt != old_rt) {
+		    rtbit_set(new_rt, krt_task->task_rtbit);
+		}
+	    } else {
+		/* Not allowed to announce it */
+
+#if	!defined(VARIABLE_MASKS)
+	    no_announce:
+#endif	/* !defined(VARIABLE_MASKS) */
+		new_rt = (rt_entry *) 0;
+	    }
+	}
+
+	if (new_rt || old_rt) {
+	    sockaddr_un *new_router;
+	    sockaddr_un *old_router;
+	    /* Something has changed */
+
+	    if (old_rt) {
+		/* Get the old router address */
+
+		rttsi_get(rth, krt_task->task_rtbit, (byte *) &old_router);
+	    } else {
+		/* Indicate no old router */
+
+		old_router = (sockaddr_un *) 0;
+	    }
+
+	    /* Change the kernel */
+	    (void) krt_change(old_rt, old_router, new_rt);
+
+	    /* Set TSI to remember the current router */
+	    if (new_rt) {
+		/* See if we can make use of the old sockaddr */
+		if (old_router && sockaddrcmp(old_router, new_rt->rt_router)) {
+		    /* Use old router */
+		    new_router = old_router;
+		} else {
+		    /* Set new router */
+		    new_router = sockdup(new_rt->rt_router);
+		}
+	    } else {
+		/* Indicate no old router */
+		new_router = (sockaddr_un *) 0;
+	    }
+
+	    if (new_router != old_router) {
+		/* Change the TSI to point at new router */
+		rttsi_set(rth, krt_task->task_rtbit, (byte *) &new_router);
+		if (old_router) {
+		    /* Free old router */
+		    sockfree(old_router);
+		}
+	    }
+
+	    if (old_rt && old_rt != new_rt) {
+		/* Reset the announcement bit on the old route */
+		(void) rtbit_reset(old_rt, krt_task->task_rtbit);
+	    }
+	}
+    } RT_LIST_END(rth, rtl, rt_head) ;
+
+    /* Close the routing table */
+    rt_close(krt_task, (gw_entry *) 0, 0, NULL);
+}
+
+
+
+/*
+ *	If we support the routing socket, remove any static routes we
+ *	installed. 
+ *
+ *	Reset the announcement bits on any routes installed in the kernel.
+ *	If they don't have RTS_RETAIN set they get removed from the kernel.
+ */
+static void
+krt_terminate __PF1(tp, task *)
+{
+    int changes = 0;
+    rt_entry *rt;
+    rt_head *rth;
+    rt_list *rtl;
+
+    rt_open(tp);
+
+#ifdef	ROUTING_SOCKET
+    rtl = rtlist_gw(krt_gwp_krt);
+
+    RT_LIST(rt, rtl, rt_entry) {
+	if (
+#ifdef	RTF_STATIC
+	    !BIT_TEST(rt->rt_state, RTS_STATIC) &&
+#endif	/* RTF_STATIC */
+	    !BIT_TEST(rt->rt_state, RTS_DELETE)) {
+	    /* Remove a route we installed */
+	    rt_delete(rt);
+	    changes++;
+	}
+    } RT_LIST_END(rt, rtl, rt_entry) ;
+
+    RTLIST_RESET(rtl);
+#endif	/* ROUTING_SOCKET */
+
+    rtl = rthlist_all(AF_UNSPEC);
+
+    RT_LIST(rth, rtl, rt_head) {
+	if ((rt = rth->rth_active) && rtbit_isset(rt, tp->task_rtbit)) {
+	    sockaddr_un *router = (sockaddr_un *) 0;
+
+	    /* Get the old router */
+	    rttsi_get(rth, tp->task_rtbit, (byte *) &router);
+
+	    if (!BIT_TEST(rt->rt_state, RTS_RETAIN)) {
+		/* Remove it from the kernel */
+		(void) krt_change(rt, router, (rt_entry *) 0);
+	    }
+
+	    /* Reset router and free the socket */
+	    sockfree(router);
+	    rttsi_reset(rth, tp->task_rtbit);
+	    changes++;
+
+	    /* Reset the bit */
+	    (void) rtbit_reset(rt, tp->task_rtbit);
+	}
+    } RT_LIST_END(rth, rtl, rt_head);
+
+    RTLIST_RESET(rtl);
+    
+    rt_close(tp, (gw_entry *) 0, changes, NULL);
+    
+    rtbit_free(tp, tp->task_rtbit);
+
+    task_delete(tp);
+}
+
+
+/*ARGSUSED*/
+void
+if_check __PF1(tp, task *)
+{
+    (void) krt_ifread(FALSE, task_state);
+}
+
+
+static void
+krt_ifcheck __PF2(tip, timer *,
+		  interval, time_t)
+{
+    /* Read the interface configuration */
+    if_check(if_task);
+}
+
+
+static void
+krt_tsi_dump __PF3(rth, rt_head *,
+		   data, void_t,
+		   buf, char *)
+{
+    sockaddr_un *gw;
+
+    rttsi_get(rth, krt_task->task_rtbit, (byte *) &gw);
+
+    if (gw) {
+	(void) sprintf(buf, "KERNEL gateway %-15A",
+		       gw);
+    }
+		   
+    return;
+}
+
+
+/* Figure out what the maximum value for a kernel socket buffer is */
+static int
+krt_get_maxpacket __PF1(skip, int)
+{
+    u_int I;
+    u_int U = IP_MAXPACKET;
+    u_int L = 0;
+    int s = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+    if (!s) {
+	trace(TR_ALL, LOG_WARNING, "krt_get_maxpacket: socket(AF_UNIX, SOCK_DGRAM, 0): %m");
+	return skip;
+    }
+    
+
+    do {
+	register int C;
+	    
+	I = (U - L) / 2 + L;
+	C = setsockopt(s,
+		       SOL_SOCKET,
+		       SO_RCVBUF,
+		       (caddr_t) &I,
+		       (int) (sizeof (I)));
+	if (C < 0) {
+	    U = I - 1;
+	} else {
+	    L = I + 1;
+	}
+    } while (U >= L);
+
+    task_maxpacket = I;
+
+    trace(TR_ALL, 0, "krt_get_maxpacket: Maximum kernel receive/send packet size is %u",
+	  task_maxpacket);
+    trace(TR_ALL, 0, NULL);
+
+    if (close(s) < 0) {
+	trace(TR_ALL, LOG_WARNING, "krt_get_maxpacket: close(socket): %m");
+    }
+    
+    return skip;
+}
+
+
+#ifdef	SIOCGNETOPT
+struct nopts {
+    const char *name;
+    int value;
+    const char *message;
+};
+
+static struct nopts net_opts[] = {
+    { "ipforwarding", 1, "IP forwarding disabled in kernel" },
+    { NULL }
+} ;
+
+#ifndef	MAXOPTLEN
+#define	MAXOPTLEN	128
+
+struct optreq {
+    char name[MAXOPTLEN];
+    char data[MAXOPTLEN];
+    char getnext;
+} ;
+
+#endif	/* MAXOPTLEN */
+
+
+static int
+krt_netopts __PF1(skip, int)
+{
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct nopts *np;
+
+    if (!s) {
+	trace(TR_ALL, LOG_WARNING, "krt_netopts: socket(AF_UNIX, SOCK_STREAM, 0): %m");
+	return skip;
+    }
+    
+    for (np = net_opts; np->name; np++) {
+	int value;
+	struct optreq optreq;
+
+	optreq.getnext = 0;
+	(void) strncpy(optreq.name, np->name, MAXOPTLEN);
+	
+	if (task_ioctl(s, SIOCGNETOPT, (caddr_t) &optreq, sizeof (optreq)) < 0) {
+	    trace(TR_ALL, LOG_WARNING, "krt_netopts: ioctl(SIOCGNETOPT, %s): %m",
+		  optreq.name,
+		  errno);
+	    continue;
+	}
+
+	value = atoi(optreq.data);
+	if (value != np->value) {
+	    trace(TR_ALL, 0, NULL);
+	    trace(TR_ALL, LOG_WARNING, "krt_netopts: *WARNING* %s (%s = %s)",
+		  np->message,
+		  optreq.name,
+		  optreq.data);
+	    trace(TR_ALL, 0, NULL);
+	}
+    }
+
+    if (close(s) < 0) {
+	trace(TR_ALL, LOG_WARNING, "krt_netopts: close(socket): %m");
+    }
+    
+    return skip;
+}
+#endif	/* SIOCGNETOPT */
+
+
+static int
+krt_symbols __PF2(nl, struct nlist *,
+		  skip, int)
+{
+    int i;
+
+    for (i = NL_SIZE; i--;) {
+	/* Use bcopy to avoid warning about const char * */
+	bcopy((caddr_t) & nl_names[i].nl_name, (caddr_t) & nl[i].n_name, sizeof(char *));
+#ifdef	NLIST_NOUNDER
+	if (nl[i].n_name) {
+	    nl[i].n_name++;
+	}
+#endif	/* NLIST_NOUNDER */
+	if (nl_names[i].nl_ptr) {
+	    *nl_names[i].nl_ptr = &nl[i];
+	}
+    }
+
+    if (!skip && (KVM_NLIST(kd, nl) == -1)) {
+	trace(TR_ALL, LOG_ERR, "krt_init: %s",
+	      KVM_GETERR(kd, "kvm_nlist error"));
+
+	skip = TRUE;
+    }
+#ifndef vax11c
+    if (krt_version->n_value && !skip) {
+	char *p;
+
+	krt_version_kernel = (char *) task_block_alloc(task_block_pagesize);
+	if (KVM_READ(kd,
+		     krt_version->n_value,
+		     krt_version_kernel,
+		     BUFSIZ - 1) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_init: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return TRUE;
+	}
+	if (p = (char *) index(krt_version_kernel, '\n')) {
+	    *p = (char) 0;
+	}
+	p = task_mem_strdup(krt_task, krt_version_kernel);
+	task_block_free(task_block_pagesize, krt_version_kernel);
+	krt_version_kernel = p;
+	trace(TR_KRT, 0, NULL);
+	trace(TR_KRT, 0, "krt_init: %s = %s",
+	      krt_version->n_name,
+	      krt_version_kernel);
+    } else {
+	krt_version_kernel = NULL;
+    }
+#else	/* vax11c */
+    if (krt_multinet_version->n_value && krt_multinet_product_name->n_value && !skip) {
+	char *p;
+
+	krt_version_kernel = task_block_alloc(task_block_pagesize);
+	if (KVM_READ(kd,
+		     krt_multinet_product_name->n_value,
+		     krt_version_kernel,
+		     BUFSIZ - 2) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_init: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return TRUE;
+	}
+	(void) strcat(krt_version_kernel, " ");
+	if (KVM_READ(kd,
+		     krt_multinet_version->n_value,
+		     krt_version_kernel + strlen(krt_version_kernel),
+		     BUFSIZ - 1 - strlen(krt_version_kernel)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_init: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	    return TRUE;
+	}
+	p = task_mem_strdup(krt_task, krt_version_kernel);
+	task_block_free(task_block_pagesize, krt_version_kernel);
+	krt_version_kernel = p;
+	trace(TR_KRT, 0, "krt_init: %s %s = %s",
+	      krt_multinet_product_name->n_name,
+	      krt_multinet_version->n_name,
+	      krt_version_kernel);
+    } else {
+	krt_version_kernel = NULL;
+    }
+#endif	/* vax11c */
+
+    if (krt_ipforwarding->n_type) {
+	int ipforwarding;
+	
+	if (KVM_READ(kd,
+		     krt_ipforwarding->n_value,
+		     (caddr_t) &ipforwarding,
+		     sizeof(ipforwarding)) < 0) {
+	    trace(TR_ALL, LOG_INFO, "krt_symbols: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	} else if (ipforwarding != 1) {
+	    trace(TR_ALL, LOG_WARNING, "krt_symbols: *WARNING* IP forwarding disabled in kernel (%s = %d)",
+		  krt_ipforwarding->n_name,
+		  ipforwarding);
+	}
+    }
+
+    if (krt_udpcksum->n_type) {
+	int udpcksum;
+	
+	if (KVM_READ(kd,
+		     krt_udpcksum->n_value,
+		     (caddr_t) &udpcksum,
+		     sizeof(udpcksum)) < 0) {
+	    trace(TR_ALL, LOG_INFO, "krt_symbols: %s",
+		  KVM_GETERR(kd, "kvm_read error"));
+	} else if (udpcksum != 1) {
+	    trace(TR_ALL, LOG_WARNING, "krt_symbols: *WARNING* UDP checksums disabled in kernel (%s = %d)",
+		  krt_udpcksum->n_name,
+		  udpcksum);
+	}
+    }
+
+    return skip;
+}
+
+
+ /*  Initilize the kernel routing table function.  First, create a	*/
+ /*  task to hold the socket used in manipulating the kernel routing	*/
+ /*  table.  Second, read the initial kernel routing table into		*/
+ /*  gated's routing table.						*/
+void
+krt_init __PF0(void)
+{
+    int saveinstall = krt_install;
+    flag_t save_task_state = task_state;
+    int skip = FALSE;
+    struct nlist *nl = (struct nlist *) 0;
+    KVM_OPEN_DEFINE(open_msg);
+
+#if	RT_N_MULTPATH > 1
+    trace(TR_ALL, LOG_WARNING, "krt_init: Configured for %d multipath routes, kernel only supports one!",
+	  RT_N_MULTIPATH);
+#endif	/* RT_N_MULTIPATH > 1 */
+
+    krt_task = task_alloc("KRT", TASKPRI_KERNEL);
+    krt_task->task_flags = TASKF_LAST;
+    krt_task->task_proto = IPPROTO_RAW;
+    krt_task->task_rtproto = RTPROTO_KERNEL;
+    krt_task->task_terminate = krt_terminate;
+    BIT_RESET(task_state, TASKS_INIT|TASKS_TEST);
+#ifdef	ROUTING_SOCKET
+    krt_task->task_dump = krt_dump;
+    krt_task->task_recv = krt_recv;
+    krt_task->task_ifchange = krt_ifchange;
+    krt_task->task_socket = task_get_socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
+#else	/* ROUTING_SOCKET */
+#ifdef	SYSVR4
+    krt_task->task_socket = task_get_socket(PF_INET, SOCK_DGRAM, 0);
+#else	/* SYSVR4 */
+    krt_task->task_socket = task_get_socket(PF_UNIX, SOCK_DGRAM, 0);
+#endif	/* SYSVR4 */
+#endif	/* ROUTING_SOCKET */
+    krt_task->task_n_timers = KRT_TIMER_MAX;
+    task_state = save_task_state;
+
+    /* Insure we have a socket */
+    assert(krt_task->task_socket >= 0);
+
+    krt_task->task_rtbit = rtbit_alloc(krt_task,
+				       sizeof(sockaddr_un *),
+				       (caddr_t) 0,
+				       krt_tsi_dump);	/* Allocate a bit */
+    if (!task_create(krt_task)) {
+	task_quit(EINVAL);
+    }
+
+    krt_gwp_kernel = gw_init((gw_entry *) 0,
+			     RTPROTO_KERNEL,
+			     krt_task,
+			     (as_t) 0,
+			     (as_t) 0,
+			     KRT_T_EXPIRE,
+			     (sockaddr_un *) 0);
+    
+#ifdef	ROUTING_SOCKET
+    krt_gwp_krt = gw_init((gw_entry *) 0,
+			  RTPROTO_KRT,
+			  krt_task,
+			  (as_t) 0,
+			  (as_t) 0,
+			  (time_t) 0,
+			  (sockaddr_un *) 0);
+    
+    (void) timer_create(krt_task,
+			KRT_TIMER_TIMEOUT,
+			"Timeout",
+			TIMERF_ABSOLUTE,
+			(time_t) 0,
+			(time_t) 0,
+			krt_timeout,
+			(void_t) 0);
+#endif	/* ROUTING_SOCKET */
+
+    (void) timer_create(krt_task,
+			KRT_TIMER_IFCHECK,
+			"IfCheck",
+			(flag_t) 0,
+			KRT_T_IFCHECK,
+			KRT_T_IFCHECK,	/* Prevent immediate firing */
+			krt_ifcheck,
+			(void_t) 0);
+
+    kd = KVM_OPENFILES(NULL, NULL, NULL, O_RDONLY, open_msg);
+    if (!kd) {
+	trace(TR_ALL, LOG_ERR, "krt_init: %s",
+	      KVM_OPEN_ERROR(open_msg));
+
+	if (BIT_TEST(task_state, TASKS_TEST)) {
+	    skip = TRUE;
+	} else {
+	    task_quit(errno);
+	}
+    }
+
+    nl = (struct nlist *) task_block_malloc(NL_SIZE * sizeof(struct nlist));
+
+    skip = krt_symbols(nl, skip);
+    if (skip && !BIT_TEST(task_state, TASKS_TEST)) {
+	task_quit(errno);
+    }
+
+#ifdef	SIOCGNETOPT
+    /* Check some kernel variables */
+    skip = krt_netopts(skip);
+    assert(!skip || BIT_TEST(task_state, TASKS_TEST));
+#endif	/* SIOCGNETOPT */
+
+    /* Figure out the maximum packet size we can use */
+    skip = krt_get_maxpacket(skip);
+    assert(!skip || BIT_TEST(task_state, TASKS_TEST));
+    
+#ifdef	IBM_6611
+    /* Hack */
+    scram_init();
+#endif	/* IBM_6611 */
+
+    /* Read the interface configuration */
+    (void) krt_ifread(krt_task->task_socket < 0, save_task_state);
+    assert (BIT_TEST(task_state, TASKS_TEST));
+
+    rt_open(krt_task);
+
+#ifdef	ROUTING_SOCKET
+    /* Allocate buffer space */
+    task_alloc_recv(krt_task, task_maxpacket);
+    task_alloc_send(krt_task, BUFSIZ);
+
+    if (task_set_option(krt_task,
+			TASKOPTION_NONBLOCKING,
+			TRUE) < 0) {
+	task_quit(errno);
+    }
+
+    /* Set our receive buffer as high as possible so we don't miss any packets */
+    if (task_set_option(krt_task,
+			TASKOPTION_RECVBUF,
+			task_maxpacket) < 0) {
+	task_quit(errno);
+    }
+    
+    /* Indicate we do not want to see our packets */
+    if (task_set_option(krt_task,
+			TASKOPTION_USELOOPBACK,
+			FALSE) < 0) {
+	task_quit(errno);
+    }
+#endif	/* ROUTING_SOCKET */
+    
+    /* Read the kernel's routing table */
+    errno = krt_rtread(skip);
+    assert(!errno || BIT_TEST(task_state, TASKS_TEST));
+
+    rt_close(krt_task, (gw_entry *) 0, 0, NULL);
+
+    krt_install = saveinstall;
+
+    if (!skip && (KVM_CLOSE(kd) == -1)) {
+	trace(TR_ALL, LOG_ERR, "kvm_init: %s",
+	      KVM_GETERR(kd, "kvm_close error"));
+    }
+
+    if (nl) {
+	task_block_reclaim(NL_SIZE * sizeof(struct nlist), (caddr_t) nl);
+    }
+}

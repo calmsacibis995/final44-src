@@ -1,0 +1,488 @@
+From chris@cs.UMD.EDU  Mon Aug 20 05:02:07 1990
+Received: from gyre.cs.umd.edu by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA01697; Mon, 20 Aug 90 05:02:07 -0700
+Received: by gyre.cs.UMD.EDU (5.61/UMIACS-0.9/04-05-88)
+	id AA01903; Mon, 20 Aug 90 08:02:01 -0400
+Date: Mon, 20 Aug 90 08:02:01 -0400
+From: chris@cs.UMD.EDU (Chris Torek)
+Message-Id: <9008201202.AA01903@gyre.cs.UMD.EDU>
+To: reno43-bugs@okeeffe.Berkeley.EDU
+Subject: lint-type changes for dump & rdump
+
+Index: sbin/dump 4.3BSD-Reno Fix
+
+Description:
+	The new stdio requires changing the name of `rewind'.
+
+	The rdump code always has a remote host, but makes redundant
+	tests on the variable `host'.
+
+	rdump should allow the form `user@host:tape' as well as
+	simply `host:tape'.
+
+	The signal handlers should all return `void'; they currently
+	return int.
+
+	dumpmain.c and dumpoptr.c have private declarations for malloc()
+	and calloc() (actually, dumpmain is missing the declaration for
+	calloc() entirely), instead of using the ANSI header <stdlib.h>.
+
+Repeat-by:
+	examination
+
+Fix:
+
+Only in .: RCS
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/dump.h ./dump.h
+*** /mnt/4.3reno/usr/src/sbin/dump/dump.h	Fri Jun  1 19:15:08 1990
+--- ./dump.h	Mon Aug 20 07:20:55 1990
+***************
+*** 21,24 ****
+--- 21,26 ----
+  #include <fstab.h>
+  #include <stdio.h>
++ #include <stdlib.h>
++ #include <string.h>
+  #include <ctype.h>
+  
+***************
+*** 83,87 ****
+  struct dinode *getino();
+  
+! int	interrupt();		/* in case operator bangs on console */
+  
+  #define	HOUR	(60L*60L)
+--- 85,90 ----
+  struct dinode *getino();
+  
+! void	interrupt();		/* in case operator bangs on console */
+! void	dumpabort();
+  
+  #define	HOUR	(60L*60L)
+***************
+*** 123,135 ****
+   *	We catch these interrupts
+   */
+! int	sighup();
+! int	sigquit();
+! int	sigill();
+! int	sigtrap();
+! int	sigfpe();
+! int	sigkill();
+! int	sigbus();
+! int	sigsegv();
+! int	sigsys();
+! int	sigalrm();
+! int	sigterm();
+--- 126,138 ----
+   *	We catch these interrupts
+   */
+! void	sighup();
+! void	sigquit();
+! void	sigill();
+! void	sigtrap();
+! void	sigfpe();
+! void	sigkill();
+! void	sigbus();
+! void	sigsegv();
+! void	sigsys();
+! void	sigalrm();
+! void	sigterm();
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/dumpmain.c ./dumpmain.c
+*** /mnt/4.3reno/usr/src/sbin/dump/dumpmain.c	Fri Jun  1 19:15:10 1990
+--- ./dumpmain.c	Mon Aug 20 07:20:38 1990
+***************
+*** 11,14 ****
+--- 11,15 ----
+  #include "dump.h"
+  #include "pathnames.h"
++ #include <string.h>
+  
+  int	notify = 0;	/* notify operator flag */
+***************
+*** 19,25 ****
+  int	cartridge = 0;	/* Assume non-cartridge tape */
+  long	dev_bsize = 1;	/* recalculated below */
+- #ifdef RDUMP
+- char	*host;
+- #endif
+  int	anydskipped;	/* set true in mark() if any directories are skipped */
+  			/* this lets us avoid map pass 2 in some cases */
+--- 20,23 ----
+***************
+*** 33,36 ****
+--- 31,37 ----
+  	float		fetapes;
+  	register	struct	fstab	*dt;
++ #ifdef RDUMP
++ 	char		*host;
++ #endif
+  
+  	time(&(spcl.c_date));
+***************
+*** 155,169 ****
+  
+  #ifdef RDUMP
+! 	{ char *index();
+! 	  host = tape;
+! 	  tape = index(host, ':');
+! 	  if (tape == 0) {
+  		msg("need keyletter ``f'' and device ``host:tape''\n");
+  		exit(1);
+- 	  }
+- 	  *tape++ = 0;
+- 	  if (rmthost(host) == 0)
+- 		exit(X_ABORT);
+  	}
+  	setuid(getuid());	/* rmthost() is the only reason to be setuid */
+  #endif
+--- 156,167 ----
+  
+  #ifdef RDUMP
+! 	host = tape;
+! 	if ((tape = index(host, ':')) == NULL) {
+  		msg("need keyletter ``f'' and device ``host:tape''\n");
+  		exit(1);
+  	}
++ 	*tape++ = 0;
++ 	if (rmthost(host) == 0)
++ 		exit(X_ABORT);
+  	setuid(getuid());	/* rmthost() is the only reason to be setuid */
+  #endif
+***************
+*** 236,242 ****
+  	msiz = roundup(howmany(sblock->fs_ipg * sblock->fs_ncg, NBBY),
+  		TP_BSIZE);
+! 	clrmap = (char *)calloc(msiz, sizeof(char));
+! 	dirmap = (char *)calloc(msiz, sizeof(char));
+! 	nodmap = (char *)calloc(msiz, sizeof(char));
+  
+  	anydskipped = 0;
+--- 234,240 ----
+  	msiz = roundup(howmany(sblock->fs_ipg * sblock->fs_ncg, NBBY),
+  		TP_BSIZE);
+! 	clrmap = calloc(msiz, sizeof(char));
+! 	dirmap = calloc(msiz, sizeof(char));
+! 	nodmap = calloc(msiz, sizeof(char));
+  
+  	anydskipped = 0;
+***************
+*** 315,323 ****
+  	if (!pipeout) {
+  		close(to);
+! 		rewind();
+  	}
+  #else
+  	tflush(1);
+! 	rewind();
+  #endif
+  	broadcast("DUMP IS DONE!\7\7\n");
+--- 313,321 ----
+  	if (!pipeout) {
+  		close(to);
+! 		trewind();
+  	}
+  #else
+  	tflush(1);
+! 	trewind();
+  #endif
+  	broadcast("DUMP IS DONE!\7\7\n");
+***************
+*** 325,335 ****
+  }
+  
+! int	sighup(){	msg("SIGHUP()  try rewriting\n"); sigAbort();}
+! int	sigtrap(){	msg("SIGTRAP()  try rewriting\n"); sigAbort();}
+! int	sigfpe(){	msg("SIGFPE()  try rewriting\n"); sigAbort();}
+! int	sigbus(){	msg("SIGBUS()  try rewriting\n"); sigAbort();}
+! int	sigsegv(){	msg("SIGSEGV()  ABORTING!\n"); abort();}
+! int	sigalrm(){	msg("SIGALRM()  try rewriting\n"); sigAbort();}
+! int	sigterm(){	msg("SIGTERM()  try rewriting\n"); sigAbort();}
+  
+  sigAbort()
+--- 323,333 ----
+  }
+  
+! void	sighup(){	msg("SIGHUP()  try rewriting\n"); sigAbort();}
+! void	sigtrap(){	msg("SIGTRAP()  try rewriting\n"); sigAbort();}
+! void	sigfpe(){	msg("SIGFPE()  try rewriting\n"); sigAbort();}
+! void	sigbus(){	msg("SIGBUS()  try rewriting\n"); sigAbort();}
+! void	sigsegv(){	msg("SIGSEGV()  ABORTING!\n"); abort();}
+! void	sigalrm(){	msg("SIGALRM()  try rewriting\n"); sigAbort();}
+! void	sigterm(){	msg("SIGTERM()  try rewriting\n"); sigAbort();}
+  
+  sigAbort()
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/dumpoptr.c ./dumpoptr.c
+*** /mnt/4.3reno/usr/src/sbin/dump/dumpoptr.c	Fri Jun  1 19:15:12 1990
+--- ./dumpoptr.c	Mon Aug 20 07:24:31 1990
+***************
+*** 110,113 ****
+--- 110,114 ----
+   *	Here if an inquisitive operator interrupts the dump program
+   */
++ void
+  interrupt()
+  {
+***************
+*** 314,318 ****
+  	register struct fstab *new;
+  	register char *cp;
+- 	char *malloc();
+  
+  	new = (struct fstab *)malloc(sizeof (*fs));
+--- 315,318 ----
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/dumprmt.c ./dumprmt.c
+*** /mnt/4.3reno/usr/src/sbin/dump/dumprmt.c	Fri Jun  1 19:15:13 1990
+--- ./dumprmt.c	Mon Aug 20 06:59:02 1990
+***************
+*** 30,33 ****
+--- 30,34 ----
+  int	rmtconnaborted();
+  char	*rmtpeer;
++ char	*rmtuser;
+  
+  extern int ntrec;		/* blocking factor on tape */
+***************
+*** 34,43 ****
+  
+  rmthost(host)
+! 	char *host;
+  {
+  
+! 	rmtpeer = host;
+  	signal(SIGPIPE, rmtconnaborted);
+! 	rmtgetconn();
+  	if (rmtape < 0)
+  		return (0);
+--- 35,60 ----
+  
+  rmthost(host)
+! 	register char *host;
+  {
++ 	register char *p, *luser;
++ 	struct passwd *pw;
++ 	char *index();
+  
+! 	/* who am I? */
+! 	pw = getpwuid(getuid());
+! 	luser = pw && pw->pw_name ? pw->pw_name : "root";
+! 
+! 	/* split host into host@user */
+! 	p = index(host, '@');
+! 	if (p == NULL) {	/* no user name: use local name */
+! 		rmtpeer = host;
+! 		rmtuser = luser;
+! 	} else {		/* use given remote user name */
+! 		*p++ = 0;
+! 		rmtpeer = p;
+! 		rmtuser = host;
+! 	}
+  	signal(SIGPIPE, rmtconnaborted);
+! 	rmtgetconn(luser);
+  	if (rmtape < 0)
+  		return (0);
+***************
+*** 52,60 ****
+  }
+  
+! rmtgetconn()
+  {
+  	static struct servent *sp = 0;
+- 	struct passwd *pw;
+- 	char *name = "root";
+  	int size;
+  
+--- 69,76 ----
+  }
+  
+! rmtgetconn(luser)
+! 	char *luser;
+  {
+  	static struct servent *sp = 0;
+  	int size;
+  
+***************
+*** 66,73 ****
+  		}
+  	}
+! 	pw = getpwuid(getuid());
+! 	if (pw && pw->pw_name)
+! 		name = pw->pw_name;
+! 	rmtape = rcmd(&rmtpeer, sp->s_port, name, name, _PATH_RMT, 0);
+  	size = ntrec * TP_BSIZE;
+  	while (size > TP_BSIZE &&
+--- 82,86 ----
+  		}
+  	}
+! 	rmtape = rcmd(&rmtpeer, sp->s_port, luser, rmtuser, _PATH_RMT, 0);
+  	size = ntrec * TP_BSIZE;
+  	while (size > TP_BSIZE &&
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/dumptape.c ./dumptape.c
+*** /mnt/4.3reno/usr/src/sbin/dump/dumptape.c	Fri Jun  1 19:15:15 1990
+--- ./dumptape.c	Mon Aug 20 06:44:48 1990
+***************
+*** 20,26 ****
+  extern int cartridge;
+  extern int read(), write();
+- #ifdef RDUMP
+- extern char *host;
+- #endif RDUMP
+  
+  /*
+--- 20,23 ----
+***************
+*** 106,109 ****
+--- 103,107 ----
+  int	nogripe = 0;
+  
++ void
+  tperror() {
+  	if (pipeout) {
+***************
+*** 126,129 ****
+--- 124,128 ----
+  }
+  
++ void
+  sigpipe()
+  {
+***************
+*** 166,170 ****
+  }
+  
+! rewind()
+  {
+  	int f;
+--- 165,169 ----
+  }
+  
+! trewind()
+  {
+  	int f;
+***************
+*** 177,192 ****
+  	msg("Tape rewinding\n");
+  #ifdef RDUMP
+! 	if (host) {
+! 		rmtclose();
+! 		while (rmtopen(tape, 0) < 0)
+! 			sleep(10);
+! 		rmtclose();
+! 		return;
+! 	}
+! #endif RDUMP
+  	close(to);
+  	while ((f = open(tape, 0)) < 0)
+! 		sleep (10);
+  	close(f);
+  }
+  
+--- 176,189 ----
+  	msg("Tape rewinding\n");
+  #ifdef RDUMP
+! 	rmtclose();
+! 	while (rmtopen(tape, 0) < 0)
+! 		sleep(10);
+! 	rmtclose();
+! #else
+  	close(to);
+  	while ((f = open(tape, 0)) < 0)
+! 		sleep(10);
+  	close(f);
++ #endif RDUMP
+  }
+  
+***************
+*** 193,197 ****
+  close_rewind()
+  {
+! 	rewind();
+  	if (!nogripe) {
+  		msg("Change Tapes: Mount tape #%d\n", tapeno+1);
+--- 190,194 ----
+  close_rewind()
+  {
+! 	trewind();
+  	if (!nogripe) {
+  		msg("Change Tapes: Mount tape #%d\n", tapeno+1);
+***************
+*** 293,298 ****
+  #endif TDEBUG
+  #ifdef RDUMP
+! 		while ((to = (host ? rmtopen(tape, 2) :
+! 			pipeout ? 1 : creat(tape, 0666))) < 0)
+  #else RDUMP
+  		while ((to = pipeout ? 1 : creat(tape, 0666)) < 0)
+--- 290,294 ----
+  #endif TDEBUG
+  #ifdef RDUMP
+! 		while ((to = rmtopen(tape, 2)) < 0)
+  #else RDUMP
+  		while ((to = pipeout ? 1 : creat(tape, 0666)) < 0)
+***************
+*** 326,329 ****
+--- 322,326 ----
+  }
+  
++ void
+  dumpabort()
+  {
+***************
+*** 463,468 ****
+  
+  #ifdef RDUMP
+! 		if ((host ? rmtwrite(tblock[0], writesize)
+! 			: write(to, tblock[0], writesize)) != writesize) {
+  #else RDUMP
+  		if (write(to, tblock[0], writesize) != writesize) {
+--- 460,464 ----
+  
+  #ifdef RDUMP
+! 		if (rmtwrite(tblock[0], writesize) != writesize) {
+  #else RDUMP
+  		if (write(to, tblock[0], writesize) != writesize) {
+Common subdirectories: /mnt/4.3reno/usr/src/sbin/dump/obj and ./obj
+Only in .: rdump
+diff -r -c2 /mnt/4.3reno/usr/src/sbin/dump/rdump.8 ./rdump.8
+*** /mnt/4.3reno/usr/src/sbin/dump/rdump.8	Mon Jun 25 00:31:01 1990
+--- ./rdump.8	Mon Aug 20 07:01:09 1990
+***************
+*** 26,30 ****
+  key should be specified and the file
+  supplied should be of the form
+! .IR machine:device .
+  .PP
+  .I Rdump
+--- 26,32 ----
+  key should be specified and the file
+  supplied should be of the form
+! .I machine:device
+! or
+! .IR user@machine:device .
+  .PP
+  .I Rdump
+***************
+*** 32,39 ****
+  .IR rmt ,
+  on the client machine to access the tape
+! device.
+  .SH "SEE ALSO"
+  dump(8),
+! rmt(8C)
+  .SH DIAGNOSTICS
+  Same as 
+--- 34,47 ----
+  .IR rmt ,
+  on the client machine to access the tape
+! device.  If the
+! .I user@machine
+! format is given, the rmt process is run on behalf of the
+! named user; otherwise it is run as root.  The named remote user
+! (or root) must allow the local user access (see
+! .IR rshd (8)).
+  .SH "SEE ALSO"
+  dump(8),
+! rshd(8)
+! rmt(8)
+  .SH DIAGNOSTICS
+  Same as 

@@ -1,0 +1,1071 @@
+head     4.12;
+branch   ;
+access   ;
+symbols  PATCH8:4.12 PATCH7:4.12 KPATCH6:4.12 ASRSNAP1001:4.12 PATCH5:4.12 KPATCH4:4.12 KPATCH3:4.12 KPATCH2:4.12 KREL1:4.12 BETA5/24/88:4.9;
+locks    ; strict;
+comment  @ * @;
+
+
+4.12
+date     89.01.23.15.16.16;  author steiner;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     88.12.05.15.21.50;  author steiner;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     88.12.01.14.26.54;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.02.24.18.15.47;  author steiner;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.01.12.21.23.51;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     87.12.06.11.25.18;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     87.10.29.09.59.28;  author jtkohl;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     87.10.28.16.05.11;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.28.15.59.08;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.20.17.12.35;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.21.03;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.47.29;  author steiner;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     86.07.02.17.56.09;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     86.05.23.13.12.35;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.05.14.15.26.27;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.05.06.16.31.04;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@reorder protocol
+@
+
+
+4.12
+log
+@Programmer: jtkohl
+Auditor: steiner
+Fixed address comparisons.
+@
+text
+@/*
+ * $Source: /mit/kerberos/src/lib/krb/RCS/rd_safe.c,v $
+ * $Author: steiner $
+ *
+ * Copyright 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine dissects a a Kerberos 'safe msg', checking its
+ * integrity, and returning a pointer to the application data
+ * contained and its length.
+ *
+ * Returns 0 (RD_AP_OK) for success or an error code (RD_AP_...)
+ *
+ * Steve Miller    Project Athena  MIT/DEC
+ */
+
+#ifndef lint
+static char *rcsid_rd_safe_c=
+"$Header: rd_safe.c,v 4.11 88/12/05 15:21:50 jtkohl Locked $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+
+/* system include files */
+#include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/time.h>
+
+/* application include files */
+#include <des.h>
+#include <krb.h>
+#include <prot.h>
+#include "lsb_addr_comp.h"
+
+extern char *errmsg();
+extern int errno;
+extern int krb_debug;
+
+/* static storage */
+
+static C_Block calc_cksum[2];
+static C_Block big_cksum[2];
+static int swap_bytes;
+static struct timeval local_time;
+static u_long delta_t;
+
+/*
+ * krb_rd_safe() checks the integrity of an AUTH_MSG_SAFE message.
+ * Given the message received, "in", the length of that message,
+ * "in_length", the "key" to compute the checksum with, and the
+ * network addresses of the "sender" and "receiver" of the message,
+ * krb_rd_safe() returns RD_AP_OK if message is okay, otherwise
+ * some error code.
+ *
+ * The message data retrieved from "in" is returned in the structure
+ * "m_data".  The pointer to the application data (m_data->app_data)
+ * refers back to the appropriate place in "in".
+ *
+ * See the file "mk_safe.c" for the format of the AUTH_MSG_SAFE
+ * message.  The structure containing the extracted message
+ * information, MSG_DAT, is defined in "krb.h".
+ */
+
+long krb_rd_safe(in,in_length,key,sender,receiver,m_data)
+    u_char *in;                 /* pointer to the msg received */
+    u_long in_length;           /* length of "in" msg */
+    C_Block *key;               /* encryption key for seed and ivec */
+    struct sockaddr_in *sender; /* sender's address */
+    struct sockaddr_in *receiver; /* receiver's address -- me */
+    MSG_DAT *m_data;		/* where to put message information */
+{
+    register u_char     *p,*q;
+    static      u_long  src_addr; /* Can't send structs since no
+                                   * guarantees on size */
+    /* Be very conservative */
+    if (sizeof(u_long) != sizeof(struct in_addr)) {
+        fprintf(stderr,"\n\
+krb_rd_safe protocol err sizeof(u_long) != sizeof(struct in_addr)");
+        exit(-1);
+    }
+
+    if (gettimeofday(&local_time,(struct timezone *)0))
+        return  -1;
+
+    p = in;                     /* beginning of message */
+    swap_bytes = 0;
+
+    if (*p++ != KRB_PROT_VERSION)       return RD_AP_VERSION;
+    if (((*p) & ~1) != AUTH_MSG_SAFE) return RD_AP_MSG_TYPE;
+    if ((*p++ & 1) != HOST_BYTE_ORDER) swap_bytes++;
+
+    q = p;                      /* mark start of cksum stuff */
+
+    /* safely get length */
+    bcopy((char *)p,(char *)&(m_data->app_length),
+          sizeof(m_data->app_length));
+    if (swap_bytes) swap_u_long(m_data->app_length);
+    p += sizeof(m_data->app_length); /* skip over */
+
+    if (m_data->app_length + sizeof(in_length)
+        + sizeof(m_data->time_sec) + sizeof(m_data->time_5ms)
+        + sizeof(big_cksum) + sizeof(src_addr)
+        + VERSION_SZ + MSG_TYPE_SZ > in_length)
+        return(RD_AP_MODIFIED);
+
+    m_data->app_data = p;       /* we're now at the application data */
+
+    /* skip app data */
+    p += m_data->app_length;
+
+    /* safely get time_5ms */
+    bcopy((char *)p, (char *)&(m_data->time_5ms),
+          sizeof(m_data->time_5ms));
+
+    /* don't need to swap-- one byte for now */
+    p += sizeof(m_data->time_5ms);
+
+    /* safely get src address */
+    bcopy((char *)p,(char *)&src_addr,sizeof(src_addr));
+
+    /* don't swap, net order always */
+    p += sizeof(src_addr);
+
+    if (src_addr != (u_long) sender->sin_addr.s_addr)
+        return RD_AP_MODIFIED;
+
+    /* safely get time_sec */
+    bcopy((char *)p, (char *)&(m_data->time_sec),
+          sizeof(m_data->time_sec));
+    if (swap_bytes)
+        swap_u_long(m_data->time_sec);
+    p += sizeof(m_data->time_sec);
+
+    /* check direction bit is the sign bit */
+    /* For compatibility with broken old code, compares are done in VAX 
+       byte order (LSBFIRST) */ 
+    if (lsb_net_ulong_less(sender->sin_addr.s_addr,
+			   receiver->sin_addr.s_addr)==-1) 
+	/* src < recv */ 
+	m_data->time_sec =  - m_data->time_sec; 
+    else if (lsb_net_ulong_less(sender->sin_addr.s_addr, 
+				receiver->sin_addr.s_addr)==0) 
+	if (lsb_net_ushort_less(sender->sin_port,receiver->sin_port)==-1)
+	    /* src < recv */
+	    m_data->time_sec =  - m_data->time_sec; 
+
+    /*
+     * All that for one tiny bit!  Heaven help those that talk to
+     * themselves.
+     */
+
+    /* check the time integrity of the msg */
+    delta_t = abs((int)((long) local_time.tv_sec - m_data->time_sec));
+    if (delta_t > CLOCK_SKEW) return RD_AP_TIME;
+
+    /*
+     * caller must check timestamps for proper order and replays, since
+     * server might have multiple clients each with its own timestamps
+     * and we don't assume tightly synchronized clocks.
+     */
+
+    bcopy((char *)p,(char *)big_cksum,sizeof(big_cksum));
+    if (swap_bytes) swap_u_16(big_cksum);
+
+#ifdef NOENCRYPTION
+    bzero(calc_cksum, sizeof(calc_cksum));
+#else /* Do encryption */
+    /* calculate the checksum of the length, timestamps, and
+     * input data, on the sending byte order !! */
+    quad_cksum(q,calc_cksum,p-q,2,key);
+#endif /* NOENCRYPTION */
+
+    if (krb_debug)
+        printf("\ncalc_cksum = %u, received cksum = %u",
+               (long) calc_cksum[0], (long) big_cksum[0]);
+    if (bcmp((char *)big_cksum,(char *)calc_cksum,sizeof(big_cksum)))
+        return(RD_AP_MODIFIED);
+
+    return(RD_AP_OK);           /* OK == 0 */
+}
+@
+
+
+4.11
+log
+@Added #ifdef NOENCRYPTION code (to send stuff
+in the clear in case no DES library present).
+Programmer: jtkohl
+Auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d22 1
+a22 1
+"$Header: rd_safe.c,v 4.10 88/12/01 14:26:54 jtkohl Locked $";
+d38 1
+d140 11
+a150 6
+    if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr)
+        m_data->time_sec = - m_data->time_sec;
+    else
+        if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr)
+            if (sender->sin_port < receiver->sin_port)
+                m_data->time_sec  = -m_data->time_sec;
+@
+
+
+4.10
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d22 1
+a22 1
+"$Header: rd_safe.c,v 4.9 88/02/24 18:15:47 steiner Locked $";
+d164 3
+d170 1
+@
+
+
+4.9
+log
+@Copyright notice, etc.
+@
+text
+@d22 1
+a22 1
+"$Header: rd_safe.c,v 4.8 88/01/12 21:23:51 steiner Locked $";
+d51 16
+a66 1
+/* routine bodies */
+a67 1
+/* RETURNS 0 if ok, else error code */
+d70 1
+a70 1
+    u_long in_length;           /* of in msg */
+d74 1
+a74 1
+    MSG_DAT *m_data;
+d77 1
+a77 1
+    static      u_long  src_addr; /* Cant send structs since no
+d110 1
+a110 2
+    m_data->app_data = p;       /* we're now at the decrypted
+                                 * application data */
+d119 1
+a119 1
+    /* dont need to swap-- one byte for now */
+d125 1
+a125 1
+    /* dont swap, net order always */
+d158 1
+a158 1
+     * and we dont assume tightly synchronized clocks.
+@
+
+
+4.8
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 1
+ * Copyright    1986    Massachusetts Institute of Technology
+d5 2
+a6 3
+ *      $Source: /mit/kerberos/lib/krb/RCS/rd_safe.c,v $
+ *      $Author: steiner $
+ *      $Locker:  $
+d8 2
+a9 1
+ *      Steve Miller    Project Athena  MIT/DEC
+d16 2
+d20 7
+a43 5
+
+#ifndef lint
+static char *rcsid_rd_safe_msg_c=
+    "$Header: rd_safe.c,v 4.7 87/12/06 11:25:18 steiner Exp $";
+#endif /* lint */
+@
+
+
+4.7
+log
+@Changed user routine names to krb_xxxxxxx
+@
+text
+@d1 2
+a2 1
+/*	Copyright	1986	Massachusetts Institute of Technology	
+d4 3
+a6 9
+ *  $Source: /mit/kerberos/lib/krb/RCS/rd_safe.c,v $
+ *	$Author: jtkohl $
+ *	$Locker: steiner $
+ * 
+ *	Steve Miller	Project Athena	MIT/DEC
+ * 
+ *	This routine dissects a a Kerberos 'safe msg',
+ *  checking its integrity, and returning a pointer to the application
+ *  data contained and its length.
+d8 7
+a14 1
+ *	Returns 0 (RD_AP_OK) for success or an error code (RD_AP_...)
+a16 1
+
+d18 5
+a22 5
+#include	<stdio.h>
+#include	<errno.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+#include	<sys/time.h>
+d25 3
+a27 3
+#include	<des.h>
+#include	<krb.h>
+#include	<prot.h>
+d29 3
+a31 3
+extern 	char	*errmsg();
+extern	int 	errno;
+extern	int		krb_debug;
+a32 5
+/* local defines */
+
+/* global storage */
+
+
+d35 1
+a35 1
+#ifndef	lint
+d37 2
+a38 2
+"$Header: rd_safe.c,v 4.6 87/10/29 09:59:28 steiner Locked $";
+#endif lint
+d40 5
+a44 5
+static	C_Block	calc_cksum[2];
+static	C_Block	big_cksum[2];
+static	int		swap_bytes;
+static	struct	timeval	local_time;
+static	u_long	delta_t;
+d48 8
+a55 9
+long
+krb_rd_safe(in,in_length,key,sender,receiver,m_data)
+u_char *in;				/* pointer to the msg received */
+u_long in_length;			/* of in msg */
+C_Block *key;				/* encryption key for seed and ivec */
+struct sockaddr_in *sender;		/* sender's address */
+struct sockaddr_in *receiver;		/* receiver's address -- me */
+MSG_DAT *m_data;
+/* RETURNS	0 if ok, else error code */
+d57 6
+a62 6
+	register u_char	*p,*q;
+	static	u_long	src_addr;	/* Cant send structs since no
+					   guarantees on size */
+	/* Be very conservative */
+	if (sizeof(u_long) != sizeof(struct in_addr)) {
+		fprintf(stderr,"\n\
+d64 2
+a65 6
+		exit(-1);
+	}
+	
+	if (gettimeofday(&local_time,(struct timezone *)0)) {
+		return	-1;
+	}
+d67 2
+a68 2
+	p = in;				/* beginning of message */
+	swap_bytes = 0;
+d70 2
+a71 3
+	if (*p++ != KRB_PROT_VERSION)	return RD_AP_VERSION;
+	if ( ((*p) & ~1) != AUTH_MSG_SAFE) return RD_AP_MSG_TYPE;
+	if (  (*p++ & 1) != HOST_BYTE_ORDER) swap_bytes++;
+d73 3
+a75 1
+	q = p;				/* mark start of cksum stuff */
+d77 1
+a77 5
+	/* safely get length */
+	bcopy((char *)p,(char *)&(m_data->app_length),
+	      sizeof(m_data->app_length));
+	if (swap_bytes) swap_u_long(m_data->app_length);
+	p += sizeof(m_data->app_length); /* skip over */
+d79 5
+a83 4
+	if (m_data->app_length + sizeof(in_length) + sizeof(m_data->time_sec) +
+	    sizeof(m_data->time_5ms) + sizeof(big_cksum) +
+	    sizeof(src_addr) + VERSION_SZ + MSG_TYPE_SZ > in_length)
+		return(RD_AP_MODIFIED);
+d85 5
+a89 2
+	m_data->app_data = p;		/* we're now at the decrypted
+					   application data */
+d91 2
+a92 2
+	/* skip app data */
+	p += m_data->app_length;
+d94 2
+a95 2
+	/* safely get time_5ms */
+	bcopy((char *)p,(char *)&(m_data->time_5ms),sizeof(m_data->time_5ms));
+d97 3
+a99 5
+	/* dont need to swap-- one byte for now */
+	p += sizeof(m_data->time_5ms);
+	
+	/* safely get src address */
+	bcopy((char *)p,(char *)&src_addr,sizeof(src_addr));
+d101 2
+a102 2
+	/* dont swap, net order always */
+	p += sizeof(src_addr);
+d104 2
+a105 2
+	if (src_addr != (u_long) sender->sin_addr.s_addr)
+		return RD_AP_MODIFIED;
+d107 2
+a108 27
+ 	/* safely get time_sec */
+	bcopy((char *)p,(char *)&(m_data->time_sec),sizeof(m_data->time_sec));
+	if (swap_bytes) swap_u_long(m_data->time_sec);
+	p += sizeof(m_data->time_sec);
+	
+	/* check direction bit is the sign bit */	
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) {
+		m_data->time_sec = - m_data->time_sec;
+	} else {
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr) {
+			if (sender->sin_port < receiver->sin_port) {
+				m_data->time_sec  = -m_data->time_sec;
+			}
+		}
+	}
+	/* all that for one tiny bit!
+	 * Heaven help those that talk to themselves.
+	 */
+	
+	/* check the time integrity of the msg */
+	delta_t = abs((int)((long) local_time.tv_sec - m_data->time_sec));
+	if (delta_t > CLOCK_SKEW) return RD_AP_TIME;
+	
+	/* caller must check timestamps for proper order and replays, since
+	 * server might have multiple clients each with its own timestamps
+	 * and we dont assume tightly synchronized clocks.
+	 */
+d110 2
+a111 2
+	bcopy((char *)p,(char *)big_cksum,sizeof(big_cksum));
+	if (swap_bytes) swap_u_16(big_cksum);
+d113 6
+a118 3
+	/* calculate the checksum of the length, timestamps, and
+	   input data, on the sending byte order !! */
+	quad_cksum(q,calc_cksum,p-q,2,key);
+d120 7
+a126 5
+	if (krb_debug) printf("\ncalc_cksum = %u, received cksum = %u",
+			      (long) calc_cksum[0],
+			      (long) big_cksum[0]);
+	if (bcmp((char *)big_cksum,(char *)calc_cksum,sizeof(big_cksum)))
+		return(RD_AP_MODIFIED);
+d128 29
+a156 1
+	return(RD_AP_OK);		/* OK == 0 */
+@
+
+
+4.6
+log
+@clean up; split out rd_appl_err_msg
+@
+text
+@d3 3
+a5 3
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/rd_safe_msg.c,v $
+ *	$Author: steiner $
+ *	$Locker: jtkohl $
+d42 1
+a42 1
+"$Header: rd_safe_msg.c,v 4.5 87/10/28 16:05:11 jtkohl Locked $";
+d54 1
+a54 1
+rd_safe_msg(in,in_length,key,sender,receiver,m_data)
+d69 1
+a69 1
+rd_safe_msg protocol err sizeof(u_long) != sizeof(struct in_addr)");
+@
+
+
+4.5
+log
+@Took byteorder.h out; that info is now in krb_conf.h.
+@
+text
+@d5 1
+a5 1
+ *	$Locker: steiner $
+d18 5
+a22 5
+# include	<stdio.h>
+# include	<errno.h>
+# include	<sys/types.h>
+# include	<netinet/in.h>
+# include	<sys/time.h>
+d42 1
+a42 1
+"$Header: rd_safe_msg.c,v 4.4 87/10/28 15:59:08 steiner Locked $";
+d58 1
+a58 1
+struct sockaddr_in *sender;	/* sender's address */
+d64 6
+a69 8
+	static	u_long	src_addr;	/* Cant send structs since no guarantees
+								 * on size
+								 */
+	/* Be very conservative												   */
+	if (sizeof(u_long) != sizeof(struct in_addr))
+		{
+		fprintf(stderr,
+		"\nrd_safe_msg protocol err sizeof(u_long) != sizeof(struct in_addr)");
+d71 1
+a71 1
+		}
+d77 1
+a77 1
+	p = in;						/* beginning of message					   */
+d84 1
+a84 1
+	q = p;						/* mark start of cksum stuff		   */
+d86 3
+a88 3
+	/* safely get length	   */
+		bcopy((char *)p,(char *)&(m_data->app_length),
+		      sizeof(m_data->app_length));
+d90 1
+a90 1
+	p += sizeof(m_data->app_length);	/* skip over							   */
+d93 3
+a95 3
+		sizeof(m_data->time_5ms) + sizeof(big_cksum) + sizeof(src_addr) +
+		 VERSION_SZ + MSG_TYPE_SZ > in_length)
+		 return RD_AP_MODIFIED;
+d97 2
+a98 1
+	m_data->app_data = p;	/* we're now at the decrypted application data  */
+d100 1
+a100 1
+	/* skip app data													   */
+d102 2
+a103 1
+	/* safely get time_5ms		   */
+d105 1
+d109 1
+a109 1
+	/* safely get src address  */
+d111 1
+d154 2
+a155 2
+			  (long) calc_cksum[0],
+			  (long) big_cksum[0]);
+d157 1
+a157 1
+		return RD_AP_MODIFIED;
+d159 1
+a159 30
+	return RD_AP_OK;	/* OK	== 0				   */
+						
+}
+
+/* SPLIT UP ??? */
+long
+rd_appl_err_msg(in,in_length,code,m_data)
+u_char *in;				/* pointer to the msg received */
+u_long in_length;			/* of in msg */
+long *code;				/* received error code */
+MSG_DAT *m_data;
+/* RETURNS	0 if ok, else error code */
+{
+	register u_char	*p;
+	p = in;				/* beginning of message */
+	swap_bytes = 0;
+
+	if (*p++ != KRB_PROT_VERSION)	return RD_AP_VERSION;
+	if ( ((*p) & ~1) != AUTH_MSG_APPL_ERR) return RD_AP_MSG_TYPE;
+	if (  (*p++ & 1) != HOST_BYTE_ORDER) swap_bytes++;
+
+	/* safely get code */
+	bcopy((char *)p,(char *)code,sizeof(*code));
+	if (swap_bytes) swap_u_long(*code);
+	p += sizeof(*code);		/* skip over */
+
+	m_data->app_data = p;		/* we're now at the error text
+					   message */
+
+	return RD_AP_OK;	/* OK	== 0				   */
+@
+
+
+4.4
+log
+@jtkohl's changes.
+@
+text
+@d3 3
+a5 3
+ *  $Source: /paris/u3/kerberos.new/lib/krb/RCS/rd_safe_msg.c,v $
+ *	$Author: jtkohl $
+ *	$Locker: jtkohl $
+a27 1
+#include	<byteorder.h>
+d41 2
+a42 1
+static char *rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 4.3 87/10/20 17:12:35 jtkohl Locked $";
+@
+
+
+4.3
+log
+@lint fixes.
+@
+text
+@d3 2
+a4 2
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/rd_safe_msg.c,v $
+ *	$Author: steiner $
+d32 1
+a32 1
+extern	int		debug;
+d42 1
+a42 1
+static char *rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 4.2 87/09/10 16:21:03 jtkohl Locked $";
+d151 1
+a151 1
+	if (debug) printf("\ncalc_cksum = %u, received cksum = %u",
+d161 1
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/rd_safe_msg.c,v $
+d5 1
+a5 4
+ *	$Locker: steiner $
+ *	$Log:	rd_safe_msg.c,v $
+ * Revision 4.1  87/09/01  15:47:29  steiner
+ * No change; starting version 4.
+a6 16
+ * Revision 1.4  86/07/02  17:56:09  spm
+ * add second arg to gettimeofday
+ * 
+ * Revision 1.3  86/05/23  13:12:35  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.2  86/05/14  15:26:27  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  86/04/16  12:23:36  spm
+ * Initial revision
+ * 
+ * Revision 1.1  86/04/04  18:08:43  spm
+ * Initial revision
+ * 
+ * 
+d17 1
+a17 1
+/* system include files													   */
+d24 1
+a24 1
+/* application include files											   */
+d28 1
+d34 1
+a34 1
+/* local defines														   */
+d36 1
+a36 1
+/* global storage														   */
+d39 1
+a39 1
+/* static storage														   */
+d42 1
+a42 1
+static char		*rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 4.1 87/09/01 15:47:29 steiner Locked $";
+a46 1
+static 	C_Block	temp;
+a48 1
+static	long	local_time_sec;
+d51 1
+a51 1
+/* routine bodies														   */
+d54 8
+a61 11
+	rd_safe_msg(in,in_length,key,sender,receiver,m_data)
+
+	u_char			*in;		/* pointer to the msg received			   */
+	u_long			in_length;		/* of in msg							   */
+	C_Block			*key;		/* encryption key for seed and ivec		   */
+	struct	sockaddr_in	*sender; /* sender's address					   */
+	struct	sockaddr_in *receiver;	/* receiver's address -- me			   */
+	MSG_DAT			*m_data;
+
+/* RETURNS	0 if ok, else error code									   */
+
+d75 1
+a75 2
+	if (gettimeofday(&local_time,NULL))
+		{
+d77 1
+a77 1
+		}
+d89 2
+a90 1
+		bcopy(p,&(m_data->app_length),sizeof(m_data->app_length));
+d104 2
+a105 2
+	bcopy(p,&(m_data->time_5ms),sizeof(m_data->time_5ms));
+	/*	dont need to swap-- one byte for now							   */
+d107 4
+a110 3
+
+	bcopy(p,&src_addr,sizeof(src_addr));	/* safely get src address  */
+	/* dont swap, net order always										   */
+d113 2
+a114 1
+	if (src_addr != (u_long) sender->sin_addr.s_addr) return RD_AP_MODIFIED;
+d116 2
+a117 2
+ 	/*	safely get time_sec 		   */
+	bcopy(p,&(m_data->time_sec),sizeof(m_data->time_sec));
+d122 1
+a122 2
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) 
+		{
+d124 3
+a126 7
+		}		
+	else 
+		{
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr)
+			{
+			if (sender->sin_port < receiver->sin_port)
+				{
+a127 1
+				}
+d130 1
+d135 2
+a136 2
+	/* check the time integrity of the msg								   */
+	delta_t = abs((long) local_time.tv_sec - m_data->time_sec) ;
+d144 1
+a144 1
+	bcopy(p,big_cksum,sizeof(big_cksum));
+d147 2
+a148 3
+	/* calculate the checksum of the length, timestamps, and input data, on the
+	 * sending byte order !!
+	 */
+d151 5
+a155 3
+	if (debug) printf("\ncalc_cksum = %u, received cksum = %u",(long) calc_cksum[0],
+						(long) big_cksum[0]);
+	if (bcmp(big_cksum,calc_cksum,sizeof(big_cksum))) return RD_AP_MODIFIED;
+d162 6
+a167 9
+	rd_appl_err_msg(in,in_length,code,m_data)
+
+	u_char			*in;		/* pointer to the msg received			   */
+	u_long			in_length;	/* of in msg							   */
+	long			*code;		/* received error code		   */
+	MSG_DAT			*m_data;
+
+/* RETURNS	0 if ok, else error code									   */
+
+d169 2
+a170 5
+	register u_char	*p,*q;
+	static	u_long	src_addr;	/* Cant send structs since no guarantees
+								 * on size
+								 */
+	p = in;						/* beginning of message					   */
+d177 2
+a178 1
+	bcopy(p,code,sizeof(*code));	/* safely get code	   */
+d180 1
+a180 1
+	p += sizeof(*code);	/* skip over							   */
+d182 2
+a183 1
+	m_data->app_data = p;	/* we're now at the error text message */
+a185 1
+						
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d4 1
+a4 1
+ *	$Author: spm $
+d7 3
+d46 1
+a46 1
+#include	"prot.h"
+d60 1
+a60 1
+static char		*rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 1.4 86/07/02 17:56:09 steiner Locked $";
+@
+
+
+1.4
+log
+@add second arg to gettimeofday
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/projects/auth/src/lib/krb/RCS/rd_safe_msg.c,v $
+d5 1
+a5 1
+ *	$Locker: spm $
+d7 3
+d57 1
+a57 1
+static char		*rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 1.3 86/05/23 13:12:35 spm Exp $";
+@
+
+
+1.3
+log
+@*** empty log message ***
+@
+text
+@d5 1
+a5 1
+ *	$Locker:  $
+d7 3
+d54 1
+a54 1
+static char		*rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 1.2 86/05/14 15:26:27 spm Exp $";
+d92 1
+a92 1
+	if (gettimeofday(&local_time))
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d5 1
+a5 1
+ *	$Locker: spm $
+d7 3
+d51 1
+a51 1
+static char		*rcsid_rd_safe_msg_c="$Header: rd_safe_msg.c,v 1.1 86/04/16 12:23:36 spm Exp $";
+d65 1
+a65 2
+	rd_safe_msg(in,out,length,key,sender,receiver,app_length,
+				   time_sec,time_5ms)
+d68 1
+a68 4
+	u_char			**out;		/* ptr to ptr to the app data, after decrypted
+								 * in place
+								 */
+	u_long			length;		/* of in msg							   */
+d72 1
+a72 3
+	u_long			*app_length;	/* resulting app data length		   */
+	long			*time_sec;		/* received timestamp sec			   */
+	u_char			*time_5ms;		/* received timestamp - 5ms			   */
+d103 4
+a106 3
+	bcopy(p,app_length,sizeof(*app_length));	/* safely get length	   */
+	if (swap_bytes) swap_u_long(*app_length);
+	p += sizeof(*app_length);	/* skip over							   */
+d108 3
+a110 3
+	if (*app_length + sizeof(length) + sizeof(*time_sec) +	sizeof(*time_5ms)
+		 + sizeof(big_cksum) + sizeof(src_addr) +
+		 VERSION_SZ + MSG_TYPE_SZ > length)
+d113 1
+a113 1
+	*out = p;	/* we're now at the decrypted application data  */
+d116 3
+a118 3
+	p += *app_length;
+
+	bcopy(p,time_5ms,sizeof(*time_5ms));	/* safely get time_5ms		   */
+d120 1
+a120 1
+	p += sizeof(*time_5ms);
+d128 4
+a131 3
+	bcopy(p,time_sec,sizeof(*time_sec)); /*	safely get time_sec 		   */
+	if (swap_bytes) swap_u_long(*time_sec);
+	p += sizeof(*time_sec);
+d136 1
+a136 1
+		*time_sec =  -*time_sec;
+d144 1
+a144 1
+				*time_sec  = -*time_sec;
+d153 1
+a153 1
+	delta_t = abs((long) local_time.tv_sec - *time_sec) ;
+d178 1
+a178 1
+	rd_appl_err_msg(in,out,length,code)
+d181 1
+a181 4
+	u_char			**out;		/* ptr to ptr to the app data, after decrypted
+								 * in place
+								 */
+	u_long			length;		/* of in msg							   */
+d183 1
+d199 1
+a199 1
+	bcopy(p,code,sizeof(*code));	/* safely get length	   */
+d203 1
+a203 1
+	*out = p;	/* we're now at the error text message */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d115 5
+a161 4
+	*out = p;	/* we're now at the decrypted application data  */
+
+	/* skip to received checksum										   */
+	p += *app_length;
+d173 34
+@

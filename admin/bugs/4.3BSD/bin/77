@@ -1,0 +1,209 @@
+From mjs@j.cc.purdue.edu  Thu Jul 16 13:30:46 1987
+Date: Thu, 16 Jul 87 14:47:40 EST
+From: mjs@j.cc.purdue.edu (Mike Spitzer)
+Subject: enhancement: "-d" option for du (print usage of each subdir)
+Index: bin/du.c 4.3BSD
+
+Description:
+	Here are modifications by Stephan Bechtolsheim to add
+	a "-d" option to du to tell it to go only one level
+	deep on its recursive descent of subdirectories.  It 
+	essentially does a 
+
+		    foreach i (<subdirs in cwd>)
+			    du -s $i
+		    end
+Repeat-By:
+	Trying to find out what subdir is filling up a filesystem
+	without the "-d" option.
+Fix:
+	Here are diffs for both du.c and du.1.  If you have any
+	comments about this please send them to me
+	(mjs@j.cc.purdu.edu) and Stephan (i5f@l.cc.purdue.edu).
+
+RCS file: /usr/src/bin/RCS/du.c,v
+retrieving revision 4.3.1.1
+retrieving revision 4.3.1.2
+diff -c -r4.3.1.1 -r4.3.1.2
+*** /tmp/,RCSt1014192	Thu Jul 16 14:41:35 1987
+--- /tmp/,RCSt2014192	Thu Jul 16 14:41:37 1987
+***************
+*** 10,15
+  char	path[BUFSIZ], name[BUFSIZ];
+  int	aflg;
+  int	sflg;
+  char	*dot = ".";
+  
+  #define ML	1000
+
+--- 10,16 -----
+  char	path[BUFSIZ], name[BUFSIZ];
+  int	aflg;
+  int	sflg;
++ int     dflg;
+  char	*dot = ".";
+  
+  #define ML	1000
+***************
+*** 44,49
+  		argc--, argv++;
+  		goto again;
+  	}
+  	if (argc == 0) {
+  		argv = &dot;
+  		argc = 1;
+
+--- 45,55 -----
+  		argc--, argv++;
+  		goto again;
+  	}
++ 	if (argc && !strcmp(*argv, "-d")) {
++ 		dflg++;
++ 		argc--, argv++;
++ 		goto again;
++ 	}
+  	if (argc == 0) {
+  		argv = &dot;
+  		argc = 1;
+***************
+*** 69,75
+  				}
+  			} else
+  				np = path;
+! 			blocks = descend(path, *np ? np : ".");
+  			if (sflg)
+  				printf("%ld\t%s\n", kb(blocks), path);
+  			if (argc > 1)
+
+--- 75,81 -----
+  				}
+  			} else
+  				np = path;
+! 			blocks = descend(path, *np ? np : ".", 0);
+  			if (sflg)
+  				printf("%ld\t%s\n", kb(blocks), path);
+  			if (argc > 1)
+***************
+*** 83,89
+  DIR	*dirp = NULL;
+  
+  long
+! descend(base, name)
+  	char *base, *name;
+  {
+  	char *ebase0, *ebase;
+
+--- 89,95 -----
+  DIR	*dirp = NULL;
+  
+  long
+! descend(base, name, level)
+  	char *base, *name;
+          int level;
+  {
+***************
+*** 85,90
+  long
+  descend(base, name)
+  	char *base, *name;
+  {
+  	char *ebase0, *ebase;
+  	struct stat stb;
+
+--- 91,97 -----
+  long
+  descend(base, name, level)
+  	char *base, *name;
++         int level;
+  {
+  	char *ebase0, *ebase;
+  	struct stat stb;
+***************
+*** 132,137
+  		dirp = NULL;
+  		return (0);
+  	}
+  	while (dp = readdir(dirp)) {
+  		if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, ".."))
+  			continue;
+
+--- 139,145 -----
+  		dirp = NULL;
+  		return (0);
+  	}
++ 
+  	while (dp = readdir(dirp)) {
+  		if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, ".."))
+  			continue;
+***************
+*** 137,143
+  			continue;
+  		(void) sprintf(ebase, "/%s", dp->d_name);
+  		curoff = telldir(dirp);
+! 		blocks += descend(base, ebase+1);
+  		*ebase = 0;
+  		if (dirp == NULL) {
+  			dirp = opendir(".");
+
+--- 145,151 -----
+  			continue;
+  		(void) sprintf(ebase, "/%s", dp->d_name);
+  		curoff = telldir(dirp);
+! 		blocks += descend(base, ebase+1, level+1);
+  		*ebase = 0;
+  		if (dirp == NULL) {
+  			dirp = opendir(".");
+***************
+*** 150,156
+  	}
+  	closedir(dirp);
+  	dirp = NULL;
+! 	if (sflg == 0)
+  		printf("%ld\t%s\n", kb(blocks), base);
+  	if (chdir("..") < 0) {
+  		(void) sprintf(index(base, 0), "/..");
+
+--- 158,165 -----
+  	}
+  	closedir(dirp);
+  	dirp = NULL;
+! 	if (sflg == 0) {
+! 	  if (!dflg || level<=1)
+  		printf("%ld\t%s\n", kb(blocks), base);
+  	}
+  	if (chdir("..") < 0) {
+***************
+*** 152,157
+  	dirp = NULL;
+  	if (sflg == 0)
+  		printf("%ld\t%s\n", kb(blocks), base);
+  	if (chdir("..") < 0) {
+  		(void) sprintf(index(base, 0), "/..");
+  		perror(base);
+
+--- 161,167 -----
+  	if (sflg == 0) {
+  	  if (!dflg || level<=1)
+  		printf("%ld\t%s\n", kb(blocks), base);
++ 	}
+  	if (chdir("..") < 0) {
+  		(void) sprintf(index(base, 0), "/..");
+  		perror(base);
+
+RCS file: /usr/man/man1/RCS/du.1,v
+retrieving revision 4.3.1.1
+diff  -r4.3.1.1 du.1
+12a13,14
+> ] [
+> .B \-d
+34c36,43
+< Absence of either causes an entry to be generated for
+---
+> The argument
+> .B \-d
+> causes a summary of the disk usage for each subdirectory of
+> .I name
+> to be generated.  This is useful for finding the subdirectory of
+> .I name
+> that is most full.
+> Absence of options causes an entry to be generated for

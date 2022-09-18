@@ -1,0 +1,70 @@
+(setq rcs-curses-
+   "$Header: /usr/lib/lisp/curses.l,v 1.1 83/01/29 18:35:32 jkf Exp $")
+
+;					-[Sat Jan 29 18:19:00 1983 by jkf]-
+; interface to curses and termlib / terminfo
+;
+(declare (special tc:standard-screen))
+
+(defun tc:initscr ()
+   (let ((res (itc #.tc_initscr)))
+      (if res then (setq tc:standard-screen res))))
+
+(defun tc:endwin ()
+   (itc #.tc_endwin)
+   (setq tcss nil)
+   t)
+
+(defun tc:clearok (win bool)
+   (itc (tcwc win) (tcbc bool)))
+
+(defun tc:idlok (win bool)
+   (itc #.tc_idlok (tcwc win) (tcbc bool)))
+
+(defun tc:keypad (win bool)
+   (itc #.tc_keypad (tcwc win) (tcbc bool)))
+
+(defun tc:leaveok (win bool)
+   (itc #.tc_leaveok (tcwc win) (tcbc bool)))
+
+(defun tc:nodelay (win bool)
+   (itc #.tc_nodelay (tcwc win) (tcbc bool)))
+
+(defun tc:scrollok (win bool)
+   (itc #.tc_scrollok (tcwc win) (tcbc bool)))
+
+(defun tc:setscrreg (win top bot)
+   (itc #.tc_setscrreg win (tcic top) (tcic bot)))
+
+(defun tc:cbreak () (itc #.tc_cbreak))
+(defun tc:nocbreak () (itc #.tc_nocbreak))
+(defun tc:crmode () (itc #.tc_crmode))
+(defun tc:nocrmode () (itc #.tc_nocrmode))
+(defun tc:raw () (itc #.tc_raw))
+(defun tc:noraw () (itc #.tc_noraw))
+(defun tc:echo () (itc #.tc_echo))
+(defun tc:noecho () (itc #.tc_noecho))
+(defun tc:nl () (itc #.tc_nl))
+(defun tc:nonl () (itc #.tc_nonl))
+(defun tc:resettty () (itc #.tc_resettty))
+(defun tc:settty () (itc #.tc_settty))
+
+(defun tc:newwin (numlines numcols begy begx)
+   (tc:genwindow (itc #.tc_newwin (tcic numlines)
+			(tcic numcols)
+			(tcic begy)
+			(tcic begx))))
+
+(defun tc:newwin (win numlines numcols begy begx)
+   (tc:genwindow (itc #.tc_newwin
+			(tcwc win)
+			(tcic numlines)
+			(tcic numcols)
+			(tcic begy)
+			(tcic begx))))
+
+(defun tc:delwin (win)
+   (itc #.tc_delwin (tcwc win)))
+
+(defun tc:mvwin (win begy begx)
+   (itc #.tc_mvwin (tcwc win) (tcic begy) (tcic begx)))

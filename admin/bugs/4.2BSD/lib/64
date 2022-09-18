@@ -1,0 +1,70 @@
+Return-Path: <chris@maryland>
+Date: Sun, 18 Nov 84 07:25:11 est
+From: chris@maryland (Chris Torek)
+Subject: missed optimizations in pcc
+
+Index: lib/pcc/optim.c 4.2BSD Fix
+
+Description:
+	The machine independent expression optimizer doesn't handle
+	"/=", "%", or "%=" by the constants 1 and 0.
+
+Repeat-By:
+	Feed the following through /lib/ccom; look at the assembly:
+
+		f () {
+			register i,j;
+
+			i = j / 1;	/* nice, the division goes away */
+			i /= 1;		/* but not this time! */
+			i = j % 1;	/* result is always 0, but talk
+					   about doing things the hard way */
+			i %= 1;		/* same */
+		}
+
+Fix:
+	The following changes to optim.c make it like /= as well as /,
+	and make it handle % 1 and %= 1 in a reasonable way.  We also
+	added checks for division and mod by zero (they used to just
+	generate divisions by zero).
+
+RCS file: RCS/optim.c,v
+retrieving revision 1.1
+diff -c1 -r1.1 optim.c
+*** /tmp/,RCSt1008671	Sun Nov 18 07:16:07 1984
+--- optim.c	Sun Nov 18 07:15:44 1984
+***************
+*** 142,143
+  
+  	case DIV:
+
+--- 142,157 -----
+  
++ 	case ASG MOD:
++ 	case MOD:
++ 		if( nncon( p->in.right ) ){
++ 			if( p->in.right->tn.lval == 1 ){
++ 				/* mod by one gives zero */
++ 				p->in.op = p->in.op==MOD ? COMOP : ASSIGN;
++ 				p->in.right->tn.lval = 0;
++ 				break;
++ 				}
++ 			if( p->in.right->tn.lval == 0 ) uerror("mod by zero");
++ 			}
++ 		break;
++ 
++ 	case ASG DIV:
+  	case DIV:
+***************
+*** 143,145
+  	case DIV:
+! 		if( nncon( p->in.right ) && p->in.right->tn.lval == 1 ) goto zapright;
+  		break;
+
+--- 157,162 -----
+  	case DIV:
+! 		if( nncon( p->in.right ) ){
+! 			if( p->in.right->tn.lval == 1 ) goto zapright;
+! 			if( p->in.right->tn.lval == 0 ) uerror("division by zero");
+! 			}
+  		break;

@@ -1,0 +1,49 @@
+Return-Path: <sun!rusty>
+Date: Mon, 2 Apr 84 15:24:44 pst
+From: sun!rusty (Russel Sandberg)
+Subject: broadcast ICMP ECHO on ethernet crash
+Index: 	sys/netinet/if_ether.c 4.2BSD
+
+Description:
+	Sending a broadcast ICMP ECHO packet on an ethernet with lots of
+	hosts causes a panic.
+Repeat-By:
+	Send an ICMP ECHO packet on an ethernet with >50 hosts.
+Fix:
+	The ethernet drivers (if_ec.c) call arpresolve to get an ethernet
+	address given an arpanet address.  Arpresolve normaly returns 1 for
+	success and 0 for failure.  However, when arpresolve sees a packet
+	addressed to itself it calls the loopback driver (if_loop.c) and
+	returns the result of that call.  Loop back returns 0 for success
+	and errno for error.  When the loopback call works everything is ok
+	because arpresolve then returns a 0, if_ec interprets this as an error
+	and returns immediately.  But when the loopback driver fails (due to
+	ip input queue full) it returns ENOBUFS and frees the mbuf chain.
+	Arpresolve returns the error to if_ec which interprets it as success
+	and sends out the packet.  When it has been sent if_ec frees the same
+	mbuf chain.
+
+	Here is a diff -c that show the kludge to fix this bug.  Line numbers
+	are probably wrong.
+
+	*** if_ether.c		Sun Aug 28 01:30:48 1983
+	--- if_ether.c.new	Mon Apr  2 15:18:54 1984
+	***************
+	*** 202,208
+		    ((struct sockaddr_in *)&ifp->if_addr)-> sin_addr.s_addr) {
+			sin.sin_family = AF_INET;
+			sin.sin_addr = *destip;
+	! 		return (looutput(&loif, m, (struct sockaddr *)&sin));
+		}
+		if ((ifp->if_flags & IFF_NOARP) || lna >= oldmap) {
+			bcopy((caddr_t)ac->ac_enaddr, (caddr_t)desten, 3);
+
+	--- 149,156 -----
+		    ((struct sockaddr_in *)&ifp->if_addr)-> sin_addr.s_addr) {
+			sin.sin_family = AF_INET;
+			sin.sin_addr = *destip;
+	! 		(void) looutput(&loif, m, (struct sockaddr *)&sin);
+	! 		return (0);
+		}
+	  #ifdef IPENADDR
+		if (destip->s_net == 0) {	/* real IP address unknown */

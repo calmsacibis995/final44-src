@@ -1,0 +1,247 @@
+Path: ucsfcgl!ucbvax!decvax!ima!spdcc!eplunix!das
+From: das@eplunix.UUCP (Dave Steffens)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.[23]bsd dump misses last inode on filsys
+Date: 31 May 87 02:56:25 GMT
+Index: etc/dump/dumptraverse.c 4.3BSD
+
+Discussion:
+	This bug was found in dump(8) on Ultrix 1.1 but is known
+	to be present in dump(8) on 4.2bsd and 4.3bsd as well.
+
+	The highest-numbered inode (maxino) on a filsys is _never_
+	written to tape by dump(8) because someone had a problem
+	with the range of a for-loop (see Fix, below).  Maxino is
+	calculated correctly, but the for-loop test clause is written
+	incorrectly such that dump(8) stops processing inodes at maxino-1.
+
+	The resulting tape can cause restore(8) to get very confused.
+	The critical message from 4.2bsd and Ultrix 1.1 versions of restore(8)
+	is "[NIL] xxx: inconsistant state" and you will be asked if you want
+	to abort the restore.  From a 4.3bsd version of restore, you will get
+	"xxx: not found on tape" and the restore will continue automatically.
+	For either version this chatter is likely to be followed by a message
+	"resync restore, skipped nnn blocks" if maxino was linked somewhere.
+
+	What happens in both cases is that restore discovers a directory
+	which contains an entry for which there is no corresponding inode
+	on the tape.  The reason for the behavioral difference is a change
+	from the 4.2bsd to the 4.3bsd version of restore which reduces
+	the assumed severity of said error -- 4.2bsd assumes that the dump
+	tape is bad; 4.3bsd assumes that the filsys was active at the time
+	the dump tape was made and that the missing file was created
+	after the bitmaps were written to tape.
+
+	If you were _very_ clever (i.e. once bitten, twice as careful),
+	you will have handy a list of filename/inode pairs from the
+	original filsys.  Consulting same, you will discover that "xxx"
+	has the highest-numbered inode which can be allocated on the filsys.
+
+	If you continue the restore after it barfs, you will get a filsys
+	which is missing the file corresponding to maxino.  In the case
+	of one or more hard links to maxino, the "resysnc restore, skipped..."
+	will result in lost linking information for other files as well.
+	The case of maxino == IFDIR is left as an exercise for the reader.
+
+Repeat_by:
+	Read the source.  Or you could do what I did...
+
+	Give netnews a small filsys of its own and let it run for a few days
+	without expiring very much stuff.  After you've gotten tired of
+	20 pages of "/news: out of inodes" messages cluttering up your
+	console log every morning, dump the filsys and rebuild it with
+	more inodes.  Then run restore and watch it barf.  For even more fun,
+	make _sure_ maxino has hard links to it in several directories
+	scattered around the filsys.
+
+	You might also make the following change to 4.2bsd restore/restore.c:
+***************
+*** 390,392
+  	case NIL:
+  		panic("[%s] %s: inconsistent state\n", keyval(key), name);
+  		break;
+- --- 390,393 -----
+  	case NIL:
++ 		fprintf(stderr, "(ino %d) ", ino);
+  		panic("[%s] %s: inconsistent state\n", keyval(key), name);
+  		break;
+***************
+
+	Or make the following change to 4.3bsd restore/restore.c:
+***************
+*** 394,396
+  	case NIL:
+! 		fprintf(stderr, "%s: not found on tape\n", name);
+  		break;
+- --- 394,396 -----
+  	case NIL:
+! 		fprintf(stderr, "%s (ino %d): not found on tape\n", name, ino);
+  		break;
+***************
+
+	When the modified restore is run on the bad tape, you will see
+	immediately that the offending file has the highest-numbered inode.
+
+Fix:
+	The following context diff is from 4.3bsd source.
+
+*** etc/dump/dumptraverse.c0	Fri May  2 13:53:45 1986
+- --- etc/dump/dumptraverse.c	Fri May 15 09:55:55 1987
+***************
+*** 18,24
+  	ino_t maxino;
+  
+  	maxino = sblock->fs_ipg * sblock->fs_ncg - 1;
+! 	for (ino = 0; ino < maxino; ) {
+  		if ((ino % NBBY) == 0) {
+  			bits = ~0;
+  			if (map != NULL)
+
+- --- 18,24 -----
+  	ino_t maxino;
+  
+  	maxino = sblock->fs_ipg * sblock->fs_ncg - 1;
+! 	for (ino = 0; ino <= maxino; ) {
+  		if ((ino % NBBY) == 0) {
+  			bits = ~0;
+  			if (map != NULL)
+
+- -- 
+{harvard,mit-eddie,think}!eplunix!das		David Allan Steffens
+243 Charles St., Boston, MA 02114		Eaton-Peabody Laboratory
+(617) 573-3748					Mass. Eye & Ear Infirmary
+====================================================================
+I'm sending this several ways because I want to make *sure* it gets thru...
+
+> By chance I received your bug report on the problem in dump.
+> Your report was both lucid and accurate.
+
+Unfortunately, I don't deserve your vote of confidence.
+The only hope of saving some of my (rapidly dwindling) reputation
+is to retract my own fix, so here goes...
+
+My bug fix is *wrong* -- or rather it applies *only* to Ultrix.
+It should *not* be applied to 4.3bsd (or to 4.2bsd, either).
+
+I have seen the official 4.3bsd bug fix -- it will have to be retracted.
+Apologies if my mistake has made you (or Berekely) look foolish.
+I will soon be posting my own retractions and explanations to the net
+but I wanted to apprise you of the situation as soon as possible.
+The blame is all mine; please make that clear in your retraction.
+Credit should be given to Ken Lalonde at U of Waterloo for putting
+me on the right track (see below).
+
+Fortunately, tapes made with the modified dump will not be corrupted,
+at least according to my tests.  In some cases there will be a garbage
+inode written on the end of the tape which will have a bogus ino = maxino+1.
+Since this inode never appears in a directory, it will never be extracted.
+However, restore will report "expected next file xxx, got yyy", where xxx
+is the value of maxino computed by restore from spcl.c_count in the clrmap
+header and yyy is the bogus inode number.  This error is non-fatal.
+There is more trouble if this garbage inode appears to be a directory.
+Restore reports "cannot find directory inode yyy", where yyy is again
+the bogus inode number.  This error is fatal.  In both cases, restore seems
+to be otherwise successful because it finishes processing all the real inodes
+before it hits the bogus one (N.B. directory case only lightly tested).
+
+The preceding paragraphs contain the essential information.  What follows
+is an attempt to save face and should be considered optional reading.
+Feel free to consign the rest of this note (and me :-( ) to /dev/null.
+
+What happened was that I found (and fixed) a *real* bug in the Ultrix
+1.1 version of dump.  All of my testing was done on this version of dump.
+The code in the 4.[23]bsd versions is similar (but not identical).
+Therefore, I *assumed* that the fix to the Ultrix version was directly
+applicable to the 4.[23]bsd versions -- but unfortunately I didn't *test*
+my assumptions.  Had I tested, I would have immediately seen the restore
+errors and taken a closer look at my supposed fix.  So much for any claims
+I might have made for following good programming practice.
+
+My posting was for 4.3bsd because I assumed Ultrix 1.1 had long-since
+been consigned to the dustbin of history.  Another bad mistake.
+
+Then on Saturday I received this note:
+> From harvard!seismo!watmath!orchid!kwlalonde Sat Jun 20 03:41:16 1987
+> Date: Sat, 20 Jun 87 00:21:51 EDT
+> From: Ken Lalonde <harvard!seismo!watmath!orchid!kwlalonde>
+>
+> The for loop in the stock dumptraverse.c looks like
+> 	
+> 	for (ino = 0; ino < maxino; ) {
+> 		...
+> 		ino++
+> 		...
+> 			(*fn)(getino(ino));
+> 		...
+> 	}
+>
+> The loop runs from 0..maxino-1, so getino is
+> called with arguments 1..maxino.  That sounds correct to me.
+> If the loop is changed to run from 0..maxino, the last
+> time around we call getino(maxino+1).  This will eventually
+> call bread, and bread will notice that it is attempting
+> to read past the end of the fs.  There is a kludge for that case in bread,
+> so nothing is really read, no error message is produced, and everything
+> looks okay.  So it seems to me that the original code is correct.
+
+Since then I have been engaged in extensive testing of all versions
+of dump, both with and without my bug fix.  My strategy was to create
+a filsys with only 128 inodes on a spare root partition and install
+one hundred files on it.  This is enough to cause the allocation
+of the higest-numbered inode.  Then I ran various combinations of dump
+and restore, as well as looking at the output of dump with od.
+Ken is indeed correct, and so is the 4.[23]bsd dump code.  The Ultrix
+version of dump is not (1.1 at least -- I have no more recent version).
+
+If my bug fix is installed in the 4.3bsd version of dump, the kludge
+in bread() Ken mentions will potentially cause a bogus inode = maxino+1
+to be written to tape.  This occurs because bread() will keep trying
+to read past the end of the filsys in smaller and smaller pieces
+until the count goes to zero.  Then it will return success and getino()
+will return a pointer to the first inode in the last inode block read in.
+If said inode is allocated, a bogus copy of it will be written on the end
+of the tape with ino = maxino+1.  This is most troublesome when the bogus
+inode appears to be a directory, less so if it appears to be a file.
+Restore gets confused but apparently still manages to do the right thing
+since the bogus inode appears *after* all the real ones have been processed.
+
+For what it's worth, the Ultrix 1.1 pass() looks like: 
+	if (map == NULL)
+		for (ino = 0; ino < maxino; ino++)
+			(*fn)(getino(ino));
+	else
+	for (ino = 0; ino < maxino; ) {
+		...
+		ino++;
+		if(bits & 1) {
+			dp = getino(ino);
+			(*fn)(dp);
+		}
+	}
+
+The bug is in the first for loop -- "map" is NULL on the first call
+to pass() which in turn calls mark() with each inode.  Someone at DEC
+tried to be clever but introduced a bug instead.  As written, 
+the first for loop fails to mark the higest-numbered inode on the filsys.
+Then later calls to pass() don't see said inode because it wasn't marked.
+This is the bug that caused the original problem I saw and reported.
+The fix is clearly the one I posted, namely to make the 1st for loop read:
+	for (ino = 0; ino <= maxino; ino++)
+
+The second for loop (which is similar in 4.[23]bsd) is correct as is.
+However, the code is a bit obscure -- the loop appears to count from 0
+to maxino-1 but because of the odd placement of "ino++", it actually runs
+over inodes 1 thru maxino.  I guess I didn't really look at the inards
+of this loop very carefully since I was so confident that I understood
+the problem and had a *working* fix.  I know this bit of obscurantism
+was what misled me; it seems that it misled someone at DEC also.
+
+Kudos to Ken Lalonde for catching it!  Sackcloth and ashes for me.
+I will repeat a thousand times... test it! test it!! test it!!!
+I really am sorry about all this.  Don't quite know what else to say.
+Guess I shouldn't be playing unix guru if I can't really cut it.
+
+-----
+{harvard,mit-eddie,think}!eplunix!das		David Allan Steffens
+243 Charles St., Boston, MA 02114		Eaton-Peabody Laboratory
+(617) 573-3748					Mass. Eye & Ear Infirmary

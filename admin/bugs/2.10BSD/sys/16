@@ -1,0 +1,79 @@
+From nelslab!local@vax.cs.pittsburgh.edu  Sun Apr 24 18:23:26 1988
+Date: Sun, 24 Apr 88 21:17:27 EDT
+From: nelslab!local@vax.cs.pittsburgh.edu (Jack Nelson)
+Subject: Badsector handling is done incorrectly,
+Index: sys/pdpuba/xp.c 2.10BSD
+
+Description:
+	Badsector handling is done incorrectly, with some being done
+	correctly but most not.
+Repeat-By:
+	Try to read or write badblocks on an xp.c disk with block sizes
+	greater than 512bytes; see the attempt fail by causing spurious
+	"file system full" messages, with resulting file system damage,
+	or sometimes "panic: red kernel violation trap" with subsequent
+	crashes (tar on raw device is particularly good at this).
+Fix:
+	Apply the patch below.   
+
+The main error is division by NBPW in line 857 of xp.c; since
+that is defined as sizeof(int), and sizeof is an unsigned operator,
+the division is promoted to unsigned, and the result is a nonsense
+number in the 32000's range, i.e. the unsigned value shifted right
+one bit as an unsigned number.  The division at l. 962 may also be
+a problem.  I also rearranged the expression to be more readable.
+
+UUCP: { akgua | allegra | cmcl2 | idis | ihnp4 | mi-cec | pitt |
+	psuvax1 | sun | sunrise | vax135 } ! cadre ! nelslab ! jack
+ARPA: jack@cadre.dsl.pittsburgh.edu
+John P. Nelson, M.D., 3811 O'Hara St, Pittsburgh, PA 15213, t:412-624-1769
+Dept. of Psychiatry, U. of Pittsburgh
+
+Cut:-------------------
+*** ../orgs/xp.c	Sun Aug 30 22:47:05 1987
+--- xp.c.badfix	Sun Apr 24 20:57:20 1988
+***************
+*** 854,865 ****
+  		npx = bp->b_error;
+  		bp->b_error = 0;
+  		ndone = npx * NBPG;
+! 		wc = ((int)(ndone - bp->b_bcount)) / NBPW;
+  	}
+  	else {
+  #endif
+  		wc = xpaddr->hpwc;
+! 		ndone = (wc * NBPW) + bp->b_bcount;
+  		npx = ndone / NBPG;
+  #ifdef BADSECT
+  	}
+--- 854,865 ----
+  		npx = bp->b_error;
+  		bp->b_error = 0;
+  		ndone = npx * NBPG;
+! 		wc = -((short)(bp->b_bcount - ndone) / (short)NBPW);
+  	}
+  	else {
+  #endif
+  		wc = xpaddr->hpwc;
+! 		ndone = bp->b_bcount - ((unsigned)(-wc) * NBPW) ;
+  		npx = ndone / NBPG;
+  #ifdef BADSECT
+  	}
+***************
+*** 929,935 ****
+  #ifdef DEBUG
+  			printf("revector to cn %d tn %d sn %d\n", cn, tn, sn);
+  #endif
+! 			wc = -(512 / NBPW);
+  			break;
+  		case CONT:
+  			bp->b_flags &= ~B_BAD;
+--- 929,935 ----
+  #ifdef DEBUG
+  			printf("revector to cn %d tn %d sn %d\n", cn, tn, sn);
+  #endif
+! 			wc = -(512 / (short)NBPW);
+  			break;
+  		case CONT:
+  			bp->b_flags &= ~B_BAD;
+

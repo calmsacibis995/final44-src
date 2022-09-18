@@ -1,0 +1,59 @@
+Path: seismo!uunet!husc6!hao!ames!necntc!encore!loverso
+From: loverso@encore.UUCP (John LoVerso)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.3 comsat can dump core (but not on VAXen) +FIX
+Index: etc/comsat.c 4.3BSD +FIX
+
+Description:
+	Comsat doesn't dereference a NULL pointer, but instead decrements
+	it by sizeof(struct utmp) and then dereferences that.
+
+	Comsat keeps a cached copy of /etc/utmp in malloc'd space.  If
+	no-one has logged in since the machine was booted, /etc/utmp
+	will be length 0 and so no space will be malloc'd, leaving the
+	pointer `utmp' NULL.  When there is an incoming message that
+	mail has been delivered, mailfor() gets called, and does the
+	following to step thru the utmp array:
+
+		register struct utmp *utp = &utmp[nutmp];
+		while (--utp >= utmp)
+			{ dereference utp }
+
+	A struct utmp is 36 bytes, and so --utp ends being 0xffffffdc.
+	On a VAX using the 4.3 C compiler, the comparison is done with
+	a "cmpl", which I think is a signed compare (I don't have a VAX
+	arch handbook handy).  This means the expression in the while
+	will return false, and its body never get executed.  But, both
+	the Sun3.4 C compiler and one used on a Multimax use unsigned
+	compares for pointers, allowing the expression in the while to
+	eval to true.  The resulting dereference of utp produces a SEGV.
+
+	Of course, if comsat does dump core, inetd will start it back
+	up again the next time mail gets delivered.
+
+Repeat-By:
+	Reboot your machine and then send mail from another host on the network
+	before anybody at all logs in (while /etc/utmp still has a length of 0).
+	Comsat should drop a core in /usr/spool/mail.
+
+Fix:
+	Prevent mailfor() from being called when no-one is logged in.
+
+*** comsat.c_orig	Thu Nov 12 15:14:09 1987
+--- comsat.c	Thu Nov 12 15:08:15 1987
+***************
+*** 91,96 ****
+--- 91,98 ----
+  			errno = 0;
+  			continue;
+  		}
++ 		if (nutmp == 0)			/* no users (yet) */
++ 			continue;
+  		sigblock(sigmask(SIGALRM));
+  		msgbuf[cc] = 0;
+  		lastmsgtime = time(0);
+
+--
+John Robert LoVerso, Encore Computer Corp
+encore!loverso, loverso@multimax.arpa
+

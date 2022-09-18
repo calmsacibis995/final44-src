@@ -1,0 +1,90 @@
+Path: seismo!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd
+Subject: sendmail and others print bogus `Not a typewriter' errors
+Index: lib/libc/gen/isatty.c 4.3BSD Fix
+
+Description:
+	Calls to isatty(), such as those in stdio, can clobber errno,
+	making later perror()s do strange things.  There are no doubt
+	other library routines that do the same, but this is one of the
+	more obvious.
+
+Repeat-By:
+	See, e.g., sendmail errors.
+
+Fix:
+	I chose to change isatty() itself, rather than _flsbuf().
+	I doubt anything depends on errno==ENOTTY after isatty(n)==0.
+
+RCS file: RCS/isatty.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c2 -r1.1 -r1.2
+*** /tmp/,RCSt1007512	Wed Aug 26 23:13:55 1987
+--- /tmp/,RCSt2007512	Wed Aug 26 23:13:55 1987
+***************
+*** 12,18 ****
+  {
+  	struct sgttyb ttyb;
+! 	if (ioctl(f, TIOCGETP, &ttyb) < 0)
+  		return(0);
+  	return(1);
+  }
+--- 12,22 ----
+  {
+  	struct sgttyb ttyb;
++ 	extern int errno;
++ 	int olderr = errno;
+! 	if (ioctl(f, TIOCGETP, &ttyb) < 0) {
+! 		errno = olderr;
+  		return(0);
++ 	}
+  	return(1);
+  }
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7690)
+Domain:	chris@mimsy.umd.edu	Path:	seismo!mimsy!chris
+---------------------------------------------------------------------
+Path: seismo!uunet!husc6!cmcl2!brl-adm!brl-smoke!gwyn
+From: gwyn@brl-smoke.ARPA (Doug Gwyn )
+Newsgroups: comp.bugs.4bsd
+Subject: Re: sendmail and others print bogus `Not a typewriter' errors
+In article <8192@mimsy.UUCP> chris@mimsy.UUCP (Chris Torek) writes:
+>	Calls to isatty(), such as those in stdio, can clobber errno,
+>	making later perror()s do strange things.
+
+I take issue with this.  By no stretch of the imagination is this a
+bug in isatty(); errno may always be set by successful functions, and
+isatty() is always successful.
+
+The real problem is programmers who invoke perror() when errno is
+not guaranteed to be set up correctly to indicate an error cause.
+By installing such a change in isatty(), you're encouraging this
+misuse of perror().
+---------------------------------------------------------------------
+Path: seismo!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: sendmail and others print bogus `Not a typewriter' errors
+In article <6348@brl-smoke.ARPA> gwyn@brl-smoke.ARPA (Doug Gwyn ) writes:
+>... The real problem is programmers who invoke perror() when errno is
+>not guaranteed to be set up correctly to indicate an error cause.
+
+Agreed.  Yet I think more section-3 routines should take care with
+errno; in particular, those routines that can fail due to failing
+system calls should arrange to set errno always upon failing.  For
+instance,
+
+	if ((f = fopen(tmp, "w")) == NULL) {
+		perror("cannot create temp file");
+		...
+
+is technically wrong, but most often produces what is desired.  It
+should always produce what is desired, or there should be a better
+mechanism.  (A global error number is rather grotty.)  Restoring
+errno inside isatty() is not a proper fix, but may help reduce
+confusion until we get one.
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7690)
+Domain:	chris@mimsy.umd.edu	Path:	seismo!mimsy!chris

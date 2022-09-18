@@ -1,0 +1,575 @@
+Index: sys 4.3BSD-tahoe
+
+Since this is a fairly widespread security hole, I did not send it
+like a regular bug report. Hopefully you know what to do with it.
+
+Keith Muller
+
+PS Kevin Fall and I tried it on okeeffe and the bug is still present
+
+------------------- report ---------------
+
+Problem:
+
+	There is a nasty security bug on almost ALL BSD versions that have 
+	job control. (It has been observed in BSD4.3 BSD4.3-tahoe, SUNOS 4.0.3)
+
+	The problem has to do with the interaction of vhangup() and stopped 
+	processes. This bug allows you to obtain clear text passwords of other
+	users on any machine on which you can log into. NO OTHER PRIVILEGES 
+	ARE REQUIRED.
+
+	The bug works as follows:
+	-------------
+
+	Using two terminals (call them A and B):
+
+	1) log onto host with terminal A. Call this connection A at /dev/ttyA
+
+	2) log onto host with terminal B. Call this connection B at /dev/ttyB
+
+	3) On connection A (terminal A) do the following:
+
+		cat < /dev/ttyB
+
+		--- stop this with a: <control-z>
+
+	4) Log out of Connection B
+
+	5) Connect to host again using port /dev/ttyB when getty gives
+	   login: prompt on terminal B, THEN ON TERMINAL A push
+	   the cat < /dev/ttyB to the background (make sure TOSTOP is not set
+	   on terminal B)
+
+	6) On terminal B type username
+
+	7) On terminal B when prompted type password. 
+
+	-------------
+
+	Now step #7 will have no effect on terminal B, because the 
+	"cat < /dev/ttyB" process on TERMINAL A just grabbed all those 
+	characters typed after the password input and echoed them to terminal A.
+	(You just got a clear text password!)
+
+	It seems that due to scheduling, the "cat" almost always gets the
+	"second" read. So the login: input goes to getty, but the "cat" gets
+	the the passwd: input. This also works on pty's but is a little bit
+	harder to do. Often pty connections that use rlogin do not have the
+	login name (or password) prompted for. Therefore, on rlogin
+	connections the "second" read becomes the first (or "second")
+	shell command typed by the user and not the clear text password.
+	With a little luck (and more that one "cat" process) you can always
+	get those (r)logins (or telnets) that prompt for passwords.
+
+	This bug is not foolproof, but it can be made to work the majority
+	of time. Clearly using more sophisticated code (instead of just the
+	"cat" command I used here to demonstrate the bug) it would be very
+	easy to build a "smart" process that collects open file descriptors
+	(using unix access rights and sockets for example) to obtain clear
+	text passwords on almost every login session.
+
+	You can also sit around with a stopped cat and wait for an su to
+	catch roots password (this is much harder, but can be done). The
+	only restriction seems to be the one read per blocked file descriptor
+	(remember vhangup() has stripped further access for any
+	subsequent reads() on that file descriptor).
+
+Analysis: (for 4.3BSD-tahoe as an example)
+
+	The path through the kernel that a read on a terminal takes is:
+	read() -> rwuio() -> ino_rw() -> rwip() -> <dev read> -> ttread()
+
+	For writes it is:
+	write() -> rwuio() -> ino_rw() -> rwip() -> <dev write> -> ttwrite()
+
+	Access rights for read() and write() takes place in rwuio() by
+	examining the f_flag field from the open file table.
+
+	When you block on a read you do so in ttread() AFTER the check. If 
+	you stop the job you remain in ttread() until restarted. (Similar fo
+	write()).
+
+	Normally a process gets caught by the check for TS_CARRIER (in 4.3 
+	that is) when it tries to complete a blocked read and the user has
+	logged out. By staying stopped until someone connects again you avoid
+	this (and you get to make one final read() or write()).
+
+	It is the intent of vhangup() (forceclose() really) to strip off all 
+	FREAD and FWRITE on a tty before the new user logs in (in getty). 
+	However this will only stop future reads/writes not those already 
+	blocked down in ttread()/ttwrite().
+
+	The file table entry is passed by read() to rwuio() (who checks the
+	access) then to ino_rw() (who uses it to set uio_offset by the f_flags
+	data). But the file table pointer is not passed on to rwip(). The file 
+	table pointer is the place where forceclose() strips off the access 
+	rights. In order for ttread() to check for stripped off access rights 
+	before returning the characters, it needs a pointer to the open file 
+	table structure. (The same applies to writes and ttwrite()).
+
+Fix (for 4.3BSD-tahoe):
+
+	Modify rwip(), each terminal device read/write routine (physical
+	devices, /dev/tty, pty's), ttread() and ttwrite() to be passed
+	an additional argument, the pointer to the open file table slot.
+	This will allow ttread() and ttwrite() to check for access rights
+	that may have been stripped off this file descriptor after passing
+	through rwuio() and BEFORE the read/write completes 
+	in ttread()/ttwrite().
+
+	The following diffs illustrate the fix (from a CCI running 4.3BSD-tahoe)
+	(Note line numbers may vary)
+
+	Keith Muller
+	muller@ucsd.edu
+
+-------------- fix follows ------------
+
+RCS file: sys/RCS/sys_inode.c,v
+retrieving revision 1.1
+diff -c -r1.1 sys/sys_inode.c
+*** /tmp/,RCSt1011267	Fri Jun 15 14:36:27 1990
+--- sys/sys_inode.c	Fri Jun 15 14:15:14 1990
+***************
+*** 45,51 ****
+  		fp->f_offset = ip->i_size;
+  	uio->uio_offset = fp->f_offset;
+  	count = uio->uio_resid;
+! 	error = rwip(ip, uio, rw);
+  	fp->f_offset += count - uio->uio_resid;
+  	if ((ip->i_mode&IFMT) != IFCHR)
+  		IUNLOCK(ip);
+--- 45,51 ----
+  		fp->f_offset = ip->i_size;
+  	uio->uio_offset = fp->f_offset;
+  	count = uio->uio_resid;
+! 	error = rwip(ip, uio, rw, fp);
+  	fp->f_offset += count - uio->uio_resid;
+  	if ((ip->i_mode&IFMT) != IFCHR)
+  		IUNLOCK(ip);
+***************
+*** 71,77 ****
+  	auio.uio_resid = len;
+  	auio.uio_offset = offset;
+  	auio.uio_segflg = segflg;
+! 	error = rwip(ip, &auio, rw);
+  	if (aresid)
+  		*aresid = auio.uio_resid;
+  	else
+--- 71,77 ----
+  	auio.uio_resid = len;
+  	auio.uio_offset = offset;
+  	auio.uio_segflg = segflg;
+! 	error = rwip(ip, &auio, rw, 0); /* no file ptr here */
+  	if (aresid)
+  		*aresid = auio.uio_resid;
+  	else
+***************
+*** 80,89 ****
+  	return (error);
+  }
+  
+! rwip(ip, uio, rw)
+  	register struct inode *ip;
+  	register struct uio *uio;
+  	enum uio_rw rw;
+  {
+  	dev_t dev = (dev_t)ip->i_rdev;
+  	register struct buf *bp;
+--- 80,90 ----
+  	return (error);
+  }
+  
+! rwip(ip, uio, rw, fp)
+  	register struct inode *ip;
+  	register struct uio *uio;
+  	enum uio_rw rw;
++ 	struct file *fp;
+  {
+  	dev_t dev = (dev_t)ip->i_rdev;
+  	register struct buf *bp;
+***************
+*** 108,117 ****
+  	type = ip->i_mode&IFMT;
+  	if (type == IFCHR) {
+  		if (rw == UIO_READ)
+! 			error = (*cdevsw[major(dev)].d_read)(dev, uio);
+  		else {
+  			ip->i_flag |= IUPD|ICHG;
+! 			error = (*cdevsw[major(dev)].d_write)(dev, uio);
+  		}
+  		return (error);
+  	}
+--- 109,118 ----
+  	type = ip->i_mode&IFMT;
+  	if (type == IFCHR) {
+  		if (rw == UIO_READ)
+! 			error = (*cdevsw[major(dev)].d_read)(dev, uio, fp);
+  		else {
+  			ip->i_flag |= IUPD|ICHG;
+! 			error = (*cdevsw[major(dev)].d_write)(dev, uio, fp);
+  		}
+  		return (error);
+  	}
+
+RCS file: sys/RCS/tty.c,v
+retrieving revision 1.1
+diff -c -r1.1 sys/tty.c
+*** /tmp/,RCSt1011340	Fri Jun 15 14:37:41 1990
+--- sys/tty.c	Fri Jun 15 14:14:57 1990
+***************
+*** 1129,1137 ****
+   * Called from device's read routine after it has
+   * calculated the tty-structure given as argument.
+   */
+! ttread(tp, uio)
+  	register struct tty *tp;
+  	struct uio *uio;
+  {
+  	register struct clist *qp;
+  	register c, t_flags;
+--- 1129,1138 ----
+   * Called from device's read routine after it has
+   * calculated the tty-structure given as argument.
+   */
+! ttread(tp, uio, fp)
+  	register struct tty *tp;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	register struct clist *qp;
+  	register c, t_flags;
+***************
+*** 1138,1143 ****
+--- 1139,1147 ----
+  	int s, first, error = 0;
+  
+  loop:
++ 	if ((fp != (struct file *)0) && ((fp->f_flag & FREAD) == 0))
++ 		return(EBADF);
++ 
+  	/*
+  	 * Take any pending input first.
+  	 */
+***************
+*** 1299,1307 ****
+   * Called from the device's write routine after it has
+   * calculated the tty-structure given as argument.
+   */
+! ttwrite(tp, uio)
+  	register struct tty *tp;
+  	register struct uio *uio;
+  {
+  	register char *cp;
+  	register int cc, ce, c;
+--- 1303,1312 ----
+   * Called from the device's write routine after it has
+   * calculated the tty-structure given as argument.
+   */
+! ttwrite(tp, uio, fp)
+  	register struct tty *tp;
+  	register struct uio *uio;
++ 	struct file *fp;
+  {
+  	register char *cp;
+  	register int cc, ce, c;
+***************
+*** 1312,1317 ****
+--- 1317,1325 ----
+  	cnt = uio->uio_resid;
+  	error = 0;
+  loop:
++ 	if ((fp != (struct file *)0) && ((fp->f_flag & FWRITE) == 0))
++ 		return(EBADF);
++ 
+  	if ((tp->t_state&TS_CARR_ON) == 0)
+  		return (EIO);
+  	/*
+
+RCS file: sys/RCS/tty_tty.c,v
+retrieving revision 1.1
+diff -c -r1.1 sys/tty_tty.c
+*** /tmp/,RCSt1011373	Fri Jun 15 14:38:23 1990
+--- sys/tty_tty.c	Fri Jun 15 14:01:16 1990
+***************
+*** 20,25 ****
+--- 20,26 ----
+  #include "tty.h"
+  #include "proc.h"
+  #include "uio.h"
++ #include "file.h"
+  
+  /*ARGSUSED*/
+  syopen(dev, flag)
+***************
+*** 33,57 ****
+  }
+  
+  /*ARGSUSED*/
+! syread(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_read)(u.u_ttyd, uio));
+  }
+  
+  /*ARGSUSED*/
+! sywrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_write)(u.u_ttyd, uio));
+  }
+  
+  /*ARGSUSED*/
+--- 34,60 ----
+  }
+  
+  /*ARGSUSED*/
+! syread(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_read)(u.u_ttyd, uio, fp));
+  }
+  
+  /*ARGSUSED*/
+! sywrite(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_write)(u.u_ttyd, uio, fp));
+  }
+  
+  /*ARGSUSED*/
+
+RCS file: sys/RCS/tty_pty.c,v
+retrieving revision 1.1
+diff -c -r1.1 sys/tty_pty.c
+*** /tmp/,RCSt1011407	Fri Jun 15 14:39:00 1990
+--- sys/tty_pty.c	Fri Jun 15 14:02:53 1990
+***************
+*** 95,103 ****
+  	ptcwakeup(tp, FREAD|FWRITE);
+  }
+  
+! ptsread(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	register struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+--- 95,104 ----
+  	ptcwakeup(tp, FREAD|FWRITE);
+  }
+  
+! ptsread(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	register struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+***************
+*** 130,136 ****
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+! 			error = (*linesw[tp->t_line].l_read)(tp, uio);
+  	ptcwakeup(tp, FWRITE);
+  	return (error);
+  }
+--- 131,137 ----
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+! 			error = (*linesw[tp->t_line].l_read)(tp, uio, fp);
+  	ptcwakeup(tp, FWRITE);
+  	return (error);
+  }
+***************
+*** 140,148 ****
+   * Wakeups of controlling tty will happen
+   * indirectly, when tty driver calls ptsstart.
+   */
+! ptswrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	register struct tty *tp;
+  
+--- 141,150 ----
+   * Wakeups of controlling tty will happen
+   * indirectly, when tty driver calls ptsstart.
+   */
+! ptswrite(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	register struct tty *tp;
+  
+***************
+*** 149,155 ****
+  	tp = &pt_tty[minor(dev)];
+  	if (tp->t_oproc == 0)
+  		return (EIO);
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio));
+  }
+  
+  /*
+--- 151,157 ----
+  	tp = &pt_tty[minor(dev)];
+  	if (tp->t_oproc == 0)
+  		return (EIO);
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio, fp));
+  }
+  
+  /*
+
+RCS file: tahoe/RCS/cons.c,v
+retrieving revision 1.1
+diff -c -r1.1 tahoe/cons.c
+*** /tmp/,RCSt1011473	Fri Jun 15 14:39:50 1990
+--- tahoe/cons.c	Fri Jun 15 14:18:11 1990
+***************
+*** 132,150 ****
+  }
+  
+  /*ARGSUSED*/
+! cnread(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	struct tty *tp = cntty[minor(dev)];
+  
+! 	return ((*linesw[tp->t_line].l_read)(tp, uio));
+  }
+  
+  /*ARGSUSED*/
+! cnwrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	register struct tty *tp = cntty[minor(dev)];
+  
+--- 132,152 ----
+  }
+  
+  /*ARGSUSED*/
+! cnread(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	struct tty *tp = cntty[minor(dev)];
+  
+! 	return ((*linesw[tp->t_line].l_read)(tp, uio, fp));
+  }
+  
+  /*ARGSUSED*/
+! cnwrite(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	register struct tty *tp = cntty[minor(dev)];
+  
+***************
+*** 152,158 ****
+  	    (constty->t_state & (TS_CARR_ON | TS_ISOPEN)) ==
+  	    (TS_CARR_ON | TS_ISOPEN))
+  		tp = constty;
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio));
+  }
+  
+  /*
+--- 154,160 ----
+  	    (constty->t_state & (TS_CARR_ON | TS_ISOPEN)) ==
+  	    (TS_CARR_ON | TS_ISOPEN))
+  		tp = constty;
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio, fp));
+  }
+  
+  /*
+
+RCS file: tahoevba/RCS/mp.c,v
+retrieving revision 1.15
+diff -c -r1.15 tahoevba/mp.c
+*** /tmp/,RCSt1011539	Fri Jun 15 14:41:22 1990
+--- tahoevba/mp.c	Fri Jun 15 14:25:31 1990
+***************
+*** 300,326 ****
+  /*
+   * Read from an mpcc port.
+   */
+! mpread(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	struct tty *tp;
+  
+  	tp = &mp_tty[minor(dev)];
+! 	return ((*linesw[tp->t_line].l_read)(tp, uio));
+  }
+  
+  /*
+   * Write to an mpcc port.
+   */
+! mpwrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+  {
+  	struct tty *tp;
+  
+  	tp = &mp_tty[minor(dev)];
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio));
+  }
+  
+  /*
+--- 300,328 ----
+  /*
+   * Read from an mpcc port.
+   */
+! mpread(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	struct tty *tp;
+  
+  	tp = &mp_tty[minor(dev)];
+! 	return ((*linesw[tp->t_line].l_read)(tp, uio, fp));
+  }
+  
+  /*
+   * Write to an mpcc port.
+   */
+! mpwrite(dev, uio, fp)
+  	dev_t dev;
+  	struct uio *uio;
++ 	struct file *fp;
+  {
+  	struct tty *tp;
+  
+  	tp = &mp_tty[minor(dev)];
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio, fp));
+  }
+  
+  /*
+

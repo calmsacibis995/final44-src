@@ -1,0 +1,164 @@
+
+/* $XConsortium: redrawstr.pi,v 5.1 91/02/16 10:02:16 rws Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+## redrawstr.pi -  
+## Test requirements:
+##   test redraw all structures with control flags PFLAG_COND and PFLAG_ALWAYS
+
+source macro.pi
+source dcmacro.pi
+source xpmacro.pi
+
+tbegintest("redrawstr","redraw all structures with post and unpost structure");
+
+# INITIALIZE: data for a line, ws window
+line = IA_Ppoint(2, 0.25,0.25, 0.75,0.75);
+line3 = IA_Ppoint3(2, 0.25,0.25,0.0, 0.75,0.75,0.0);
+pl = I_Ppoint_list(2,line);
+
+# SETUP: open phigs and a workstation, open a structure, 
+#        insert a polyline element
+
+i_open_phigs(NULL,0);
+i_open_x_ws(1,&xdisplay,&xwindow,0,0,200,200);
+popen_struct(1);
+ppolyline(&pl);
+
+#OPERATION: redraw all structures with PFLAG_COND
+predraw_all_structs(1,PFLAG_COND);
+
+#VERIFICATION: verify visual rep state is PVISUAL_ST_CORRECT
+im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  "failed: redraw with CONDITIONALLY,visual=%d,expected PVISUAL_ST_CORRECT before poststruct\n");
+
+#OPERATION: redraw all structures with PFLAG_ALWAYS
+predraw_all_structs(1,PFLAG_ALWAYS);
+
+#VERIFICATION: verify visual rep state is PVISUAL_ST_CORRECT
+im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  "failed: redraw with ALWAYS,visual=%d,expected PVISUAL_ST_CORRECT before poststruct\n");
+
+#OPERATION: set display update state to WAIT/UQUM, 
+#            post a structure that contains a polyline
+pset_disp_upd_st(1, PDEFER_WAIT, PMODE_UQUM);
+ppost_struct(1,1,1.0);
+
+#VERIFICATION: 
+dynmod = i_get_struct_dyn_mod(1,"post structure");
+if (dynmod == PDYN_IRG) # if post structure's dynamic modification is IRG
+
+	# verify visual rep state is PVISUAL_ST_DEFER
+	im_confirm_visual_rep(1,PVISUAL_ST_DEFER,
+  		"failed: visual=%d,expected PVISUAL_ST_DEFER after poststruct\n");
+	#  Verify that line is not rendered
+        status = i_check_line3(xdisplay,xwindow,1,0,line3,5,1);
+        im_ifneq(status,0,
+                "failed: line is rendered before redrawallstruct\n",NULL);
+endif
+
+if (dynmod == PDYN_CBS) # if post structure 's dynamic modification is CBS
+	# verify visual rep state is PVISUAL_ST_SIMULATED
+	im_confirm_visual_rep(1,PVISUAL_ST_SIMULATED,
+  		"failed: visual=%d,expected PVISUAL_ST_SIMULATED after poststruct\n");
+endif
+
+if (dynmod == PDYN_IMM) # if post structure 's dynamic modification is IMM
+	# verify visual rep state is PVISUAL_ST_CORRECT
+	im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  		"failed: visual=%d,expected PVISUAL_ST_CORRECT after poststruct\n");
+	#  Verify that line is rendered
+	im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1,
+  	"failed: line is not rendered before redrawallstruct\n",NULL);
+endif
+
+tvprintf(2,"after struct posted under WAIT/UQUM\n");
+i_pause();
+
+#OPERATION: redraw all structures with PFLAG_COND
+predraw_all_structs(1,PFLAG_COND);
+
+#VERIFICATION: 
+# verify visual rep state is PVISUAL_ST_CORRECT
+im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  "failed: redraw with CONDITIONALLY,visual=%d,expected PVISUAL_ST_CORRECT after poststruct\n");
+
+#  Verify that line is rendered
+im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1,
+  "failed: line is not rendered after redrawallstruct\n",NULL);
+tvprintf(2,"after redrawallstruct CONDITIONALLY\n");
+i_pause();
+
+#OPERATION: unpost the structure that contains a polyline
+punpost_struct(1,1);
+
+#VERIFICATION: 
+if (dynmod == PDYN_IRG) # if unpost structure's dynamic modification is IRG
+
+	# verify visual rep state is PVISUAL_ST_DEFER
+	im_confirm_visual_rep(1,PVISUAL_ST_DEFER,
+  		"failed: visual=%d,expected PVISUAL_ST_DEFER after poststruct\n");
+	#  Verify that line is still rendered
+	im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1,
+		"failed: line is erased before redrawallstruct\n",NULL);
+endif
+
+if (dynmod == PDYN_CBS) # if unpost structure's dynamic modification is CBS
+	# verify visual rep state is PVISUAL_ST_SIMULATED
+	im_confirm_visual_rep(1,PVISUAL_ST_SIMULATED,
+  		"failed: visual=%d,expected PVISUAL_ST_SIMULATED after poststruct\n");
+endif
+
+if (dynmod == PDYN_IMM) # if unpost structure's dynamic modification is IMM
+	# verify visual rep state is PVISUAL_ST_CORRECT
+	im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  		"failed: visual=%d,expected PVISUAL_ST_SIMULATED after poststruct\n");
+	#  Verify that line is erased
+        status = i_check_line3(xdisplay,xwindow,1,0,line3,5,1);
+        im_ifneq(status,0,
+                "failed: line is not erased before redrawallstruct\n",NULL);
+endif
+
+tvprintf(2,"after struct unposted under WAIT/UQUM\n");
+i_pause();
+
+#OPERATION: redraw all structures with PFLAG_ALWAYS
+predraw_all_structs(1,PFLAG_ALWAYS);
+
+#VERIFICATION: 
+# verify visual rep state is PVISUAL_ST_CORRECT
+im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+  "failed: redraw with ALWAYS,visual=%d,expected PVISUAL_ST_CORRECT after unpoststruct\n");
+#  Verify that line is erased
+status = i_check_line3(xdisplay,xwindow,1,0,line3,5,1);
+im_ifneq(status,0,
+  "failed: line is not erased after redrawallstruct\n",NULL);
+
+tvprintf(2,"after redrawallstruct ALWAYS\n");
+i_pause();
+
+tendtest();

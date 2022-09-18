@@ -1,0 +1,271 @@
+From leres@helios.ee.lbl.gov  Mon Nov 14 19:27:19 1988
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: tar stderr line buffering bugs
+Index: bin/tar/tar.c 4.3BSD +FIX
+Date: Mon, 14 Nov 88 19:27:22 PST
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+Description:
+	When tar is told to read from stdin or write to stdout, it can
+	mix up the text of its error/warning messages. This is because
+	in these cases, stderr is set to line buffering. Since perror()
+	doesn't use stdio, its output can appear first.
+
+Repeat-By:
+	Execute the following sequence of commands:
+
+	    okeeffe 1 % touch a b c
+	    okeeffe 2 % chmod 0 a b c
+	    okeeffe 3 % tar cf - a b c > /dev/null
+	    a: Permission denied
+	    b: Permission denied
+	    c: Permission denied
+	    tar: tar: tar: okeeffe 4 % 
+
+	Notice that perror() text comes out before the text fprintf'ed
+	to stderr.
+
+Fix:
+	Always fflush() stderr before using perror().
+
+*** tar.c	Mon Nov 14 19:04:18 1988
+--- tar.c.new	Mon Nov 14 19:13:06 1988
+***************
+*** 11,17 ****
+  #endif /* not lint */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)tar.c	5.12 (Berkeley) 5/23/88";
+  #endif /* not lint */
+  
+  /*
+--- 11,17 ----
+  #endif /* not lint */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)tar.c	5.12++ (Berkeley) 5/23/88";
+  #endif /* not lint */
+  
+  /*
+***************
+*** 316,321 ****
+--- 316,322 ----
+  			mt = open(tape, O_RDONLY);
+  		if (mt < 0) {
+  			fprintf(stderr, "tar: ");
++ 			fflush(stderr);
+  			perror(tape);
+  			done(1);
+  		}
+***************
+*** 358,364 ****
+  		if (!strcmp(cp2, "-C") && argv[1]) {
+  			argv++;
+  			if (chdir(*argv) < 0) {
+! 				fprintf(stderr, "tar: can't change directories to ");
+  				perror(*argv);
+  			} else
+  				(void) getcwd(wdir);
+--- 359,367 ----
+  		if (!strcmp(cp2, "-C") && argv[1]) {
+  			argv++;
+  			if (chdir(*argv) < 0) {
+! 				fprintf(stderr,
+! 				    "tar: can't change directories to ");
+! 				fflush(stderr);
+  				perror(*argv);
+  			} else
+  				(void) getcwd(wdir);
+***************
+*** 372,378 ****
+  		if (cp2 != *argv) {
+  			*cp2 = '\0';
+  			if (chdir(*argv) < 0) {
+! 				fprintf(stderr, "tar: can't change directories to ");
+  				perror(*argv);
+  				continue;
+  			}
+--- 375,383 ----
+  		if (cp2 != *argv) {
+  			*cp2 = '\0';
+  			if (chdir(*argv) < 0) {
+! 				fprintf(stderr,
+! 				    "tar: can't change directories to ");
+! 				fflush(stderr);
+  				perror(*argv);
+  				continue;
+  			}
+***************
+*** 383,388 ****
+--- 388,394 ----
+  		putfile(*argv++, cp2, parent);
+  		if (chdir(wdir) < 0) {
+  			fprintf(stderr, "tar: cannot change back?: ");
++ 			fflush(stderr);
+  			perror(wdir);
+  		}
+  	}
+***************
+*** 480,485 ****
+--- 486,492 ----
+  		i = stat(shortname, &stbuf);
+  	if (i < 0) {
+  		fprintf(stderr, "tar: ");
++ 		fflush(stderr);
+  		perror(longname);
+  		return;
+  	}
+***************
+*** 510,515 ****
+--- 517,524 ----
+  		}
+  		(void)sprintf(newparent, "%s/%s", parent, shortname);
+  		if (chdir(shortname) < 0) {
++ 			fprintf(stderr, "tar: ");
++ 			fflush(stderr);
+  			perror(shortname);
+  			return;
+  		}
+***************
+*** 518,523 ****
+--- 527,533 ----
+  			    longname);
+  			if (chdir(parent) < 0) {
+  				fprintf(stderr, "tar: cannot change back?: ");
++ 				fflush(stderr);
+  				perror(parent);
+  			}
+  			return;
+***************
+*** 536,541 ****
+--- 546,552 ----
+  		closedir(dirp);
+  		if (chdir(parent) < 0) {
+  			fprintf(stderr, "tar: cannot change back?: ");
++ 			fflush(stderr);
+  			perror(parent);
+  		}
+  		break;
+***************
+*** 556,561 ****
+--- 567,573 ----
+  		i = readlink(shortname, dblock.dbuf.linkname, NAMSIZ - 1);
+  		if (i < 0) {
+  			fprintf(stderr, "tar: can't read symbolic link ");
++ 			fflush(stderr);
+  			perror(longname);
+  			return;
+  		}
+***************
+*** 572,577 ****
+--- 584,590 ----
+  	case S_IFREG:
+  		if ((infile = open(shortname, 0)) < 0) {
+  			fprintf(stderr, "tar: ");
++ 			fflush(stderr);
+  			perror(longname);
+  			return;
+  		}
+***************
+*** 641,646 ****
+--- 654,660 ----
+  			free(bigbuf);
+  		if (i < 0) {
+  			fprintf(stderr, "tar: Read error on ");
++ 			fflush(stderr);
+  			perror(longname);
+  		} else if (blocks != 0 || i != 0)
+  			fprintf(stderr, "tar: %s: file changed size\n",
+***************
+*** 701,706 ****
+--- 715,721 ----
+  			if (symlink(dblock.dbuf.linkname, dblock.dbuf.name)<0) {
+  				fprintf(stderr, "tar: %s: symbolic link failed: ",
+  				    dblock.dbuf.name);
++ 				fflush(stderr);
+  				perror("");
+  				continue;
+  			}
+***************
+*** 729,734 ****
+--- 744,750 ----
+  			if (link(dblock.dbuf.linkname, dblock.dbuf.name) < 0) {
+  				fprintf(stderr, "tar: can't link %s to %s: ",
+  				    dblock.dbuf.name, dblock.dbuf.linkname);
++ 				fflush(stderr);
+  				perror("");
+  				continue;
+  			}
+***************
+*** 740,745 ****
+--- 756,762 ----
+  		if ((ofile = creat(dblock.dbuf.name,stbuf.st_mode&0xfff)) < 0) {
+  			fprintf(stderr, "tar: can't create %s: ",
+  			    dblock.dbuf.name);
++ 			fflush(stderr);
+  			perror("");
+  			passtape();
+  			continue;
+***************
+*** 762,767 ****
+--- 779,785 ----
+  				fprintf(stderr,
+  				    "tar: %s: HELP - extract write error: ",
+  				    dblock.dbuf.name);
++ 				fflush(stderr);
+  				perror("");
+  				done(2);
+  			}
+***************
+*** 900,905 ****
+--- 918,925 ----
+  		*cp = '\0';
+  		if (access(name, 0) < 0) {
+  			if (mkdir(name, 0777) < 0) {
++ 				fprintf(stderr, "tar: ");
++ 				fflush(stderr);
+  				perror(name);
+  				*cp = '/';
+  				return (0);
+***************
+*** 1253,1258 ****
+--- 1273,1279 ----
+  	if (mtdev == 0) {
+  		if (ioctl(mt, MTIOCTOP, (char *)&mtop) < 0) {
+  			fprintf(stderr, "tar: tape backspace error: ");
++ 			fflush(stderr);
+  			perror("");
+  			done(4);
+  		}
+***************
+*** 1275,1283 ****
+  	int i;
+  {
+  	fprintf(stderr, "tar: tape %s error: ", operation);
+! 	if (i < 0)
+  		perror("");
+! 	else
+  		fprintf(stderr, "unexpected EOF\n");
+  	done(exitcode);
+  }
+--- 1296,1305 ----
+  	int i;
+  {
+  	fprintf(stderr, "tar: tape %s error: ", operation);
+! 	if (i < 0) {
+! 		fflush(stderr);
+  		perror("");
+! 	} else
+  		fprintf(stderr, "unexpected EOF\n");
+  	done(exitcode);
+  }
+***************
+*** 1409,1414 ****
+--- 1431,1437 ----
+  	tv[0].tv_usec = tv[1].tv_usec = 0;
+  	if (utimes(path, tv) < 0) {
+  		fprintf(stderr, "tar: can't set time on %s: ", path);
++ 		fflush(stderr);
+  		perror("");
+  	}
+  }

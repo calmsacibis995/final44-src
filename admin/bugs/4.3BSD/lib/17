@@ -1,0 +1,954 @@
+Return-Path: <allegra!jpl@ucbvax.Berkeley.EDU>
+From: allegra!jpl@ucbvax.berkeley.edu
+Date: Tue, 2 Sep 86 14:04:19 edt
+To: ucbvax!4bsd-bugs
+Subject:  lib/malloc
+Index: lib 4.3BSD
+
+[Except for the source to malloc.c at the end of this note, I plan to
+ post this to net.unix-wizards in a couple of weeks, after I've soaked
+ it here a while.  If you'd like to make some editorial comments on the
+ article or code between now and then, input is always welcome. jpl]
+
+The version of malloc that was distributed with 4.3-beta has changed in
+several ways from the 4.2 version.  Several old bugs have been
+repaired, several new features and new bugs have been added.  I have
+attempted to repair the new bugs and preserve the new features.  At
+first I tried to minimize the scope of the changes, so it would be easy
+to see what had changed.  In the end, I did what I felt was ``right''
+and stopped worrying about minimizing differences.  As a result, I
+cannot post the diff's... that would amount to posting both versions.
+I will send my version to Berkeley.  I hope they'll incorporate at least
+some of the changes.  The rest of this article describes some of the
+problems I found and corrected, and some test software you can run if
+you think I'm hallucinating.
+
+Lint complains about the 4.3 malloc.  The findbucket() routine that is
+associated with reallocating freed blocks [sic] returns -1 to indicate
+that the freed block wasn't found.  The return value is assigned to an
+unsigned integer, so a return value less than 0 cannot be detected.
+The -1 return will turn into a VERY large and thoroughly meaningless
+bucket index.  The fact that this has not caused problems suggests that
+the feature is not often used, a tribute to the good taste of 4.3
+programmers.  Forcing ``compaction'' is pretty much a no-op on every
+malloc implementation I know of, and doing it by the artifice of
+reallocating freed storage is unspeakable (even if documented).  I have
+simplified the compaction code.  It will take longer, but it will work
+correctly.  The world would be a better place if manipulating freed
+storage were disallowed altogether.
+
+The 4.3 malloc attempts to align large allocations on page boundaries.
+This is a feature.  The kernel can do I/O operations into page-aligned
+areas by simply fiddling with page tables.  The alignment is
+established on the first call to malloc, and is preserved by doing all
+subsequent sbrk allocations in page multiples.  This is a bug.  If the
+user does an sbrk allocation that is NOT a multiple of a page, all
+subsequent malloc allocations will be aligned OFF page boundaries.  If
+the user does an sbrk of an odd number of bytes, all subsequent malloc
+allocations will be aligned on odd byte boundaries.  I have changed the
+code to check for correct allocation each time malloc must do an sbrk.
+
+The 4.2 malloc kept internal allocation buckets whose sizes were powers
+of 2.  A small amount of bookkeeping overhead was added to user
+requests, and the resulting space was allocated from the smallest
+bucket that could satisfy it.  If the user asked for an area whose size
+was a power of 2, like a stdio buffer, the bookkeeping overhead made
+the request just a bit larger, and the request had to be satisfied out
+of a block that was nearly twice the size the user asked for.  Large
+allocations in the 4.3 malloc come out of blocks that are a power of 2,
+plus one page.  Thus, requests for a power of 2 bytes waste only a
+fraction of a page.  This is a feature.  Unfortunately, the bucket size
+calculations are a little peculiar.  A request for 512 bytes will come
+out of a 2048-byte area, surpassing 4.2's unenviable record of 50%
+storage waste.  It is difficult to change the allocation policy, both
+because it is slightly cryptic, and because it appears in several
+routines.  (Its appearance in the mstats routine is subtly different
+from its appearance elsewhere, so if you allocate and then free 2000
+bytes, mstats will tell you 1024 bytes are free.)  I have changed the
+allocation policy to create a 1024-byte bucket.  I have also
+consolidated the allocation policy into a single routine, so it can be
+more easily modified.  Mstats, using this policy routine, now reports
+used and free figures that bear some relation to reality.
+
+Both 4.2 and 4.3 malloc will return NULL if an sbrk fails, even if
+there are large free blocks available that could satisfy the request.
+I posted a fix for the 4.2 malloc to netnews.  The new bucket sizes
+make that fix unusable, so I have fixed the 4.3 version as well.  The
+fix is remarkably resistent to changes in bucket allocation policies,
+and is quite conservative of large blocks.  I'm rather proud of it,
+even if most of the nice features were unintentional.
+
+If a realloc of an allocated block fails under 4.3, the block is
+freed as an unwanted side-effect.  This has been fixed.  If the
+allocation fails, the original block remains allocated.
+
+The test program and data that follow demonstrate a number of these
+bugs.  The scripts assume that both talloc.c and malloc.c have been
+compiled with -DMSTATS.
+
+# To unbundle, delete any lines before this one and sh this file.
+echo unbundling talloc.c
+#################### talloc.c Tue Sep  2 13:48:43 EDT 1986 ####################
+sed -e 's/.//' > talloc.c <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X#include <stdio.h>
+X#include <ctype.h>
+X
+X#ifndef ASLOTS
+X#define ASLOTS 1000
+X#endif
+X
+Xchar *Me;
+X
+Xstruct {
+X    char *p;
+X    int z;
+X} a[ASLOTS];
+X
+X#define SKIP(p) while (isspace(*p)) p++
+X
+Xchar *
+Xcvnum(p, np)
+X    register char *p;
+X    int *np;
+X{
+X    register int n;
+X
+X    SKIP(p);
+X    if (isdigit(*p))
+X	for (n = 0; isdigit(*p);)
+X	    n = 10 * n + *p++ - '0';
+X    else    n = -1;
+X    *np = n;
+X    return (p);
+X}
+X
+Xint
+Xfindex()
+X{
+X    register int i;
+X
+X    for (i = 0; i < ASLOTS; i++) {
+X	if (a[i].z == 0)
+X	    return (i);
+X    }
+X    (void) fprintf(stderr, "%s: %s %s %d\n",
+X		    Me,
+X		    "Pointer table full -- do some frees",
+X		    "or recompile with ASLOTS >",
+X		    ASLOTS);
+X    return (-1);
+X}
+X
+Xmain(argc, argv)
+X    int argc;
+X    char **argv;
+X{
+X    register char *p;
+X    register int i;
+X    char buf[256], *malloc(), *realloc(), *gets();
+X    int n, last = 4000000;
+X    extern int getpagesize();
+X
+X    Me = argv[0];
+X    while (gets(buf)) {
+X	p = buf;
+X	SKIP(p);
+X	switch (*p) {
+X	case 'a':   /* allocate: n, or last allocation; report index */
+X	    if ((i = findex()) < 0) continue;
+X	    (void) cvnum(p+1, &n);
+X	    if (n > 0) last = n;
+X	    if (p = malloc(last)) {
+X		(void) printf("%d: %d bytes at %#x\n", i, last, p);
+X		a[i].p = p;
+X		a[i].z = last;
+X	    } else {
+X		(void) printf("Out of space looking for %d bytes\n", last);
+X	    }
+X	    break;
+X	case 'b':
+X	    (void) cvnum(p+1, &n);
+X	    if (n > 0) last = n;
+X	    (void) printf("sbrk(%d) returned %#x\n", last, sbrk(last));
+X	    break;
+X	case 'f':
+X	    (void) cvnum(p+1, &n);
+X	    i = n;
+X	    if ((i < 0) || (i >= ASLOTS) || (a[i].z == 0)) {
+X		(void) printf("Slot invalid or already free\n");
+X	    } else {
+X		free(p = a[i].p);
+X		(void) printf("%d: %d bytes at %#x\n", i, a[i].z, p);
+X		a[i].z = 0;
+X		a[i].p = NULL;
+X	    }
+X	    break;
+X	case 'r':
+X	    p = cvnum(p+1, &n);
+X	    i = n;
+X	    if ((i < 0) || (i >= ASLOTS) || (a[i].z == 0)) {
+X		(void) printf("Slot invalid or free\n");
+X	    } else {
+X		(void) cvnum(p, &n);
+X		if (n > 0) last = n;
+X		if (p = realloc(a[i].p, last)) {
+X		    (void) printf("%d: %d=>%d bytes from %#x to %#x\n",
+X			i, a[i].z, last, a[i].p, p);
+X		    a[i].p = p;
+X		    a[i].z = last;
+X		} else {
+X		    (void) printf("Out of space looking for %d bytes\n", last);
+X		}
+X	    }
+X	    break;
+X	case 'p':
+X	    i = getpagesize();
+X	    (void) printf("Page size is %d(%#x)\n", i, i);
+X	    break;
+X	case 's':
+X	    for (i = 0; i < ASLOTS; i++) {
+X		if (a[i].z) {
+X		    (void) printf("%7d: %9d bytes at %#x\n",
+X			i, a[i].z, a[i].p);
+X		}
+X	    }
+X	    break;
+X#ifdef MSTATS
+X	case 'm':
+X	    (void) mstats(p+1);
+X	    break;
+X#endif
+X	case 'q':
+X	    exit(0);
+X	case '#':
+X	    (void) printf("%s\n", buf);
+X	    break;
+X	case '?':
+X	    (void) printf("a [N] => allocate N bytes, report index\n");
+X	    (void) printf("b [N] => sbrk N bytes, report address\n");
+X	    (void) printf("f index => free space at index\n");
+X#ifdef MSTATS
+X	    (void) printf("m [title] => print malloc statistics\n");
+X#endif
+X	    (void) printf("p => report page size\n");
+X	    (void) printf("r index [N] => reallocate N bytes at index\n");
+X	    (void) printf("s => print summary of allocated storage\n");
+X	    (void) printf("q => quit\n");
+X	    (void) printf("# => echo the input line\n");
+X	    (void) printf("? => print this helpful summary\n");
+X	    break;
+X	default:
+X	    (void) fprintf(stderr, "%s: %s %s\n",
+X		Me, "Unrecognized command --",
+X		"enter ? for help");
+X	}
+X    }
+X}
+John P. Linderman allegra!jpl MH3D-435 x6427
+echo unbundling testalign
+#################### testalign Tue Sep  2 13:48:44 EDT 1986 ####################
+sed -e 's/.//' > testalign <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X# Show how user sbrk's interact with malloc alignment.
+X# The 4.3 malloc only adjusts alignment when it is first called.
+X# If the user invokes sbrk thereafter, alignment can get wierd.
+X#
+X# First, get a couple large chunks, which should be page aligned
+Xp
+Xa 4096
+Xa 4096
+X# Now, sbrk a single byte, and then see how other chunks are aligned
+Xb 1
+Xa 4096
+Xa 4096
+Xs
+Xq
+John P. Linderman allegra!jpl MH3D-435 x6427
+echo unbundling testfunny
+#################### testfunny Tue Sep  2 13:48:44 EDT 1986 ####################
+sed -e 's/.//' > testfunny <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X# Demonstrate funny bucket with 4.3 allocator.
+X# There are two problems here:
+X# 1)  Because of the way bucket sizes are determined in the 4.3 malloc,
+X# one bucket gets blocks with sizes (after malloc overhead) from
+X# 512 bytes through 2048 bytes.  That's pretty poor storage
+X# efficiency for the 512-byte chunks.
+X# 2)  Mstats doesn't calculate block sizes in the same way that malloc
+X# does.  It's wrong about the size of the funny bucket.  It never takes
+X# the extra page overhead into consideration, either.
+Xm Initial configuration
+X# Allocate 2000 bytes, free it and see how much space mstats reports.
+Xa2000
+Xf0
+Xm 2000 bytes allocated and freed
+X# Reallocate the 2000 bytes, then allocate 512, and see if they end
+X# up in the same bucket
+Xa2000
+Xa 512
+Xm 2000 and 512 bytes allocated
+Xq
+John P. Linderman allegra!jpl MH3D-435 x6427
+echo unbundling testrealloc
+#################### testrealloc Tue Sep  2 13:48:45 EDT 1986 ####################
+sed -e 's/.//' > testrealloc <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X# If an attempt to reallocate a busy block fails, the block will
+X# be freed as an (undesirable) side-effect
+X#
+X# First, run ourselves out of space
+Xa1000000000
+Xa 500000000
+Xa 250000000
+Xa 125000000
+Xa  64000000
+Xa  32000000
+Xa  16000000
+Xa   8000000
+Xa   4000000
+Xa   2000000
+Xa   1000000
+Xa    500000
+Xa    256000
+Xa    128000
+Xa     65536
+Xa     32768
+Xa     16384
+Xa      8192
+Xa      4096
+Xa      2048
+Xa      1024
+Xa       512
+Xa       256
+Xa       128
+Xa        64
+Xa        32
+Xa        16
+Xa         8
+Xa         4
+Xa         2
+Xa         1
+Xm After running out of space
+X# Now, attempt to reallocate the biggest block and make it even bigger
+Xr 0 2000000000
+Xm After failing to reallocate
+Xq
+John P. Linderman allegra!jpl MH3D-435 x6427
+echo unbundling testsalvage
+#################### testsalvage Tue Sep  2 13:48:46 EDT 1986 ####################
+sed -e 's/.//' > testsalvage <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X# The 4.3 malloc will not split up a free block, even if it means
+X# returning NULL from malloc.
+X#
+X# First, run ourselves out of space
+Xa1000000000
+Xa 500000000
+Xa 250000000
+Xa 125000000
+Xa  64000000
+Xa  32000000
+Xa  16000000
+Xa   8000000
+Xa   4000000
+Xa   2000000
+Xa   1000000
+Xa    500000
+Xa    256000
+Xa    128000
+Xa     65536
+Xa     32768
+Xa     16384
+Xa      8192
+Xa      4096
+Xa      2048
+Xa      1024
+Xa       512
+Xa       256
+Xa       128
+Xa        64
+Xa        32
+Xa        16
+Xa         8
+Xa         4
+Xa         2
+Xa         1
+X# Now, free the biggest block, and try for one more byte
+Xf0
+Xm After freeing biggest block
+Xa
+Xm After trying to allocate another byte
+Xq
+John P. Linderman allegra!jpl MH3D-435 x6427
+echo To produce a test driver,
+echo "  cc -O -DMSTATS [-DRCHECK] -o talloc talloc.c /usr/src/lib/libc/gen/malloc.c"
+echo To exercise it
+echo '  for i in test*'
+echo '  do ./talloc < $i'
+echo '  done'
+# To unbundle, delete any lines before this one and sh this file.
+echo unbundling malloc.c
+#################### malloc.c Tue Sep  2 13:58:04 EDT 1986 ####################
+sed -e 's/.//' > malloc.c <<'John P. Linderman allegra!jpl MH3D-435 x6427'
+X/*
+X * Copyright (c) 1983 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)malloc.c	5.6 (Berkeley) 3/9/86";
+X#endif
+X
+X/*
+X * malloc.c (Caltech) 2/21/82
+X * Chris Kingsley, kingsley@cit-20.
+X *
+X * This is a very fast storage allocator.  It allocates blocks of a small
+X * number of different sizes, and keeps free lists of each size.  Blocks that
+X * don't exactly fit are passed up to the next larger size.
+X * This is designed for use in a virtual memory environment.
+X */
+X
+X#include <sys/types.h>
+X
+X#define	NULL 0
+X#define	NULLCHR ((char *) NULL)
+X#define	NULLOHD ((union overhead *) NULL)
+X
+X/*
+X * The overhead on a block is at least 4 bytes.  When free, this space holds
+X * a pointer to the next free block, and the bottom two bits must be zero.
+X * When in use, the first byte is set to MAGIC, and the second byte is the
+X * size index.  If range checking is not enabled, the other two bytes are
+X * unused.  If range checking is enabled, then the other two bytes are
+X * treated as a short, holding magic number RMAGIC.  A second word holds a
+X * pointer to the first short that follows the area the user requested, and
+X * it, too, holds RMAGIC.  This value acts as a ``fence'', and if the user
+X * overruns the space allocated, it is likely that the value will be
+X * changed.  (The RMAGIC at the front of the area is less useful in this
+X * regard, since the pointer to the second magic number stands between it and
+X * the user area.  It is therefore more likely that the pointer will be
+X * trashed by the user, although this, too, should be detected when looking
+X * for the magic number it addresses.  Unfortunately, it may be detected by
+X * generating a memory fault.  Putting the first magic number after the
+X * pointer would reduce the probability of such an event, but it would take
+X * more space, and nothing prevents the user from trashing the pointer, no
+X * matter how we try to hide it.)  The order of elements is critical:
+X * ov_magic must overlay the low order its of ov_next, and ov_magic can not
+X * be a valid ov_next bit pattern.
+X */
+Xunion	overhead {
+X	union	overhead *ov_next;	/* when free */
+X	struct {
+X		u_char	ovu_magic;	/* magic number */
+X		u_char	ovu_index;	/* bucket # */
+X#ifdef	RCHECK
+X		u_short	ovu_rmagic;	/* range magic number */
+X		u_short	*ovu_magicp;	/* pointer to magic number at end */
+X#endif
+X	} ovu;
+X#define	ov_magic	ovu.ovu_magic
+X#define	ov_index	ovu.ovu_index
+X#define	ov_rmagic	ovu.ovu_rmagic
+X#define	ov_magicp	ovu.ovu_magicp
+X};
+X
+X
+X#define	MAGIC		0xef		/* magic # on accounting info */
+X
+X#ifdef	RCHECK
+X#define	RMAGIC		0x5555		/* magic # on range info */
+X#define	RSLOP		sizeof (u_short)
+X#define	MOHD		(sizeof(union overhead) + RSLOP)
+X/*
+X * The magic number at the end of the storage area is set both by malloc and
+X * realloc.  The code is not very portable nor is it very pretty, so we hide
+X * it here in a macro.  The fact is, the original code only worked because
+X * sizeof(u_short) is two, and because real space was always allocated in
+X * even-sized units.  To align the magic number on a two-byte boundary, it
+X * took at most one extra byte, and, since the alignment was necessary only
+X * if the user asked for an odd amount, that byte was always available in the
+X * even-sized allocation.  If the magic number had been expanded to four
+X * bytes, it might have been necessary to allocate up to three extra bytes to
+X * align it on a four-byte boundary, and there was no guarantee that those
+X * three extra bytes had been allocated.
+X *
+X * We still rely on the size of the range magic number being a power of 2
+X * (for masking) and we assume that alignment on a sizeof(type) boundary
+X * is sufficient (and necessary) for aligning a given type.  It's hard to
+X * deal with alignment in a portable way, since alignment requirements are
+X * fundamentally machine-dependent.  Modular arithmetic would be slightly
+X * more general, but slower, and there are other places (like the page
+X * alignment code) that are pretty much wedded to binary machines anyway.
+X */
+X#define ROUNDUP(sz,bndry) (((sz) + (bndry) - 1) & ~((bndry) - 1))
+X#define SETRMAGIC(op,sz) *((op)->ov_magicp = (u_short *) (((char *) op) \
+X			    + ROUNDUP((sz) + MOHD - RSLOP, RSLOP))) = RMAGIC
+X#else
+X#define	MOHD		(sizeof(union overhead))
+X#endif
+X
+X
+X/*
+X * All requests for a page or more of space will return an address that is
+X * page aligned.  (This is important for data buffers, so the kernel can
+X * ``copy'' data by simply mapping pages.)  That means placing the malloc
+X * overhead information at the end of one page, so the user space that
+X * follows will start at the beginning of the next page.  To preserve the
+X * alignment of the overhead and user data, internal allocations should
+X * always be done in page multiples.  Small user requests are packed into
+X * page-sized blocks, without concern for page alignment.
+X */
+X
+X#define	NBUCKETS 30
+Xstatic	union overhead *nextf[NBUCKETS];
+Xextern	char *sbrk();
+X
+Xstatic	int pagesz;			/* page size */
+Xstatic	int minalloc;			/* size of minimum allocation */
+Xstatic	int aligngoal;			/* how we'd like alignment */
+X
+X#ifdef	MSTATS
+X/*
+X * nmalloc[i] is the difference between the number of mallocs and frees
+X * for a given block size.
+X */
+Xstatic	u_int nmalloc[NBUCKETS];
+X#include <stdio.h>
+X#endif
+X
+X#if defined(DEBUG) || defined(RCHECK)
+X#define	ASSERT(p)   if (!(p)) botch("p"); else
+X#include <stdio.h>
+Xstatic
+Xbotch(s)
+X	char *s;
+X{
+X	fprintf(stderr, "\r\nassertion botched: %s\r\n", s);
+X 	(void) fflush(stderr);		/* just in case user buffered it */
+X	abort();
+X}
+X#else
+X#define	ASSERT(p)
+X#endif
+X
+X
+X/*
+X * How many bytes (exclusive of any overhead) are in a given bucket.
+X * Almost any arrangement of bucket sizes will do, as long as the bucket
+X * sizes are in increasing order.  Here are some guidelines:
+X *
+X * Since sub-page buckets are packed into page-sized allocations, (and
+X * since the alignment calculations DEPEND on page size being a power of
+X * 2), sub-page bucket sizes may as well be a power of 2.
+X *
+X * Buckets larger than a page should be a multiple of a page, to preserve
+X * alignment without necessitating additional sbrk's.
+X *
+X * If one accepts that users commonly request areas whose size is a power
+X * of 2 (as for standard I/O buffers), buckets whose sizes are power of 2
+X * plus one page (for malloc overhead) should be available to reduce
+X * wasted storage.  For an application whose allocation units are not
+X * powers of 2, a little tweaking of the bucksize routine may result in
+X * fabulously better storage use.  (Since 1000 is just a bit less than
+X * 2**10, powers of 2 times a thousand or a million also work quite
+X * efficiently with the existing implementation.)
+X *
+X * Dynamic determination of bucket sizes is not out of the question (it
+X * might help guarantee a good match with actual user requests), but it is
+X * probably best to avoid changing the size of buckets once they are
+X * established.  In particular, bucket size must not increase if there are
+X * outstanding allocations from that bucket.
+X *
+X * Minalloc (a power of 2 computed in minit) serves two functions.  It
+X * ensures that bucket 0 is large enough to hold something useful, so we
+X * make better use of the limited supply of buckets, and it guarantees
+X * storage alignment, so whatever the user stores in the space we return,
+X * it will be acceptably aligned.
+X */
+X
+Xstatic unsigned
+Xbucksize(bucket)
+X	int bucket;
+X{
+X	register unsigned n;
+X	register int pgsz = pagesz;
+X
+X	ASSERT(bucket < NBUCKETS);
+X	n = minalloc << bucket;
+X	if (n > pgsz) n = (n/2) + pgsz;
+X	return (n);
+X}
+X
+X/*
+X * What is the appropriate bucket when the user asks for sz bytes.
+X * Malloc overhead requirements are accounted for here.
+X */
+X
+Xstatic
+Xbucketfor(sz)
+X	register unsigned sz;
+X{
+X	register int bucket;
+X
+X	sz += MOHD;
+X#ifdef	RCHECK
+X	sz = ROUNDUP(sz,RSLOP);
+X#endif
+X	bucket = 0;
+X	while ((bucket < NBUCKETS) && (sz > bucksize(bucket))) bucket++;
+X	return (bucket);
+X}
+X
+Xstatic
+Xminit()
+X{
+X	register unsigned amt;
+X
+X	/*
+X	 * First time malloc is called, set up page size, alignment goal,
+X	 * and minimum allocation unit.
+X	 *
+X	 * We obviously want minalloc >= MOHD, since at least MOHD bytes
+X	 * are going to be allocated.  (There's no particular harm in a
+X	 * smaller minalloc, but the corresponding buckets would always
+X	 * be unused, and the sizing loop would go around a couple more
+X	 * times.)  In the same spirit, we insist that minalloc be
+X	 * strictly greater than MOHD, since with RCHECK off, MOHD is 4,
+X	 * and if minalloc were 4, bucket 0 would only be used for
+X	 * allocations of size 0.
+X	 */
+X	aligngoal = (pagesz = getpagesize()) - sizeof(union overhead);
+X	for (amt = 1; amt <= MOHD; amt <<= 1);
+X	minalloc = amt;
+X}
+X
+Xchar *
+Xmalloc(nbytes)
+X	unsigned nbytes;
+X{
+X  	register union overhead *op;
+X  	register union overhead **bucketp;
+X  	register int bucket;
+X
+X	if (pagesz == 0) minit();
+X	bucket = bucketfor(nbytes);
+X	if (bucket >= NBUCKETS) return(NULLCHR);  /* Oink! */
+X	/*
+X	 * If nothing in hash bucket right now,
+X	 * request more memory from the system.
+X	 */
+X	bucketp = &(nextf[bucket]);
+X  	if ((op = *bucketp) == NULLOHD) {
+X  		morecore(bucket);
+X  		if ((op = *bucketp) == NULLOHD)
+X  			return (NULLCHR);
+X	}
+X	/* remove from linked list */
+X  	*bucketp = op->ov_next;
+X	op->ov_magic = MAGIC;
+X	op->ov_index = bucket;
+X#ifdef	MSTATS
+X  	nmalloc[bucket]++;
+X#endif
+X#ifdef	RCHECK
+X	/* Bound space with magic numbers. */
+X	op->ov_rmagic = RMAGIC;
+X  	SETRMAGIC(op, nbytes);
+X#endif
+X  	return ((char *)(op + 1));
+X}
+X
+X/*
+X * Allocate more memory to the indicated bucket.
+X */
+Xstatic
+Xmorecore(bucket)
+X	register int bucket;
+X{
+X  	register union overhead *op;
+X	register int sz;		/* size of desired block */
+X  	register int amt;		/* amount to allocate */
+X	register int pgsz = pagesz;	/* page size */
+X	register int algn;		/* page alignment */
+X
+X	sz = bucksize(bucket);
+X	amt = pgsz;
+X	if (amt < sz) amt = sz;
+X	op = (union overhead *)sbrk(amt);
+X	/* no more room! */
+X	if ((int)op == -1) {
+X		salvage(bucket);
+X		return;
+X	}
+X	algn = aligngoal - ((int) op & (pgsz - 1));
+X	if (algn) {
+X		if (algn < 0) algn += pgsz;
+X		if ((int) sbrk(algn) != -1)
+X			op = (union overhead *) (((char *) op) + algn);
+X		/*
+X		 * If this fails, true paranoids might try to align op
+X		 * on at least an even or 4-byte boundary.  The code is
+X		 * not difficult, but the circumstances for needing it
+X		 * are truly extraordinary.  A user would have to invoke
+X		 * sbrk with an odd number of bytes, then attempt to
+X		 * malloc just enough space so it can be allocated,
+X		 * but not on a page boundary.  This is so bizarre that
+X		 * I don't feel that every program that uses malloc
+X		 * should have to pay the code overhead to anticipate it.
+X		 */
+X	}
+X	/*
+X	 * Add new memory allocated to that on
+X	 * free list for this hash bucket.
+X	 */
+X	while ((amt -= sz) >= 0) {
+X		op->ov_next = nextf[bucket];
+X		nextf[bucket] = op;
+X		op = (union overhead *)((char *)op + sz);
+X	}
+X	return;
+X}
+X
+Xfree(cp)
+X	char *cp;
+X{
+X  	register int size;
+X	register union overhead *op;
+X
+X  	if (cp == NULLCHR)
+X  		return;
+X	op = (union overhead *)((char *)cp - sizeof (union overhead));
+X#ifdef	DEBUG
+X  	ASSERT(op->ov_magic == MAGIC);		/* make sure it was in use */
+X#else
+X	if (op->ov_magic != MAGIC)
+X		return;				/* sanity */
+X#endif
+X#ifdef	RCHECK
+X  	ASSERT(op->ov_rmagic == RMAGIC);
+X	ASSERT(*(op->ov_magicp) == RMAGIC);
+X#endif
+X  	size = op->ov_index;
+X  	ASSERT(size < NBUCKETS);
+X	op->ov_next = nextf[size];	/* also clobbers ov_magic */
+X  	nextf[size] = op;
+X#ifdef	MSTATS
+X  	nmalloc[size]--;
+X#endif
+X}
+X
+X/*
+X * When a program attempts "storage compaction" as mentioned in the old
+X * malloc man page, it realloc's an already freed block.  This is a fine
+X * example of somebody noticing an interesting side-effect of a particular
+X * implementation, and raising it to the level of a standard.  "Storage
+X * compaction" doesn't mean anything in this implementation.  In fact, it
+X * never meant anything in the original implementation...  storage was
+X * always compacted when allocations took place, and if allocations
+X * weren't taking place, why bother?
+X *
+X * In the spirit of not breaking operational code, however poorly written,
+X * reallocation of freed blocks will be tolerated.  It's NOT worth
+X * optimizing, so the original policy of looking at the first free block
+X * in each bucket, then at the first realloc_srchlen blocks, has been
+X * scrapped.  Every block will be checked.  realloc_srchlen has been left
+X * defined to protect those who wrote code that set it.  It is otherwise
+X * unused.
+X */
+X
+Xint realloc_srchlen = 0;
+X
+Xchar *
+Xrealloc(cp, nbytes)
+X	register char *cp;
+X	unsigned nbytes;
+X{
+X	register union overhead *op;
+X	register int i;
+X  	register int onb;
+X	register int ni;
+X  	char *res;
+X	register int was_alloced = 0;
+X
+X#ifdef	lint
+X	i = realloc_srchlen;	/* pretend to use useless variable */
+X#endif
+X  	if (cp == NULLCHR)
+X  		return (malloc(nbytes));
+X	op = (union overhead *)((char *)cp - sizeof (union overhead));
+X	if (op->ov_magic == MAGIC) {
+X		was_alloced++;
+X		i = op->ov_index;
+X	} else {
+X		/*
+X		 * Already free, doing "compaction".
+X		 *
+X		 * Search for the old block of memory on the free list.
+X		 */
+X		i = findbucket(op);
+X	}
+X	/* avoid the copy if same size block */
+X	if (was_alloced) {
+X		if (i == (ni = bucketfor(nbytes))) {
+X#ifdef	RCHECK
+X			SETRMAGIC(op, nbytes);
+X#endif
+X			return(cp);
+X		} else if (i > ni) {
+X			/*
+X			 * The old and new areas must be different sizes.
+X			 * If the old area was bigger, freeing it first
+X			 * ensures that the malloc below will succeed
+X			 * (thanks to the salvaging routine).
+X			 * If it was smaller, freeing it won't help,
+X			 * and, if the malloc fails, we don't want it freed.
+X			 * This fixes a longstanding bug in the BSD malloc.
+X			 */
+X			free(cp);
+X			was_alloced = 0;
+X		}
+X	}
+X  	if ((res = malloc(nbytes)) == NULLCHR)
+X  		return (NULLCHR);
+X  	if (cp != res) {	/* common optimization if "compacting" */
+X		onb = bucksize(i) - MOHD;
+X		bcopy(cp, res, (nbytes < onb) ? (int) nbytes : onb);
+X	}
+X	if (was_alloced) free(cp);
+X  	return (res);
+X}
+X
+X/*
+X * Search each free list for a block whose header starts at freep.
+X * Search largest (and presumably least crowded) buckets first.
+X * If the block hasn't been found before bucket 0, return 0,
+X * the smallest bucket, minimizing copying.  Bear in mind that
+X * this routine won't be called if the pointer was already allocated,
+X * so if we don't find the address on a free list, the user has
+X * passed us a bogus pointer.  Copying as little data as possible
+X * is at least as reasonable as copying as much as possible.
+X */
+Xstatic
+Xfindbucket(freep)
+X	register union overhead *freep;
+X{
+X	register union overhead *p;
+X	register int i;
+X
+X	for (i = NBUCKETS; --i > 0;) {
+X		for (p = nextf[i]; p != NULLOHD; p = p->ov_next) {
+X			if (p == freep) return (i);
+X		}
+X	}
+X	return (0);
+X}
+X
+X
+X/*
+X * The original malloc punted when sbrk failed, even if there was
+X * plenty of free space in the buckets.  Trying to preserve big blocks
+X * is a noble goal, but many programs will fail (often gracelessly)
+X * if malloc returns NULL, whereas few can recover to use the carefully
+X * preserved large block.
+X *
+X * This salvaging algorithm works by starting at the (empty) target
+X * buffer and scanning up for the next larger non-empty bucket.
+X * If there is no larger bucket, we punt for real.  It would be
+X * possible, but very complicated, to try to reassemble smaller
+X * free blocks to construct a larger one.
+X *
+X * Given a larger free block, we work back down the buckets,
+X * using whatever remains to fill as many buckets as possible
+X * at each lower level.  If, in the process, we added to the bucket
+X * we were after, we return.  Otherwise, we try again.
+X *
+X * This approach has several nice features, few of which were planned,
+X * but all of which are welcome.  Among these are
+X *
+X * 1) As long as bucket sizes are strictly increasing, the bucket we
+X *    break up will always supply at least one block for the next
+X *    smaller bucket.  It follows that if the first non-empty bucket
+X *    is n buckets up from our target bucket, we will fill the target
+X *    in at most n iterations.  We also tend to preserve the largest
+X *    blocks possible.
+X *
+X * 2) When reallocating blocks (freed or otherwise), the old block may be
+X *    freed before the new block is allocated.  Before salvaging was
+X *    supported, malloc never tampered with free space.  The realloc
+X *    might fail, but the original block was unscathed.  Can the malloc
+X *    now destroy the area being reallocated before the data can be
+X *    copied out?  Fortunately not.  The worst that could happen is
+X *    that the larger freed area is broken up to provide space for the
+X *    area to be allocated.  Fragments of the original area can
+X *    "leapfrog" the bucket we need space in.  However, the start of
+X *    the old area can only move down one bucket in each iteration.
+X *    It can never leapfrog the the target bucket, so there will always be
+X *    enough data in the old bucket to fill the new one.
+X */
+X
+X
+Xstatic
+Xsalvage(bucket)
+X	int bucket;
+X{
+X	register union overhead *op;
+X	register int i, sz, need;
+X
+X	do {
+X		/* find next larger non-empty bucket */
+X		for (i = bucket; (++i < NBUCKETS) && (nextf[i] == NULLOHD););
+X		if (i >= NBUCKETS) return;
+X		op = nextf[i];
+X		nextf[i] = op->ov_next;
+X		sz = bucksize(i);
+X		while ((--i >= 0) && (sz > 0)) {
+X			need = bucksize(i);
+X			while (sz >= need) {
+X				op->ov_next = nextf[i];
+X				nextf[i] = op;
+X				op = (union overhead *)(((char *) op) + need);
+X				sz -= need;
+X			}
+X		}
+X	} while (nextf[bucket] == NULLOHD);
+X}
+X
+X#ifdef	MSTATS
+X/*
+X * mstats - print out statistics about malloc
+X *
+X * Prints two lines of numbers, one showing the length of the free list
+X * for each size category, the second showing the number of mallocs -
+X * frees for each size category.
+X *
+X * Watch out for hidden allocations like buffers for standard in
+X * and standard out when analyzing the output.  Discrepancies
+X * between the totals reported here and the total amount of
+X * dynamically allocated storage can usually be traced to storage
+X * that is ``wasted'' aligning storage on pages, and to use of
+X * sbrk() or brk() directly by the user.
+X */
+Xmstats(s)
+X	char *s;
+X{
+X  	register int i, j;
+X  	register union overhead *p;
+X  	int totfree = 0,
+X  	totused = 0;
+X
+X  	fprintf(stderr, "Memory allocation statistics %s\nfree:\t", s);
+X  	for (i = 0; i < NBUCKETS; i++) {
+X  		for (j = 0, p = nextf[i]; p; p = p->ov_next, j++)
+X  			;
+X  		fprintf(stderr, " %d", j);
+X  		totfree += j * bucksize(i);
+X  	}
+X  	fprintf(stderr, "\nused:\t");
+X  	for (i = 0; i < NBUCKETS; i++) {
+X  		fprintf(stderr, " %d", nmalloc[i]);
+X  		totused += nmalloc[i] * bucksize(i);
+X  	}
+X  	fprintf(stderr, "\n\tTotal in use: %d, total free: %d, total: %d\n",
+X	    totused, totfree, totused + totfree);
+X}
+X#endif
+John P. Linderman allegra!jpl MH3D-435 x6427
+exit 0

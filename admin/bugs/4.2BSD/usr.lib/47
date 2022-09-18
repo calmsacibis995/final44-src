@@ -1,0 +1,39 @@
+Return-Path: <mazama!stew@su-shasta.arpa>
+Date: Fri, 29 Jun 84 23:09:08 pdt
+From: mazama!stew (Stewart Levin) <mazama!stew@su-shasta.arpa>
+Subject: Curses package requires stdin and stdout to be tty's
+Index: usr.lib/libcurses 4.2BSD
+
+Description:
+	I tried to use an interactive graphics display program
+	with data to be plotted piped through standard input
+	out of a windowing filter.  The program failed.  A gcore
+	dump revealed it was looping indefinitely within a subroutine
+	that called wgetch() to read a character from the terminal.
+	Examining the source for libcurses I found that wgetch() was
+	using the stdio macro getchar().  The plot program was thereby
+	being fed a few megabytes of binary data as if they were characters
+	typed from the control terminal.
+	The initscr() command searches around through file descriptors
+	to find one that references a tty (trying file descriptor 2 first)
+	and places that info in the external variable _tty_ch for use by
+	other routines.  I find that some but not all of the curses routines
+	use this file descriptor.
+Repeat-By:
+	Use a curses program to read screen input when stdin is redirected.
+	For that matter, use curses to write screen output when stdout is
+	redirected.
+Fix:
+	Change the body of _putchar() in cr_put.c to:
+
+		char byte = c;
+		write(_tty_ch,&byte,1);
+
+	Change all occurences of putchar(...) in refresh.c and scroll.c
+	to _putchar(...)
+
+	Change "inp = getchar()" in getch.c to "read(_tty_ch,&inp,1)"
+
+	To pass muster with lint, you should have _putchar return an
+	integer just as putchar() does.  Also, the returned value of
+	read and write should be checked for I/O errors.

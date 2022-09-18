@@ -1,0 +1,230 @@
+From decwrl!3comvax!marcl@ucbvax.Berkeley.EDU  Wed Aug 31 03:08:56 1988
+Date: Wed, 31 Aug 88 03:03:06 PDT
+From: marcl@vax.3Com.Com (Marc Lavine)
+Subject: XNS datagrams sent on an unconnected socket are mis-routed
+Index: sys/netns/ns_pcb.c 4.3BSD
+
+Description:
+	This report only applies to the updated XNS sources distributed
+	in early '88.  The bug occurs when multiple IDP datagrams
+	addressed to different destinations on the same network are
+	sent via a socket that is not connected, but is bound to a
+	local address (not sure if this last part matters).
+
+	When a datagram is sent, idp_usrreq is called with the request
+	PRU_SEND.  To send a datagram via a socket that is not connected,
+	the code in idp_usrreq calls ns_pcbconnect to temporarily connect
+	to the specified destination address.  Inside ns_pcbconnect, a
+	route is allocated.  After the datagram is sent, ns_pcbdisconnect
+	is called.  When the next datagram is sent, ns_pcbconnect will not
+	select a new route for the datagram if the destination network is
+	the same as that of the previous datagram.  If datagrams are sent
+	only to addresses on the local network, they will all go to the
+	same address, which is obviously incorrect.
+Fix:
+	My fix for this problem is to remove two lines in ns_pcbconnect
+	which test to see if the interface used by the existing route is a
+	point-to-point link.  Removing these lines lets the code choose a
+	new route if the datagram is addressed to a different network from
+	the last datagram (same as before) OR if the datagram is addressed
+	to a different host, no matter what type of interface is used by
+	the existing route.
+
+
+*** ns_pcb.c.old	Wed Aug 10 03:56:09 1988
+--- ns_pcb.c	Wed Aug 31 01:47:33 1988
+***************
+*** 123,131 ****
+  		ia = (struct ns_ifaddr *)0;
+  		if (ro->ro_rt) {
+  		    if ((!ns_neteq(nsp->nsp_lastdst, sns->sns_addr)) ||
+! 			((ifp = ro->ro_rt->rt_ifp) &&
+! 			 (ifp->if_flags & IFF_POINTOPOINT) &&
+! 			 (!ns_hosteq(nsp->nsp_lastdst, sns->sns_addr))) ||
+  			(nsp->nsp_socket->so_options & SO_DONTROUTE)) {
+  				RTFREE(ro->ro_rt);
+  				ro->ro_rt = (struct rtentry *)0;
+--- 123,129 ----
+  		ia = (struct ns_ifaddr *)0;
+  		if (ro->ro_rt) {
+  		    if ((!ns_neteq(nsp->nsp_lastdst, sns->sns_addr)) ||
+! 			(!ns_hosteq(nsp->nsp_lastdst, sns->sns_addr)) ||
+  			(nsp->nsp_socket->so_options & SO_DONTROUTE)) {
+  				RTFREE(ro->ro_rt);
+  				ro->ro_rt = (struct rtentry *)0;
+
+==========================================================================
+From sklower Fri Sep  2 00:21:56 1988
+Date: Fri, 2 Sep 88 00:21:48 PDT
+From: sklower (Keith Sklower)
+To: marcl@vax.3Com.Com
+Subject: re: sys/netns/ns_pcb.c
+
+I have received your bug report, and do not agree with the analysis
+or the fix.  You did not in fact submit a test program
+which actually exercises the supposed bug; however, having looked at the code,
+I will suggest an alternate fix, but if you had a test
+program around I would be much happier before making the change permanent.
+
+Do you have a phone number that we can discuss this voice-grade?
+
+In any case, here is my analysis of the code:
+
+A collection of point-to-point links terminating at a common host can
+be given a single network number under certain topological conditions
+(which is desirable for reducing the number of different network
+numbers broadcast by the-real-xns-rip)
+
+If the new destination has a different network number than the old one,
+then you can't avoid doing a routing table lookup to find the gateway
+although it may turn out to be the same gateway after all.
+
+Even if the new destination has the same network number as the old one,
+you may not be able to use the same interface if we are in the condition
+above (we are applying the same network number to a collection of point
+to point links).  However, if you are routing to the same network
+and either it is a UG type route, or the interface itself is not
+a point to point link, then you are not in the condition above,
+and you are guaranteed to be able to use the same route as before.
+
+Your suggested fix would would have us throw away the cached route
+every time we sent to a different destination on the previous network.
+This will not prevent correct reception of the packet, but defeats 
+some of the purpose of cacheing a route in the first place, and unfortunately
+would not fix the case where you had permanently bound a local address.
+*** ns_pcb.c	Fri Sep  2 00:17:39 1988
+--- /nbsd/sys/netns/ns_pcb.c	Wed Jun 29 17:13:59 1988
+***************
+*** 14,20 ****
+   * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+   * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+   *
+!  *	@(#)ns_pcb.c	7.6 (Berkeley) 9/2/88
+   */
+  
+  #include "param.h"
+--- 14,20 ----
+   * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+   * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+   *
+!  *	@(#)ns_pcb.c	7.5 (Berkeley) 6/29/88
+   */
+  
+  #include "param.h"
+***************
+*** 107,114 ****
+  	struct ns_ifaddr *ia;
+  	register struct sockaddr_ns *sns = mtod(nam, struct sockaddr_ns *);
+  	register struct ns_addr *dst;
+- 	register struct route *ro;
+- 	struct ifnet *ifp;
+  
+  	if (nam->m_len != sizeof (*sns))
+  		return (EINVAL);
+--- 107,112 ----
+***************
+*** 116,171 ****
+  		return (EAFNOSUPPORT);
+  	if (sns->sns_port==0 || ns_nullhost(sns->sns_addr))
+  		return (EADDRNOTAVAIL);
+! 	/*
+! 	 * If we haven't bound which network number to use as ours,
+! 	 * we will use the number of the outgoing interface.
+! 	 * This depends on having done a routing lookup, which
+! 	 * we will probably have to do anyway, so we might
+! 	 * as well do it now.  On the other hand if we are
+! 	 * sending to multiple destinations we may have already
+! 	 * done the lookup, so see if we can use the route
+! 	 * from before.  In any case, we only
+! 	 * chose a port number once, even if sending to multiple
+! 	 * destinations.
+! 	 */
+! 	ro = &nsp->nsp_route;
+! 	dst = &satons_addr(ro->ro_dst);
+! 	if (ro->ro_rt) {
+! 		if (nsp->nsp_socket->so_options & SO_DONTROUTE)
+! 			goto flush;
+! 		if (!ns_neteq(nsp->nsp_lastdst, sns->sns_addr))
+! 			goto flush;
+! 		if (!ns_hosteq(nsp->nsp_lastdst, sns->sns_addr)) {
+! 			if (((ro->ro_rt->rt_flags & (RTF_GATEWAY|RTF_HOST))
+! 			     == RTF_GATEWAY)
+! 			    || ((ifp = ro->ro_rt->rt_ifp) &&
+! 				 !(ifp->if_flags & IFF_POINTOPOINT))) {
+! 				/* can patch route to avoid rtalloc */
+! 				*dst = sns->sns_addr;
+! 			} else {
+! 		flush:
+! 				RTFREE(ro->ro_rt);
+! 				ro->ro_rt = (struct rtentry *)0;
+! 			}
+! 		}/* else cached route is ok; do nothing */
+! 	}
+! 	nsp->nsp_lastdst = sns->sns_addr;
+! 	if ((nsp->nsp_socket->so_options & SO_DONTROUTE) == 0 && /*XXX*/
+! 	    (ro->ro_rt == (struct rtentry *)0 ||
+! 	     ro->ro_rt->rt_ifp == (struct ifnet *)0)) {
+! 		    /* No route yet, so try to acquire one */
+! 		    ro->ro_dst.sa_family = AF_NS;
+! 		    *dst = sns->sns_addr;
+! 		    dst->x_port = 0;
+! 		    rtalloc(ro);
+! 	}
+! 	if (ns_neteqnn(nsp->nsp_laddr.x_net, ns_zeronet)) {
+  		/* 
+  		 * If route is known or can be allocated now,
+  		 * our src addr is taken from the i/f, else punt.
+  		 */
+  
+  		ia = (struct ns_ifaddr *)0;
+  		/*
+  		 * If we found a route, use the address
+  		 * corresponding to the outgoing interface
+--- 114,149 ----
+  		return (EAFNOSUPPORT);
+  	if (sns->sns_port==0 || ns_nullhost(sns->sns_addr))
+  		return (EADDRNOTAVAIL);
+! 	if (ns_nullhost(nsp->nsp_laddr)) {
+! 		register struct route *ro;
+! 		struct ifnet *ifp;
+  		/* 
+  		 * If route is known or can be allocated now,
+  		 * our src addr is taken from the i/f, else punt.
+  		 */
++ 		ro = &nsp->nsp_route;
++ 		dst = &satons_addr(ro->ro_dst);
+  
+  		ia = (struct ns_ifaddr *)0;
++ 		if (ro->ro_rt) {
++ 		    if ((!ns_neteq(nsp->nsp_lastdst, sns->sns_addr)) ||
++ 			((ifp = ro->ro_rt->rt_ifp) &&
++ 			 (ifp->if_flags & IFF_POINTOPOINT) &&
++ 			 (!ns_hosteq(nsp->nsp_lastdst, sns->sns_addr))) ||
++ 			(nsp->nsp_socket->so_options & SO_DONTROUTE)) {
++ 				RTFREE(ro->ro_rt);
++ 				ro->ro_rt = (struct rtentry *)0;
++ 			}
++ 		}
++ 		if ((nsp->nsp_socket->so_options & SO_DONTROUTE) == 0 && /*XXX*/
++ 		    (ro->ro_rt == (struct rtentry *)0 ||
++ 		     ro->ro_rt->rt_ifp == (struct ifnet *)0)) {
++ 			    /* No route yet, so try to acquire one */
++ 			    ro->ro_dst.sa_family = AF_NS;
++ 			    *dst = sns->sns_addr;
++ 			    dst->x_port = 0;
++ 			    rtalloc(ro);
++ 		}
+  		/*
+  		 * If we found a route, use the address
+  		 * corresponding to the outgoing interface
+***************
+*** 188,193 ****
+--- 166,172 ----
+  				return (EADDRNOTAVAIL);
+  		}
+  		nsp->nsp_laddr.x_net = satons_addr(ia->ia_addr).x_net;
++ 		nsp->nsp_lastdst = sns->sns_addr;
+  	}
+  	if (ns_pcblookup(&sns->sns_addr, nsp->nsp_lport, 0))
+  		return (EADDRINUSE);
+

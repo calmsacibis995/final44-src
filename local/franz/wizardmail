@@ -1,0 +1,530 @@
+From jkf  Mon Oct 18 19:52:27 1982
+Date: 18-Oct-82 19:52:24-PDT (Mon)
+From: jkf (John Foderaro)
+Subject: new mailing list
+Message-Id: <8209190252.4980@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A04980; 18-Oct-82 19:52:27-PDT (Mon)
+To: franz-wizards
+
+  This new mailing list is for people who have an understanding of the
+internals of the current version of Franz Lisp, and who care about
+what happens to it.   The initial group of people in this list are:
+
+franz-wizards: jkf, sklower, fateman, layer, rz@mit-mc, /na/franz/wizardmail
+
+ To see why we need another mailing list for lisp, let's review what
+we have:
+
+franz-friends: huge list containing people who are interested in general
+	franz info.   Most people in the list are using a lisp which is
+	many versions older than the current one and may not be able to
+	view the current problems in context.
+
+franz-composers:  Again, the people in this list are probably using older
+	versions of lisp and may not understand or care about the current
+	problems.
+
+local-lisp: contains local users.  Most don't understand how lisp works
+	internally and thus can't help in a discussion of how to
+	add feature X to franz.
+
+ Thus franz-wizards is a list for people to discuss the pros and cons of new
+	features and methods for adding new features or removing old bugs.
+	[When something is actually added to franz, an appropriate message
+	 will be sent to one of the other mailing lists, so that the
+	 users don't miss out]
+	 
+	
+
+
+From jkf  Mon Oct 18 22:24:39 1982
+Date: 18-Oct-82 22:24:36-PDT (Mon)
+From: jkf (John Foderaro)
+Subject: vector info
+Message-Id: <8209190524.7604@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A07604; 18-Oct-82 22:24:39-PDT (Mon)
+To: franz-wizards
+
+ After a discussion with rz, here is where vectors stand.  Most of what is
+here has already been implemented, however there isn't any compiler support.
+Please send comments to this mailing list:
+[file ~jkf/lisp/vecplan]
+
+
+Summary of new functions (described below):
+
+ From a user's view, a vector contains an indexed sequence of data elements
+ and an lisp object called a vector leader.
+
+ In the implementation of vectors, one more field is added: the size of the
+ vector.  The size is maintained as the number of longwords in the vector's
+ data.
+ 
+ Vector creation (by size with optional fill value):
+    (new-vector	 	'x_size ['g_fill ['g_leader]])
+    (new-vectori-byte	'x_size ['x_fill ['g_leader]])
+    (new-vectori-word	'x_size ['x_fill ['g_leader]])
+    (new-vectori-long   'x_size ['x_fill ['g_leader]])
+
+ Vector creation by initial values:
+    (vector [g_val ...])
+    (vectori-byte [x_val ...])
+    (vectori-word [x_val ...])
+    (vectori-long [x_val ...])
+
+ Vector accessors
+    (vref 	  'v_vect  'x_index)
+    (vrefi-byte   'vi_vect 'x_bindex)	; signed
+    (vrefi-word   'vi_vect 'x_windex)
+    (vrefi-long	  'vi_vect 'x_index)
+
+    (vrefi-byteu 'vi_vect 'x_bindex)	; unsigned 
+    (vrefi-wordu 'vi_vect 'x_windex)
+
+ Vector modifiers:    
+    (vset 'g_val 'v_vect 'x_index)
+    (vseti-byte 'x_val 'vi_vect 'x_bindex)
+    (vseti-word 'x_val 'vi_vect 'x_windex)
+    (vseti-long 'x_val 'vi_vect 'x_dindex)
+
+  Other functions:
+    (vsize 'viv_vect)
+    (vi-byte-size 'vi_vect)	; size as if byte vector
+    (vi-word-size 'vi_vect)	; size as if word vector
+ 
+    (vprop 'viv_vect)
+    (vsetprop 'v_vect 'g_value)
+
+
+The types are named 'vector' and 'vectori' (vector immediate).
+The vector type will be a sequence of 0 or more lispvals of user information
+plus one longword of system information and a lisp property object.
+
+  The form of a Vector is this
+	----------------------------------------------------------
+	| size = n | prop  | elt 0   | elt 1    | ... | elt n-1  |
+	----------------------------------------------------------
+		               ^--- pointer to vector goes to here.
+
+  size = the length of the data portion of the vector in lispvals (longwords).
+The size is non negative and is not modifiable by the user.  It is 
+represented as an immediate fixnum because its value is important when the
+vector is unused (when it is on the free list).  There is no limit to 
+the size of a vector, other than the maximum size of lisp data segment
+when the lisp system was built.
+   
+   prop is an arbirary lisp object.  It permits lisp data to be stored 
+in otherwise unmarked vectori's, and it provides a good place to place
+information about an object (for doing multidimensional array simulation).
+
+    A 'vectori' looks the same as a 'vector'.  The only differences are that
+the data portion of a 'vectori' is not marked by the garbage collector 
+and there are ways of accessing smaller data objects. 
+
+
+   Accessing a vector is done with (vref 'v_vector 'x_index). x_index is 0 
+based and must be less than the size of the vector.  The accessor
+for vectori's is 'vrefi'.  It extracts a longword from the vector and 
+converts it to an fixnum (never to a bignum).
+
+  As for the other sizes, vrefi-byte and vrefi-word extract and sign
+extend a byte or word, placing it in a fixnum.  vrefi-byteu and vrefi-wordu
+zero fill rather than sign extend. The index for vrefi-byte selects a 
+particular byte from 0 to 4*size - 1.   The index for vrefi-word selects a
+particular word from 0 to 2*size - 1.  
+
+Motivation:
+  The purpose of vector data types is to allow programs to quickly 
+access indexed data types.  This purpose is achieved by: 
+  1) the data object has a very simple form and a very simple bounds check
+     can be done.
+  2) the accessing functions are unambiguous which makes it possible
+     for the the compiler to open code the accesses.
+
+ In order to implement high-level abstractions in terms of vectors,
+we will require the vector leader to have a standard form.  The standard
+form hasn't been completely ironed out yet, but it will probably
+be a list (or nil).  The car of the list is a hash table relating
+function name to function body, providing an object oriented data type
+extension facility.
+
+
+
+ 
+
+
+From jkf  Tue Oct 19 08:14:16 1982
+Date: 19-Oct-82 08:14:14-PDT (Tue)
+From: jkf (John Foderaro)
+Subject: compiler only macros and autoloading macros
+Message-Id: <8209191514.16118@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A16118; 19-Oct-82 08:14:16-PDT (Tue)
+To: franz-wizards
+
+
+Topic 1:
+  Another thing that rz and I talked about was adding compiler-only macros
+(or cmacros).
+Why cmacros?:
+ 1) An example: We would like to macro expand calls to nth in new code
+ 	however we want all calls to nth from existing compiled code
+	to refer to the lambda version.
+ 2) There are some tricks you can do with compiled code which won't work
+    with the interpreter due to its type checking.
+    For example, you could define getd this way:
+    	(defcmacro getd (x &protect (x))
+	   `(and (symbolp ,x)
+	         (car ,x)))
+   This will not work interpreted because the interpreter wouldn't
+   permit the 'car' operation
+
+ This is a trivial change: a cmacro would simply be put on the property
+ list under the indicator 'cmacro'.   They would be defined with defcmacro
+ or (eval-when (compile load eval) (defun (getd cmacro) ...))
+
+
+Topic 2:
+ Autoloading of macros would make it easier to compile and run programs from
+mit which assume that the various macros packages already exist.
+It is another trivial change: just put the indicator 'macro-autoload' on the
+property list of the macro name with the file name containing the macro as
+the value.   The compiler would be modified to check for this property
+while compiling, and the undefined-function handler would also look for this.
+
+
+
+From jkf  Tue Oct 19 08:22:14 1982
+Date: 19-Oct-82 08:22:12-PDT (Tue)
+From: jkf (John Foderaro)
+Subject: cmacros
+Message-Id: <8209191522.16252@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A16252; 19-Oct-82 08:22:14-PDT (Tue)
+To: franz-wizards
+
+  I don't think that I ever explicitly mentioned what cmacros do.  A cmacro
+is simply a function which will be run only by the compiler in order to
+macroexpand a form.  The interpreter will ignore cmacros.
+
+
+
+
+From jkf  Sat Oct 23 15:23:17 1982
+Date: 23-Oct-82 15:23:07-PDT (Sat)
+From: jkf (John Foderaro)
+Subject: tyipeek and tyi
+Message-Id: <8209232223.28128@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A28128; 23-Oct-82 15:23:17-PDT (Sat)
+To: franz-wizards
+
+  One would expect that this is always true: (eq (tyipeek) (tyi)).
+It turns out that is isn't true for the case of eof on a terminal.
+If you type ^D, the tyipeek will return -1, but the subsequent tyi
+will not return eof unless you type ^D again.
+  Perhaps the fact that EOF in unix isn't really 'end' of anything is
+a good thing in an interactive environment.  However it wouldn't be
+much work to maintain the illusion that (eq (tyipeek) (tyi)) and
+still not have EOF shut down a read-port permanently.
+  The problem is in the standard I/O library.  You can't ungetc an EOF.
+We could complain to the standard I/O folks but there is little chance that
+it would get fixed in our lifetime, if at all.   The 'correct' solution
+would be to write all I/O in lisp, but that will have to wait until we get
+the man-hours to do it.
+
+
+
+
+
+From jkf@UCBERNIE  Fri Nov 12 08:44:23 1982
+Date: 12-Nov-82 08:43:14-PST (Fri)
+From: jkf@UCBERNIE (John Foderaro)
+Subject: status site
+Message-Id: <8210121643.1901@UCBERNIE.BERKELEY.ARPA>
+Received: by UCBERNIE.BERKELEY.ARPA (3.227 [10/22/82])
+	id A01888; 12-Nov-82 08:43:20-PST (Fri)
+Received: from UCBERNIE.BERKELEY.ARPA by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A19338; 12-Nov-82 08:44:23-PST (Fri)
+To: rz@mit-mc
+Cc: franz-wizards@kim
+
+  I can't recall if I replied to you about (status site).  I think it is a
+good idea to be able to isolate the site name.  The reason for it being in
+the status features list is so that #+ and #- will work.  We will probably
+need two names for each machine:
+	the domain, such as ucb,mit,cmu
+	the actual machine, such as ucbkim, ucbernie
+Perhaps (status domain) == ucb, (status site) == ucbernie.  Both would be in
+the (status features) list.
+  In order for us to determine the site (in a machine independent way) we
+will have to use a system call not available in 4.1.  Thus we will need to
+build a retrofit library so the system will still build on 4.1 systems.
+
+
+
+From layer  Fri Nov 12 12:41:32 1982
+Date: 12-Nov-82 12:41:28-PST (Fri)
+From: layer (Kevin Layer)
+Subject: Re: status site
+Message-Id: <8210122041.24664@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A24664; 12-Nov-82 12:41:32-PST (Fri)
+To: jkf@UCBKIM
+Cc: franz-wizards
+In-Reply-To: Your message of 12 Nov 1982 0844-PST (Friday)
+Phone: (415) 652-2405
+
+   I think this is an execellent idea, but because the system call is not in
+4.1, it will cause mucho problems, I think.  I guess that this means a
+library with all the 4.1 system calls + gethostname() + getdomain() calls
+must be distributed with franz or vaxima tapes?  This sounds pretty gross to
+me...
+
+
+From jkf@UCBERNIE  Fri Nov 12 13:59:23 1982
+Date: 12-Nov-82 13:58:14-PST (Fri)
+From: jkf@UCBERNIE (John Foderaro)
+Subject: Re: status site
+Message-Id: <8210122158.10154@UCBERNIE.BERKELEY.ARPA>
+Received: by UCBERNIE.BERKELEY.ARPA (3.227 [10/22/82])
+	id A10149; 12-Nov-82 13:58:19-PST (Fri)
+Received: from UCBERNIE.BERKELEY.ARPA by UCBKIM.BERKELEY.ARPA (3.222 [10/13/82])
+	id A27557; 12-Nov-82 13:59:23-PST (Fri)
+To: layer@UCBKIM
+Cc: franz-wizards@UCBKIM
+In-Reply-To: Your message of 12-Nov-82 12:41:28-PST (Fri)
+
+ it isn't that bad.   if we use gethostname() then we write a function
+gethostname() which returns some constant string and put it in a retrofit
+library file.  When building lisp, the last library we load is the retrofit
+library.  Thus 4.1a systems will use the real gethostname() from the C
+library, while 4.1 sites will use the dummy gethostname().
+ 
+
+
+From jkf  Mon Nov 29 10:14:34 1982
+Date: 29-Nov-82 10:14:34-PST (Mon)
+From: jkf (John Foderaro)
+Subject: franz-friends list
+Message-Id: <8210291814.4099@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.255 [11/28/82])
+	id AA04099; 29-Nov-82 10:14:34-PST (Mon)
+To: franz-wizards
+
+ I've shut off the franz-friends mailing list, directing all mail sent to it
+to me.    The mail duplication problem is occuring between the time the mail
+reaches kim and the time it makes it to the ucbvax over the berknet.
+I am investigating.
+
+
+
+From norvig  Sun Jan  9 21:44:32 1983
+Date: 9-Jan-83 21:44:32-PST (Sun)
+From: norvig (Peter Norvig)
+Subject: autoloading
+Message-Id: <8300100544.3697@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.256 [12/5/82])
+	id AA03697; 9-Jan-83 21:44:32-PST (Sun)
+To: franz-wizards
+
+
+With all the new packages and functions, it seems that autoload is no longer
+fulfilling its purpose: keeping franz relatively small and quick to load.
+The problem is that to declare an autoloaded function takes up time,
+space, and atoms.  I propose that undef-func-handler should be extended to
+know about a list of files which contain ``assoc lists'' (in text form) of
+function names and files.  One easy solution would be to use tags files, or
+a new format could be invented.  For those with lots of packages this would
+save much time.  (Of course, much of this time savings would be lost the
+first time you mistyped a function name...)
+
+
+From jkf  Sun Jan 16 16:13:28 1983
+Date: 16-Jan-83 16:13:28-PST (Sun)
+From: jkf (John Foderaro)
+Subject: lisp distribution
+Message-Id: <8300170013.17590@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.256 [12/5/82])
+	id AA17590; 16-Jan-83 16:13:28-PST (Sun)
+To: franz-wizards
+
+  well lisp fans, opus38.47 constructed itself in just 6 hours on a slightly
+loaded 750 (load average around 4).  I'd like to wait until more files are
+checked in and before I finish my latest compiler hack before I send this
+over to ucbvax for distribution.
+  I don't know if you are aware of it or not, but we finally have an
+anonymous ftp server on ucbvax.  I've stored the opus38.44 files in
+ ~ftp/lisp where anyone on the arpanet can get them by ftp'ing and
+giving the login name anonymous and any non empty password.
+I plan to announce this to the franz friends mailing list once I get
+the franz friends mailing list on ucbvax.  The c70, which contains
+the latest version, is down.  I hope that they didn't turn it off for
+good.
+
+
+
+From jkf  Sat Jan 29 11:55:03 1983
+Date: 29-Jan-83 11:55:03-PST (Sat)
+From: jkf (John Foderaro)
+Subject: Talloc.c
+Message-Id: <8300291955.22300@UCBKIM.BERKELEY.ARPA>
+Received: by UCBKIM.BERKELEY.ARPA (3.256 [12/5/82])
+	id AA22300; 29-Jan-83 11:55:03-PST (Sat)
+To: franz-wizards
+
+ I think that Talloc.c has been a Test version long enough and that it is
+time to call it 'alloc.c' once again.  I've made that change.
+
+
+
+From jkf  Mon Jun 13 08:30:59 1983
+Date: 13 Jun 83 08:30:59 PDT (Mon)
+From: jkf (John Foderaro)
+Subject: 4.2 conversion
+Message-Id: <8306131530.18272@UCBKIM.ARPA>
+Received: by UCBKIM.ARPA (3.340/3.5)
+	id AA18272; 13 Jun 83 08:30:59 PDT (Mon)
+To: franz-wizards
+
+  It appears that 4.2 will soon be upon us.  This statement from
+sam has me a bit worried:
+
+> The 4.2 systems running on matisse, calder, and monet will NOT
+> have 4.1 compatibility in them, this is the reason you must take
+> source code (how else am I to insure the new stuff works if I
+> don't "force" people to use it?)
+
+Does this mean that we are going to have to put ifdef's around all
+'open' functions.  Will some of our chmk's fail now (in the autorun
+code and the write function)?
+
+
+
+From jkf  Fri Aug  5 07:54:38 1983
+Received: by ucbkim.ARPA (4.2/4.2)
+	id AA03001; Fri, 5 Aug 83 07:54:38 PDT
+Date: Fri, 5 Aug 83 07:54:38 PDT
+From: jkf (John Foderaro)
+Message-Id: <8308051454.AA03001@ucbkim.ARPA>
+To: franz-wizards
+Subject: gcstrings
+
+  A person from cca has mentioned that there is an accounting problem when
+you are gc'ing strings.  Apparently the value returned by (opval 'string)
+in gcafter is such to cause gcafter to continuously allocate strings.
+Since strings are variable size, I can understand this.  I've enabled
+gcstrings in /na/franz so I can test this out.
+
+
+
+
+From soiffer  Wed May  2 20:11:04 1984
+Received: by ucbkim.ARPA (4.24/4.3)
+	id AA12375; Wed, 2 May 84 20:11:04 pdt
+Date: Wed, 2 May 84 20:11:04 pdt
+From: soiffer (Neil Soiffer)
+Message-Id: <8405030311.AA12375@ucbkim.ARPA>
+To: franz-wizards
+Subject: ok wizards, here's one...
+
+Why are '* and '+ bound to nil?
+
+From jkf  Wed May  2 20:38:33 1984
+Received: by ucbkim.ARPA (4.24/4.3)
+	id AA12802; Wed, 2 May 84 20:38:33 pdt
+Date: Wed, 2 May 84 20:38:33 pdt
+From: John Foderaro (on an sun) <jkf>
+Message-Id: <8405030338.AA12802@ucbkim.ARPA>
+To: soiffer, franz-wizards
+Subject: Re: ok wizards, here's one...
+Cc: 
+In-Reply-To: Your message of Wed, 2 May 84 20:11:04 pdt
+
+ That's simple, + is bound to the last expression you typed and  * to
+the last value returned in the standard franz top-level.
+
+
+
+From soiffer@ucbdali  Thu May  3 12:27:52 1984
+Received: from ucbdali.ARPA by ucbkim.ARPA (4.24/4.3)
+	id AA21730; Thu, 3 May 84 12:27:52 pdt
+Received: by ucbdali.ARPA (4.24/4.27)
+	id AA20822; Thu, 3 May 84 12:26:21 pdt
+Date: Thu, 3 May 84 12:26:21 pdt
+From: soiffer@ucbdali (Neil Soiffer)
+Message-Id: <8405031926.AA20822@ucbdali.ARPA>
+To: franz-wizards@ucbkim, jkf@ucbkim, soiffer@ucbkim
+Subject: Re: ok wizards, here's one...
+
+I defy you to find the definition of + and * in the manual...
+
+From chin  Fri May  4 16:38:32 1984
+Received: by ucbkim.ARPA (4.24/4.27)
+	id AA15937; Fri, 4 May 84 16:38:32 pdt
+Date: Fri, 4 May 84 16:38:32 pdt
+From: chin (David Chin)
+Message-Id: <8405042338.AA15937@ucbkim.ARPA>
+To: fkunze, franz-wizards
+Subject: /usr/lib/lisp/pearl.o
+
+Please reinstall pearl.o in /usr/lib/lisp.  People actually use it.
+
+Dave
+
+From layer@ucbchip  Fri May  4 16:51:20 1984
+Received: from ucbchip.ARPA by ucbkim.ARPA (4.24/4.3)
+	id AA16198; Fri, 4 May 84 16:51:20 pdt
+Date: Fri, 4 May 84 16:50:14 pdt
+From: layer@ucbchip (Kevin Layer)
+Message-Id: <8405042350.3269@ucbchip.ARPA>
+Received: by ucbchip.ARPA (4.24/3.5)
+	id AA03269; Fri, 4 May 84 16:50:14 pdt
+Phone: (415) 652-2405
+To: chin@ucbkim, fkunze@ucbkim, franz-wizards@ucbkim
+Subject: Re:  /usr/lib/lisp/pearl.o
+
+I deleted it in the shuffle of making a new lisplib.  I
+know nothing of pearl.  Can you create it for me?
+
+	Kevin
+
+
+From chin  Fri May  4 16:52:23 1984
+Received: by ucbkim.ARPA (4.24/4.27)
+	id AA16222; Fri, 4 May 84 16:52:23 pdt
+Date: Fri, 4 May 84 16:52:23 pdt
+From: chin (David Chin)
+Message-Id: <8405042352.AA16222@ucbkim.ARPA>
+To: fkunze, franz-wizards
+Subject: pearl.o
+
+
+A copy of pearl.o may be found in ~bair/pearl.o on both dali and kim.
+Please install it in /usr/lib/lisp.
+
+					Thanks,
+					Dave
+
+From sklower@ucbdali  Mon Jun  4 15:26:48 1984
+Received: from ucbdali.ARPA by ucbkim.ARPA (4.28/4.27)
+	id AA02274; Mon, 4 Jun 84 15:26:48 pdt
+Received: by ucbdali.ARPA (4.28/4.27)
+	id AA18398; Mon, 4 Jun 84 15:25:34 pdt
+Date: Mon, 4 Jun 84 15:25:34 pdt
+From: sklower@ucbdali (Keith Sklower)
+Message-Id: <8406042225.AA18398@ucbdali.ARPA>
+To: allegra!convex!smu!pedz
+Subject: _brk()
+Cc: franz-wizards@ucbkim
+
+The 4.2 people made brk() check to make sure you didn't break below
+profiling buffers.  This won't work for rawhlisp.  They agreed to have
+an entry _brk() which did the stuff without the checks but confusion
+reigned, and it didn't make it into the 4.2 distribution.
+
+You can use opus38.91, which works.  Or attempt to continue by saying
+#define _brk(x) syscall(17,x)
+

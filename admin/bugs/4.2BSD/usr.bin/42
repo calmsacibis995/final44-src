@@ -1,0 +1,149 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Fri, 8 Jun 84 15:13:04 pdt
+Subject: f77 has problems when a DO loop variable is also a loop parameter
+Index: usr.bin/f77/src/f77pass1/exec.c 4.2BSD
+
+Description:
+	This bug only strikes when the optimizer is OFF.  If a DO
+	loop variable is used for other purposes in a routine and in
+	particular is used in the loop initialization, limit or
+	increment at the same time it is used as the loop variable, the
+	parameter containing the loop variable will appear to be
+	garbage.  This bug was originally sent to me by Robert Elz
+	of the University of Melbourne.
+
+Repeat-By:
+	Compile the following program with 'f77 -S' (examples are
+	courtesy of Robert Elz):
+
+	----------------------------------------------------------------
+		k = 1
+		i = 1
+		do 10 k = k, 10
+		i = i + k
+	10	continue
+		print i
+		end
+	----------------------------------------------------------------
+
+	In the assembly language output we see that the register is
+	initialized from itself, instead of the memory version of the
+	loop variable:
+
+	----------------------------------------------------------------
+		movl	$1,{k}(r11)
+		movl	$1,{i}(r11)
+		movl	r10,r10				<<<<<<<<<<<
+		cmpl	r10,$10
+		jgtr	L16
+	L17:
+		movl	r10,{k}(r11)
+		addl3	r10,{i}(r11),r0
+		movl	r0,{i}(r11)
+	L15:
+		incl	r10
+		cmpl	r10,$10
+		jleq	L17
+	L16:
+		movl	r10,{k}(r11)
+		clrl	-104(fp)
+		movl	$6,-100(fp)
+		movl	{i}(r11),-92(fp)
+		addl3	$-104,fp,r0
+		pushl	r0
+		calls	$1,_s_wsfe
+		calls	$0,_e_wsfe
+	L14:
+		ret
+	----------------------------------------------------------------
+
+Fix:
+	The problem is that the compiler puts the DO loop variable in
+	register before fixing the DO loop parameters.  The bug goes
+	away if you just swap the two chunks of code in exdo() in
+	f77pass1/exec.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1019970	Thu Jun  7 22:27:42 1984
+	--- exec.c	Thu Jun  7 22:12:00 1984
+	***************
+	*** 379,385
+	      }
+	  
+	    dovarp = mkplace(np);
+	!   if( ! ONEOF(dovarp->vtype, MSKINT|MSKREAL) )
+	      {
+		err("bad type on DO variable");
+		return;
+
+	--- 379,387 -----
+	      }
+	  
+	    dovarp = mkplace(np);
+	!   dotype = dovarp->vtype;
+	! 
+	!   if( ! ONEOF(dotype, MSKINT|MSKREAL) )
+	      {
+		err("bad type on DO variable");
+		return;
+	***************
+	*** 387,404
+		return;
+	      }
+	  
+	-   ctlstack->donamep = np;
+	- 
+	-   np->vdovar = YES;
+	-   if( !optimflag && enregister(np) )
+	-     {
+	-       /* stgp points to a storage version, varp to a register version */
+	-       dostgp = dovarp;
+	-       dovarp = mkplace(np);
+	-     }
+	-   else
+	-     dostgp = NULL;
+	-   dotype = dovarp->vtype;
+	- 
+	- 
+	    for(i=0 , cp = spec->nextp ; cp!=NULL && i<3 ; cp = cp->nextp)
+	      {
+		p = fixtype((expptr) cpexpr((tagptr) q = cp->datap));
+
+	--- 388,393 -----
+		return;
+	      }
+	  
+	    for(i=0 , cp = spec->nextp ; cp!=NULL && i<3 ; cp = cp->nextp)
+	      {
+		p = fixtype((expptr) cpexpr((tagptr) q = cp->datap));
+	***************
+	*** 440,445
+		return;
+	      }
+	  
+	  
+	    for (i = 0; i < 4; i++)
+	      ctlstack->ctlabels[i] = newlabel();
+
+	--- 429,445 -----
+		return;
+	      }
+	  
+	+   ctlstack->donamep = np;
+	+ 
+	+   np->vdovar = YES;
+	+   if( !optimflag && enregister(np) )
+	+     {
+	+       /* stgp points to a storage version, varp to a register version */
+	+       dostgp = dovarp;
+	+       dovarp = mkplace(np);
+	+     }
+	+   else
+	+     dostgp = NULL;
+	  
+	    for (i = 0; i < 4; i++)
+	      ctlstack->ctlabels[i] = newlabel();
+	----------------------------------------------------------------
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn

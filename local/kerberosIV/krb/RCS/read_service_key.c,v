@@ -1,0 +1,733 @@
+head     4.10;
+branch   ;
+access   ;
+symbols  PATCH8:4.9 PATCH7:4.8 KPATCH6:4.7 ASRSNAP1001:4.7 PATCH5:4.7 KPATCH4:4.6 KPATCH3:4.6 KPATCH2:4.6 KREL1:4.6 BETA5/24/88:4.5;
+locks    ; strict;
+comment  @ * @;
+
+
+4.10
+date     90.06.25.20.57.14;  author kfall;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     90.01.02.13.40.33;  author jtkohl;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     89.10.16.13.33.06;  author jon;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     89.07.27.19.03.27;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.12.01.14.28.32;  author jtkohl;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.02.24.18.15.55;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.01.12.21.24.02;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.29.10.46.51;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.10.20.17.12.40;  author jtkohl;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.47.32;  author steiner;  state Exp;
+branches ;
+next     3.5;
+
+3.5
+date     87.07.06.13.51.11;  author jis;  state Exp;
+branches ;
+next     3.4;
+
+3.4
+date     86.09.05.16.06.18;  author bcn;  state Exp;
+branches ;
+next     3.3;
+
+3.3
+date     86.06.18.14.14.34;  author bcn;  state Exp;
+branches ;
+next     3.2;
+
+3.2
+date     86.05.14.14.49.41;  author bcn;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.03.28.10.14.14;  author bcn;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.12.06.20.50.16;  author bcn;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.11.20.11.58.20;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Read server key from file
+@
+
+
+4.10
+log
+@include des.h
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/src/lib/krb/RCS/read_service_key.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ */
+
+#ifndef lint
+static char *rcsid_read_service_key_c =
+"$Id: read_service_key.c,v 4.9 90/01/02 13:40:33 jtkohl Exp Locker: kfall $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+#include <des.h>
+#include <krb.h>
+#include <stdio.h>
+#include <strings.h>
+
+/*
+ * The private keys for servers on a given host are stored in a
+ * "srvtab" file (typically "/etc/srvtab").  This routine extracts
+ * a given server's key from the file.
+ *
+ * read_service_key() takes the server's name ("service"), "instance",
+ * and "realm" and a key version number "kvno", and looks in the given
+ * "file" for the corresponding entry, and if found, returns the entry's
+ * key field in "key".
+ * 
+ * If "instance" contains the string "*", then it will match
+ * any instance, and the chosen instance will be copied to that
+ * string.  For this reason it is important that the there is enough
+ * space beyond the "*" to receive the entry.
+ *
+ * If "kvno" is 0, it is treated as a wild card and the first
+ * matching entry regardless of the "vno" field is returned.
+ *
+ * This routine returns KSUCCESS on success, otherwise KFAILURE.
+ *
+ * The format of each "srvtab" entry is as follows:
+ *
+ * Size			Variable		Field in file
+ * ----			--------		-------------
+ * string		serv			server name
+ * string		inst			server instance
+ * string		realm			server realm
+ * 1 byte		vno			server key version #
+ * 8 bytes		key			server's key
+ * ...			...			...
+ */
+
+
+/*ARGSUSED */
+read_service_key(service,instance,realm,kvno,file,key)
+    char *service;              /* Service Name */
+    char *instance;             /* Instance name or "*" */
+    char *realm;                /* Realm */
+    int kvno;                   /* Key version number */
+    char *file;                 /* Filename */
+    char *key;                  /* Pointer to key to be filled in */
+{
+    char serv[SNAME_SZ];
+    char inst[INST_SZ];
+    char rlm[REALM_SZ];
+    unsigned char vno;          /* Key version number */
+    int wcard;
+
+    int stab, open();
+
+    if ((stab = open(file, 0, 0)) < NULL)
+        return(KFAILURE);
+
+    wcard = (instance[0] == '*') && (instance[1] == '\0');
+
+    while(getst(stab,serv,SNAME_SZ) > 0) { /* Read sname */
+        (void) getst(stab,inst,INST_SZ); /* Instance */
+        (void) getst(stab,rlm,REALM_SZ); /* Realm */
+        /* Vers number */
+        if (read(stab,(char *)&vno,1) != 1)
+            return(KFAILURE);
+        /* Key */
+        if (read(stab,key,8) != 8)
+            return(KFAILURE);
+        /* Is this the right service */
+        if (strcmp(serv,service))
+            continue;
+        /* How about instance */
+        if (!wcard && strcmp(inst,instance))
+            continue;
+        if (wcard)
+            (void) strncpy(instance,inst,INST_SZ);
+        /* Is this the right realm */
+#ifdef ATHENA_COMPAT
+	/* XXX For backward compatibility:  if keyfile says "Athena"
+	   and caller wants "ATHENA.MIT.EDU", call it a match */
+        if (strcmp(rlm,realm) &&
+	    (strcmp(rlm,"Athena") ||
+	     strcmp(realm,"ATHENA.MIT.EDU")))
+	    continue;
+#else /* ! ATHENA_COMPAT */
+        if (strcmp(rlm,realm)) 
+	    continue;
+#endif /* ATHENA_COMPAT */
+
+        /* How about the key version number */
+        if (kvno && kvno != (int) vno)
+            continue;
+
+        (void) close(stab);
+        return(KSUCCESS);
+    }
+
+    /* Can't find the requested service */
+    (void) close(stab);
+    return(KFAILURE);
+}
+@
+
+
+4.9
+log
+@change $Header to $Id
+@
+text
+@d2 2
+a3 2
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/read_service_key.c,v $
+ * $Author: jon $
+d14 1
+a14 1
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/read_service_key.c,v 4.8 89/10/16 13:33:06 jon Exp Locker: jtkohl $";
+d18 1
+@
+
+
+4.8
+log
+@Add backward compatibility for old style srvtabs (with "Athena" as the
+realm).  This should only effect athena and not other sites.
+
+Programer: jtkohl
+Auditor: jon
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d14 1
+a14 1
+"$Header: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/read_service_key.c,v 4.7 89/07/27 19:03:27 jtkohl Exp Locker: jtkohl $";
+@
+
+
+4.7
+log
+@Programmer: Jay Berkenbilt
+Auditor: John Kohl
+allow it to compare realms now
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/lib/krb/RCS/read_service_key.c,v $
+d14 1
+a14 1
+"$Header: /mit/kerberos/src/lib/krb/RCS/read_service_key.c,v 4.7 89/07/27 19:02:55 jtkohl Exp $";
+d95 8
+d105 1
+@
+
+
+4.6
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d14 1
+a14 1
+"$Header: read_service_key.c,v 4.5 88/02/24 18:15:55 steiner Locked $";
+a53 4
+/*
+ * XXX this is bogus; the realm isn't used currently, it
+ * probably should be.
+ */
+d72 1
+a72 1
+    if ((stab = open(file,0)) < NULL)
+d95 2
+a96 6
+
+#ifdef notdef
+        if (strcmp(rlm,realm)) continue;
+    Warning: If you include this code you must fix ext_srvtab to
+        properly build the srvtab files.
+#endif
+@
+
+
+4.5
+log
+@Copyright notice, etc.
+@
+text
+@d14 1
+a14 1
+"$Header: read_service_key.c,v 4.4 88/01/12 21:24:02 steiner Locked $";
+d23 10
+a32 6
+ * This routine takes a service name, instance name, a realm name, a
+ * key version number, a filename, and a pointer to a Cblock which is
+ * to receive the key.  It will then look for an entry in "file"
+ * corresponding to the particular service and instance given.  If
+ * found, the key will be copied from the file to the cblock pointed
+ * to by key.  If instance contains the string "*", then it will match
+d35 1
+a35 1
+ * space beyond the * to receive the entry.
+d37 15
+a51 2
+ * This routine returns 0 on success, 1 on failure (not found), and
+ * 2 on failure (Can't open file).
+d54 4
+a57 2
+/* XXX this is bogus; the realm isn't used currently, it
+ * probably should be. */
+@
+
+
+4.4
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 3
+ *      $Source: /mit/kerberos/lib/krb/RCS/read_service_key.c,v $
+ *      $Author: jtkohl $
+ *      $Locker: steiner $
+d5 2
+a6 2
+ * Copyright 1985,1986,1987
+ * by the Massachusetts Institute of Technology
+d8 2
+d13 2
+a14 2
+static char *rcsid_readservkey_c =
+"$Header: read_service_key.c,v 4.3 87/10/29 10:46:51 steiner Locked $";
+d17 1
+@
+
+
+4.3
+log
+@lint cleanup
+@
+text
+@d1 4
+a4 4
+/* 
+ * 	$Source: /u3/kerberos.new/lib/krb/RCS/readservkey.c,v $
+ * 	$Author: jtkohl $
+ * 	$Locker: jtkohl $
+d6 2
+a7 1
+ * Copyright 1985,1986,1987 by the Massachusetts Institute of Technology
+d12 3
+a14 2
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 4.2 87/10/20 17:12:40 jtkohl Locked $";
+#endif	lint
+d16 3
+a18 3
+#include        <krb.h>
+#include        <stdio.h>
+#include	<strings.h>
+d21 9
+d31 1
+a31 11
+ * This routine takes a service name, instance name, a realm name, 
+ * a key version number, a filename, and a pointer to a Cblock which 
+ * is to receive the key.  It will then look for an entry in "file" 
+ * corresponding to the particular service and instance given.  If found, 
+ * the key will be copied from the file to the cblock pointed to by key.  
+ * If instance contains the string "*", then it will match any instance, 
+ * and the chosen instance will be copied to that string.  For this reason 
+ * it is important that the there is enough space beyond the * to receive 
+ * the entry.
+ *
+ * This routine returns 0 on success, 1 on failure (not found), and 
+d35 4
+a38 2
+/* XXX this is bogus; the realm isn't used currently, it probably should. */
+/*ARGSUSED*/
+d40 6
+a45 6
+    char	*service;	/* Service Name 		  */
+    char	*instance;	/* Instance name or "*" 	  */
+    char	*realm;		/* Realm			  */
+    int		kvno;		/* Key version number		  */
+    char	*file;		/* Filename			  */
+    char	*key;		/* Pointer to key to be filled in */
+d47 8
+a54 8
+    char		serv[SNAME_SZ];
+    char		inst[INST_SZ];
+    char		rlm[REALM_SZ];
+    unsigned char	vno;    /* Key version number     */
+    int			wcard;
+	
+    int	stab, open();
+	
+d56 1
+a56 1
+		return(KFAILURE);
+a58 19
+    
+    while(getst(stab,serv,SNAME_SZ) > 0) { /* Read sname   */
+	(void) getst(stab,inst,INST_SZ); /* Instance */
+	(void) getst(stab,rlm,REALM_SZ); /* Realm */
+	/* Vers number */
+	if (read(stab,(char *)&vno,1) != 1)
+		return(KFAILURE);
+	/* Key */
+	if (read(stab,key,8) != 8)
+		return(KFAILURE);
+	/* Is this the right service */
+	if (strcmp(serv,service))
+	    continue;
+	/* How about instance */
+	if (!wcard && strcmp(inst,instance))
+	    continue;
+	if (wcard)
+	    (void) strncpy(instance,inst,INST_SZ);
+	/* Is this the right realm */
+d60 19
+d80 3
+a82 3
+	if (strcmp(rlm,realm)) continue;
+      Warning: If you include this code you must fix ext_srvtab to
+	 properly build the srvtab files.
+d85 3
+a87 3
+	/* How about the key version number */
+	if (kvno && kvno != (int) vno)
+	    continue;
+d89 2
+a90 2
+	(void) close(stab);
+	return(KSUCCESS);
+a96 2
+
+
+@
+
+
+4.2
+log
+@lint fixes.
+@
+text
+@d3 1
+a3 1
+ * 	$Author: steiner $
+d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 4.1 87/09/01 15:47:32 jtkohl Locked $";
+d34 2
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d2 3
+a4 3
+ * 	$Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/readservkey.c,v $
+ * 	$Author: jis $
+ * 	$Locker: steiner $
+d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 3.5 87/07/06 13:51:11 steiner Locked $";
+d55 9
+a63 5
+    while(getst(stab,serv,SNAME_SZ) > 0) {      /* Read sname   */
+	getst(stab,inst,INST_SZ);             /* Instance     */
+	getst(stab,rlm,REALM_SZ);		/* Realm 	*/
+	read(stab,&vno,1);			/* Vers number  */
+	read(stab,key,8);		        /* Key  	*/
+d71 1
+a71 1
+	    strncpy(instance,inst,INST_SZ);
+d84 1
+a84 1
+	close(stab);
+d89 1
+a89 1
+    close(stab);
+@
+
+
+3.5
+log
+@Input key version number of 0 means return any key version.
+@
+text
+@d2 3
+a4 3
+ * 	$Source: /source/kerberos/lib/krb/RCS/readservkey.c,v $
+ * 	$Author: bcn $
+ * 	$Locker:  $
+d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 3.4 86/09/05 16:06:18 bcn Exp $";
+@
+
+
+3.4
+log
+@Don't print error message if cant read file.  Instead return error code.
+@
+text
+@d2 1
+a2 1
+ * 	$Source: /mit/projects/auth/src/lib/krb/RCS/readservkey.c,v $
+d4 1
+a4 1
+ * 	$Locker: bcn $
+d6 1
+a6 1
+ * Copyright 1985,1986 by the Massachusetts Institute of Technology
+d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 3.3 86/06/18 14:14:34 bcn Exp $";
+d16 1
+d35 6
+a40 6
+char	*service;	/* Service Name 		  */
+char	*instance;	/* Instance name or "*" 	  */
+char	*realm;		/* Realm			  */
+int	kvno;		/* Key version number		  */
+char	*file;		/* Filename			  */
+char	*key;		/* Pointer to key to be filled in */
+d45 2
+a46 2
+    unsigned	char	vno;    /* Key version number     */
+    int			wcard = !strcmp(instance,"*");
+d53 16
+d70 5
+a74 14
+    while(getst(stab,serv,SNAME_SZ) > 0)        /* Read sname   */
+         {getst(stab,inst,INST_SZ);             /* Instance     */
+	  getst(stab,rlm,REALM_SZ);		/* Realm 	*/
+	  read(stab,&vno,1);			/* Vers number  */
+          read(stab,key,8);		        /* Key  	*/
+          /* Is this the right service */
+          if (strcmp(serv,service)) continue;
+	  /* How about instance */
+	  if (!wcard && strcmp(inst,instance)) continue;
+	  if (wcard) strcpy(instance,inst);
+          /* Is this the right realm */
+/*          if (strcmp(rlm,realm)) continue; */
+	  /* How about the key version number */
+	  if (kvno != (int) vno) continue;
+d76 3
+a78 3
+	  close(stab);
+          return(KSUCCESS);
+          }
+a79 1
+        /* Can't find the requested service */
+d81 6
+a86 1
+        return(KFAILURE);
+@
+
+
+3.3
+log
+@Keys are now encrypted in the srvtab file.
+@
+text
+@d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 3.2 86/05/14 14:49:41 bcn Exp $";
+d50 1
+a50 2
+		{fprintf(stderr,"Error opening %s",file);
+		return(2);}
+@
+
+
+3.2
+log
+@Arguments changed to support key version number.
+@
+text
+@d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 3.1 86/03/28 10:14:14 bcn Exp $";
+d44 1
+a44 1
+    unsigned	char	vno;
+d58 1
+a58 1
+          getst(stab,key,KKEY_SZ);              /* Key  	*/
+d68 1
+@
+
+
+3.1
+log
+@Added realm to information used in indexing the key.
+Update for protocol revision 3 now complete.
+@
+text
+@d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 1.2 85/12/06 20:50:16 bcn Exp $";
+d20 8
+a27 7
+ * a filename, and a pointer to a Cblock which is to receive the key.  
+ * It will then look for an entry in "file" corresponding to the particular
+ * service and instance given.  If found, the key will be copied from 
+ * the file to the cblock pointed to by key.  If instnance contains the
+ * string "*", then it will match any instance, and the chosen instance
+ * will be copied to that string.  For this reason it is important that
+ * the there is enough space beyon the * to receive the entry.
+d33 1
+a33 1
+read_service_key(service,instance,realm,file,key)
+d37 1
+d41 5
+a45 4
+    char	serv[SNAME_SZ];
+    char	inst[INST_SZ];
+    char	rlm[REALM_SZ];
+    int		wcard = !strcmp(instance,"*");
+d57 1
+d65 3
+a67 1
+          if (strcmp(rlm,realm)) continue;
+@
+
+
+1.2
+log
+@Added most of the code.
+@
+text
+@a4 4
+ *    	$Log:	readservkey.c,v $
+ * Revision 1.1  85/11/20  11:58:20  bcn
+ * Initial revision
+ * 
+d6 1
+a6 1
+ * Copyright 1985 by the Massachusetts Institute of Technology
+d11 1
+a11 1
+static char *rcsid_readservkey_c = "$Header: readservkey.c,v 1.1 85/11/20 11:58:20 bcn Exp $";
+d19 3
+a21 3
+ * This routine takes a service name, instance name, a filename, 
+ * and a pointer to a Cblock which is to receive the key.  It will
+ * then look for an entry in "file" corresponding to the particular
+d32 1
+a32 1
+read_service_key(service,instance,file,key)
+d35 1
+d41 1
+d53 1
+d60 2
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 7
+a8 4
+ * 	$Source: $
+ * 	$Author: $
+ * 	$Locker: $
+ *    	$Log:	 $
+d15 1
+a15 1
+static char *rcsid_readservkey_c = "$Header: $";
+d18 2
+d23 8
+a30 6
+ * This routine takes a service name, instance name, and filename.  It will
+ * then look for and entry in the file specified corresponding to the key
+ * for the particular service and instance.  It will then fill in "key"
+ * (which must also be passed to it).  It returns 0 on success, 1 on
+ * failure (not found), and 2 on failure (Can't open file).f
+
+d32 2
+d37 4
+a40 4
+char	*service;
+char	*instance;
+char	*file;
+char	key[8];
+d42 3
+a44 1
+	int	stab, open();
+d46 3
+a48 1
+	if ((stab = open(file,0)) < NULL)
+d53 11
+d65 1
+d67 1
+a67 1
+	return(0);
+d69 2
+@

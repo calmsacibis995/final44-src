@@ -1,0 +1,104 @@
+Return-Path: <keith@seismo>
+Date: Wed, 19 Jun 85 19:43:14 EDT
+From: Keith Bostic <keith@seismo>
+Subject: The shutdown program has a few problems.
+Index: 	etc/shutdown.c 4.2BSD
+
+Description:
+	1: The function "finish()" is not explicitly declared as returning
+	   an integer before being used in a call to signal(2).  This is
+	   safe under the current VAX compiler, but that may change.  It fails
+	   on the current pdp11 compiler.
+
+	2: The function time(2) is not declared as returning a time_t.
+
+	3: Even after compiling shutdown with the "DEBUG" flag, you have to
+	   be super-user to run the program.
+
+	4: If no arguments are passed to shutdown, a usage print statement
+	   is called with a null value for the program name.
+Repeat-By:
+	For the first two items, compile and run shutdown with a less
+	forgiving compiler/machine.  The third item isn't really a bug,
+	it just makes it easier to debug and is reasonable since a debugging
+	structure is already built into shutdown.  The final item can be
+	reproduced by running shutdown without any arguments; no program
+	name will be displayed in the usage statement given.  Then look at
+	the source code, it very explicitly attempts to print out the
+	name of the program.
+Fix:
+	The first two items can be fixed by adding the declarations:
+
+	int	finish();
+	time_t	time();
+
+	Incidentally, if this is being done, shutdown could be converted
+	to the gettimeofday(3) interface.
+
+	The third item can be easily changed by putting "ifdef DEBUG" 
+	around the geteuid(3) test.
+
+	The final item is most reasonably fixed by converting shutdown
+	to use the getopt(3) routine, as delivered with 4.3.  
+
+	Diffs follow:
+
+38,39c38,39
+< int	timeout();
+< time_t	getsdt();
+---
+> int	timeout() finish();
+> time_t	getsdt(), time();
+85a86,87
+> 	extern char	*optarg;
+> 	extern int	optind;
+88c90
+< 	char *ts;
+---
+> 	char *ts, c;
+96,110c98,111
+< 	argc--, argv++;
+< 	while (argc > 0 && (f = argv[0], *f++ == '-')) {
+< 		while (i = *f++) switch (i) {
+< 		case 'k':
+< 			killflg = 0;
+< 			continue;
+< 		case 'r':
+< 			reboot = 1;
+< 			continue;
+< 		case 'h':
+< 			halt = 1;
+< 			continue;
+< 		default:
+< 			fprintf(stderr, "shutdown: '%c' - unknown flag\n", i);
+< 			exit(1);
+---
+> 	while((c = getopt(argc,argv,"krh")) != EOF)
+> 		switch((char)c) {
+> 			case 'k':
+> 				killflg = 0;
+> 				break;
+> 			case 'r':
+> 				reboot = 1;
+> 				break;
+> 			case 'h':
+> 				halt = 1;
+> 				break;
+> 			case '?':
+> 				argc = 0;
+> 				break;
+112,114c113
+< 		argc--, argv++;
+< 	}
+< 	if (argc < 1) {
+---
+> 	if (argc - optind < 1) {
+118a118,119
+> 	argv += optind;
+> #ifndef DEBUG
+122a124
+> #endif !DEBUG
+146a149
+> #ifndef pdp11
+147a151
+> #endif !pdp11

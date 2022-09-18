@@ -1,0 +1,57 @@
+From bigbug@cs.huji.ac.il  Thu Feb 25 21:25:21 1993
+Date: Fri, 26 Feb 93 07:26:32 +0200
+From: Yuval Yarom <yval@CS.HUJI.AC.IL>
+To: 4bsd-bugs@okeeffe.CS.Berkeley.EDU
+Subject: Wrong access rights handling in unix domain sockets
+Index: sys/kern/uipc_usrreq.c 4.4BSD-alpha
+
+Shalom,
+  The following program crashes the system with 'panic:closef: count < 0'.
+
+#include <sys/types.h>
+#include <sys/socket.h>
+main()
+{
+	int p[2];
+	int fd;
+	struct msghdr mh;
+	char cmsgbuf[sizeof(struct cmsghdr) + sizeof(int)];
+	struct cmsghdr *cmhp = (struct cmsghdr *)cmsgbuf;
+
+	cmhp->cmsg_len = sizeof(cmsgbuf);
+	cmhp->cmsg_level = SOL_SOCKET;
+	cmhp->cmsg_type = SCM_RIGHTS;
+
+	mh.msg_name = 0;
+	mh.msg_namelen = 0;
+	mh.msg_iov = 0;
+	mh.msg_iovlen = 0;
+	mh.msg_control = (caddr_t)cmhp;
+	mh.msg_controllen = cmhp->cmsg_len;
+	mh.msg_flags = 0;
+
+	pipe(p);
+	*(int *)CMSG_DATA(cmhp) = p[1];
+	sendmsg(p[1], &mh, 0);
+	close(p[1]);
+	close(p[0]);
+}
+
+The reason is a second call to unp_discard when closing the socket.
+
+			Yuval
+
+----------------------------------------------------------
+*** uipc_usrreq.c.orig	Fri Feb 26 14:31:53 1993
+--- uipc_usrreq.c	Fri Feb 26 14:32:02 1993
+***************
+*** 761,766 ****
+--- 761,768 ----
+  	struct file *fp;
+  {
+  
++ 	if (fp->f_msgcount == 0)
++ 		return;
+  	fp->f_msgcount--;
+  	unp_rights--;
+  	(void) closef(fp);

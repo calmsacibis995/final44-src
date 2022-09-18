@@ -1,0 +1,171 @@
+From hahn@ames-nas.arpa Fri Dec  4 17:11:11 1987
+Date: Fri, 4 Dec 87 15:58:24 PST
+From: Jonathan Hahn <hahn@ames-nas.arpa>
+Subject: 4.3 BSD bug (/etc/arp)
+Index: etc/arp.c 4.3BSD
+
+Hi.  I found a couple of bugs in VAX 4.3 BSD /etc/arp (described
+below).  We monitor comp.bugs.4bsd.ucb-fixes and haven't come across
+this, so I assume these are previously-unknown bugs.
+
+I hope you're the right person to send this too.  If not and you know
+who is, please let me know.  Also, should I post to comp.bugs.4bsd?
+
+There's a related issue I'd like to bring to your attention.  We here
+at nas.nasa.gov publish the ARP info for about 75+ hosts on one of our
+VAX 780s.  There is a reason for this, but it's not relevant.  Anyway,
+I have found that when the ARP table gets much above 100 entries, it
+has a strong tendency to crash the VAX with a Protection Fault panic.
+
+This phenomenon has been repeated on 3 of our 780s (whichever one
+happens to have the published entries).  So far I have not been able to
+gain any insight from the core dumps other than that I'm pretty sure it's
+ARP-related, but I'm still looking into it.
+
+Ever heard of this?  Any ideas?
+
+thanks,
+-jonathan hahn
+hahn@amelia.nas.nasa.gov
+
+----------------------------------------------------------------------
+
+Subject: Two minor bugs in /etc/arp
+
+Description:
+    There are two bugs the VAX 4.3 BSD /etc/arp program: 1) an fprintf()
+    call writes to fprintf instead of stderr, and 2) core file addresses
+    do not have the high-order bit zeroed when an alternate to
+    /dev/kmem is supplied on the command line (as is the case in most
+    other similar utilities).
+
+Repeat-By:
+    For 1), generate the error message in question by naming a core file
+    which cannot be opened:
+
+	    /etc/arp -a /vmunix NON_EXISTENT_FILE
+
+    this will result in a Bus Error/core dump instead of an error message.
+
+    For 2), try to print the arp table of a kernel core dump file:
+	    
+	    cd /usr/crash		(or wherever kernel core dumps are kept)
+	    /etc/arp -a vmunix.N vmcore.N
+					(where N is a valid core dump number)
+
+    This won't work because the addresses in the symbol table point to
+    locations in VAX kernel memory, not locations in the core file.
+
+Diff:
+*** ../arp.c	Fri Dec  4 11:58:15 1987
+--- /usr/src/etc/arp.c	Fri Feb 21 12:30:36 1986
+***************
+*** 18,25
+  #include <netinet/if_ether.h>
+  
+  extern int errno;
+- int	usercore = 0;		/* true if user-supplied core file */
+- #define	coreadr(adr)		(usercore ? (adr & 0x7fffffff) : adr)
+  
+  main(argc, argv)
+	char **argv;
+
+--- 18,23 -----
+  #include <netinet/if_ether.h>
+  
+  extern int errno;
+  
+  main(argc, argv)
+	char **argv;
+***************
+*** 29,35
+  
+		if (argc >= 3)
+			kernel = argv[2];
+! 		if (argc >= 4) {
+			mem = argv[3];
+			usercore++;
+		}
+
+--- 27,33 -----
+  
+		if (argc >= 3)
+			kernel = argv[2];
+! 		if (argc >= 4)
+			mem = argv[3];
+		dump(kernel, mem);
+		exit(0);
+***************
+*** 31,38
+			kernel = argv[2];
+		if (argc >= 4) {
+			mem = argv[3];
+- 			usercore++;
+- 		}
+		dump(kernel, mem);
+		exit(0);
+	}
+
+--- 29,34 -----
+			kernel = argv[2];
+		if (argc >= 4)
+			mem = argv[3];
+		dump(kernel, mem);
+		exit(0);
+	}
+***************
+*** 263,269
+	}
+	mf = open(mem, 0);
+	if(mf < 0) {
+! 		fprintf(stderr, "arp: cannot open %s\n", mem);
+		exit(1);
+	}
+	lseek(mf, coreadr((long)nl[X_ARPTAB_SIZE].n_value), 0);
+
+--- 259,265 -----
+	}
+	mf = open(mem, 0);
+	if(mf < 0) {
+! 		fprintf(fprintf, "arp: cannot open %s\n", mem);
+		exit(1);
+	}
+	lseek(mf, (long)nl[X_ARPTAB_SIZE].n_value, 0);
+***************
+*** 266,272
+		fprintf(stderr, "arp: cannot open %s\n", mem);
+		exit(1);
+	}
+! 	lseek(mf, coreadr((long)nl[X_ARPTAB_SIZE].n_value), 0);
+	read(mf, &arptab_size, sizeof arptab_size);
+	if (arptab_size <=0 || arptab_size > 1000) {
+		fprintf(stderr, "arp: %s: namelist wrong\n", kernel);
+
+--- 262,268 -----
+		fprintf(fprintf, "arp: cannot open %s\n", mem);
+		exit(1);
+	}
+! 	lseek(mf, (long)nl[X_ARPTAB_SIZE].n_value, 0);
+	read(mf, &arptab_size, sizeof arptab_size);
+	if (arptab_size <=0 || arptab_size > 1000) {
+		fprintf(stderr, "arp: %s: namelist wrong\n", kernel);
+***************
+*** 278,284
+		fprintf(stderr, "arp: can't get memory for arptab\n");
+		exit(1);
+	}
+! 	lseek(mf, coreadr((long)nl[X_ARPTAB].n_value), 0);
+	if (read(mf, (char *)at, sz) != sz) {
+		perror("arp: error reading arptab");
+		exit(1);
+
+--- 274,280 -----
+		fprintf(stderr, "arp: can't get memory for arptab\n");
+		exit(1);
+	}
+! 	lseek(mf, (long)nl[X_ARPTAB].n_value, 0);
+	if (read(mf, (char *)at, sz) != sz) {
+		perror("arp: error reading arptab");
+		exit(1);
+
+

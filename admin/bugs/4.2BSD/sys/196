@@ -1,0 +1,44 @@
+Return-Path: <mjb%IRIS%brown.csnet@csnet-relay.arpa>
+Date:     25 Apr 85 (Thu) 09:25:36 EST
+From: Mike Braca <mjb%IRIS%brown.csnet@csnet-relay.arpa>
+To: 4bsd-bugs@BERKELEY
+Subject: ip_init() trashes a random memory location
+Index: sys/netinet/ip_input.c 4.2BSD Fix
+
+Description:
+	Routine ip_init() trashes one random memory byte. Its idea
+	of how to detect the end of the inetsw table (in in_proto.c)
+	differs from how that value is computed in the inetdomain
+	structure (element dom_protoswNPROTOSW, also in in_proto.c),
+	so it goes one element beyond the end of the table in an
+	initialization loop.
+Repeat-By:
+	Code inspection. Find the following declaration in in_proto.c:
+
+	struct domain inetdomain =
+    { AF_INET, "internet", inetsw, &inetsw[sizeof(inetsw)/sizeof(inetsw[0])] };
+
+	Satisfy yourself that the fourth element indeed points to the
+	location following the end of the table, NOT to the last element
+	in the table. Now find the following code fragment in ip_init()
+	in ip_input.c:
+
+	for (pr = inetdomain.dom_protosw;
+	    pr <= inetdomain.dom_protoswNPROTOSW; pr++)
+		if (pr->pr_family == PF_INET &&
+		    pr->pr_protocol && pr->pr_protocol != IPPROTO_RAW)
+			ip_protox[pr->pr_protocol] = pr - inetsw;
+	
+	Now notice that the termination condition for the loop thinks
+	that same element points to the last table entry, thus it will
+	execute one too many times. Notice the before the loop trashes
+	a byte somewhere it has to pass a conditional test. Well it
+	so happens that the inetsw array is immediately followed by
+	the inetdomain structure, and the AF_INET there lines up with
+	the PF_INET in the conditional above, so it indeed gets by that
+	and trashes your random byte. Exercise for the reader: determine
+	which byte has been getting stepped on on your machine. On one of
+	our vaxen it was in the middle of a tty structure so it didn't
+	hurt anything.
+Fix:
+	s/<=/< in the loop shown above in ip_init() in ip_input.c .

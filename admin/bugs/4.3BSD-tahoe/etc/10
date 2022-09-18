@@ -1,0 +1,57 @@
+From jtkohl@athena.mit.edu Fri Oct 14 00:00:24 1988
+Path: seismo!uunet!husc6!bloom-beacon!athena.mit.edu!jtkohl
+From: jtkohl@athena.mit.edu (John T Kohl)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.3BSD: /etc/syslogd doesn't close consoles or UDP ports + FIX
+Sender: daemon@bloom-beacon.MIT.EDU
+Index: etc/syslogd.c 4.3BSD-tahoe
+
+Description:
+	when syslogd is configured to log messages to /dev/console or to
+other hosts via the @hostname forwarding conventions, and it is
+reconfigured by SIGHUP, it fails to close the file descriptors it uses,
+and eventually syslogd will run out of file descriptors.
+
+Repeat-By:
+	Put a line in your crontab to hangup syslogd every once in a while.
+	Then put a forwarding host line in your /etc/syslog.conf.
+	After a lot of hangups, watch syslog complain about a lack of
+	file descriptors.  Examining with netstat shows lots of udp *.* ports.
+
+Fix:
+
+This patch closes the appropriate type of file descriptors:
+
+*** syslogd.c   Tue May 27 01:03:20 1986
+--- /tmp/syslogd.c      Thu Oct 13 14:24:53 1988
+***************
+*** 795,804 ****
+        /*
+         *  Close all open log files.
+         */
+        for (f = Files; f < &Files[NLOGS]; f++) {
+!               if (f->f_type == F_FILE || f->f_type == F_TTY)
+                        (void) close(f->f_file);
+                f->f_type = F_UNUSED;
+        }
+--- 795,811 ----
+        /*
+         *  Close all open log files.
++        *  This includes files, consoles, ttys, and forwarding sockets.
+         */
+        for (f = Files; f < &Files[NLOGS]; f++) {
+!               switch (f->f_type) {
+!                   case F_FILE:
+!                   case F_TTY:
+!                   case F_CONSOLE:
+!                   case F_FORW:
+                        (void) close(f->f_file);
++                       break;
++               }
+                f->f_type = F_UNUSED;
+        }
+John Kohl <jtkohl@ATHENA.MIT.EDU>
+Digital Equipment Corporation/MIT Project Athena
+(As usual, the opinions expressed above do not necessarily reflect the
+opinions of my employer. :-)
+

@@ -1,0 +1,262 @@
+Return-Path: <sun!gorodish!guy@ucbvax.Berkeley.EDU>
+Date: Tue, 29 Jul 86 15:37:11 PDT
+From: sun!gorodish!guy@ucbvax.Berkeley.EDU (Guy Harris)
+Subject: Some bugs in the "sccs" command
+Index: ucb/sccs.c 4.3BSD
+
+Description:
+	1) Some commands aren't documented in the comments.
+
+	2) The "prt" command in the PWB/UNIX SCCS was renamed "prs"
+	   in later versions; same with the "chghist" and "cdc" commands.
+
+	3) It can dereference a null pointer under some circumstances.
+
+	4) If a process spawned by "sccs" dies from a signal, it won't
+	   print an error message indicating this.
+
+	5) It doesn't wait properly for a process it spawns.  It should
+	   specifically wait for a process with a given PID to die, but
+	   it waits for the first child process to die instead.  Processes
+	   inside pipelines started by the Bourne shell often have extra
+	   children, so the "wait" would terminate prematurely if any of
+	   them exited before the process "sccs" spawned exited.
+Repeat-By:
+	For 5), try doing something like
+
+	cat <file-with-comments> | sccs delget <file>
+
+	Since "delget" first spawns a "delta" and then a "get", when
+	it waits for the "delta" to finish the wait may terminate when
+	the "cat" terminates, so it tries to run the "get" before the
+	"delta" is finished.
+Fix:
+
+*** sccs.c.orig	Thu Jan  2 14:39:31 1986
+--- sccs.c	Thu Jan  2 14:39:40 1986
+***************
+*** 69,75
+  **		get,
+  **		delta,
+  **		rmdel,
+! **		chghist,
+  **		etc.		Straight out of SCCS; only difference
+  **				is that pathnames get modified as
+  **				described above.
+
+--- 69,75 -----
+  **		get,
+  **		delta,
+  **		rmdel,
+! **		cdc,
+  **		etc.		Straight out of SCCS; only difference
+  **				is that pathnames get modified as
+  **				described above.
+***************
+*** 73,78
+  **		etc.		Straight out of SCCS; only difference
+  **				is that pathnames get modified as
+  **				described above.
+  **		edit		Macro for "get -e".
+  **		unedit		Removes a file being edited, knowing
+  **				about p-files, etc.
+
+--- 73,80 -----
+  **		etc.		Straight out of SCCS; only difference
+  **				is that pathnames get modified as
+  **				described above.
++ **		enter		Front end doing "sccs admin -i<name> <name>"
++ **		create		Macro for "enter" followed by "get".
+  **		edit		Macro for "get -e".
+  **		unedit		Removes a file being edited, knowing
+  **				about p-files, etc.
+***************
+*** 78,84
+  **				about p-files, etc.
+  **		delget		Macro for "delta" followed by "get".
+  **		deledit		Macro for "delta" followed by "get -e".
+! **		info		Tell what files being edited.
+  **		clean		Remove all files that can be
+  **				regenerated from SCCS files.
+  **		check		Like info, but return exit status, for
+
+--- 80,92 -----
+  **				about p-files, etc.
+  **		delget		Macro for "delta" followed by "get".
+  **		deledit		Macro for "delta" followed by "get -e".
+! **		branch		Macro for "get -b -e", followed by "delta
+! **				-s -n", followd by "get -e -t -g".
+! **		diffs		"diff" the specified version of files
+! **				and the checked-out version.
+! **		print		Macro for "prs -e" followed by "get -p -m".
+! **		tell		List what files are being edited.
+! **		info		Print information about files being edited.
+  **		clean		Remove all files that can be
+  **				regenerated from SCCS files.
+  **		check		Like info, but return exit status, for
+***************
+*** 172,178
+  struct sccsprog SccsProg[] =
+  {
+  	"admin",	PROG,	REALUSER,		PROGPATH(admin),
+! 	"chghist",	PROG,	0,			PROGPATH(rmdel),
+  	"comb",		PROG,	0,			PROGPATH(comb),
+  	"delta",	PROG,	0,			PROGPATH(delta),
+  	"get",		PROG,	0,			PROGPATH(get),
+
+--- 180,186 -----
+  struct sccsprog SccsProg[] =
+  {
+  	"admin",	PROG,	REALUSER,		PROGPATH(admin),
+! 	"cdc",		PROG,	0,			PROGPATH(rmdel),
+  	"comb",		PROG,	0,			PROGPATH(comb),
+  	"delta",	PROG,	0,			PROGPATH(delta),
+  	"get",		PROG,	0,			PROGPATH(get),
+***************
+*** 194,200
+  	"unedit",	UNEDIT,	NO_SDOT,		NULL,
+  	"diffs",	DIFFS,	NO_SDOT|REALUSER,	NULL,
+  	"-diff",	DODIFF,	NO_SDOT|REALUSER,	PROGPATH(bdiff),
+! 	"print",	CMACRO,	0,			"prt -e/get -p -m -s",
+  	"branch",	CMACRO,	NO_SDOT,
+  		"get:ixrc -e -b/delta: -s -n -ybranch-place-holder/get:pl -e -t -g",
+  	"enter",	ENTER,	NO_SDOT,		NULL,
+
+--- 202,208 -----
+  	"unedit",	UNEDIT,	NO_SDOT,		NULL,
+  	"diffs",	DIFFS,	NO_SDOT|REALUSER,	NULL,
+  	"-diff",	DODIFF,	NO_SDOT|REALUSER,	PROGPATH(bdiff),
+! 	"print",	CMACRO,	0,			"prs -e/get -p -m -s",
+  	"branch",	CMACRO,	NO_SDOT,
+  		"get:ixrc -e -b/delta: -s -n -ybranch-place-holder/get:pl -e -t -g",
+  	"enter",	ENTER,	NO_SDOT,		NULL,
+***************
+*** 229,234
+  extern char	*getenv();
+  # endif V6
+  
+  char *gstrcat(), *strcat();
+  char *gstrncat(), *strncat();
+  char *gstrcpy(), *strcpy();
+
+--- 237,244 -----
+  extern char	*getenv();
+  # endif V6
+  
++ extern char	*sys_siglist[];
++ 
+  char *gstrcat(), *strcat();
+  char *gstrncat(), *strncat();
+  char *gstrcpy(), *strcpy();
+***************
+*** 482,488
+  		break;
+  
+  	  case FIX:		/* fix a delta */
+! 		if (strncmp(ap[1], "-r", 2) != 0)
+  		{
+  			usrerr("-r flag needed for fix command");
+  			rval = EX_USAGE;
+
+--- 492,498 -----
+  		break;
+  
+  	  case FIX:		/* fix a delta */
+! 		if (ap[1]==0 || strncmp(ap[1], "-r", 2)!=0)
+  		{
+  			usrerr("-r flag needed for fix command");
+  			rval = EX_USAGE;
+***************
+*** 654,659
+  	bool forkflag;
+  {
+  	register int i;
+  	auto int st;
+  
+  # ifdef DEBUG
+
+--- 664,670 -----
+  	bool forkflag;
+  {
+  	register int i;
++ 	register int wpid;
+  	auto int st;
+  	register int sigcode;
+  	register int coredumped;
+***************
+*** 655,660
+  {
+  	register int i;
+  	auto int st;
+  
+  # ifdef DEBUG
+  	if (Debug)
+
+--- 666,675 -----
+  	register int i;
+  	register int wpid;
+  	auto int st;
++ 	register int sigcode;
++ 	register int coredumped;
++ 	register char *sigmsg;
++ 	auto char sigmsgbuf[10+1];	/* "Signal 127" + terminating '\0' */
+  
+  # ifdef DEBUG
+  	if (Debug)
+***************
+*** 686,693
+  		}
+  		else if (i > 0)
+  		{
+! 			wait(&st);
+! 			if ((st & 0377) == 0)
+  				st = (st >> 8) & 0377;
+  			if (OutFile >= 0)
+  			{
+
+--- 701,709 -----
+  		}
+  		else if (i > 0)
+  		{
+! 			while ((wpid = wait(&st)) != -1 && wpid != i)
+! 				;
+! 			if ((sigcode = st & 0377) == 0)
+  				st = (st >> 8) & 0377;
+  			else
+  			{
+***************
+*** 689,694
+  			wait(&st);
+  			if ((st & 0377) == 0)
+  				st = (st >> 8) & 0377;
+  			if (OutFile >= 0)
+  			{
+  				close(OutFile);
+
+--- 705,730 -----
+  				;
+  			if ((sigcode = st & 0377) == 0)
+  				st = (st >> 8) & 0377;
++ 			else
++ 			{
++ 				coredumped = sigcode & 0200;
++ 				sigcode &= 0177;
++ 				if (sigcode != SIGINT && sigcode != SIGPIPE)
++ 				{
++ 					if (sigcode < NSIG)
++ 						sigmsg = sys_siglist[sigcode];
++ 					else
++ 					{
++ 						sprintf(sigmsgbuf, "Signal %d",
++ 						    sigcode);
++ 						sigmsg = sigmsgbuf;
++ 					}
++ 					fprintf(stderr, "sccs: %s: %s%s", argv[0],
++ 					    sigmsg,
++ 					    coredumped ? " - core dumped": "");
++ 				}
++ 				st = EX_SOFTWARE;
++ 			}
+  			if (OutFile >= 0)
+  			{
+  				close(OutFile);

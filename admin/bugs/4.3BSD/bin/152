@@ -1,0 +1,125 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:05:12 1988
+Date: Mon, 18 Apr 88 13:23:43 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (4/13/87) tip, VT100s, & IBM mainframe don't mix (w/fix)
+Index: bin/tip 4.3BSD
+
+Description:
+	If tip is used to call an IBM mainframe system from a VT100,
+	the terminal hangs (and must be reset) at the end of the session.
+
+Repeat-By:
+	Adding a line such as
+		medline:hd:pn=3014803150:br#300:ds=hayes:
+	(suitably modified for your system) to your "remote" file, then
+	hopping on a VT100 terminal and using the command
+		tip medline
+	to call the Medline computer (as hordes of researchers nationwide
+	do every day to search for medical references).  When asked to
+	". . .TYPE /LOGIN", do so; when asked to type in a username and
+	password, type "XXX/YYY".  Since "XXX" isn't a valid account,
+	Medline will hang up on you; at this point your VT100 should be hung.
+	The same thing would happen if you had a valid account and successfully
+	logged on and off.
+
+Fix:
+	The problem comes about because at the end of a session Medline sends
+	an XOFF character without later sending an XON character.  The patches
+	below to files in the directory "/usr/src/usr.bin/tip" support a tip
+	variable called "xoffskip" (short name "xs") that strips XOFFs from
+	output to the terminal; there's also an addition to
+	"/usr/man/man5/remote.5" that documents the new tip variable.
+
+	Folks at Medline have been told of the problem.  I don't know whether
+	the problem is specific to Medline or is a problem with IBM mainframes
+	in general.
+
+*** 3.3/remote.c	Thu Sep 24 15:22:11 1987
+--- 3.4/remote.c	Thu Sep 24 15:22:13 1987
+***************
+*** 108,113 ****
+--- 108,119 ----
+  		boolean(value(RAWFTP)) = 1;
+  	if (rgetflag("hd"))
+  		boolean(value(HALFDUPLEX)) = 1;
++ #if !defined ASWAS
++ 	if (rgetflag("xs"))
++ 		boolean(value(XOFFSKIP)) = 1;
++ 	if (rgetflag("nx"))
++ 		boolean(value(XOFFSKIP)) = 0;
++ #endif /* !defined ASWAS */
+  	if (RE == NOSTR)
+  		RE = (char *)"tip.record";
+  	if (EX == NOSTR)
+*** 3.3/tip.h	Thu Sep 24 15:22:22 1987
+--- 3.4/tip.h	Thu Sep 24 15:22:24 1987
+***************
+*** 197,202 ****
+--- 197,205 ----
+  #define HALFDUPLEX	30
+  #define	LECHO		31
+  #define	PARITY		32
++ #if !defined ASWAS
++ #define XOFFSKIP	33
++ #endif /* !defined ASWAS */
+  
+  #define NOVAL	((value_t *)NULL)
+  #define NOACU	((acu_t *)NULL)
+*** 3.1/tipout.c	Thu Sep 24 15:22:32 1987
+--- 3.2/tipout.c	Thu Sep 24 15:22:34 1987
+***************
+*** 112,118 ****
+--- 112,126 ----
+  		omask = sigblock(ALLSIGS);
+  		for (cp = buf; cp < buf + cnt; cp++)
+  			*cp &= 0177;
++ #if defined ASWAS
+  		write(1, buf, cnt);
++ #else /* !defined ASWAS */
++ 		if (!boolean(value(XOFFSKIP)))
++ 			write(1, buf, cnt);
++ 		else for (cp = buf; cp < buf + cnt; ++cp)
++ 			if (*cp != ('s' & 037))
++ 				write(1, cp, 1);
++ #endif /* !defined ASWAS */
+  		if (boolean(value(SCRIPT)) && fscript != NULL) {
+  			if (!boolean(value(BEAUTIFY))) {
+  				fwrite(buf, 1, cnt, fscript);
+*** 3.1/vars.c	Thu Sep 24 15:22:39 1987
+--- 3.2/vars.c	Thu Sep 24 15:22:40 1987
+***************
+*** 80,84 ****
+--- 80,88 ----
+  	  "le",		(char *)FALSE },
+  	{ "parity",	STRING|INIT|IREMOTE,	(READ|WRITE)<<PUBLIC,
+  	  "par",	(char *)&PA },
++ #if !defined ASWAS
++ 	{ "xoffskip",	BOOL,			(READ|WRITE)<<PUBLIC,
++ 	  "xs",		(char *)FALSE },
++ #endif /* !defined ASWAS */
+  	{ NOSTR, NULL, NULL, NOSTR, NOSTR }
+  };
+*** 1.1/remote.5	Thu Sep 24 15:20:38 1987
+--- 1.2/remote.5	Thu Sep 24 15:20:39 1987
+***************
+*** 1,3 ****
+--- 1,4 ----
++ .LC @(#)remote.5	1.2
+  .\" Copyright (c) 1983 Regents of the University of California.
+  .\" All rights reserved.  The Berkeley software License Agreement
+  .\" specifies the terms and conditions for redistribution.
+***************
+*** 162,167 ****
+--- 163,173 ----
+  file for a list of telephone numbers;
+  c.f.
+  .IR phones (5).
++ .TP 0.5i
++ .B xs
++ (bool)
++ Indicates that the remote host sends unbalanced XOFF characters;
++ the XOFF characters are skipped in terminal output.
+  .TP 0.5i
+  .B tc
+  (str)
+

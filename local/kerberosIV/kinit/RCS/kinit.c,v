@@ -1,0 +1,1336 @@
+head     4.15;
+branch   ;
+access   ;
+symbols  PATCH8:4.11 PATCH7:4.11 KPATCH6:4.11 ASRSNAP1001:4.11 PATCH5:4.11 KPATCH4:4.11 KPATCH3:4.11 KPATCH2:4.11 KREL1:4.11 BETA5/24/88:4.7;
+locks    ; strict;
+comment  @ * @;
+
+
+4.15
+date     90.06.25.21.01.06;  author kfall;  state Exp;
+branches ;
+next     4.14;
+
+4.14
+date     90.06.21.23.10.23;  author kfall;  state Exp;
+branches ;
+next     4.13;
+
+4.13
+date     90.06.21.00.47.19;  author kfall;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     90.06.21.00.44.35;  author kfall;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     89.01.23.09.34.49;  author jtkohl;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     89.01.13.18.12.47;  author steiner;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.11.08.14.52.13;  author jon;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.05.26.18.40.03;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.03.18.17.11.04;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.11.19.17;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.13.28.07;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.01.14.13.25.35;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.16.18.57.06;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.22.10.49.36;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.13.43.19;  author steiner;  state Exp;
+branches ;
+next     3.4;
+
+3.4
+date     86.12.01.02.31.36;  author treese;  state Exp;
+branches ;
+next     3.3;
+
+3.3
+date     86.07.19.13.21.47;  author bcn;  state Exp;
+branches ;
+next     3.2;
+
+3.2
+date     86.05.18.17.35.17;  author spm;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.03.28.14.56.37;  author bcn;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     85.11.19.15.01.18;  author bcn;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     85.11.12.14.26.53;  author bcn;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.11.11.15.49.22;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.10.10.11.09.06;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial RCS checkin
+@
+
+
+4.15
+log
+@remove PC stuff, use default ticket life, and MAXHOSTNAMELEN
+..
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/kinit/RCS/kinit.c,v $
+ * $Author: kfall $ 
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ *
+ * Routine to initialize user to Kerberos.  Prompts optionally for
+ * user, instance and realm.  Authenticates user and gets a ticket
+ * for the Kerberos ticket-granting service for future use. 
+ *
+ * Options are: 
+ *
+ *   -i[instance]
+ *   -r[realm]
+ *   -v[erbose]
+ *   -l[ifetime]
+ */
+
+#ifndef	lint
+static char rcsid_kinit_c[] =
+"$Header: /usr/src/kerberosIV/kinit/RCS/kinit.c,v 4.14 90/06/21 23:10:23 kfall Exp Locker: kfall $";
+#endif	lint
+
+#include <sys/types.h>
+#include <sys/param.h>
+#include <mit-copyright.h>
+#include <string.h>
+#include <stdio.h>
+#include <des.h>
+#include <krb.h>
+#include <pwd.h>
+#include <paths.h>
+
+#define	LEN		MAXHOSTNAMELEN
+#define	LIFE		DEFAULT_TKT_LIFE /* in 5-minute units */
+#define	INITIAL_TICKET	"krbtgt"
+
+char	*progname;
+
+char    aname[ANAME_SZ];
+char    inst[INST_SZ];
+char    realm[REALM_SZ];
+
+main(argc, argv)
+    char   *argv[];
+{
+    char    buf[LEN];
+    char   *username = NULL;
+    int     iflag, rflag, vflag, lflag, lifetime, k_errno;
+    register char *cp;
+    register i;
+
+    *inst = *realm = '\0';
+    iflag = rflag = vflag = lflag = 0;
+    lifetime = LIFE;
+    progname = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+
+    while (--argc) {
+	if ((*++argv)[0] != '-') {
+	    if (username)
+		usage();
+	    username = *argv;
+	    continue;
+	}
+	for (i = 1; (*argv)[i] != '\0'; i++)
+	    switch ((*argv)[i]) {
+	    case 'i':		/* Instance */
+		++iflag;
+		continue;
+	    case 'r':		/* Realm */
+		++rflag;
+		continue;
+	    case 'v':		/* Verbose */
+		++vflag;
+		continue;
+	    case 'l':
+		++lflag;
+		continue;
+	    default:
+		usage();
+		exit(1);
+	    }
+    }
+    if (username && (k_errno = kname_parse(aname, inst, realm, username)) !=
+	KSUCCESS) {
+	fprintf(stderr, "%s: %s\n", progname, krb_err_txt[k_errno]);
+	iflag = rflag = 1;
+	username = NULL;
+    }
+    if (k_gethostname(buf, LEN)) {
+	fprintf(stderr, "%s: k_gethostname failed\n", progname);
+	exit(1);
+    }
+    if (vflag)
+    	printf("4.4 BSD/MIT Project Athena (%s)\n", buf);
+
+    if (username) {
+	printf("Kerberos Initialization for \"%s", aname);
+	if (*inst)
+	    printf(".%s", inst);
+	if (*realm)
+	    printf("@@%s", realm);
+	printf("\"\n");
+    } else {
+	if (iflag) {
+		printf("Kerberos Initialization\n");
+		printf("Kerberos name: ");
+		gets(aname);
+	} else {
+		/* default to current user name */
+		struct passwd	*pwd = getpwuid(geteuid());
+
+		if (pwd == (struct passwd *) NULL) {
+			fprintf(stderr, "Unknown Kerberos name for your uid\n");
+			printf("Kerberos name: ");
+			gets(aname);
+		} else
+			strncpy(aname, pwd->pw_name, sizeof(aname));
+	}
+		
+	if (!*aname)
+	    exit(0);
+	if (!k_isname(aname)) {
+	    fprintf(stderr, "%s: bad Kerberos name format\n",
+		    progname);
+	    exit(1);
+	}
+    }
+    /* optional instance */
+    if (iflag) {
+	printf("Kerberos instance: ");
+	gets(inst);
+	if (!k_isinst(inst)) {
+	    fprintf(stderr, "%s: bad Kerberos instance format\n",
+		    progname);
+	    exit(1);
+	}
+    }
+    if (rflag) {
+	printf("Kerberos realm: ");
+	gets(realm);
+	if (!k_isrealm(realm)) {
+	    fprintf(stderr, "%s: bad Kerberos realm format\n",
+		    progname);
+	    exit(1);
+	}
+    }
+    if (lflag) {
+	 printf("Kerberos ticket lifetime (minutes): ");
+	 gets(buf);
+	 lifetime = atoi(buf);
+	 if (lifetime < 5)
+	      lifetime = 1;
+	 else
+	      lifetime /= 5;
+	 /* This should be changed if the maximum ticket lifetime */
+	 /* changes */
+	 if (lifetime > 255)
+	      lifetime = 255;
+    }
+    if (!*realm && krb_get_lrealm(realm, 1)) {
+	fprintf(stderr, "%s: krb_get_lrealm failed\n", progname);
+	exit(1);
+    }
+
+    k_errno = krb_get_pw_in_tkt(aname, inst, realm, INITIAL_TICKET,
+		realm, lifetime, 0);
+
+    if (vflag) {
+	printf("Kerberos realm %s:\n", realm);
+	printf("%s\n", krb_err_txt[k_errno]);
+    } else if (k_errno) {
+	fprintf(stderr, "%s: %s\n", progname, krb_err_txt[k_errno]);
+	exit(1);
+    }
+}
+
+usage()
+{
+    fprintf(stderr, "Usage: %s [-irvl] [name]\n", progname);
+    exit(1);
+}
+@
+
+
+4.14
+log
+@back to old version (don't use ttys)
+@
+text
+@d24 1
+a24 1
+"$Header: /usr/src/kerberosIV/kinit/RCS/kinit.c,v 4.13 90/06/21 00:47:19 kfall Exp Locker: kfall $";
+d28 1
+d30 1
+d37 2
+a38 16
+
+#ifdef	PC
+#define	LEN	64		/* just guessing */
+#endif	PC
+
+#ifdef	BSD42
+#include <strings.h>
+#include <sys/param.h>
+#if 	defined(ultrix) || defined(sun)
+#define LEN	64
+#else
+#define	LEN	MAXHOSTNAMELEN
+#endif	/* defined(ultrix) || defined(sun) */
+#endif	/* BSD42 */
+
+#define	LIFE	DEFAULT_TKT_LIFE /* in 5-minute units */
+@
+
+
+4.13
+log
+@ttys
+@
+text
+@d24 1
+a24 1
+"$Header: /usr/src/kerberosIV/kinit/RCS/kinit.c,v 4.12 90/06/21 00:44:35 kfall Exp Locker: kfall $";
+a53 1
+char	*ttyname();
+a57 2
+char	tkfile[MAXPATHLEN];
+char	tname[sizeof(_PATH_TTY) + 10];
+a66 1
+    char *ttyn, *tty;
+d99 2
+a100 3
+    if (username &&
+	(k_errno = kname_parse(aname, inst, realm, username))
+	!= KSUCCESS) {
+d111 1
+a180 20
+    ttyn = ttyname(0);
+    if (ttyn == NULL || *ttyn == '\0') {
+	(void)sprintf(tname, "%s??", _PATH_TTY);
+	ttyn = tname;
+    }
+
+    if (tty = rindex(ttyn, '/'))
+	++tty;
+    else
+	tty = ttyn;
+
+    (void)sprintf(tkfile, "%s_%s", TKT_ROOT, tty);
+
+    if (setenv("KRBTKFILE", tkfile, 1) < 0)
+	fprintf(stderr, "%s: couldn't set KRBTKFILE env. variable\n",
+		progname);
+    else
+	(void)unlink(tkfile);
+
+    printf("Kerberos ");
+d183 1
+@
+
+
+4.12
+log
+@use ttys
+@
+text
+@d2 2
+a3 2
+ * $Source: /usr/src/kerberosIV/src/kuser/RCS/kinit.c,v $
+ * $Author: jtkohl $ 
+d24 1
+a24 1
+"$Header: /usr/src/kerberosIV/src/kuser/RCS/kinit.c,v 4.11 89/01/23 09:34:49 jtkohl Exp Locker: kfall $";
+d60 1
+d70 1
+@
+
+
+4.11
+log
+@Programmer/Auditor: John Kohl
+changes: name changes to krb_xxx
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/kuser/RCS/kinit.c,v $
+ * $Author: steiner $ 
+d24 1
+a24 1
+"$Header: kinit.c,v 4.10 89/01/13 18:12:47 jtkohl Locked $";
+d27 1
+d30 2
+d33 1
+a33 1
+#include <krb.h>
+d35 1
+d50 2
+a51 1
+#define	LIFE	96	/* lifetime of ticket in 5-minute units */
+d53 2
+a54 1
+char   *progname;
+d56 5
+a63 3
+    char    aname[ANAME_SZ];
+    char    inst[INST_SZ];
+    char    realm[REALM_SZ];
+d112 2
+a113 1
+    printf("MIT Project Athena (%s)\n", buf);
+d122 16
+a137 3
+	printf("Kerberos Initialization\n");
+	printf("Kerberos name: ");
+	gets(aname);
+d182 23
+a204 2
+    k_errno = krb_get_pw_in_tkt(aname, inst, realm, "krbtgt", realm,
+				lifetime, 0);
+@
+
+
+4.10
+log
+@function name changes.
+programmer: jtkohl
+auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jon $ 
+d24 1
+a24 1
+"$Header: kinit.c,v 4.9 88/11/08 14:52:13 jtkohl Locked $";
+d156 2
+a157 2
+    if (!*realm && get_krbrlm(realm, 1)) {
+	fprintf(stderr, "%s: get_krbrlm failed\n", progname);
+@
+
+
+4.9
+log
+@Programmer: Jon Kamens
+Auditor: Jon Rochlis
+changes:  add support for -l option, to specify lifetime in minutes.
+@
+text
+@d2 2
+a3 2
+ * $Source: /charon/mit/jik/src/kuser/RCS/kinit.c,v $
+ * $Author: jik $ 
+d24 1
+a24 1
+"$Header: kinit.c,v 1.1 88/10/30 00:25:59 jik Locked $";
+d160 2
+a161 1
+    k_errno = get_in_tkt(aname, inst, realm, "krbtgt", realm, lifetime, 0);
+@
+
+
+4.8
+log
+@Just for Win.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/kuser/RCS/kinit.c,v $
+ * $Author: jtkohl $ 
+d18 2
+a19 1
+ *   -v[erbose] 
+d24 1
+a24 1
+"$Header: kinit.c,v 4.7 88/03/18 17:11:04 steiner Locked $";
+d58 1
+a58 1
+    int     iflag, rflag, vflag, k_errno;
+d63 2
+a64 1
+    iflag = rflag = vflag = 0;
+d85 3
+d143 13
+d160 1
+a160 1
+    k_errno = get_in_tkt(aname, inst, realm, "krbtgt", realm, LIFE, 0);
+d172 1
+a172 1
+    fprintf(stderr, "Usage: %s [-irv] [name]\n", progname);
+@
+
+
+4.7
+log
+@Fixes from Charley Marker for suns
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $ 
+d23 1
+a23 1
+"$Header: kinit.c,v 4.6 88/02/24 11:19:17 jtkohl Locked $";
+d99 1
+a99 1
+    printf("MIT Project Athena, (%s)\n", buf);
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d23 1
+a23 1
+"$Header: kinit.c,v 4.5 88/01/14 13:28:07 steiner Locked $";
+d38 1
+a38 1
+#ifdef	ultrix
+d42 2
+a43 2
+#endif	ultrix
+#endif	BSD42
+@
+
+
+4.5
+log
+@Formatted.
+@
+text
+@d2 1
+a2 1
+ * $Source: /u2/lockers/kerberos/kuser/RCS/kinit.c,v $
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology. 
+a20 2
+#include	<mit-copyright.h>
+
+d22 2
+a23 2
+static char rcsid_module_c[] =
+"$Header: kinit.c,v 4.3 87/10/16 18:57:06 steiner Locked $";
+d26 4
+a29 3
+#include	<stdio.h>
+#include	<pwd.h>
+#include	<krb.h>
+d36 2
+a37 2
+#include	<strings.h>
+#include	<sys/param.h>
+@
+
+
+4.4
+log
+@Definitions for ultrix.
+@
+text
+@d1 3
+a3 2
+/* $Source: /u2/lockers/kerberos/kuser/RCS/kinit.c,v $
+ * $Author: steiner $
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d7 2
+a8 2
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+d10 3
+a12 3
+ * Routine to initialize user to Kerberos.  Prompts optionally
+ * for user, instance and realm.  Authenticates user and gets a ticket
+ * for the Kerberos ticket granting service for future use.
+d14 1
+a14 1
+ * options are:
+d16 3
+a18 3
+ * -i[instance]
+ * -r[realm]
+ * -v[erbose]
+d33 1
+a33 1
+#define	LEN	64	/* just guessing */
+d48 1
+a48 1
+char *progname;
+d51 1
+a51 1
+char *argv[];
+d53 8
+a60 8
+	char aname[ANAME_SZ];
+	char inst[INST_SZ];
+	char realm[REALM_SZ];
+	char buf[LEN];
+	char *username = NULL;
+	int  iflag, rflag, vflag, k_errno;
+	register char *cp;
+	register i;
+d62 3
+a64 3
+	*inst = *realm = '\0';
+	iflag = rflag = vflag = 0;
+	progname = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+d66 6
+a71 22
+	while (--argc) {
+		if ((*++argv)[0] != '-') {
+			if (username)
+				usage();
+			username = *argv;
+			continue;
+		}
+		for (i = 1; (*argv)[i] != '\0'; i++)
+			switch ((*argv)[i]) {
+			case 'i':		/* Instance */
+				++iflag;
+				continue;
+			case 'r':		/* Realm */
+				++rflag;
+				continue;
+			case 'v':		/* Verbose */
+				++vflag;
+				continue;
+			default :
+				usage();
+				exit(1);
+			}
+d73 13
+a85 8
+	if (username && (k_errno = kname_parse(aname, inst, realm, username))
+		!= KSUCCESS) {
+		fprintf(stderr, "%s: %s\n", progname, krb_err_txt[k_errno]);
+		iflag = rflag = 1;
+		username = NULL;
+	}
+	if (k_gethostname(buf, LEN)) {
+		fprintf(stderr, "%s: k_gethostname failed\n", progname);
+d87 31
+d119 9
+a127 8
+	printf("MIT Project Athena, (%s)\n", buf);
+	if (username) {
+		printf("Kerberos Initialization for \"%s", aname);
+		if (*inst)
+			printf(".%s", inst);
+		if (*realm)
+			printf("@@%s", realm);
+		printf("\"\n");
+d129 8
+a136 11
+	else {
+		printf("Kerberos Initialization\n");
+		printf("Kerberos name: ");
+		gets(aname);
+		if (!*aname)
+			exit(0);
+		if (!k_isname(aname)) {
+			fprintf(stderr, "%s: bad Kerberos name format\n",
+			progname);
+			exit(1);
+		}
+d138 13
+a150 32
+	/* optional instance */
+	if (iflag) {
+		printf("Kerberos instance: ");
+		gets(inst);
+		if (!k_isinst(inst)) {
+			fprintf(stderr, "%s: bad Kerberos instance format\n",
+			progname);
+			exit(1);
+		}
+	}
+	if (rflag) {
+		printf("Kerberos realm: ");
+		gets(realm);
+		if (!k_isrealm(realm)) {
+			fprintf(stderr, "%s: bad Kerberos realm format\n",
+			progname);
+			exit(1);
+		}
+	}
+	if (!*realm && get_krbrlm(realm,1)) {
+		fprintf(stderr, "%s: get_krbrlm failed\n", progname);
+		exit(1);
+	}
+	k_errno = get_in_tkt(aname, inst, realm, "krbtgt", realm, LIFE, 0);
+	if(vflag) {
+		printf("Kerberos realm %s:\n", realm);
+		printf("%s\n", krb_err_txt[k_errno]);
+	}
+	else if (k_errno) {
+		fprintf(stderr, "%s: %s\n", progname, krb_err_txt[k_errno]);
+		exit(1);
+	}
+d155 2
+a156 2
+	fprintf(stderr, "Usage: %s [-irv] [name]\n", progname);
+	exit(1);
+@
+
+
+4.3
+log
+@Added option to give username on command line, check for name,
+instance, and realm formats, etc.
+@
+text
+@d1 1
+a1 1
+/* $Source: /mit/s/t/steiner/kerberos/client/RCS/kinit.c,v $
+d24 1
+a24 1
+"$Header: kinit.c,v 4.3 87/09/22 13:18:54 steiner Exp $";
+d38 3
+d42 1
+@
+
+
+4.2
+log
+@revised, cleaned up.  Going to take out prompt for user name.
+@
+text
+@d1 2
+a2 3
+/* Routine to initialize user to Kerberos.  Prompts for user name,
+ * and optionally instance and realm.  Authenticates user and gets
+ * a ticket for the Kerberos ticket granting service for future use.
+d4 9
+a17 8
+ *
+ * $Source$
+ * $Author$
+ *
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+d24 1
+a24 1
+"$Header$";
+d28 1
+d43 1
+a43 1
+char *progname;	/* for krb library; take out eventually */
+d48 1
+a48 1
+	char aname[ANAME_SZ];	
+d52 2
+a53 1
+	char *pname;
+a54 1
+	int  iflag, rflag, vflag, k_errno;
+d57 3
+a59 2
+	*aname = *inst = *realm = '\0';
+	pname = (cp = rindex(*argv, '/')) ? cp + 1 : *argv;
+d61 7
+a67 1
+	while (argc-- && (*++argv)[0] == '-')
+d78 1
+a78 1
+			continue;
+d80 1
+a80 1
+				fprintf(stderr, "Usage: %s [-irv]\n", pname);
+a82 3
+	if (argc) {
+		fprintf(stderr, "Usage: %s [-irv]\n", pname);
+		exit(1);
+d84 6
+d91 1
+a91 1
+		fprintf(stderr, "%s: k_gethostname failed\n", pname);
+d94 21
+a114 3
+	printf("\nMIT Project Athena, (%s)\n", buf);
+	printf("Kerberos login: ");
+	gets(aname);
+d119 5
+d128 5
+d134 2
+a135 2
+	else if (get_krbrlm(realm,1)) {
+		fprintf(stderr, "%s: get_krbrlm failed\n", pname);
+d141 1
+a141 1
+		printf("k_errno %d: %s\n", k_errno, krb_err_txt[k_errno]);
+d144 1
+a144 1
+		fprintf(stderr, "%s: %s\n", pname, krb_err_txt[k_errno]);
+d147 6
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d1 3
+a3 4
+/* 
+ *  $Source: /mit/s/t/steiner/kerberos/client/RCS/kinit.c,v $
+ *  $Author: treese $
+ *  $Locker: steiner $
+d5 1
+a5 1
+ * Copyright 1985,1986 by the Massachusetts Institute of Technology
+d7 11
+d20 1
+a20 5
+#ifndef lint
+static char *rcsid_kinit_c = "$Header: kinit.c,v 3.4 86/12/01 02:31:36 steiner Locked $";
+static char *CopyRight = 
+        "Copyright 1985,1986 by the Massachusetts Institute of Technology";
+#endif  lint
+d22 4
+a25 2
+#include    <stdio.h>
+#include    <krb.h>
+d27 2
+a28 1
+char    *getmname();
+d30 3
+a32 5
+#ifdef  PC
+typedef long    in_name;
+#include    "custom.h"
+extern  get_custom();
+#endif
+d34 5
+a38 11
+extern char   *krb_err_txt[];
+int     debug = 0;
+int	iflag = 0;
+int	rflag = 0;
+int	vflag = 0;
+char    *progname;
+int     i;
+#ifdef  BSD42
+#include    <strings.h>
+char    *tkt_string();
+#endif
+d40 1
+a40 3
+main(argc,argv)
+char    *argv[];
+int argc;
+d42 1
+a42 5
+{
+  char        aname[ANAME_SZ];  
+  char	iname[INST_SZ];
+  char	lrealm[REALM_SZ];
+  int		kerno;
+d44 2
+a45 65
+  progname=argv[0];       /* salt away invoking program */
+
+  *aname = '\000';
+  *iname = '\000';
+  *lrealm = '\000';
+
+  while (argc-- > 0 && (*++argv)[0] == '-')
+    for (i=1; argv[0][i] != '\0'; i++) {
+      switch (argv[0][i]) {
+
+      case 'd':		/* Debug    */
+	debug=1;
+	continue;
+	
+      case 'i':		/* Instance */
+	iflag = 1;
+	continue;
+	
+      case 'r':		/* Realm    */
+	rflag = 1;
+	continue;
+	
+      case 'v':		/* Verbose  */
+      case 'c':		/* Confirm  */
+	vflag = 1;
+	continue;
+	
+	default :
+	fprintf(stderr,"%s: illegal flag \"%c\" \n",
+	       progname,argv[0][i]);
+	exit(1);
+      }
+    };
+
+  printf("\nMIT Project Athena, (%s)\n",getmname());
+  printf("Kerberos login: ");
+  
+  gets(aname);
+
+  /* optional instance */
+  if (iflag) 
+    {
+      printf("Kerberos instance: ");
+      gets(iname);
+    }
+
+  if (rflag) 
+    {
+      printf("Kerberos realm: ");
+      gets(lrealm);
+    }
+  else if(get_krbrlm(lrealm,1)) 
+    {printf("Can't get local realm\n");
+     exit(1);}
+
+  kerno = get_in_tkt(aname,iname,lrealm,"krbtgt",lrealm,96,0);
+
+  if(vflag)
+    printf("%s %d: %s\n",lrealm,kerno,krb_err_txt[kerno]);
+  else if (kerno)
+    fprintf(stderr,"%s\n",krb_err_txt[kerno]);
+}
+
+char    *
+getmname()
+d47 8
+a54 3
+static  char    hostname[41];
+static  char    b1,b2,b3,b4;
+static  char    *ptr;
+d56 2
+a57 12
+#ifdef  BSD42
+    gethostname(hostname,41);
+#endif
+#ifdef  PC
+    get_custom();
+    ptr = (char *) &(custom.c_me);
+    b1 = *ptr++;
+    b2 = *ptr++;
+    b3 = *ptr++;
+    b4 = *ptr;
+    sprintf(hostname,"PC address %d.%d.%d.%d",b1,b2,b3,b4);
+#endif
+d59 49
+a107 3
+    hostname[40] = '\0';        /* force null term                         */
+
+    return hostname;
+a108 2
+
+ 
+@
+
+
+3.4
+log
+@Moved to paris
+@
+text
+@d2 3
+a4 3
+ *  $Source: /mit/projects/auth/src/client/RCS/clogin.c,v $
+ *  $Author: bcn $
+ *  $Locker: bcn $
+d11 1
+a11 1
+static char *rcsid_kinit_c = "$Header: clogin.c,v 3.3 86/07/19 13:21:47 bcn Exp $";
+@
+
+
+3.3
+log
+@Initialize iname.
+@
+text
+@d3 2
+a4 2
+ *  $Author: spm $
+ *  $Locker:  $
+d11 1
+a11 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 3.2 86/05/18 17:35:17 spm Exp $";
+d13 1
+a13 1
+        "Copyright 1985 by the Massachusetts Institute of Technology";
+d27 1
+d29 3
+a31 1
+int		iflag = 0;
+d44 4
+a47 2
+    char        aname[ANAME_SZ];  
+    char	iname[INST_SZ];
+d49 1
+a49 1
+    progname=argv[0];       /* salt away invoking program */
+d51 3
+a53 2
+    *aname = '\000';
+    *iname = '\000';
+d55 3
+a57 3
+    while (argc-- > 0 && (*++argv)[0] == '-')
+       for (i=1; argv[0][i] != '\0'; i++) {
+        switch (argv[0][i]) {
+d59 23
+a81 4
+    /*  debugging flag          */
+        case 'd':
+            debug=1;
+            continue;
+d83 4
+a86 4
+	/* prompt for instance												   */
+		case 'i':
+			iflag = 1;
+			continue;
+d88 6
+a93 6
+	     default :
+            printf("%s: illegal flag \"%c\" ",
+                progname,argv[0][i]);
+            exit(1);
+        }
+       };
+d95 8
+a102 2
+    printf("\nMIT Project Athena, (%s)\n",getmname());
+    printf("Kerberos login: ");
+d104 1
+a104 1
+    gets(aname);
+d106 4
+a109 8
+	/* optional instance												   */
+	if (iflag) 
+		{
+		printf("Kerberos instance: ");
+		gets(iname);
+		}
+	
+    cl_get_tgt(aname,iname,"");
+@
+
+
+3.2
+log
+@add optional instance
+@
+text
+@d3 2
+a4 2
+ *  $Author: bcn $
+ *  $Locker: spm $
+d11 1
+a11 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 3.1 86/03/28 14:56:37 bcn Exp $";
+d42 1
+a42 1
+	char		iname[INST_SZ];
+d45 3
+@
+
+
+3.1
+log
+@Updated to revision 3 of the kerberos protocol.
+@
+text
+@d4 1
+a4 1
+ *  $Locker: bcn $
+d11 1
+a11 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 1.4 85/11/19 15:01:18 bcn Exp $";
+d28 1
+d42 1
+d55 6
+a60 1
+        default :
+d71 9
+a79 1
+    cl_get_tgt(aname,"","");
+@
+
+
+1.4
+log
+@client.h >>---> <krb.h>
+@
+text
+@d2 3
+a4 14
+ * 	$Source: /mit/projects/auth/src/client/RCS/clogin.c,v $
+ * 	$Author: bcn $
+ * 	$Locker:  $
+ *    	$Log:	clogin.c,v $
+ * Revision 1.3  85/11/12  14:26:53  bcn
+ * tkt_string() moved to storage.c.
+ * 
+ * Revision 1.2  85/11/11  15:49:22  spm
+ * add debug flag -d ; add host name or number; add uid to
+ * ticket file name
+ * 
+ * Revision 1.1  85/10/10  11:09:06  bcn
+ * Initial revision
+ * 
+d6 1
+a6 1
+ * Copyright 1985 by the Massachusetts Institute of Technology
+d11 1
+a11 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 1.3 85/11/12 14:26:53 bcn Exp $";
+d13 2
+a14 2
+	    "Copyright 1985 by the Massachusetts Institute of Technology";
+#endif	lint
+d16 2
+a17 1
+#include	<stdio.h>
+d19 1
+a19 2
+#include 	<krb.h>
+char	*getmname();
+d21 4
+a24 4
+#ifdef	PC
+typedef	long	in_name;
+#include	"custom.h"
+extern	get_custom();
+d27 6
+a32 6
+int		debug = 0;
+char	*progname;
+int		i;
+#ifdef	BSD42
+#include	<strings.h>
+char	*tkt_string();
+d36 2
+a37 2
+char	*argv[];
+int	argc;
+d40 1
+a40 1
+	char		aname[41];  /* define the length */
+d42 1
+a42 1
+	progname=argv[0];		/* salt away invoking program */
+d44 3
+a46 3
+	while (argc-- > 0 && (*++argv)[0] == '-')
+	   for (i=1; argv[0][i] != '\0'; i++) {
+		switch (argv[0][i]) {
+d48 4
+a51 4
+	/*	debugging flag			*/
+		case 'd':
+			debug=1;
+			continue;
+d53 6
+a58 6
+		default :
+			printf("%s: illegal flag \"%c\" ",
+				progname,argv[0][i]);
+			exit(1);
+		}
+	   };
+d60 2
+a61 2
+	printf("\nMIT Project Athena, (%s)\n",getmname());
+	printf("Kerberos login: ");
+d63 2
+a64 2
+	gets(aname);
+	cl_get_tgt(aname);
+d67 1
+a67 1
+char	*
+d70 3
+a72 3
+static	char	hostname[41];
+static	char	b1,b2,b3,b4;
+static	char	*ptr;
+d74 2
+a75 2
+#ifdef	BSD42
+	gethostname(hostname,41);
+d77 8
+a84 8
+#ifdef	PC
+	get_custom();
+	ptr = (char *) &(custom.c_me);
+	b1 = *ptr++;
+	b2 = *ptr++;
+	b3 = *ptr++;
+	b4 = *ptr;
+	sprintf(hostname,"PC address %d.%d.%d.%d",b1,b2,b3,b4);
+d87 1
+a87 1
+	hostname[40] = '\0';		/* force null term						   */
+d89 1
+a89 1
+	return hostname;
+@
+
+
+1.3
+log
+@tkt_string() moved to storage.c.
+@
+text
+@d3 2
+a4 2
+ * 	$Author: spm $
+ * 	$Locker: bcn $
+d6 3
+d22 1
+a22 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 1.2 85/11/11 15:49:22 spm Exp $";
+d29 1
+a29 1
+#include 	"client.h"
+@
+
+
+1.2
+log
+@add debug flag -d ; add host name or number; add uid to
+ticket file name
+@
+text
+@d3 2
+a4 2
+ * 	$Author: bcn $
+ * 	$Locker: spm $
+d6 4
+d19 1
+a19 1
+static char *rcsid_clogin_c = "$Header: clogin.c,v 1.1 85/10/10 11:09:06 bcn Exp $";
+d100 1
+a100 17
+#ifdef	BSD42
+char *tkt_string()
+{
+	static	char	s[64];
+	static	char	uid[5];
+	static	int		done;
+	if (!done)
+		{
+		strcpy(s,TKT_ROOT);
+		sprintf(uid,"%d",getuid());
+		strcat(s,uid);
+		done = 1;
+		}
+	return s;
+}
+#endif
+	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 7
+a8 4
+ * 	$Source: $
+ * 	$Author: $
+ * 	$Locker: $
+ *    	$Log:	 $
+d15 1
+a15 1
+static char *rcsid_clogin_c = "$Header: $";
+a22 1
+
+d25 14
+a44 2
+	printf("MIT Project Athena, (%s)\n",getmname());
+	printf("login: ");
+d46 21
+d74 20
+a93 1
+return("TARTAROS.MIT.EDU");
+d95 18
+@

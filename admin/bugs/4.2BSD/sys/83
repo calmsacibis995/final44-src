@@ -1,0 +1,37 @@
+Return-Path: <rws@mit-bold>
+Date: Tue, 22 Nov 83 15:28:17 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: vv doesn't broadcast, doesn't loopback
+Index: sys/vaxif/if_vv.c 4.2BSD
+
+Description:
+	The V2LNI driver doesn't set up for broadcast correctly, and
+	doesn't take advantage of the loopback-net.
+Repeat-By:
+	Try running rwhod (for broacast) and rlogin to self (for loopback).
+Fix:
+	Somewhere after the top add the declaration
+		extern struct ifnet loif;
+	In vvinit(), change
+		sin->sin_addr = if_makeaddr(vs->vs_if.if_net, VV_BROADCAST);
+	to be
+		sin->sin_addr = if_makeaddr(vs->vs_if.if_net, 0);
+	and change
+		vs->vs_if.if_flags |= IFF_UP | IFF_RUNNING;
+	to be
+		vs->vs_if.if_flags |= IFF_UP | IFF_RUNNING | IFF_BROADCAST;
+	In vvoutput(), after
+		dest = ((struct sockaddr_in *)dst)->sin_addr.s_addr;
+	add
+		if ((dest == ((struct sockaddr_in *)&ifp->if_addr)->sin_addr.s_addr) &&
+		   ((loif.if_flags & IFF_UP) != 0))
+			return(looutput(&loif, m0, dst));
+	(note the check to make sure the loopback is up, which other drivers
+	don't do but should) and after
+		if ((dest = in_lnaof(*((struct in_addr *)&dest))) >= 0x100) {
+			error = EPERM;
+			goto bad;
+		}
+	add
+		if (dest == 0)
+			dest = VV_BROADCAST;

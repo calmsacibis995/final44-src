@@ -1,0 +1,76 @@
+Return-Path: <keith@seismo.ARPA>
+Subject: mktemp.c
+Date: Tue, 25 Sep 84 19:59:32 EDT
+From: Keith Bostic <keith@seismo.ARPA>
+Subject: 
+	mktemp(3) only produces 26 unique file names,
+	and then returns "/" to the calling routine.
+Index: lib/libc/gen/mktemp.c 4.2BSD
+
+Description:
+
+	1: Mktemp only produces 26 unique file names.
+		It's a real pain to run out of file names,
+		especially considering...
+
+	2: On failure, mktemp returns the string "/".
+		You can't test mktemp in the standard fashion, i.e.
+		"if (!mktemp(str))" has to be done as
+		"if (!strcmp(mktemp(str),"/"))" unless you just want
+		to try and recover when you fail to open the file.  The
+		fact that it returns "/" is undocumented, and a real
+		good 20 minute bug when it occurs.
+
+Repeat-By:
+	#include <stdio.h>
+	main()
+	{
+		int	cnt;
+		char	buf[20],
+			*strcpy(), *mktemp();
+
+		for (cnt = 0;cnt < 30;++cnt) {
+			creat(mktemp(strcpy(buf,"/tmp/fileXXXXXX")),0444);
+			printf("%d -- %s\n",cnt,buf);
+		}
+	}
+Fix:
+	Replace the current mktemp with something along the lines of
+	the following code.  Its behavior is identical up to the
+	mktemp failure point; after that it continues to assign letters
+	to the pid of the process.  Its error return is NULL rather
+	than a string.  It should never return an error though; assuming
+	it gets passed a string of 6 X's, it will come up with
+	26 ** 6 + 1 file names.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#include <ctype.h>
+
+char *
+mktemp(as)
+register char	*as;
+{
+	register char	*start,
+			*trv;
+	unsigned	pid;
+
+	pid = getpid();
+	for(trv = as;*trv;++trv);
+	while(*--trv == 'X') {
+		*trv = (pid % 10) + '0';
+		pid /= 10;
+	}
+	for(start = ++trv;;) {
+		if (access(as,0)) return(as);
+		for(trv = start;;) {
+			if (!*trv) return((char *)0);
+			if (*trv == 'z') *trv++ = 'a';
+			else {
+				if (isdigit(*trv)) *trv = 'a';
+				else ++*trv;
+				break;
+			}
+		}
+	}
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

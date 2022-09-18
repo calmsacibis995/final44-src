@@ -1,0 +1,91 @@
+From ihnp4!inmet!faust!root  Tue Jul 17 07:39:11 1984
+From: ihnp4!inmet!faust!root
+Date: 17 Jul 84 09:09:54 CDT (Tue)
+Subject: lastcomm (1) doesn't work if UCB_LOGIN is defined
+Index: 	ucb/lastcomm.c 2.9BSD
+
+Description:
+	Lastcomm(1) reports total garbage if run on a system configured with
+	UCB_LOGIN.
+Repeat-By:
+	Configure a 2.9BSD system with UCB_LOGIN and ACCT enabled.  Recompile
+	/usr/src/ucb/lastcomm.c (note that for this part to succeed,
+	you must put in a #include <sys/localopts.h> before the include
+	of <sys/acct.h>, which was in a previous bug report).  Turn
+	accounting on, wait for the file to get something in it (preferably
+	more than BUFSIZ long), and execute lastcomm.
+Fix:
+	The problem is that lastcomm assumes that an integral number of
+	accounting records will fit in a block (BUFSIZ bytes).  This is
+	true when UCB_LOGIN is not defined, and an acct struct is 32 bytes,
+	but with UCB_LOGIN defines, the struct is 38 bytes long.  The code
+	reads the accounting file block by block, assuming that each starts
+	with an accounting record boundary, and ends with one as well.  Here
+	is a fix:
+
+RCS file: lastcomm.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -e -r1.1 -r1.2
+78,141c
+	    fseek(acct_desc, (long)(i * sizeof acctrec), FSEEK_ABSOLUTE);
+	    fread(&acctrec, sizeof acctrec, 1, acct_desc);
+
+	    if (acctrec.ac_uid >= N_USER)
+	    {
+		    printf (
+		    "lastcomm: Too large of a user id number\n");
+		    return;
+	    }
+	    if (!*user_list [acctrec.ac_uid]) continue;
+	    /*
+	     * get the times
+	     */
+	    x =	expand (acctrec.ac_utime)
+		    +
+		    expand (acctrec.ac_stime);
+	    /*
+	     * null terminate the command name
+	     */
+	    acctrec.ac_comm [10] = 0;
+	    /*
+	     * replace missing command names with question marks
+	     */
+	    if (!*acctrec.ac_comm)
+	    {
+		    move ("?", acctrec.ac_comm);
+	    }
+	    /*
+	     * replace control characters with question marks
+	     */
+	    for (p = acctrec.ac_comm; *p; p++)
+	    {
+		    if (*p < '!' || '~' < *p) *p = '?';
+	    }
+	    for (j = 1; j < argc; j++)
+	    {
+		    if
+		    (
+			    equal (acctrec.ac_comm, argv [j])
+			    ||
+			    equal
+			    (
+			    user_list [acctrec.ac_uid],
+				    argv [j]
+			    )
+		    )
+		    {
+			    break;
+		    }
+	    }
+	    if (argc == 1 || j != argc)
+	    {
+		    printf
+		    (
+			    "%-10s %-8s %6.2f     %.16s\n",
+			    acctrec.ac_comm,
+			    user_list [acctrec.ac_uid],
+			    x / 60.0,
+			    ctime (&acctrec.ac_btime)
+		    );
+	    }

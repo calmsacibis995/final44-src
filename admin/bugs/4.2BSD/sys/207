@@ -1,0 +1,82 @@
+Return-Path: <stephen%computing.lancaster.ac.uk@cs.ucl.ac.uk>
+From: "Stephen J. Muir" <stephen%computing.lancaster.ac.uk@cs.ucl.ac.uk>
+Date: Fri, 13 Dec 85 00:07:13 gmt
+To: 4bsd-bugs <@cs.ucl.ac.uk,@cs.ucl.ac.uk:4bsd-bugs@ucbvax.berkeley.edu>
+Subject: flock(3) can deadlock
+
+Index:	sys/sys/kern_descrip.c 4.2BSD
+
+Description:
+	Advisory locks applied by flock(3) aren't removed when a process's
+	files are closed and other processes have the same file open.
+
+Repeat-By:
+	Put the following program in file "flock.c".
+----------------------------------- Cut Here ----------------------------------
+# include "sys/file.h"
+# include <stdio.h>
+
+char	c;
+
+int	fd;
+
+main ()
+	{ if ((fd = open (".", O_RDONLY, 0)) == -1)
+	  { perror (".");
+	    exit (1);
+	  }
+	  while (read (0, &c, 1) == 1)
+	  { switch (c | 040)
+	    { case 's':
+	      case 'r':
+		printf ("shared ... ");
+		fflush (stdout);
+		printf ("done(%d)\n", flock (fd, LOCK_SH));
+		continue;
+	      case 'x':
+	      case 'e':
+	      case 'w':
+		printf ("exclusive ... ");
+		fflush (stdout);
+		printf ("done(%d)\n", flock (fd, LOCK_EX));
+		continue;
+	      case 'u':
+		printf ("unlock ... ");
+		fflush (stdout);
+		printf ("done(%d)\n", flock (fd, LOCK_UN));
+		continue;
+	      default:
+		continue;
+	    }
+	    break;
+	  }
+	  exit (0);
+	}
+----------------------------------- Cut Here ----------------------------------
+	Compile the program:
+		% cc -o flock flock.c
+
+	Login in on two different terminals, tty1 & tty2.
+	Start the "flock" program on both terminals.
+	Type "s<return>" on the first terminal.
+	Type "x<return>" on the second terminal.
+	Type "x<return>" on the first terminal.
+
+	Both processes are now hung.  One of them should have continued.
+
+	Abort the process on the second terminal.
+
+	The process on the first terminal is still hung.  This is wrong.
+
+	Abort the process on the first terminal.
+	Start the "flock" program on the first terminal.
+	Type "x<return>" on the first terminal.
+
+	The process should not have hung.
+
+	Change out of the home directory on both terminals.
+	Change back into the home directory on both terminals.
+	Start the "flock" program on the first terminal.
+	Type "x<return>" on the first terminal.
+
+	The process can now apply an exclusive lock successfully.

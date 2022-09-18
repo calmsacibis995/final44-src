@@ -1,0 +1,129 @@
+From serge@okeeffe.Berkeley.EDU  Thu Dec 15 17:59:58 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA04835; Thu, 15 Dec 88 17:59:58 PST
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA12363; Thu, 15 Dec 88 17:58:52 PST
+Received: by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA04817; Thu, 15 Dec 88 17:59:51 PST
+Date: Thu, 15 Dec 88 17:59:51 PST
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8812160159.AA04817@okeeffe.Berkeley.EDU>
+Subject: There is no ptopen(3)
+Index: lib/libc/gen/ptopen.c 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Pseudo terminal allocation is done on an ad hoc basis.
+Fix:
+
+*** /usr/src/man/man3/ptopen.3	Thu Dec 15 17:57:09 1988
+--- ptopen.3	Tue Aug 23 14:19:09 1988
+***************
+*** 0 ****
+--- 1,21 ----
++ .\"	%W% (Berkeley) %G%
++ .\"
++ .TH PTOPEN 3 "%Q%"
++ .AT 3
++ .SH NAME
++ ptopen \- allocate a pseudo terminal
++ .SH SYNOPSIS
++ .B "ptopen(tty)"
++ .br
++ .B "char tty[32];"
++ .SH DESCRIPTION
++ .I Ptopen
++ searches for a free pseudo terminal.
++ If successful,
++ it returns a file descriptor to the master side,
++ and places the name of the corresponding slave side into
++ .IR tty .
++ If unsuccessful,
++ it returns -1.
++ .SH SEE ALSO
++ ioctl(2), open(2), pty(4)
+
+*** /usr/src/lib/libc/gen/ptopen.c	Thu Dec 15 17:58:38 1988
+--- ptopen.c	Thu Aug 25 18:01:51 1988
+***************
+*** 0 ****
+--- 1,79 ----
++ /*LINTLIBRARY*/
++ 
++ #if defined(LIBC_SCCS) && !defined(lint)
++ static char sccsid[] = "%W% (Berkeley) %G%";
++ #endif /* LIBC_SCCS and not lint */
++ 
++ #include <sys/types.h>
++ #include <sys/stat.h>
++ #include <fcntl.h>
++ #include <errno.h>
++ 
++ #include <string.h>
++ 
++ /*
++  * These arrays are larger than necessary to allow
++  * patching binaries in case of future expansion.
++  */
++ static char pty_template[16]	= "/dev/XtyXX";		/* `/dev/pty/ptyp0' */
++ static char pty_banks[16]	= "pqrs";		/* [p-z]	    */
++ static char pty_lines[64]	= "0123456789abcdef";	/* [0-9a-zA-Z]	    */
++ 
++ #define PTY_TYPE	5	/* offset for PTY_MASTER and PTY_SLAVE	    */
++ #define   PTY_MASTER	'p'	/*   master if pty[PTY_TYPE] == PTY_MASTER  */
++ #define   PTY_SLAVE	't'	/*   slave  if pty[PTY_TYPE] == PTY_SLAVE   */
++ #define PTY_BANK	8	/* offset for pty_banks[]		    */
++ #define PTY_LINE	9	/* offset for pty_lines[]		    */
++ 
++ extern int  errno;
++ 
++ /*
++  * Return a read/write file descriptor to a free master pseudo terminal
++  * and place the name of the corresponding slave terminal in `tty'.
++  * On error return -1.
++  */
++ int
++ ptopen(tty)
++ 	char		tty[/* >= sizeof (pty_template) */];
++ {
++ 	register char	*line;
++ 	register char	*bank;
++ 	register int	master;
++ 	register int	slave;
++ 	struct stat	status;
++ 
++ 	if (tty == (char *)0)
++ 		return (-1);
++ 
++ 	(void) strcpy(tty, pty_template);
++ 
++ 	for (bank = pty_banks; *bank != '\0'; bank++) {
++ 		tty[PTY_TYPE] = PTY_MASTER;
++ 		tty[PTY_BANK] = *bank;
++ 		tty[PTY_LINE] = pty_lines[0];
++ 
++ 		if (stat(tty, &status) == -1 && errno == ENOENT)
++ 			break;	/* No more ptys */
++ 
++ 		for (line = pty_lines; *line != '\0'; line++) {
++ 			tty[PTY_LINE] = *line;
++ 
++ 			master = open(tty, O_RDWR, 0);
++ 			if (master >= 0) {
++ 				tty[PTY_TYPE] = PTY_SLAVE;
++ 
++ 				slave = open(tty, O_RDWR, 0);
++ 				if (slave < 0) {
++ 					tty[PTY_TYPE] = PTY_MASTER;
++ 					(void) close(master);
++ 				} else {
++ 					(void) close(slave);
++ 					return (master);
++ 				}
++ 			}
++ 		}
++ 	}
++ 
++ 	tty[0] = '\0';
++ 	return (-1);
++ }

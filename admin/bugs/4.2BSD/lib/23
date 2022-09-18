@@ -1,0 +1,135 @@
+Return-Path: <chris@maryland>
+Date: Thu, 22 Nov 84 02:56:20 est
+From: chris@maryland (Chris Torek)
+To: 4bsd-bugs@BERKELEY
+Subject: (Improvement on) PCC fix for auto incr+struct/union bug
+
+Index: lib/pcc/local2.c 4.2BSD Fix
+
+Description:
+	The original 4.2BSD PCC mishandles autoincrement operations
+	on certain structures and unions.  For example, compiling
+
+		typedef struct { short i, j; } ty;
+
+		f () {
+			register ty *sp;
+
+			while (sp++->i);
+		}
+
+	produces code that autoincrements r11 ("sp") by 4, rather
+	than 2.  elsie!ado posted a fix, but it turned off optimization
+	of the same code for types such as
+
+		typedef struct { int i; } ty;
+
+	or
+
+		typedef union { int i; char c; } ty;
+
+	The same bug is probably present in the 4.1 PCC.
+
+Repeat-By:
+	(see description)
+
+Fix:
+	What's happening is that ``shumul'' is called to attempt to
+	share UNARY MULs (i.e., indirection) with predecrements or
+	postincrements.  It gets the proper size for everything except
+	structures and unions.  (For these, shumul is called only if
+	one is accessing the first element of the structure, or an item
+	at offset 0 in a union.) The original code assumed that all
+	structure elements were four bytes long!  elsie!ado's fix
+	actually turned off all shumul struct/union optimizations (I
+	forget why, but it's not important).  What I've done is rewrite
+	the code to check specifically for STRTY (structures) and
+	UNIONTY (unions), and to get the size of the element being
+	accessed (by a recursive call).
+
+	This has been installed in our compiler for quite a while now
+	and no one has complained, so it is presumably correct.  However,
+	I have to apologize for not using the format of the rest of
+	the code (I just couldn't read what I wrote that way).
+
+	Finally, the fix itself:  replace local2$shumul() with the
+	following:
+
+-------------------------------------------------------------------
+/* reshape a UNARY MUL, if possible */
+shumul (p) register NODE *p; {
+	register int o;
+	extern int xdebug;
+
+	if (xdebug) {
+		printf("\nshumul:op=%d,lop=%d,rop=%d", p->in.op,
+			p->in.left->in.op, p->in.right->in.op);
+		printf(" prname=%s,plty=%d, prlval=%D\n", p->in.right->in.name,
+			p->in.left->in.type, p->in.right->tn.lval);
+	}
+
+	o = p->in.op;
+	if (o == NAME || (o == OREG && !R2TEST(p->tn.rval)) || o == ICON)
+		return(STARNM);
+
+	/* can we make an auto-incr or auto-decr out of it? */
+	if ((o == INCR || o == ASG MINUS) &&
+	    (p->in.left->in.op == REG && p->in.right->in.op == ICON) &&
+	    p->in.right->in.name[0] == '\0') {
+		o = szumul(p->in.left->in.type, p->in.type);
+		if (edebug)
+			printf("szumul=>%d\n", o);
+		return(p->in.right->tn.lval == o ? STARREG : 0);
+	}
+	return(0);
+}
+
+/* Return the size of the object which would be dereferenced by a
+   UNARY MUL operator (0 iff unknown) */
+szumul(ty, sty)
+TWORD ty;			/* type of object */
+TWORD sty;			/* type of structure ref (if any) */
+{
+	register TWORD dty;
+
+	if (!ISPTR(ty))
+		cerror("szumul: ty not a pointer");
+	dty = DECREF(ty);
+	switch (dty) {
+	case CHAR:
+	case UCHAR:
+		return(1);
+
+	case SHORT:
+	case USHORT:
+		return(2);
+
+	case INT:
+	case UNSIGNED:
+	case LONG:
+	case ULONG:
+	case FLOAT:
+		return(4);
+
+	case DOUBLE:
+		return(8);
+
+	case STRTY:
+	case UNIONTY:
+		if (!ISPTR(sty))
+			return(0);
+		return(szumul(sty, UNDEF));
+
+	default:
+		if (ISPTR(dty))
+			return(4);
+	}
+	if (edebug)
+		printf("szumul can't figure out type %d\n", dty);
+	return(0);
+}
+-------------------------------------------------------------------
+(And no, I can't use ``szty'' or whatever it was.)
+
+Onward! to more optimal optimization,
+Chris

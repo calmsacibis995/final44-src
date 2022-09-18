@@ -1,0 +1,195 @@
+From sue@multimax.ARPA  Tue Aug  9 12:58:36 1988
+Date: Tue, 9 Aug 88 15:52:53 EDT
+From: Sue LoVerso <sue@multimax.ARPA>
+To: 4bsd-bugs@ucbvax.berkeley.edu
+Subject: Bug fix for rdist
+Cc: bostic@okeeffe.berkeley.edu, boykin@multimax.ARPA, sue@multimax.ARPA
+Index: ucb/rdist 4.3BSD
+
+
+We consider this a pretty major bug that was rather annoying.
+I was told you might be interested in it, to maybe put it into
+the Tahoe release.
+
+	Sue LoVerso
+	sue@multimax.arpa
+
+============================================================
+Subject: Rdist and hard links in explicit dest dirs
+Index:	/usr/src/ucb/rdist/server.c 4.3BSD
+
+Description:
+	rdist would fail when one tried to update a directory on the local
+	machine to an explicit (read different) directory on the remote
+	machine and there were hard links in the local directory.
+	It would fail, typically, because it was trying to link to the
+	pathname of the local file on the remote and that directory path
+	did not exist on the remote.
+Repeat-By:
+	% cd /tmp
+	% mkdir foobar
+	% cd foobar
+	% cp /etc/motd foo
+	% ln foo bar
+
+	create a Distfile with the following: 
+
+/tmp/foobar -> <machine_name>
+	install /usr/tmp/foobar ;
+
+	And run rdist on that Distfile
+
+Fix:
+	Apply the following patch:
+
+*** /tmp/,RCSt1006369	Tue Aug  9 15:50:18 1988
+--- server.c	Tue Aug  9 15:50:03 1988
+***************
+*** 10,15
+   * is provided ``as is'' without express or implied warranty.
+   */
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)server.c	5.7 (Berkeley) 4/18/88";
+  #endif /* not lint */
+
+--- 10,25 -----
+   * is provided ``as is'' without express or implied warranty.
+   */
+  
++ /*
++  * HISTORY
++  * 08-Aug-88 (8/8/88)  Joseph Boykin (boykin) & Sue LoVerso (sue)
++  *				at Encore Computer Corporation
++  *	Fixed a bug where hard-links to a destination directory
++  *	which is different than the source directory on the
++  *	local machine (e.g. "install destdir;") would try to put
++  *	the links in the wrong directory.
++  */
++ 
+  #ifndef lint
+  static char sccsid[] = "@(#)server.c	5.7 (Berkeley) 4/18/88";
+  #endif /* not lint */
+***************
+*** 22,27
+  struct	linkbuf *ihead;		/* list of files with more than one link */
+  char	buf[BUFSIZ];		/* general purpose buffer */
+  char	target[BUFSIZ];		/* target/source directory name */
+  char	*tp;			/* pointer to end of target name */
+  char	*Tdest;			/* pointer to last T dest*/
+  int	catname;		/* cat name to target name */
+
+--- 32,39 -----
+  struct	linkbuf *ihead;		/* list of files with more than one link */
+  char	buf[BUFSIZ];		/* general purpose buffer */
+  char	target[BUFSIZ];		/* target/source directory name */
++ char	rtarget[BUFSIZ];	/* remote target/destination directory name */
++ int	srclen;			/* Length of source directory name	*/
+  char	*tp;			/* pointer to end of target name */
+  char	*Tdest;			/* pointer to last T dest*/
+  int	catname;		/* cat name to target name */
+***************
+*** 216,221
+  	tp = target;
+  	while (*tp)
+  		tp++;
+  	/*
+  	 * If we are renaming a directory and we want to preserve
+  	 * the directory heirarchy (-w), we must strip off the leading
+
+--- 228,235 -----
+  	tp = target;
+  	while (*tp)
+  		tp++;
++ 	srclen = tp - target;
++ 
+  	/*
+  	 * Place remote target into rtarget.
+  	 */
+***************
+*** 217,222
+  	while (*tp)
+  		tp++;
+  	/*
+  	 * If we are renaming a directory and we want to preserve
+  	 * the directory heirarchy (-w), we must strip off the leading
+  	 * directory name and preserve the rest.
+
+--- 231,242 -----
+  	srclen = tp - target;
+  
+  	/*
++ 	 * Place remote target into rtarget.
++ 	 */
++ 	strcpy(rtarget, ((strcmp(src,dest)==0) ? target : dest));
++ 
++ 
++ 	/*
+  	 * If we are renaming a directory and we want to preserve
+  	 * the directory heirarchy (-w), we must strip off the leading
+  	 * directory name and preserve the rest.
+***************
+*** 363,372
+  
+  			if ((lp = savelink(&stb)) != NULL) {
+  				/* install link */
+- 				if (*lp->target == 0)
+- 				(void) sprintf(buf, "k%o %s %s\n", opts,
+- 					lp->pathname, rname);
+- 				else
+  				(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+  					lp->target, lp->pathname, rname);
+  				if (debug)
+
+--- 383,388 -----
+  
+  			if ((lp = savelink(&stb)) != NULL) {
+  				/* install link */
+  				(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+  					lp->target, lp->pathname, rname);
+  				if (debug)
+***************
+*** 411,420
+  
+  		if ((lp = savelink(&stb)) != NULL) {
+  			/* install link */
+- 			if (*lp->target == 0)
+- 			(void) sprintf(buf, "k%o %s %s\n", opts,
+- 				lp->pathname, rname);
+- 			else
+  			(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+  				lp->target, lp->pathname, rname);
+  			if (debug)
+
+--- 427,432 -----
+  
+  		if ((lp = savelink(&stb)) != NULL) {
+  			/* install link */
+  			(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+  				lp->target, lp->pathname, rname);
+  			if (debug)
+***************
+*** 497,507
+  		lp->inum = stp->st_ino;
+  		lp->devnum = stp->st_dev;
+  		lp->count = stp->st_nlink - 1;
+! 		strcpy(lp->pathname, target);
+! 		if (Tdest)
+! 			strcpy(lp->target, Tdest);
+! 		else
+! 			*lp->target = 0;
+  	}
+  	return(NULL);
+  }
+
+--- 509,517 -----
+  		lp->inum = stp->st_ino;
+  		lp->devnum = stp->st_dev;
+  		lp->count = stp->st_nlink - 1;
+! 		strcpy(lp->pathname,
+! 			Tdest ? target : &target[0] + srclen + 1);
+! 		strcpy(lp->target, rtarget);
+  	}
+  	return(NULL);
+  }
+

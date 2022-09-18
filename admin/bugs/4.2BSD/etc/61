@@ -1,0 +1,75 @@
+Return-Path: <ddj%Brown@UDel-Relay>
+Date:     11 Oct 83 (Tuesday) 12:54 EDT
+From: Dave Johnson <ddj%Brown@UDel-Relay>
+Return-Path: <ddj%Brown@UDel-Relay>
+Subject:  dump at 6250 bpi miscounts amount of tape used
+
+Index:	etc/dump/dumptape.c 4.2BSD Fix
+
+Description:
+	dump stops writing on a tape volume long before the real end
+	of tape, and uses more volumes than it estimated.  The estimated
+	amount is fairly accurate, but the tape length used is not accounted
+	for the same way.  In particular, the inter-record gap is estimated
+	at 0.3" for 6250, but the value used is hardwired at 0.7" in dumptape.c
+	and dumprtape.c (which is the 800 and 1600 bpi value).
+
+Repeat-By:
+	Dump a filesystem of larger than 145 megabytes, using the non-rewind
+	tape drive at 6250 bpi.  When it asks to change tapes, look how close
+	it got to the end of the tape (almost 500 feet left when I tried it).
+
+Fix:
+	in routine flusht(), files dumptape.c and dumprtape.c, increment asize
+	by the proper amount.  It would be best to compute this once and use
+	a global variable, but for now, this works:
+
+*** /usr/src/etc/dump/dumptape.c	Sun May  8 22:13:01 1983
+--- /usr/src/local/etc/dump/dumptape.c	Sun Oct  9 14:51:50 1983
+***************
+*** 1,4
+! static	char *sccsid = "@(#)dumptape.c	1.7 (Berkeley) 5/8/83";
+  #include "dump.h"
+  
+  char	(*tblock)[TP_BSIZE];	/* Pointer to malloc()ed buffer for tape */
+
+--- 1,4 -----
+! static	char *sccsid = "@(#)dumptape.c	1.7+BRUNIX (Berkeley) 5/8/83";
+  #include "dump.h"
+  
+  char	(*tblock)[TP_BSIZE];	/* Pointer to malloc()ed buffer for tape */
+***************
+*** 68,73
+  flusht()
+  {
+  	register i, si;
+  	daddr_t d;
+  
+  	trecno = 0;
+
+--- 68,74 -----
+  flusht()
+  {
+  	register i, si;
++ 	int tenthsperirg = (density == 625) ? 3 : 7;	/* ddj */
+  	daddr_t d;
+  
+  	trecno = 0;
+***************
+*** 100,106
+  	}
+  
+  	asize += writesize/density;
+! 	asize += 7;
+  	blockswritten += ntrec;
+  	if (!pipeout && asize > tsize) {
+  		close_rewind();
+
+--- 101,107 -----
+  	}
+  
+  	asize += writesize/density;
+! 	asize += tenthsperirg;	/* ddj -- was 7 */
+  	blockswritten += ntrec;
+  	if (asize > tsize) {
+  		close_rewind();

@@ -1,0 +1,77 @@
+Return-Path: <broman%GUPPY@Nosc>
+Date: Wed, 26 Sep 84 09:32:36 pdt
+From: Vincent Broman <broman%BUGS@Nosc>
+
+Subject: c2 removes non-redundant jump, wrongly assuming a constant's value
+Index:	lib/c2 4.2BSD
+
+Description:
+	This is a followup on my previous bug report.
+	c2 keeps track to some extent of the contents of the registers
+	and of one other variable (source string) with a known constant value.
+	(i.e. conloc/conval). The address described by conloc may be
+	rewritten without rmove() properly noting the change. e.g.
+Repeat-By:
+	Run c2 on the following code, noting that it combines the jump
+	to a compare-and-jump into one jump because it assumes that _a
+	is still 0 arriving at L2, despite the previous "cvtlb $1,_a" .
+	Essentially, the second "if" statement ends up inside the first
+	"else" clause.
+	.text
+	.align	1
+	_optim:	.word	0x0
+		clrb	_a
+		tstl	_b
+		jleq	L1
+		cvtlb	$1,_a
+		jbr	L2
+	L1:	bicl3	sp,$-2,_a
+	L2:	cmpb	_a,$1
+		jneq	L3
+		movl	$4,_b
+	L3:	ret
+
+Fix:
+	Make this change in the source.
+
+*** /usr/src/lib/c2/c21.c	Tue Jun  8 20:59:06 1982
+--- c21.c	Wed Sep 26 07:27:26 1984
+***************
+*** 435,438
+  		r1 = isreg(regs[RT2]);
+  		dest(regs[RT2],p->subop);
+  		if (r>=0) {
+  			if (r1>=0) savereg(r1, regs[r]+1, p->subop);
+
+--- 435,440 -----
+  		r1 = isreg(regs[RT2]);
+  		dest(regs[RT2],p->subop);
++ 		if (r1 < 0 && equstr(regs[RT2], conloc))
++ 			conloc[0] = 0;		/* invalidate conval */
+  		if (r>=0) {
+  			if (r1>=0) savereg(r1, regs[r]+1, p->subop);
+***************
+*** 1257,1261
+  	if ((r = isreg(p)) >= 0 && compat(regs[r][0],type))
+  		return(regs[r]+1);
+! 	if (equstr(p, conloc))
+  		return(conval+1);
+  	return(p);
+
+--- 1259,1263 -----
+  	if ((r = isreg(p)) >= 0 && compat(regs[r][0],type))
+  		return(regs[r]+1);
+! 	if (conloc[0] && equstr(p, conloc))
+  		return(conval+1);
+  	return(p);
+
+*****************************
+
+	The second change is reassuring, but may not be necessary.
+	Since the whole conloc/conval deal seems to be an afterthought, I'm
+	not totally convinced that its value is always correct, even now.
+	Still, this fix is monotonically conservative.
+
+UUCP: sdcsvax!noscvax!broman		Vincent Broman
+ARPA: broman@nosc			Naval Ocean Systems Center, code 632
+Phone: (619) 225-2365			San Diego, CA 92152

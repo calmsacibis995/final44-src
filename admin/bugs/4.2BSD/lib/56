@@ -1,0 +1,76 @@
+Return-Path: <elvy@harvard.ARPA>
+Date: Tue, 3 Jul 84 21:09:49 edt
+From: elvy@harvard.ARPA (Marc Elvy)
+Subject: Bug in "asm" statement in 4.X BSD C compiler
+Index: 	lib/ccom 4.2BSD
+
+Description:
+
+	The "asm" statement is handled incorrectly in both the 4.1BSD and
+	4.2BSD C compilers.  An "asm" after an "if" is placed within the
+	range of the "if"; braces make no difference.
+
+Repeat-By:
+
+	Compile the following C program.  This was prepared explicitly for
+	illustration purposes (which is why R11 is assumed), so please do
+	not waste your time hassling me about the philosophical problems
+	with "asm" statements.
+
+
+	main ()
+	{
+	    register int flag = 0;
+
+	    if (flag == 1)
+		flag = 0;
+
+	    asm ("movl	$666, r11");
+	}
+
+
+	The relevant portion of the assembly language produced follows.
+
+
+		clrl	r11
+		cmpl	r11,$1
+		jneq	L16
+		clrl	r11
+	movl	$666, r11		/* Here is the "asm" statement. */
+	L16:
+		ret
+
+	Note that the "movl" should be AFTER the label, not before.
+	Unfortunately, I have not discovered why this is done, but I
+	suspect that the asm statement is dumped before the if statement
+	is completely processed.
+
+Marc
+
+============================================================
+From donn@cs.utah.edu Fri Apr 10 12:38:04 1987
+Date: Fri, 10 Apr 87 13:55:11 MDT
+From: donn@cs.utah.edu (Donn Seeley)
+To: bostic@okeeffe.Berkeley.EDU
+Subject: Re:  !!! REAL ONE !!! (4.2BSD/lib/56)
+
+I've seen this one before.  It's a good example of why you want to
+avoid using asm()s :-).  An asm() is NOT a function call; it has the
+same syntactic status as white space or comments.  When the lexer sees
+an asm(), the asm contents go directly into the output stream.  The
+compiler won't emit a label until it sees the next statement after the
+'if', and since the asm isn't a statement, it will happily include it
+in the conditional clause of the 'if'.  My recollection of K&R is that
+asm() guarantees nothing about the resulting code...
+
+Anyway, this explains the common idiom of writing asm()s with prepended
+semicolons, e.g.:
+
+	;asm("ldpctx")
+
+The semicolon acts as a null statement to hang the asm() from.
+
+Donn
+
+PS -- Yeah, this ought to be documented somewhere, but I don't know a
+good place for it.

@@ -1,0 +1,178 @@
+Path: seismo!ut-sally!husc6!cca!mirror!ima!haddock!karl
+From: karl@haddock.UUCP (Karl Heuer)
+Newsgroups: comp.bugs.4bsd
+Index: sys/sys/tty.c 4.3BSD
+Subject: read() from tty has fencepost error
+
+main() {
+    char buf[5];
+    for (;;) printf("%d\n", read(0, buf, 5));
+}
+
+If you type *exactly* 5 characters and terminate the read with EOT (which is
+not an EOF in this context, in the middle of a line), the first read returns 5
+(as it should) and the second returns 0 (instead of waiting for more input).
+Tested on 4.3bsd.
+----------------------------------------------------------------------
+Path: seismo!ut-sally!husc6!cmcl2!brl-adm!brl-smoke!gwyn
+From: gwyn@brl-smoke.ARPA (Doug Gwyn )
+Newsgroups: comp.bugs.4bsd
+Subject: Re: read() from tty has fencepost error
+In article <648@haddock.UUCP> karl@haddock.isc.com (Karl Heuer) writes:
+>If you type *exactly* 5 characters and terminate the read with EOT (which is
+>not an EOF in this context, in the middle of a line), the first read returns 5
+>(as it should) and the second returns 0 (instead of waiting for more input).
+
+That is correct behavior.  In cooked mode, the "EOT" character is a delimiter
+that is inserted into the stream along with the others.  It is NEVER an "end
+of file" character; that is merely a conventional interpretation given to a
+delimiter found as the first character of a text line.  Your first read got 5
+characters, and the second read encountered the delimiter, which stops input
+and returns the number of characters found before the delimiter (0 in this
+case).
+----------------------------------------------------------------------
+Path: seismo!rutgers!topaz.rutgers.edu!ron
+From: ron@topaz.rutgers.edu (Ron Natalie)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: read() from tty has fencepost error
+Excuse me System V breath, if you look on your own beloved operating system
+you will see that EOT works the opposite way that it does on system V, that
+is, the following code
+
+    main()  {
+	int count;
+	char buf[10];
+
+	do {
+	    count = read(0, buf, 5);
+	    printf("\ncount = %d\n", count);
+	} while(count);
+    }
+
+Does the following on Berkeley UNIX (SUN 3.2):
+    % a.out
+    a<NL>
+
+    count = 2
+    abcde<EOT>
+    count = 5
+
+    count = 0
+    %
+  note that it doesn't read the keyboard between the last two printfs.
+
+on both a 3B20 running Sys VR2v3 and a 3B2 running Sys VR3
+
+    % a.out
+    a<NL>
+
+    count = 2
+    abcde<EOT>
+    count = 5
+
+...at this point it waits for you to type more input...
+
+I guess System V is wrong for once :-)
+
+-Ron
+----------------------------------------------------------------------
+Path: seismo!uunet!munnari!kre
+From: kre@munnari.oz (Robert Elz)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: read() from tty has fencepost error
+Summary: this is wrong in bsd, right in sysV (apparently)
+In article <13048@topaz.rutgers.edu>, ron@topaz.rutgers.edu (Ron Natalie):
+> Does the following on Berkeley UNIX (SUN 3.2):
+	...
+>   note that it doesn't read the keyboard between the last two printfs.
+
+that's wrong.
+
+> on both a 3B20 running Sys VR2v3 and a 3B2 running Sys VR3
+	...
+> ...at this point it waits for you to type more input...
+
+that's right.
+
+Sys V is clearly right here, and bsd is wrong, and it should be fixed.
+(And for anyone who doesn't know, I'm hardly a Sys V supporter).
+
+kre
+----------------------------------------------------------------------
+Path: seismo!rutgers!topaz.rutgers.edu!ron
+From: ron@topaz.rutgers.edu (Ron Natalie)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: read() from tty has fencepost error
+>I guess System V is wrong for once :-)
+No, this is the spec for EOF in termio(7) (SysV's equivalent to tty(4)):
+
+	[When EOF is received] all the characters waiting to be read are
+	immediately passed to the program, without waiting for a new-line,
+	and the EOF is descarded.  Thus, if there are no characters waiting,
+	which is to say the EOF occurred at the beginning of a line, zero
+	characters will be passed back [...]
+
+You seem to have missed the fact that I was jeering at Doug Gwyn
+(Notable System V proponent) for putting forth this opinion
+was exactly contrary to what System V does:
+
+    That is correct behavior.  In cooked mode, the "EOT" character is a
+    delimiter that is inserted into the stream along with the others.  It is
+    NEVER an "end of file" character; that is merely a conventional
+    interpretation given to a delimiter found as the first character of a
+    text line.  Your first read got 5 characters, and the second read
+    encountered the delimiter, which stops input and returns the number of
+    characters found before the delimiter (0 in this case).
+
+He's right except that System V associates the delimeter with the characters
+before it, out of band.  Berkeley, places the delimeter (still an EOF) in
+band, which causes it not to be noticed if the read size exactly matches
+the number of characters queued before the delimeter.  In neither case
+is the ^D merely discarded, that would imply that
+
+	sleep(10) read(0, buf, 10);
+with
+	a<EOT>b<EOT>c<NL>
+
+typed during the sleep would return "abc\n".
+
+The belief that the EOF should not be treated as in BSD is confirmed
+by the statement earlier in the termio manual page that states that
+the read size may be smaller than the number of characters in the queue,
+even a single character, without loss of information.  Thus, this implies
+that the loop:
+
+    while(1)  {
+	i = read(0, buf, N);
+	if(i == 0) break;
+	write(1, buf, i);
+    }
+
+will work regardless of the size of N, which is not true on Berkeley
+as setting N to 1 will cause any EOT terminated lines to return
+apparent EOF indications.
+
+To make BSD work like Sys V you can kludge it by changing tty.c routine
+ttread (around line 2191 in mine) where it says
+
+	if(u.u_resid == 0)
+		break;
+
+to say something like
+
+    if(u.u_resid == 0)  {
+        if(				    /* IF there
+	    p->c_cc > 0  &&		    /* are more characters AND    */
+	    (*p->c_cf & 0x377) == eof &&    /* ..the next is EOF AND      */
+	    (t_flags & CBREAK) == 0   &&    /* ..we're in cooked mode AND */
+	    (ttbreakc(c, tp) == 0)	    /* .. last char wasn't break  */
+        ) getc(tp);	    /* Throw away EOF that goes with this data. */
+        break;
+    }
+
+I don't feel like remaking the kernel now, so I can't tell you if
+it works.
+
+-Ron
+----------------------------------------------------------------------
+

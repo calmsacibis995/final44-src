@@ -1,0 +1,278 @@
+From serge@okeeffe.Berkeley.EDU  Tue Mar 21 16:07:46 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA21478; Tue, 21 Mar 89 16:07:46 -0800
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA15259; Tue, 21 Mar 89 16:07:44 -0800
+Received: by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA21473; Tue, 21 Mar 89 16:07:38 -0800
+Date: Tue, 21 Mar 89 16:07:38 -0800
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8903220007.AA21473@okeeffe.Berkeley.EDU>
+Subject: mv doesn't use optimal I/O buffer size
+Index: bin/mv/mv.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	It also doesn't pass lint.
+Fix:
+*** /usr/src/bin/mv/mv.c	Tue Oct 18 21:50:00 1988
+--- mv.c	Tue Jun 14 19:20:14 1988
+***************
+*** 23,28 ****
+--- 23,29 ----
+  #include <sys/file.h>
+  #include <stdio.h>
+  #include <errno.h>
++ #include <string.h>
+  
+  #define	DELIM	'/'
+  #define MODEBITS 07777
+***************
+*** 36,42 ****
+  char	*dname();
+  int	iflag = 0;	/* interactive mode */
+  int	fflag = 0;	/* force overwriting */
+! extern	unsigned errno;
+  
+  main(argc, argv)
+  	register int argc;
+--- 37,44 ----
+  char	*dname();
+  int	iflag = 0;	/* interactive mode */
+  int	fflag = 0;	/* force overwriting */
+! extern	int errno;
+! extern	char *malloc();
+  
+  main(argc, argv)
+  	register int argc;
+***************
+*** 82,97 ****
+  	char *src, *dest;
+  {
+  	register char *shortname;
+! 	char target[MAXPATHLEN + 1];
+  
+  	shortname = dname(src);
+! 	if (strlen(dest) + strlen(shortname) > MAXPATHLEN - 1) {
+! 		error("%s/%s: pathname too long", dest,
+! 			shortname);
+  		return (1);
+  	}
+! 	(void)sprintf(target, "%s/%s", dest, shortname);
+! 	return (move(src, target));
+  }
+  
+  move(source, target)
+--- 84,104 ----
+  	char *src, *dest;
+  {
+  	register char *shortname;
+! 	register char	*target;
+! 	register int	result;
+  
+  	shortname = dname(src);
+! 	target = malloc((unsigned) strlen(dest) + strlen(shortname) + 2);
+! 	if (target == NULL) {
+! 		Perror("Can't malloc pathname");
+  		return (1);
+  	}
+! 	(void) strcpy(target, dest);
+! 	(void) strcat(target, "/");
+! 	(void) strcat(target, shortname);
+! 	result = move(src, target);
+! 	(void) free(target);
+! 	return (result);
+  }
+  
+  move(source, target)
+***************
+*** 181,191 ****
+  		goto cleanup;
+  	}
+  	if (ISREG(s1)) {
+- 		register int fi, fo, n;
+  		struct timeval tv[2];
+! 		char buf[MAXBSIZE];
+  
+! 		fi = open(source, 0);
+  		if (fi < 0) {
+  			Perror(source);
+  			return (1);
+--- 188,200 ----
+  		goto cleanup;
+  	}
+  	if (ISREG(s1)) {
+  		struct timeval tv[2];
+! 		register int 	n;
+! 		register char	*buf;
+! 		register int 	fi, fo;
+! 		register int	bufsize;
+  
+! 		fi = open(source, O_RDONLY, 0);
+  		if (fi < 0) {
+  			Perror(source);
+  			return (1);
+***************
+*** 194,222 ****
+  		fo = creat(target, s1.st_mode & MODEBITS);
+  		if (fo < 0) {
+  			Perror(target);
+! 			close(fi);
+  			return (1);
+  		}
+  
+  		for (;;) {
+! 			n = read(fi, buf, sizeof buf);
+  			if (n == 0) {
+  				break;
+  			} else if (n < 0) {
+  				Perror2(source, "read");
+! 				close(fi);
+! 				close(fo);
+  				return (1);
+  			} else if (write(fo, buf, n) != n) {
+  				Perror2(target, "write");
+! 				close(fi);
+! 				close(fo);
+  				return (1);
+  			}
+  		}
+  
+! 		close(fi);
+! 		close(fo);
+  
+  		tv[0].tv_sec = s1.st_atime;
+  		tv[0].tv_usec = 0;
+--- 203,247 ----
+  		fo = creat(target, s1.st_mode & MODEBITS);
+  		if (fo < 0) {
+  			Perror(target);
+! 			(void) close(fi);
+  			return (1);
+  		}
+  
++ 		if (s1.st_blksize > 0)
++ 			bufsize = s1.st_blksize;
++ 		else
++ 			bufsize = MAXBSIZE;
++ 
++ 		buf = malloc((unsigned) bufsize);
++ 		if (buf == NULL) {
++ 			Perror("Can't malloc I/O buffer");
++ 			(void) close(fi);
++ 			(void) close(fo);
++ 			return (1);
++ 		}
++ 
+  		for (;;) {
+! 			n = read(fi, buf, bufsize);
+  			if (n == 0) {
+  				break;
+  			} else if (n < 0) {
+  				Perror2(source, "read");
+! 				(void) close(fi);
+! 				(void) close(fo);
+! 				free(buf);
+  				return (1);
+  			} else if (write(fo, buf, n) != n) {
+  				Perror2(target, "write");
+! 				(void) close(fi);
+! 				(void) close(fo);
+! 				free(buf);
+  				return (1);
+  			}
+  		}
+  
+! 		(void) close(fi);
+! 		(void) close(fo);
+! 		free(buf);
+  
+  		tv[0].tv_sec = s1.st_atime;
+  		tv[0].tv_usec = 0;
+***************
+*** 236,244 ****
+  	return (0);
+  }
+  
+! /*VARARGS*/
+  query(prompt, a1, a2)
+! 	char *a1;
+  {
+  	register int i, c;
+  
+--- 261,269 ----
+  	return (0);
+  }
+  
+! /*VARARGS1*/
+  query(prompt, a1, a2)
+! 	char *prompt;
+  {
+  	register int i, c;
+  
+***************
+*** 262,268 ****
+  	return name;
+  }
+  
+! /*VARARGS*/
+  error(fmt, a1, a2)
+  	char *fmt;
+  {
+--- 287,293 ----
+  	return name;
+  }
+  
+! /*VARARGS1*/
+  error(fmt, a1, a2)
+  	char *fmt;
+  {
+***************
+*** 275,293 ****
+  Perror(s)
+  	char *s;
+  {
+! 	char buf[MAXPATHLEN + 10];
+  
+! 	(void)sprintf(buf, "mv: %s", s);
+! 	perror(buf);
+  }
+  
+  Perror2(s1, s2)
+  	char *s1, *s2;
+  {
+! 	char buf[MAXPATHLEN + 20];
+  
+! 	(void)sprintf(buf, "mv: %s: %s", s1, s2);
+! 	perror(buf);
+  }
+  
+  usage()
+--- 300,326 ----
+  Perror(s)
+  	char *s;
+  {
+! 	int	e;
+  
+! 	e = errno;
+! 	(void) fprintf(stderr, "mv: %s: ", s);
+! 	(void) fflush(stderr);
+! 	errno = e;
+! 
+! 	perror("");
+  }
+  
+  Perror2(s1, s2)
+  	char *s1, *s2;
+  {
+! 	int	e;
+  
+! 	e = errno;
+! 	(void) fprintf(stderr, "mv: %s: %s: ", s1, s2);
+! 	(void) fflush(stderr);
+! 	errno = e;
+! 
+! 	perror("");
+  }
+  
+  usage()

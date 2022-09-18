@@ -1,0 +1,53 @@
+From: mogul@decwrl.dec.com (Jeffrey Mogul)
+Date: 21 Jan 1987 1101-PST (Wednesday)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: You can't read more than 2147483647 bytes from a character device
+
+Index:	sys/sys_inode.c 4.3BSD
+	Also gfs_gnodeops.c (?) Ultrix 2.0
+
+Description:
+	If you read (or write) a lot of data from a character special
+	device, sooner or later the total number of bytes read will
+	reach 2^31; further reads or writes will result in EINVAL.
+	
+	The problem is that sys_generic.c/rwuio() always increments
+	fp->f_offset by the number of bytes transferred, and
+	sys_inode/rwip() tests uio_offset; if it's < 0, then
+	you get EINVAL.
+Repeat-By:
+	This should work:
+	(1) Attach a source of characters to a terminal line
+	(2) Start a program that continually reads from this tty
+	(3) Wait.  If your characters are running at 9600 baud,
+	you'll get EINVAL after about 3 1/2 weeks.  I've got my
+	own character device that runs a little faster; I get
+	results after about 24 hours.
+	
+	If you'd rather not wait, compile this program and run it:
+
+	main()
+	{
+		char buf[100];
+		int fdes;
+		
+		fdes = open("/dev/tty", 0);
+		
+		lseek(fdes, 0x7FFFFFFF, 0);
+		printf("type some bytes:\n");
+		if (read(fdes, buf, sizeof(buf)) < 0)
+			perror("first read");
+		if (read(fdes, buf, sizeof(buf)) < 0)
+			perror("second read");
+	}
+
+Workaround:
+	I don't have a good idea for how to fix this.  I'd be
+	surprised if there was a simple fix, since some character
+	devices (notably, /dev/kmem) really do care what the offset
+	is.  Perhaps none of them care if it is negative? (/dev/kmem
+	has to accept "negative" offsets on a Vax, and sys_inode.c has
+	a special case for this device.)
+	
+	At any rate, my program now tests for errno == EINVAL, and does
+	an lseek(fid, 0, 0) before retrying the read().

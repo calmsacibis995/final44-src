@@ -1,0 +1,57 @@
+Return-Path: <donn@utah-cs>
+Date: Tue, 4 Dec 84 18:37:55 mst
+From: donn@utah-cs (Donn Seeley)
+To: 4bsd-bugs@BERKELEY
+Subject: Unix hangs during rewinds with tu77-emulating tape systems
+Index:	sys/vaxmba/ht.c 4.2BSD
+
+Description:
+	We have two VAXen with Emulex TC7000 tu77-emulating tape
+	controllers, one with an STC drive and another with a Kennedy
+	9400.  Both systems (used to) hang during tape rewinds.  This
+	is very annoying (silo overflows, etc.).  I don't think this
+	problem occurs with DEC drives like tu77s but I don't have one
+	to look at so I can't be sure.
+
+Repeat-By:
+	Mount a tape.  Dump data onto the tape, lots of it.  When the
+	tape rewinds all serial I/O will stop until it hits BOT.
+
+Fix:
+	The problem appears to be that the system attempts to retry the
+	rewind when the 'rewind starting' interrupt arrives.  Normal
+	policy is to hang when the tape is busy, on the hypothesis that
+	a tape operation will usually finish quickly, but rewinds are
+	an exception to the rule.  The tu78 driver (mt.c) seems to
+	understand this and it returns MBN_SKIP instead of MBN_RETRY
+	when an 'rewind starting' interrupt comes in.  If the tu77
+	driver is hacked to do the same thing, the problem goes away.
+	I looked at the monet source and this hack isn't present.
+
+	Here are the diffs:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1014160   Tue Dec  4 18:27:14 1984
+	--- ht.c        Tue Dec  4 18:03:28 1984
+	***************
+	*** 394,400
+		}
+		if (bp == &chtbuf[HTUNIT(bp->b_dev)]) {
+			if (sc->sc_flags & H_REWIND)
+	!                       return (ds & HTDS_BOT ? MBN_DONE : MBN_RETRY);
+			bp->b_resid = -sc->sc_resid;
+			return (MBN_DONE);
+		}
+
+	--- 394,400 -----
+		}
+		if (bp == &chtbuf[HTUNIT(bp->b_dev)]) {
+			if (sc->sc_flags & H_REWIND)
+	!                       return (ds & HTDS_BOT ? MBN_DONE : MBN_SKIP);
+			bp->b_resid = -sc->sc_resid;
+			return (MBN_DONE);
+		}
+	----------------------------------------------------------------
+
+	Donn Seeley    University of Utah CS Dept    donn@utah-cs.arpa
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    decvax!utah-cs!donn

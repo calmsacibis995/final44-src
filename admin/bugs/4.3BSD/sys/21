@@ -1,0 +1,164 @@
+Return-Path: <donn@utah-cs.ARPA>
+Date: Fri, 18 Jul 86 15:36:09 MDT
+From: donn@utah-cs.arpa (Donn Seeley)
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: problems using DEUNA driver for DELUA interface +FIX
+
+Subject: Problems using DEUNA driver for DELUA interface +FIX
+Index: sys/vaxif/if_de.c 4.3BSD
+
+Description:
+
+	We have 5 VAXen, ranging from 750s to an 8600, running 4.3 BSD
+	using DELUA network interfaces.  Lou Salkind's DEUNA driver
+	works with the DELUA, but there are problems (see below).
+
+	The first problem, and the one which took us the most time to
+	understand and 'fix', was that 5 of the 12 DELUA boards shipped
+	to us were broken.  Of course the first two we tried were in
+	the broken set and we had a very difficult time trying to
+	figure out what was going on.  The VMS diagnostic was not very
+	useful, since it failed on all the boards.  After talking to
+	DEC, we found that it was 'normal' for the boards to fail one
+	of the tests in the diagnostic (EVDYB test 3), and the boards
+	which failed on other tests turned out to be precisely the
+	boards which failed under Unix.  In case someone else runs into
+	this problem, the symptoms when running under Unix were that
+	the board would run for a while and then wedge, refusing to
+	interrupt or do anything else useful.  The threshold varied
+	from board to board -- one would croak after exchanging only a
+	couple packets, another after a couple hundred.
+
+	The other problem, the one we can actually fix, is that the
+	DELUA takes up to 15 seconds to run through self-test after a
+	bus init, and this can cause the DEUNA driver to screw up
+	during autoconfiguration.  (See below).
+
+Repeat-By:
+
+	When 4.3 BSD is booted on systems whose consoles run at 1200
+	baud or higher, it's easy to reach the probe routine for the
+	DEUNA/DELUA before the board has finished self-test.  If this
+	occurs, the board wedges and the autoconfiguration can hang.
+
+Fix:
+
+	I changed the driver to wait up to 15 seconds for self-test to
+	finish; the changes are presented below.  (I also made changes
+	to print out the device type in the attach routine and to be
+	more careful about the interupt enable / command interlock
+	'feature' -- if a write to csr0 changes the interrupt enable
+	bit, any changes to the command field are ignored).  The
+	principal changes are in deprobe() and deattach() in if_de.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1026392	Tue Jul 15 21:28:21 1986
+	--- if_de.c	Thu Jul 10 21:09:02 1986
+	***************
+	*** 123,128 ****
+	--- 123,144 ----
+		i = 0; derint(i); deintr(i);
+	  #endif
+	  
+	+ 	/*
+	+ 	 * Make sure self-test is finished before we screw with the board.
+	+ 	 * Self-test on a DELUA can take 15 seconds (argh).
+	+ 	 */
+	+ 	for (i = 0;
+	+ 	     i < 160 &&
+	+ 	     (addr->pcsr0 & PCSR0_FATI) == 0 &&
+	+ 	     (addr->pcsr1 & PCSR1_STMASK) == STAT_RESET;
+	+ 	     ++i)
+	+ 		DELAY(100000);
+	+ 	if ((addr->pcsr0 & PCSR0_FATI) != 0 ||
+	+ 	    (addr->pcsr1 & PCSR1_STMASK) != STAT_READY)
+	+ 		return(0);
+	+ 
+	+ 	addr->pcsr0 = 0;
+	+ 	DELAY(100);
+		addr->pcsr0 = PCSR0_RSET;
+		while ((addr->pcsr0 & PCSR0_INTR) == 0)
+			;
+	***************
+	*** 146,151 ****
+	--- 162,168 ----
+		register struct de_softc *ds = &de_softc[ui->ui_unit];
+		register struct ifnet *ifp = &ds->ds_if;
+		register struct dedevice *addr = (struct dedevice *)ui->ui_addr;
+	+ 	int csr1;
+	  
+		ifp->if_unit = ui->ui_unit;
+		ifp->if_name = "de";
+	***************
+	*** 153,161 ****
+	--- 170,193 ----
+		ifp->if_flags = IFF_BROADCAST;
+	  
+		/*
+	+ 	 * What kind of a board is this?
+	+ 	 * The error bits 4-6 in pcsr1 are a device id as long as
+	+ 	 * the high byte is zero.
+	+ 	 */
+	+ 	csr1 = addr->pcsr1;
+	+ 	if (csr1 & 0xff60)
+	+ 		printf("de%d: broken\n", ui->ui_unit);
+	+ 	else if (csr1 & 0x10)
+	+ 		printf("de%d: delua\n", ui->ui_unit);
+	+ 	else
+	+ 		printf("de%d: deuna\n", ui->ui_unit);
+	+ 
+	+ 	/*
+		 * Reset the board and temporarily map
+		 * the pcbb buffer onto the Unibus.
+		 */
+	+ 	addr->pcsr0 = 0;		/* reset INTE */
+	+ 	DELAY(100);
+		addr->pcsr0 = PCSR0_RSET;
+		(void)dewait(ui, "reset");
+	  
+	***************
+	*** 245,250 ****
+	--- 277,284 ----
+		incaddr = ds->ds_ubaddr + PCBB_OFFSET;
+		addr->pcsr2 = incaddr & 0xffff;
+		addr->pcsr3 = (incaddr >> 16) & 0x3;
+	+ 	addr->pclow = 0;	/* reset INTE */
+	+ 	DELAY(100);
+		addr->pclow = CMD_GETPCBB;
+		(void)dewait(ui, "pcbb");
+	  
+	***************
+	*** 296,303 ****
+		s = splimp();
+		ds->ds_rindex = ds->ds_xindex = ds->ds_xfree = ds->ds_nxmit = 0;
+		ds->ds_if.if_flags |= IFF_RUNNING;
+	- 	destart(unit);				/* queue output packets */
+		addr->pclow = PCSR0_INTE;		/* avoid interlock */
+		ds->ds_flags |= DSF_RUNNING;		/* need before de_setaddr */
+		if (ds->ds_flags & DSF_SETADDR)
+			de_setaddr(ds->ds_addr, unit);
+	--- 330,337 ----
+		s = splimp();
+		ds->ds_rindex = ds->ds_xindex = ds->ds_xfree = ds->ds_nxmit = 0;
+		ds->ds_if.if_flags |= IFF_RUNNING;
+		addr->pclow = PCSR0_INTE;		/* avoid interlock */
+	+ 	destart(unit);				/* queue output packets */
+		ds->ds_flags |= DSF_RUNNING;		/* need before de_setaddr */
+		if (ds->ds_flags & DSF_SETADDR)
+			de_setaddr(ds->ds_addr, unit);
+	***************
+	*** 739,744 ****
+	--- 773,781 ----
+		case SIOCSIFFLAGS:
+			if ((ifp->if_flags & IFF_UP) == 0 &&
+			    ds->ds_flags & DSF_RUNNING) {
+	+ 			((struct dedevice *)
+	+ 			   (deinfo[ifp->if_unit]->ui_addr))->pclow = 0;
+	+ 			DELAY(100);
+				((struct dedevice *)
+				   (deinfo[ifp->if_unit]->ui_addr))->pclow = PCSR0_RSET;
+				ds->ds_flags &= ~(DSF_LOCK | DSF_RUNNING);
+	----------------------------------------------------------------
+
+	Donn Seeley    University of Utah CS Dept    donn@utah-cs.arpa
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    decvax!utah-cs!donn

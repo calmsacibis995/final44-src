@@ -1,0 +1,1853 @@
+Subject: (socket 2 of 2) updated IP/TCP and XNS sources for 4.3BSD
+Index: sys 4.3BSD
+
+Description:
+	This is number 9 of 11 total articles posted to the newsgroup
+	comp.bugs.4bsd.ucb-fixes.  This archive is number 2 of the 2
+	articles that make up the socket posting.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	sys
+#	sys/sys_socket.c
+#	sys/uipc_domain.c
+#	sys/uipc_proto.c
+#	sys/uipc_syscalls.c
+#	sys/uipc_socket2.c
+#
+echo c - sys
+mkdir sys > /dev/null 2>&1
+echo x - sys/sys_socket.c
+sed 's/^X//' >sys/sys_socket.c << 'END-of-sys/sys_socket.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)sys_socket.c	7.2 (Berkeley) 3/31/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "file.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "ioctl.h"
+X#include "uio.h"
+X#include "stat.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+Xint	soo_rw(), soo_ioctl(), soo_select(), soo_close();
+Xstruct	fileops socketops =
+X    { soo_rw, soo_ioctl, soo_select, soo_close };
+X
+Xsoo_rw(fp, rw, uio)
+X	struct file *fp;
+X	enum uio_rw rw;
+X	struct uio *uio;
+X{
+X	int soreceive(), sosend();
+X
+X	return (
+X	    (*(rw==UIO_READ?soreceive:sosend))
+X	      ((struct socket *)fp->f_data, 0, uio, 0, 0));
+X}
+X
+Xsoo_ioctl(fp, cmd, data)
+X	struct file *fp;
+X	int cmd;
+X	register caddr_t data;
+X{
+X	register struct socket *so = (struct socket *)fp->f_data;
+X
+X	switch (cmd) {
+X
+X	case FIONBIO:
+X		if (*(int *)data)
+X			so->so_state |= SS_NBIO;
+X		else
+X			so->so_state &= ~SS_NBIO;
+X		return (0);
+X
+X	case FIOASYNC:
+X		if (*(int *)data)
+X			so->so_state |= SS_ASYNC;
+X		else
+X			so->so_state &= ~SS_ASYNC;
+X		return (0);
+X
+X	case FIONREAD:
+X		*(int *)data = so->so_rcv.sb_cc;
+X		return (0);
+X
+X	case SIOCSPGRP:
+X		so->so_pgrp = *(int *)data;
+X		return (0);
+X
+X	case SIOCGPGRP:
+X		*(int *)data = so->so_pgrp;
+X		return (0);
+X
+X	case SIOCATMARK:
+X		*(int *)data = (so->so_state&SS_RCVATMARK) != 0;
+X		return (0);
+X	}
+X	/*
+X	 * Interface/routing/protocol specific ioctls:
+X	 * interface and routing ioctls should have a
+X	 * different entry since a socket's unnecessary
+X	 */
+X#define	cmdbyte(x)	(((x) >> 8) & 0xff)
+X	if (cmdbyte(cmd) == 'i')
+X		return (ifioctl(so, cmd, data));
+X	if (cmdbyte(cmd) == 'r')
+X		return (rtioctl(cmd, data));
+X	return ((*so->so_proto->pr_usrreq)(so, PRU_CONTROL, 
+X	    (struct mbuf *)cmd, (struct mbuf *)data, (struct mbuf *)0));
+X}
+X
+Xsoo_select(fp, which)
+X	struct file *fp;
+X	int which;
+X{
+X	register struct socket *so = (struct socket *)fp->f_data;
+X	register int s = splnet();
+X
+X	switch (which) {
+X
+X	case FREAD:
+X		if (soreadable(so)) {
+X			splx(s);
+X			return (1);
+X		}
+X		sbselqueue(&so->so_rcv);
+X		break;
+X
+X	case FWRITE:
+X		if (sowriteable(so)) {
+X			splx(s);
+X			return (1);
+X		}
+X		sbselqueue(&so->so_snd);
+X		break;
+X
+X	case 0:
+X		if (so->so_oobmark ||
+X		    (so->so_state & SS_RCVATMARK)) {
+X			splx(s);
+X			return (1);
+X		}
+X		sbselqueue(&so->so_rcv);
+X		break;
+X	}
+X	splx(s);
+X	return (0);
+X}
+X
+X/*ARGSUSED*/
+Xsoo_stat(so, ub)
+X	register struct socket *so;
+X	register struct stat *ub;
+X{
+X
+X	bzero((caddr_t)ub, sizeof (*ub));
+X	return ((*so->so_proto->pr_usrreq)(so, PRU_SENSE,
+X	    (struct mbuf *)ub, (struct mbuf *)0, 
+X	    (struct mbuf *)0));
+X}
+X
+Xsoo_close(fp)
+X	struct file *fp;
+X{
+X	int error = 0;
+X
+X	if (fp->f_data)
+X		error = soclose((struct socket *)fp->f_data);
+X	fp->f_data = 0;
+X	return (error);
+X}
+END-of-sys/sys_socket.c
+echo x - sys/uipc_domain.c
+sed 's/^X//' >sys/uipc_domain.c << 'END-of-sys/uipc_domain.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)uipc_domain.c	7.2 (Berkeley) 12/30/87
+X */
+X
+X#include "param.h"
+X#include "socket.h"
+X#include "protosw.h"
+X#include "domain.h"
+X#include "time.h"
+X#include "kernel.h"
+X
+X#define	ADDDOMAIN(x)	{ \
+X	extern struct domain x/**/domain; \
+X	x/**/domain.dom_next = domains; \
+X	domains = &x/**/domain; \
+X}
+X
+Xdomaininit()
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X
+X#ifndef lint
+X	ADDDOMAIN(unix);
+X#ifdef INET
+X	ADDDOMAIN(inet);
+X#endif
+X#ifdef NS
+X	ADDDOMAIN(ns);
+X#endif
+X#include "imp.h"
+X#if NIMP > 0
+X	ADDDOMAIN(imp);
+X#endif
+X#endif
+X
+X	for (dp = domains; dp; dp = dp->dom_next) {
+X		if (dp->dom_init)
+X			(*dp->dom_init)();
+X		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
+X			if (pr->pr_init)
+X				(*pr->pr_init)();
+X	}
+X	null_init();
+X	pffasttimo();
+X	pfslowtimo();
+X}
+X
+Xstruct protosw *
+Xpffindtype(family, type)
+X	int family, type;
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X
+X	for (dp = domains; dp; dp = dp->dom_next)
+X		if (dp->dom_family == family)
+X			goto found;
+X	return (0);
+Xfound:
+X	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
+X		if (pr->pr_type && pr->pr_type == type)
+X			return (pr);
+X	return (0);
+X}
+X
+Xstruct protosw *
+Xpffindproto(family, protocol, type)
+X	int family, protocol, type;
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X	struct protosw *maybe = 0;
+X
+X	if (family == 0)
+X		return (0);
+X	for (dp = domains; dp; dp = dp->dom_next)
+X		if (dp->dom_family == family)
+X			goto found;
+X	return (0);
+Xfound:
+X	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++) {
+X		if ((pr->pr_protocol == protocol) && (pr->pr_type == type))
+X			return (pr);
+X
+X		if (type == SOCK_RAW && pr->pr_type == SOCK_RAW &&
+X		    pr->pr_protocol == 0 && maybe == (struct protosw *)0)
+X			maybe = pr;
+X	}
+X	return (maybe);
+X}
+X
+Xpfctlinput(cmd, sa)
+X	int cmd;
+X	struct sockaddr *sa;
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X
+X	for (dp = domains; dp; dp = dp->dom_next)
+X		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
+X			if (pr->pr_ctlinput)
+X				(*pr->pr_ctlinput)(cmd, sa);
+X}
+X
+Xpfslowtimo()
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X
+X	for (dp = domains; dp; dp = dp->dom_next)
+X		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
+X			if (pr->pr_slowtimo)
+X				(*pr->pr_slowtimo)();
+X	timeout(pfslowtimo, (caddr_t)0, hz/2);
+X}
+X
+Xpffasttimo()
+X{
+X	register struct domain *dp;
+X	register struct protosw *pr;
+X
+X	for (dp = domains; dp; dp = dp->dom_next)
+X		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
+X			if (pr->pr_fasttimo)
+X				(*pr->pr_fasttimo)();
+X	timeout(pffasttimo, (caddr_t)0, hz/5);
+X}
+END-of-sys/uipc_domain.c
+echo x - sys/uipc_proto.c
+sed 's/^X//' >sys/uipc_proto.c << 'END-of-sys/uipc_proto.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)uipc_proto.c	7.2 (Berkeley) 12/30/87
+X */
+X
+X#include "param.h"
+X#include "socket.h"
+X#include "protosw.h"
+X#include "domain.h"
+X#include "mbuf.h"
+X
+X/*
+X * Definitions of protocols supported in the UNIX domain.
+X */
+X
+Xint	uipc_usrreq();
+Xint	raw_init(),raw_usrreq(),raw_input(),raw_ctlinput();
+Xextern	struct domain unixdomain;		/* or at least forward */
+X
+Xstruct protosw unixsw[] = {
+X{ SOCK_STREAM,	&unixdomain,	0,	PR_CONNREQUIRED|PR_WANTRCVD|PR_RIGHTS,
+X  0,		0,		0,		0,
+X  uipc_usrreq,
+X  0,		0,		0,		0,
+X},
+X{ SOCK_DGRAM,	&unixdomain,	0,		PR_ATOMIC|PR_ADDR|PR_RIGHTS,
+X  0,		0,		0,		0,
+X  uipc_usrreq,
+X  0,		0,		0,		0,
+X},
+X{ 0,		0,		0,		0,
+X  raw_input,	0,		raw_ctlinput,	0,
+X  raw_usrreq,
+X  raw_init,	0,		0,		0,
+X}
+X};
+X
+Xint	unp_externalize(), unp_dispose();
+X
+Xstruct domain unixdomain =
+X    { AF_UNIX, "unix", 0, unp_externalize, unp_dispose,
+X      unixsw, &unixsw[sizeof(unixsw)/sizeof(unixsw[0])] };
+END-of-sys/uipc_proto.c
+echo x - sys/uipc_syscalls.c
+sed 's/^X//' >sys/uipc_syscalls.c << 'END-of-sys/uipc_syscalls.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)uipc_syscalls.c	7.4 (Berkeley) 1/20/88
+X */
+X
+X#include "param.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "file.h"
+X#include "buf.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X
+X/*
+X * System call interface to the socket abstraction.
+X */
+X
+Xstruct	file *getsock();
+Xextern	struct fileops socketops;
+X
+Xsocket()
+X{
+X	register struct a {
+X		int	domain;
+X		int	type;
+X		int	protocol;
+X	} *uap = (struct a *)u.u_ap;
+X	struct socket *so;
+X	register struct file *fp;
+X
+X	if ((fp = falloc()) == NULL)
+X		return;
+X	fp->f_flag = FREAD|FWRITE;
+X	fp->f_type = DTYPE_SOCKET;
+X	fp->f_ops = &socketops;
+X	u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol);
+X	if (u.u_error)
+X		goto bad;
+X	fp->f_data = (caddr_t)so;
+X	return;
+Xbad:
+X	u.u_ofile[u.u_r.r_val1] = 0;
+X	fp->f_count = 0;
+X}
+X
+Xbind()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	name;
+X		int	namelen;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X	struct mbuf *nam;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	u.u_error = sockargs(&nam, uap->name, uap->namelen, MT_SONAME);
+X	if (u.u_error)
+X		return;
+X	u.u_error = sobind((struct socket *)fp->f_data, nam);
+X	m_freem(nam);
+X}
+X
+Xlisten()
+X{
+X	register struct a {
+X		int	s;
+X		int	backlog;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	u.u_error = solisten((struct socket *)fp->f_data, uap->backlog);
+X}
+X
+Xaccept()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	name;
+X		int	*anamelen;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X	struct mbuf *nam;
+X	int namelen;
+X	int s;
+X	register struct socket *so;
+X
+X	if (uap->name == 0)
+X		goto noname;
+X	u.u_error = copyin((caddr_t)uap->anamelen, (caddr_t)&namelen,
+X		sizeof (namelen));
+X	if (u.u_error)
+X		return;
+X	if (useracc((caddr_t)uap->name, (u_int)namelen, B_WRITE) == 0) {
+X		u.u_error = EFAULT;
+X		return;
+X	}
+Xnoname:
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	s = splnet();
+X	so = (struct socket *)fp->f_data;
+X	if ((so->so_options & SO_ACCEPTCONN) == 0) {
+X		u.u_error = EINVAL;
+X		splx(s);
+X		return;
+X	}
+X	if ((so->so_state & SS_NBIO) && so->so_qlen == 0) {
+X		u.u_error = EWOULDBLOCK;
+X		splx(s);
+X		return;
+X	}
+X	while (so->so_qlen == 0 && so->so_error == 0) {
+X		if (so->so_state & SS_CANTRCVMORE) {
+X			so->so_error = ECONNABORTED;
+X			break;
+X		}
+X		sleep((caddr_t)&so->so_timeo, PZERO+1);
+X	}
+X	if (so->so_error) {
+X		u.u_error = so->so_error;
+X		so->so_error = 0;
+X		splx(s);
+X		return;
+X	}
+X	if (ufalloc(0) < 0) {
+X		splx(s);
+X		return;
+X	}
+X	fp = falloc();
+X	if (fp == 0) {
+X		u.u_ofile[u.u_r.r_val1] = 0;
+X		splx(s);
+X		return;
+X	}
+X	{ struct socket *aso = so->so_q;
+X	  if (soqremque(aso, 1) == 0)
+X		panic("accept");
+X	  so = aso;
+X	}
+X	fp->f_type = DTYPE_SOCKET;
+X	fp->f_flag = FREAD|FWRITE;
+X	fp->f_ops = &socketops;
+X	fp->f_data = (caddr_t)so;
+X	nam = m_get(M_WAIT, MT_SONAME);
+X	(void) soaccept(so, nam);
+X	if (uap->name) {
+X		if (namelen > nam->m_len)
+X			namelen = nam->m_len;
+X		/* SHOULD COPY OUT A CHAIN HERE */
+X		(void) copyout(mtod(nam, caddr_t), (caddr_t)uap->name,
+X		    (u_int)namelen);
+X		(void) copyout((caddr_t)&namelen, (caddr_t)uap->anamelen,
+X		    sizeof (*uap->anamelen));
+X	}
+X	m_freem(nam);
+X	splx(s);
+X}
+X
+Xconnect()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	name;
+X		int	namelen;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X	register struct socket *so;
+X	struct mbuf *nam;
+X	int s;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	so = (struct socket *)fp->f_data;
+X	if ((so->so_state & SS_NBIO) &&
+X	    (so->so_state & SS_ISCONNECTING)) {
+X		u.u_error = EALREADY;
+X		return;
+X	}
+X	u.u_error = sockargs(&nam, uap->name, uap->namelen, MT_SONAME);
+X	if (u.u_error)
+X		return;
+X	u.u_error = soconnect(so, nam);
+X	if (u.u_error)
+X		goto bad;
+X	if ((so->so_state & SS_NBIO) &&
+X	    (so->so_state & SS_ISCONNECTING)) {
+X		u.u_error = EINPROGRESS;
+X		m_freem(nam);
+X		return;
+X	}
+X	s = splnet();
+X	if (setjmp(&u.u_qsave)) {
+X		if (u.u_error == 0)
+X			u.u_error = EINTR;
+X		goto bad2;
+X	}
+X	while ((so->so_state & SS_ISCONNECTING) && so->so_error == 0)
+X		sleep((caddr_t)&so->so_timeo, PZERO+1);
+X	u.u_error = so->so_error;
+X	so->so_error = 0;
+Xbad2:
+X	splx(s);
+Xbad:
+X	so->so_state &= ~SS_ISCONNECTING;
+X	m_freem(nam);
+X}
+X
+Xsocketpair()
+X{
+X	register struct a {
+X		int	domain;
+X		int	type;
+X		int	protocol;
+X		int	*rsv;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp1, *fp2;
+X	struct socket *so1, *so2;
+X	int sv[2];
+X
+X	if (useracc((caddr_t)uap->rsv, 2 * sizeof (int), B_WRITE) == 0) {
+X		u.u_error = EFAULT;
+X		return;
+X	}
+X	u.u_error = socreate(uap->domain, &so1, uap->type, uap->protocol);
+X	if (u.u_error)
+X		return;
+X	u.u_error = socreate(uap->domain, &so2, uap->type, uap->protocol);
+X	if (u.u_error)
+X		goto free;
+X	fp1 = falloc();
+X	if (fp1 == NULL)
+X		goto free2;
+X	sv[0] = u.u_r.r_val1;
+X	fp1->f_flag = FREAD|FWRITE;
+X	fp1->f_type = DTYPE_SOCKET;
+X	fp1->f_ops = &socketops;
+X	fp1->f_data = (caddr_t)so1;
+X	fp2 = falloc();
+X	if (fp2 == NULL)
+X		goto free3;
+X	fp2->f_flag = FREAD|FWRITE;
+X	fp2->f_type = DTYPE_SOCKET;
+X	fp2->f_ops = &socketops;
+X	fp2->f_data = (caddr_t)so2;
+X	sv[1] = u.u_r.r_val1;
+X	u.u_error = soconnect2(so1, so2);
+X	if (u.u_error)
+X		goto free4;
+X	if (uap->type == SOCK_DGRAM) {
+X		/*
+X		 * Datagram socket connection is asymmetric.
+X		 */
+X		 u.u_error = soconnect2(so2, so1);
+X		 if (u.u_error)
+X			goto free4;
+X	}
+X	u.u_r.r_val1 = 0;
+X	(void) copyout((caddr_t)sv, (caddr_t)uap->rsv, 2 * sizeof (int));
+X	return;
+Xfree4:
+X	fp2->f_count = 0;
+X	u.u_ofile[sv[1]] = 0;
+Xfree3:
+X	fp1->f_count = 0;
+X	u.u_ofile[sv[0]] = 0;
+Xfree2:
+X	(void)soclose(so2);
+Xfree:
+X	(void)soclose(so1);
+X}
+X
+Xsendto()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	buf;
+X		int	len;
+X		int	flags;
+X		caddr_t	to;
+X		int	tolen;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov;
+X
+X	msg.msg_name = uap->to;
+X	msg.msg_namelen = uap->tolen;
+X	msg.msg_iov = &aiov;
+X	msg.msg_iovlen = 1;
+X	aiov.iov_base = uap->buf;
+X	aiov.iov_len = uap->len;
+X	msg.msg_accrights = 0;
+X	msg.msg_accrightslen = 0;
+X	sendit(uap->s, &msg, uap->flags);
+X}
+X
+Xsend()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	buf;
+X		int	len;
+X		int	flags;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov;
+X
+X	msg.msg_name = 0;
+X	msg.msg_namelen = 0;
+X	msg.msg_iov = &aiov;
+X	msg.msg_iovlen = 1;
+X	aiov.iov_base = uap->buf;
+X	aiov.iov_len = uap->len;
+X	msg.msg_accrights = 0;
+X	msg.msg_accrightslen = 0;
+X	sendit(uap->s, &msg, uap->flags);
+X}
+X
+Xsendmsg()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	msg;
+X		int	flags;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov[MSG_MAXIOVLEN];
+X
+X	u.u_error = copyin(uap->msg, (caddr_t)&msg, sizeof (msg));
+X	if (u.u_error)
+X		return;
+X	if ((u_int)msg.msg_iovlen >= sizeof (aiov) / sizeof (aiov[0])) {
+X		u.u_error = EMSGSIZE;
+X		return;
+X	}
+X	u.u_error =
+X	    copyin((caddr_t)msg.msg_iov, (caddr_t)aiov,
+X		(unsigned)(msg.msg_iovlen * sizeof (aiov[0])));
+X	if (u.u_error)
+X		return;
+X	msg.msg_iov = aiov;
+X	sendit(uap->s, &msg, uap->flags);
+X}
+X
+Xsendit(s, mp, flags)
+X	int s;
+X	register struct msghdr *mp;
+X	int flags;
+X{
+X	register struct file *fp;
+X	struct uio auio;
+X	register struct iovec *iov;
+X	register int i;
+X	struct mbuf *to, *rights;
+X	int len;
+X	
+X	fp = getsock(s);
+X	if (fp == 0)
+X		return;
+X	auio.uio_iov = mp->msg_iov;
+X	auio.uio_iovcnt = mp->msg_iovlen;
+X	auio.uio_segflg = UIO_USERSPACE;
+X	auio.uio_offset = 0;			/* XXX */
+X	auio.uio_resid = 0;
+X	iov = mp->msg_iov;
+X	for (i = 0; i < mp->msg_iovlen; i++, iov++) {
+X		if (iov->iov_len < 0) {
+X			u.u_error = EINVAL;
+X			return;
+X		}
+X		if (iov->iov_len == 0)
+X			continue;
+X		if (useracc(iov->iov_base, (u_int)iov->iov_len, B_READ) == 0) {
+X			u.u_error = EFAULT;
+X			return;
+X		}
+X		auio.uio_resid += iov->iov_len;
+X	}
+X	if (mp->msg_name) {
+X		u.u_error =
+X		    sockargs(&to, mp->msg_name, mp->msg_namelen, MT_SONAME);
+X		if (u.u_error)
+X			return;
+X	} else
+X		to = 0;
+X	if (mp->msg_accrights) {
+X		u.u_error =
+X		    sockargs(&rights, mp->msg_accrights, mp->msg_accrightslen,
+X		    MT_RIGHTS);
+X		if (u.u_error)
+X			goto bad;
+X	} else
+X		rights = 0;
+X	len = auio.uio_resid;
+X	u.u_error =
+X	    sosend((struct socket *)fp->f_data, to, &auio, flags, rights);
+X	u.u_r.r_val1 = len - auio.uio_resid;
+X	if (rights)
+X		m_freem(rights);
+Xbad:
+X	if (to)
+X		m_freem(to);
+X}
+X
+Xrecvfrom()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	buf;
+X		int	len;
+X		int	flags;
+X		caddr_t	from;
+X		int	*fromlenaddr;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov;
+X	int len;
+X
+X	u.u_error = copyin((caddr_t)uap->fromlenaddr, (caddr_t)&len,
+X	   sizeof (len));
+X	if (u.u_error)
+X		return;
+X	msg.msg_name = uap->from;
+X	msg.msg_namelen = len;
+X	msg.msg_iov = &aiov;
+X	msg.msg_iovlen = 1;
+X	aiov.iov_base = uap->buf;
+X	aiov.iov_len = uap->len;
+X	msg.msg_accrights = 0;
+X	msg.msg_accrightslen = 0;
+X	recvit(uap->s, &msg, uap->flags, (caddr_t)uap->fromlenaddr, (caddr_t)0);
+X}
+X
+Xrecv()
+X{
+X	register struct a {
+X		int	s;
+X		caddr_t	buf;
+X		int	len;
+X		int	flags;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov;
+X
+X	msg.msg_name = 0;
+X	msg.msg_namelen = 0;
+X	msg.msg_iov = &aiov;
+X	msg.msg_iovlen = 1;
+X	aiov.iov_base = uap->buf;
+X	aiov.iov_len = uap->len;
+X	msg.msg_accrights = 0;
+X	msg.msg_accrightslen = 0;
+X	recvit(uap->s, &msg, uap->flags, (caddr_t)0, (caddr_t)0);
+X}
+X
+Xrecvmsg()
+X{
+X	register struct a {
+X		int	s;
+X		struct	msghdr *msg;
+X		int	flags;
+X	} *uap = (struct a *)u.u_ap;
+X	struct msghdr msg;
+X	struct iovec aiov[MSG_MAXIOVLEN];
+X
+X	u.u_error = copyin((caddr_t)uap->msg, (caddr_t)&msg, sizeof (msg));
+X	if (u.u_error)
+X		return;
+X	if ((u_int)msg.msg_iovlen >= sizeof (aiov) / sizeof (aiov[0])) {
+X		u.u_error = EMSGSIZE;
+X		return;
+X	}
+X	u.u_error =
+X	    copyin((caddr_t)msg.msg_iov, (caddr_t)aiov,
+X		(unsigned)(msg.msg_iovlen * sizeof (aiov[0])));
+X	if (u.u_error)
+X		return;
+X	msg.msg_iov = aiov;
+X	if (msg.msg_accrights)
+X		if (useracc((caddr_t)msg.msg_accrights,
+X		    (unsigned)msg.msg_accrightslen, B_WRITE) == 0) {
+X			u.u_error = EFAULT;
+X			return;
+X		}
+X	recvit(uap->s, &msg, uap->flags,
+X	    (caddr_t)&uap->msg->msg_namelen,
+X	    (caddr_t)&uap->msg->msg_accrightslen);
+X}
+X
+Xrecvit(s, mp, flags, namelenp, rightslenp)
+X	int s;
+X	register struct msghdr *mp;
+X	int flags;
+X	caddr_t namelenp, rightslenp;
+X{
+X	register struct file *fp;
+X	struct uio auio;
+X	register struct iovec *iov;
+X	register int i;
+X	struct mbuf *from, *rights;
+X	int len;
+X	
+X	fp = getsock(s);
+X	if (fp == 0)
+X		return;
+X	auio.uio_iov = mp->msg_iov;
+X	auio.uio_iovcnt = mp->msg_iovlen;
+X	auio.uio_segflg = UIO_USERSPACE;
+X	auio.uio_offset = 0;			/* XXX */
+X	auio.uio_resid = 0;
+X	iov = mp->msg_iov;
+X	for (i = 0; i < mp->msg_iovlen; i++, iov++) {
+X		if (iov->iov_len < 0) {
+X			u.u_error = EINVAL;
+X			return;
+X		}
+X		if (iov->iov_len == 0)
+X			continue;
+X		if (useracc(iov->iov_base, (u_int)iov->iov_len, B_WRITE) == 0) {
+X			u.u_error = EFAULT;
+X			return;
+X		}
+X		auio.uio_resid += iov->iov_len;
+X	}
+X	len = auio.uio_resid;
+X	u.u_error =
+X	    soreceive((struct socket *)fp->f_data, &from, &auio,
+X		flags, &rights);
+X	u.u_r.r_val1 = len - auio.uio_resid;
+X	if (mp->msg_name) {
+X		len = mp->msg_namelen;
+X		if (len <= 0 || from == 0)
+X			len = 0;
+X		else {
+X			if (len > from->m_len)
+X				len = from->m_len;
+X			(void) copyout((caddr_t)mtod(from, caddr_t),
+X			    (caddr_t)mp->msg_name, (unsigned)len);
+X		}
+X		(void) copyout((caddr_t)&len, namelenp, sizeof (int));
+X	}
+X	if (mp->msg_accrights) {
+X		len = mp->msg_accrightslen;
+X		if (len <= 0 || rights == 0)
+X			len = 0;
+X		else {
+X			if (len > rights->m_len)
+X				len = rights->m_len;
+X			(void) copyout((caddr_t)mtod(rights, caddr_t),
+X			    (caddr_t)mp->msg_accrights, (unsigned)len);
+X		}
+X		(void) copyout((caddr_t)&len, rightslenp, sizeof (int));
+X	}
+X	if (rights)
+X		m_freem(rights);
+X	if (from)
+X		m_freem(from);
+X}
+X
+Xshutdown()
+X{
+X	struct a {
+X		int	s;
+X		int	how;
+X	} *uap = (struct a *)u.u_ap;
+X	struct file *fp;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	u.u_error = soshutdown((struct socket *)fp->f_data, uap->how);
+X}
+X
+Xsetsockopt()
+X{
+X	struct a {
+X		int	s;
+X		int	level;
+X		int	name;
+X		caddr_t	val;
+X		int	valsize;
+X	} *uap = (struct a *)u.u_ap;
+X	struct file *fp;
+X	struct mbuf *m = NULL;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	if (uap->valsize > MLEN) {
+X		u.u_error = EINVAL;
+X		return;
+X	}
+X	if (uap->val) {
+X		m = m_get(M_WAIT, MT_SOOPTS);
+X		if (m == NULL) {
+X			u.u_error = ENOBUFS;
+X			return;
+X		}
+X		u.u_error =
+X		    copyin(uap->val, mtod(m, caddr_t), (u_int)uap->valsize);
+X		if (u.u_error) {
+X			(void) m_free(m);
+X			return;
+X		}
+X		m->m_len = uap->valsize;
+X	}
+X	u.u_error =
+X	    sosetopt((struct socket *)fp->f_data, uap->level, uap->name, m);
+X}
+X
+Xgetsockopt()
+X{
+X	struct a {
+X		int	s;
+X		int	level;
+X		int	name;
+X		caddr_t	val;
+X		int	*avalsize;
+X	} *uap = (struct a *)u.u_ap;
+X	struct file *fp;
+X	struct mbuf *m = NULL;
+X	int valsize;
+X
+X	fp = getsock(uap->s);
+X	if (fp == 0)
+X		return;
+X	if (uap->val) {
+X		u.u_error = copyin((caddr_t)uap->avalsize, (caddr_t)&valsize,
+X			sizeof (valsize));
+X		if (u.u_error)
+X			return;
+X	} else
+X		valsize = 0;
+X	u.u_error =
+X	    sogetopt((struct socket *)fp->f_data, uap->level, uap->name, &m);
+X	if (u.u_error)
+X		goto bad;
+X	if (uap->val && valsize && m != NULL) {
+X		if (valsize > m->m_len)
+X			valsize = m->m_len;
+X		u.u_error = copyout(mtod(m, caddr_t), uap->val, (u_int)valsize);
+X		if (u.u_error)
+X			goto bad;
+X		u.u_error = copyout((caddr_t)&valsize, (caddr_t)uap->avalsize,
+X		    sizeof (valsize));
+X	}
+Xbad:
+X	if (m != NULL)
+X		(void) m_free(m);
+X}
+X
+Xpipe()
+X{
+X	register struct file *rf, *wf;
+X	struct socket *rso, *wso;
+X	int r;
+X
+X	u.u_error = socreate(AF_UNIX, &rso, SOCK_STREAM, 0);
+X	if (u.u_error)
+X		return;
+X	u.u_error = socreate(AF_UNIX, &wso, SOCK_STREAM, 0);
+X	if (u.u_error)
+X		goto free;
+X	rf = falloc();
+X	if (rf == NULL)
+X		goto free2;
+X	r = u.u_r.r_val1;
+X	rf->f_flag = FREAD;
+X	rf->f_type = DTYPE_SOCKET;
+X	rf->f_ops = &socketops;
+X	rf->f_data = (caddr_t)rso;
+X	wf = falloc();
+X	if (wf == NULL)
+X		goto free3;
+X	wf->f_flag = FWRITE;
+X	wf->f_type = DTYPE_SOCKET;
+X	wf->f_ops = &socketops;
+X	wf->f_data = (caddr_t)wso;
+X	u.u_r.r_val2 = u.u_r.r_val1;
+X	u.u_r.r_val1 = r;
+X	if (u.u_error = unp_connect2(wso, rso))
+X		goto free4;
+X	wso->so_state |= SS_CANTRCVMORE;
+X	rso->so_state |= SS_CANTSENDMORE;
+X	return;
+Xfree4:
+X	wf->f_count = 0;
+X	u.u_ofile[u.u_r.r_val2] = 0;
+Xfree3:
+X	rf->f_count = 0;
+X	u.u_ofile[r] = 0;
+Xfree2:
+X	(void)soclose(wso);
+Xfree:
+X	(void)soclose(rso);
+X}
+X
+X/*
+X * Get socket name.
+X */
+Xgetsockname()
+X{
+X	register struct a {
+X		int	fdes;
+X		caddr_t	asa;
+X		int	*alen;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X	register struct socket *so;
+X	struct mbuf *m;
+X	int len;
+X
+X	fp = getsock(uap->fdes);
+X	if (fp == 0)
+X		return;
+X	u.u_error = copyin((caddr_t)uap->alen, (caddr_t)&len, sizeof (len));
+X	if (u.u_error)
+X		return;
+X	so = (struct socket *)fp->f_data;
+X	m = m_getclr(M_WAIT, MT_SONAME);
+X	if (m == NULL) {
+X		u.u_error = ENOBUFS;
+X		return;
+X	}
+X	u.u_error = (*so->so_proto->pr_usrreq)(so, PRU_SOCKADDR, 0, m, 0);
+X	if (u.u_error)
+X		goto bad;
+X	if (len > m->m_len)
+X		len = m->m_len;
+X	u.u_error = copyout(mtod(m, caddr_t), (caddr_t)uap->asa, (u_int)len);
+X	if (u.u_error)
+X		goto bad;
+X	u.u_error = copyout((caddr_t)&len, (caddr_t)uap->alen, sizeof (len));
+Xbad:
+X	m_freem(m);
+X}
+X
+X/*
+X * Get name of peer for connected socket.
+X */
+Xgetpeername()
+X{
+X	register struct a {
+X		int	fdes;
+X		caddr_t	asa;
+X		int	*alen;
+X	} *uap = (struct a *)u.u_ap;
+X	register struct file *fp;
+X	register struct socket *so;
+X	struct mbuf *m;
+X	int len;
+X
+X	fp = getsock(uap->fdes);
+X	if (fp == 0)
+X		return;
+X	so = (struct socket *)fp->f_data;
+X	if ((so->so_state & SS_ISCONNECTED) == 0) {
+X		u.u_error = ENOTCONN;
+X		return;
+X	}
+X	m = m_getclr(M_WAIT, MT_SONAME);
+X	if (m == NULL) {
+X		u.u_error = ENOBUFS;
+X		return;
+X	}
+X	u.u_error = copyin((caddr_t)uap->alen, (caddr_t)&len, sizeof (len));
+X	if (u.u_error)
+X		return;
+X	u.u_error = (*so->so_proto->pr_usrreq)(so, PRU_PEERADDR, 0, m, 0);
+X	if (u.u_error)
+X		goto bad;
+X	if (len > m->m_len)
+X		len = m->m_len;
+X	u.u_error = copyout(mtod(m, caddr_t), (caddr_t)uap->asa, (u_int)len);
+X	if (u.u_error)
+X		goto bad;
+X	u.u_error = copyout((caddr_t)&len, (caddr_t)uap->alen, sizeof (len));
+Xbad:
+X	m_freem(m);
+X}
+X
+Xsockargs(aname, name, namelen, type)
+X	struct mbuf **aname;
+X	caddr_t name;
+X	int namelen, type;
+X{
+X	register struct mbuf *m;
+X	int error;
+X
+X	if ((u_int)namelen > MLEN)
+X		return (EINVAL);
+X	m = m_get(M_WAIT, type);
+X	if (m == NULL)
+X		return (ENOBUFS);
+X	m->m_len = namelen;
+X	error = copyin(name, mtod(m, caddr_t), (u_int)namelen);
+X	if (error)
+X		(void) m_free(m);
+X	else
+X		*aname = m;
+X	return (error);
+X}
+X
+Xstruct file *
+Xgetsock(fdes)
+X	int fdes;
+X{
+X	register struct file *fp;
+X
+X	fp = getf(fdes);
+X	if (fp == NULL)
+X		return (0);
+X	if (fp->f_type != DTYPE_SOCKET) {
+X		u.u_error = ENOTSOCK;
+X		return (0);
+X	}
+X	return (fp);
+X}
+END-of-sys/uipc_syscalls.c
+echo x - sys/uipc_socket2.c
+sed 's/^X//' >sys/uipc_socket2.c << 'END-of-sys/uipc_socket2.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)uipc_socket2.c	7.3 (Berkeley) 1/28/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "proc.h"
+X#include "file.h"
+X#include "inode.h"
+X#include "buf.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X
+X/*
+X * Primitive routines for operating on sockets and socket buffers
+X */
+X
+X/*
+X * Procedures to manipulate state flags of socket
+X * and do appropriate wakeups.  Normal sequence from the
+X * active (originating) side is that soisconnecting() is
+X * called during processing of connect() call,
+X * resulting in an eventual call to soisconnected() if/when the
+X * connection is established.  When the connection is torn down
+X * soisdisconnecting() is called during processing of disconnect() call,
+X * and soisdisconnected() is called when the connection to the peer
+X * is totally severed.  The semantics of these routines are such that
+X * connectionless protocols can call soisconnected() and soisdisconnected()
+X * only, bypassing the in-progress calls when setting up a ``connection''
+X * takes no time.
+X *
+X * From the passive side, a socket is created with
+X * two queues of sockets: so_q0 for connections in progress
+X * and so_q for connections already made and awaiting user acceptance.
+X * As a protocol is preparing incoming connections, it creates a socket
+X * structure queued on so_q0 by calling sonewconn().  When the connection
+X * is established, soisconnected() is called, and transfers the
+X * socket structure to so_q, making it available to accept().
+X * 
+X * If a socket is closed with sockets on either
+X * so_q0 or so_q, these sockets are dropped.
+X *
+X * If higher level protocols are implemented in
+X * the kernel, the wakeups done here will sometimes
+X * cause software-interrupt process scheduling.
+X */
+X
+Xsoisconnecting(so)
+X	register struct socket *so;
+X{
+X
+X	so->so_state &= ~(SS_ISCONNECTED|SS_ISDISCONNECTING);
+X	so->so_state |= SS_ISCONNECTING;
+X	wakeup((caddr_t)&so->so_timeo);
+X}
+X
+Xsoisconnected(so)
+X	register struct socket *so;
+X{
+X	register struct socket *head = so->so_head;
+X
+X	if (head) {
+X		if (soqremque(so, 0) == 0)
+X			panic("soisconnected");
+X		soqinsque(head, so, 1);
+X		sorwakeup(head);
+X		wakeup((caddr_t)&head->so_timeo);
+X	}
+X	so->so_state &= ~(SS_ISCONNECTING|SS_ISDISCONNECTING);
+X	so->so_state |= SS_ISCONNECTED;
+X	wakeup((caddr_t)&so->so_timeo);
+X	sorwakeup(so);
+X	sowwakeup(so);
+X}
+X
+Xsoisdisconnecting(so)
+X	register struct socket *so;
+X{
+X
+X	so->so_state &= ~SS_ISCONNECTING;
+X	so->so_state |= (SS_ISDISCONNECTING|SS_CANTRCVMORE|SS_CANTSENDMORE);
+X	wakeup((caddr_t)&so->so_timeo);
+X	sowwakeup(so);
+X	sorwakeup(so);
+X}
+X
+Xsoisdisconnected(so)
+X	register struct socket *so;
+X{
+X
+X	so->so_state &= ~(SS_ISCONNECTING|SS_ISCONNECTED|SS_ISDISCONNECTING);
+X	so->so_state |= (SS_CANTRCVMORE|SS_CANTSENDMORE);
+X	wakeup((caddr_t)&so->so_timeo);
+X	sowwakeup(so);
+X	sorwakeup(so);
+X}
+X
+X/*
+X * When an attempt at a new connection is noted on a socket
+X * which accepts connections, sonewconn is called.  If the
+X * connection is possible (subject to space constraints, etc.)
+X * then we allocate a new structure, propoerly linked into the
+X * data structure of the original socket, and return this.
+X */
+Xstruct socket *
+Xsonewconn(head)
+X	register struct socket *head;
+X{
+X	register struct socket *so;
+X	register struct mbuf *m;
+X
+X	if (head->so_qlen + head->so_q0len > 3 * head->so_qlimit / 2)
+X		goto bad;
+X	m = m_getclr(M_DONTWAIT, MT_SOCKET);
+X	if (m == NULL)
+X		goto bad;
+X	so = mtod(m, struct socket *);
+X	so->so_type = head->so_type;
+X	so->so_options = head->so_options &~ SO_ACCEPTCONN;
+X	so->so_linger = head->so_linger;
+X	so->so_state = head->so_state | SS_NOFDREF;
+X	so->so_proto = head->so_proto;
+X	so->so_timeo = head->so_timeo;
+X	so->so_pgrp = head->so_pgrp;
+X	soqinsque(head, so, 0);
+X	if ((*so->so_proto->pr_usrreq)(so, PRU_ATTACH,
+X	    (struct mbuf *)0, (struct mbuf *)0, (struct mbuf *)0)) {
+X		(void) soqremque(so, 0);
+X		(void) m_free(m);
+X		goto bad;
+X	}
+X	return (so);
+Xbad:
+X	return ((struct socket *)0);
+X}
+X
+Xsoqinsque(head, so, q)
+X	register struct socket *head, *so;
+X	int q;
+X{
+X
+X	so->so_head = head;
+X	if (q == 0) {
+X		head->so_q0len++;
+X		so->so_q0 = head->so_q0;
+X		head->so_q0 = so;
+X	} else {
+X		head->so_qlen++;
+X		so->so_q = head->so_q;
+X		head->so_q = so;
+X	}
+X}
+X
+Xsoqremque(so, q)
+X	register struct socket *so;
+X	int q;
+X{
+X	register struct socket *head, *prev, *next;
+X
+X	head = so->so_head;
+X	prev = head;
+X	for (;;) {
+X		next = q ? prev->so_q : prev->so_q0;
+X		if (next == so)
+X			break;
+X		if (next == head)
+X			return (0);
+X		prev = next;
+X	}
+X	if (q == 0) {
+X		prev->so_q0 = next->so_q0;
+X		head->so_q0len--;
+X	} else {
+X		prev->so_q = next->so_q;
+X		head->so_qlen--;
+X	}
+X	next->so_q0 = next->so_q = 0;
+X	next->so_head = 0;
+X	return (1);
+X}
+X
+X/*
+X * Socantsendmore indicates that no more data will be sent on the
+X * socket; it would normally be applied to a socket when the user
+X * informs the system that no more data is to be sent, by the protocol
+X * code (in case PRU_SHUTDOWN).  Socantrcvmore indicates that no more data
+X * will be received, and will normally be applied to the socket by a
+X * protocol when it detects that the peer will send no more data.
+X * Data queued for reading in the socket may yet be read.
+X */
+X
+Xsocantsendmore(so)
+X	struct socket *so;
+X{
+X
+X	so->so_state |= SS_CANTSENDMORE;
+X	sowwakeup(so);
+X}
+X
+Xsocantrcvmore(so)
+X	struct socket *so;
+X{
+X
+X	so->so_state |= SS_CANTRCVMORE;
+X	sorwakeup(so);
+X}
+X
+X/*
+X * Socket select/wakeup routines.
+X */
+X
+X/*
+X * Queue a process for a select on a socket buffer.
+X */
+Xsbselqueue(sb)
+X	struct sockbuf *sb;
+X{
+X	register struct proc *p;
+X
+X	if ((p = sb->sb_sel) && p->p_wchan == (caddr_t)&selwait)
+X		sb->sb_flags |= SB_COLL;
+X	else
+X		sb->sb_sel = u.u_procp;
+X}
+X
+X/*
+X * Wait for data to arrive at/drain from a socket buffer.
+X */
+Xsbwait(sb)
+X	struct sockbuf *sb;
+X{
+X
+X	sb->sb_flags |= SB_WAIT;
+X	sleep((caddr_t)&sb->sb_cc, PZERO+1);
+X}
+X
+X/*
+X * Wakeup processes waiting on a socket buffer.
+X */
+Xsbwakeup(sb)
+X	register struct sockbuf *sb;
+X{
+X
+X	if (sb->sb_sel) {
+X		selwakeup(sb->sb_sel, sb->sb_flags & SB_COLL);
+X		sb->sb_sel = 0;
+X		sb->sb_flags &= ~SB_COLL;
+X	}
+X	if (sb->sb_flags & SB_WAIT) {
+X		sb->sb_flags &= ~SB_WAIT;
+X		wakeup((caddr_t)&sb->sb_cc);
+X	}
+X}
+X
+X/*
+X * Wakeup socket readers and writers.
+X * Do asynchronous notification via SIGIO
+X * if the socket has the SS_ASYNC flag set.
+X */
+Xsowakeup(so, sb)
+X	register struct socket *so;
+X	struct sockbuf *sb;
+X{
+X	register struct proc *p;
+X
+X	sbwakeup(sb);
+X	if (so->so_state & SS_ASYNC) {
+X		if (so->so_pgrp < 0)
+X			gsignal(-so->so_pgrp, SIGIO);
+X		else if (so->so_pgrp > 0 && (p = pfind(so->so_pgrp)) != 0)
+X			psignal(p, SIGIO);
+X	}
+X}
+X
+X/*
+X * Socket buffer (struct sockbuf) utility routines.
+X *
+X * Each socket contains two socket buffers: one for sending data and
+X * one for receiving data.  Each buffer contains a queue of mbufs,
+X * information about the number of mbufs and amount of data in the
+X * queue, and other fields allowing select() statements and notification
+X * on data availability to be implemented.
+X *
+X * Data stored in a socket buffer is maintained as a list of records.
+X * Each record is a list of mbufs chained together with the m_next
+X * field.  Records are chained together with the m_act field. The upper
+X * level routine soreceive() expects the following conventions to be
+X * observed when placing information in the receive buffer:
+X *
+X * 1. If the protocol requires each message be preceded by the sender's
+X *    name, then a record containing that name must be present before
+X *    any associated data (mbuf's must be of type MT_SONAME).
+X * 2. If the protocol supports the exchange of ``access rights'' (really
+X *    just additional data associated with the message), and there are
+X *    ``rights'' to be received, then a record containing this data
+X *    should be present (mbuf's must be of type MT_RIGHTS).
+X * 3. If a name or rights record exists, then it must be followed by
+X *    a data record, perhaps of zero length.
+X *
+X * Before using a new socket structure it is first necessary to reserve
+X * buffer space to the socket, by calling sbreserve().  This should commit
+X * some of the available buffer space in the system buffer pool for the
+X * socket (currently, it does nothing but enforce limits).  The space
+X * should be released by calling sbrelease() when the socket is destroyed.
+X */
+X
+Xsoreserve(so, sndcc, rcvcc)
+X	register struct socket *so;
+X	u_long sndcc, rcvcc;
+X{
+X
+X	if (sbreserve(&so->so_snd, sndcc) == 0)
+X		goto bad;
+X	if (sbreserve(&so->so_rcv, rcvcc) == 0)
+X		goto bad2;
+X	return (0);
+Xbad2:
+X	sbrelease(&so->so_snd);
+Xbad:
+X	return (ENOBUFS);
+X}
+X
+X/*
+X * Allot mbufs to a sockbuf.
+X * Attempt to scale cc so that mbcnt doesn't become limiting
+X * if buffering efficiency is near the normal case.
+X */
+Xsbreserve(sb, cc)
+X	struct sockbuf *sb;
+X	u_long cc;
+X{
+X
+X	if (cc > (u_long)SB_MAX * CLBYTES / (2 * MSIZE + CLBYTES))
+X		return (0);
+X	sb->sb_hiwat = cc;
+X	sb->sb_mbmax = MIN(cc * 2, SB_MAX);
+X	return (1);
+X}
+X
+X/*
+X * Free mbufs held by a socket, and reserved mbuf space.
+X */
+Xsbrelease(sb)
+X	struct sockbuf *sb;
+X{
+X
+X	sbflush(sb);
+X	sb->sb_hiwat = sb->sb_mbmax = 0;
+X}
+X
+X/*
+X * Routines to add and remove
+X * data from an mbuf queue.
+X *
+X * The routines sbappend() or sbappendrecord() are normally called to
+X * append new mbufs to a socket buffer, after checking that adequate
+X * space is available, comparing the function sbspace() with the amount
+X * of data to be added.  sbappendrecord() differs from sbappend() in
+X * that data supplied is treated as the beginning of a new record.
+X * To place a sender's address, optional access rights, and data in a
+X * socket receive buffer, sbappendaddr() should be used.  To place
+X * access rights and data in a socket receive buffer, sbappendrights()
+X * should be used.  In either case, the new data begins a new record.
+X * Note that unlike sbappend() and sbappendrecord(), these routines check
+X * for the caller that there will be enough space to store the data.
+X * Each fails if there is not enough space, or if it cannot find mbufs
+X * to store additional information in.
+X *
+X * Reliable protocols may use the socket send buffer to hold data
+X * awaiting acknowledgement.  Data is normally copied from a socket
+X * send buffer in a protocol with m_copy for output to a peer,
+X * and then removing the data from the socket buffer with sbdrop()
+X * or sbdroprecord() when the data is acknowledged by the peer.
+X */
+X
+X/*
+X * Append mbuf chain m to the last record in the
+X * socket buffer sb.  The additional space associated
+X * the mbuf chain is recorded in sb.  Empty mbufs are
+X * discarded and mbufs are compacted where possible.
+X */
+Xsbappend(sb, m)
+X	struct sockbuf *sb;
+X	struct mbuf *m;
+X{
+X	register struct mbuf *n;
+X
+X	if (m == 0)
+X		return;
+X	if (n = sb->sb_mb) {
+X		while (n->m_act)
+X			n = n->m_act;
+X		while (n->m_next)
+X			n = n->m_next;
+X	}
+X	sbcompress(sb, m, n);
+X}
+X
+X/*
+X * As above, except the mbuf chain
+X * begins a new record.
+X */
+Xsbappendrecord(sb, m0)
+X	register struct sockbuf *sb;
+X	register struct mbuf *m0;
+X{
+X	register struct mbuf *m;
+X
+X	if (m0 == 0)
+X		return;
+X	if (m = sb->sb_mb)
+X		while (m->m_act)
+X			m = m->m_act;
+X	/*
+X	 * Put the first mbuf on the queue.
+X	 * Note this permits zero length records.
+X	 */
+X	sballoc(sb, m0);
+X	if (m)
+X		m->m_act = m0;
+X	else
+X		sb->sb_mb = m0;
+X	m = m0->m_next;
+X	m0->m_next = 0;
+X	sbcompress(sb, m, m0);
+X}
+X
+X/*
+X * Append address and data, and optionally, rights
+X * to the receive queue of a socket.  Return 0 if
+X * no space in sockbuf or insufficient mbufs.
+X */
+Xsbappendaddr(sb, asa, m0, rights0)
+X	register struct sockbuf *sb;
+X	struct sockaddr *asa;
+X	struct mbuf *rights0, *m0;
+X{
+X	register struct mbuf *m, *n;
+X	int space = sizeof (*asa);
+X
+X	for (m = m0; m; m = m->m_next)
+X		space += m->m_len;
+X	if (rights0)
+X		space += rights0->m_len;
+X	if (space > sbspace(sb))
+X		return (0);
+X	MGET(m, M_DONTWAIT, MT_SONAME);
+X	if (m == 0)
+X		return (0);
+X	*mtod(m, struct sockaddr *) = *asa;
+X	m->m_len = sizeof (*asa);
+X	if (rights0 && rights0->m_len) {
+X		m->m_next = m_copy(rights0, 0, rights0->m_len);
+X		if (m->m_next == 0) {
+X			m_freem(m);
+X			return (0);
+X		}
+X		sballoc(sb, m->m_next);
+X	}
+X	sballoc(sb, m);
+X	if (n = sb->sb_mb) {
+X		while (n->m_act)
+X			n = n->m_act;
+X		n->m_act = m;
+X	} else
+X		sb->sb_mb = m;
+X	if (m->m_next)
+X		m = m->m_next;
+X	if (m0)
+X		sbcompress(sb, m0, m);
+X	return (1);
+X}
+X
+Xsbappendrights(sb, m0, rights)
+X	struct sockbuf *sb;
+X	struct mbuf *rights, *m0;
+X{
+X	register struct mbuf *m, *n;
+X	int space = 0;
+X
+X	if (rights == 0)
+X		panic("sbappendrights");
+X	for (m = m0; m; m = m->m_next)
+X		space += m->m_len;
+X	space += rights->m_len;
+X	if (space > sbspace(sb))
+X		return (0);
+X	m = m_copy(rights, 0, rights->m_len);
+X	if (m == 0)
+X		return (0);
+X	sballoc(sb, m);
+X	if (n = sb->sb_mb) {
+X		while (n->m_act)
+X			n = n->m_act;
+X		n->m_act = m;
+X	} else
+X		sb->sb_mb = m;
+X	if (m0)
+X		sbcompress(sb, m0, m);
+X	return (1);
+X}
+X
+X/*
+X * Compress mbuf chain m into the socket
+X * buffer sb following mbuf n.  If n
+X * is null, the buffer is presumed empty.
+X */
+Xsbcompress(sb, m, n)
+X	register struct sockbuf *sb;
+X	register struct mbuf *m, *n;
+X{
+X
+X	while (m) {
+X		if (m->m_len == 0) {
+X			m = m_free(m);
+X			continue;
+X		}
+X		if (n && n->m_off <= MMAXOFF && m->m_off <= MMAXOFF &&
+X		    (n->m_off + n->m_len + m->m_len) <= MMAXOFF &&
+X		    n->m_type == m->m_type) {
+X			bcopy(mtod(m, caddr_t), mtod(n, caddr_t) + n->m_len,
+X			    (unsigned)m->m_len);
+X			n->m_len += m->m_len;
+X			sb->sb_cc += m->m_len;
+X			m = m_free(m);
+X			continue;
+X		}
+X		sballoc(sb, m);
+X		if (n)
+X			n->m_next = m;
+X		else
+X			sb->sb_mb = m;
+X		n = m;
+X		m = m->m_next;
+X		n->m_next = 0;
+X	}
+X}
+X
+X/*
+X * Free all mbufs in a sockbuf.
+X * Check that all resources are reclaimed.
+X */
+Xsbflush(sb)
+X	register struct sockbuf *sb;
+X{
+X
+X	if (sb->sb_flags & SB_LOCK)
+X		panic("sbflush");
+X	while (sb->sb_mbcnt)
+X		sbdrop(sb, (int)sb->sb_cc);
+X	if (sb->sb_cc || sb->sb_mbcnt || sb->sb_mb)
+X		panic("sbflush 2");
+X}
+X
+X/*
+X * Drop data from (the front of) a sockbuf.
+X */
+Xsbdrop(sb, len)
+X	register struct sockbuf *sb;
+X	register int len;
+X{
+X	register struct mbuf *m, *mn;
+X	struct mbuf *next;
+X
+X	next = (m = sb->sb_mb) ? m->m_act : 0;
+X	while (len > 0) {
+X		if (m == 0) {
+X			if (next == 0)
+X				panic("sbdrop");
+X			m = next;
+X			next = m->m_act;
+X			continue;
+X		}
+X		if (m->m_len > len) {
+X			m->m_len -= len;
+X			m->m_off += len;
+X			sb->sb_cc -= len;
+X			break;
+X		}
+X		len -= m->m_len;
+X		sbfree(sb, m);
+X		MFREE(m, mn);
+X		m = mn;
+X	}
+X	while (m && m->m_len == 0) {
+X		sbfree(sb, m);
+X		MFREE(m, mn);
+X		m = mn;
+X	}
+X	if (m) {
+X		sb->sb_mb = m;
+X		m->m_act = next;
+X	} else
+X		sb->sb_mb = next;
+X}
+X
+X/*
+X * Drop a record off the front of a sockbuf
+X * and move the next record to the front.
+X */
+Xsbdroprecord(sb)
+X	register struct sockbuf *sb;
+X{
+X	register struct mbuf *m, *mn;
+X
+X	m = sb->sb_mb;
+X	if (m) {
+X		sb->sb_mb = m->m_act;
+X		do {
+X			sbfree(sb, m);
+X			MFREE(m, mn);
+X		} while (m = mn);
+X	}
+X}
+END-of-sys/uipc_socket2.c
+exit
+

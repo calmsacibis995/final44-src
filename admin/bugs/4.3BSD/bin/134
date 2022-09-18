@@ -1,0 +1,116 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:11:18 1988
+Date: Mon, 18 Apr 88 13:27:45 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) system() (really /bin/sh) muffs status of ^C'ees
+#Index: /bin/sh /bin/sh.4bsd MORE/bsd 4.3 (10/5/87)
+Index: bin/sh 4.3BSD
+
+Description:
+	The "/bin/sh -c" commands used by the "system" function return
+	strange status results if an interrupt occurs; this means you can't
+	tell interrupted commands from commands that exit voluntarily with
+	non-zero values.  "/bin/sh.4bsd" suffers the same problem.
+
+Repeat-By:
+	This script shows up the problem that got me concerned in the first
+	place:
+		Script started on Mon Mar 14 21:48:42 1988
+		$ cat try.c
+		#include <stdio.h>
+		#include <sys/wait.h>
+
+		main()
+		{
+			union wait	w;
+
+			w.w_status = system("sleep 3600");
+			(void) printf("w.w_termsig: %d\n", w.w_termsig);
+			(void) printf("w.w_coredump: %d\n", w.w_coredump);
+			(void) printf("w.w_retcode: %d\n", w.w_retcode);
+			return 0;
+		}
+		$ cc try.c -o try
+		$ try
+		^C
+		w.w_termsig: 0
+		w.w_coredump: 0
+		w.w_retcode: 234
+		$ exit
+
+		script done on Mon Mar 14 21:49:15 1988
+
+	...while this script shows up what the "real" problem seems to be:
+
+		Script started on Mon Mar 14 21:49:22 1988
+		$ cat try2.c
+		#include <stdio.h>
+		#include <sys/wait.h>
+		#include <signal.h>
+
+		static char *	shells[] = {
+			"sh",
+			"sh.4bsd",
+			"ksh",
+			NULL
+		};
+
+		main(argc, argv)
+		int	argc;
+		char *	argv[];
+		{
+			union wait	w;
+			int		i;
+
+			for (i = 0; shells[i] != NULL; ++i) {
+				(void) printf("%s:\n", shells[i]);
+				if (fork() == 0)
+					execlp(shells[i],
+						"sh", "-c",
+						"/bin/kill -2 0", (char *) 0);
+				(void) signal(SIGINT, SIG_IGN);
+				(void) wait(&w.w_status);
+				(void) printf("w.w_termsig: %d\n",
+					w.w_termsig);
+				(void) printf("w.w_coredump: %d\n",
+					w.w_coredump);
+				(void) printf("w.w_retcode: %d\n",
+					w.w_retcode);
+				(void) signal(SIGINT, SIG_DFL);
+			}
+			return 0;
+		}
+		$ cc try2.c -o try2
+		$ try2
+		sh:
+
+		w.w_termsig: 0
+		w.w_coredump: 0
+		w.w_retcode: 234
+		sh.4bsd:
+
+		w.w_termsig: 0
+		w.w_coredump: 0
+		w.w_retcode: 3
+		ksh:
+		w.w_termsig: 2
+		w.w_coredump: 0
+		w.w_retcode: 0
+		$ exit
+
+		script done on Mon Mar 14 21:49:53 1988
+
+	Note that our copy of the Korn shell (not distributed with
+	MORE/bsd or BSD) gets it right.
+
+Workaround:
+	In the particular case that got me started on this, replacing the
+		system("sleep 3600")
+	call with a
+		system("exec sleep 3600")
+	eliminates the /bin/sh middleman and provides a workaround.
+
+Fix:
+	Well, actually we won't be fixing it here at elsie; that'll help me
+	remember to drop those 'exec's into programs to improve portability
+	to BSD 4.3 and Mt. Xinu systems.
+

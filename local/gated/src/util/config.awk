@@ -1,0 +1,517 @@
+#
+#	$Id: config.awk,v 1.47.2.10 1995/05/01 16:25:44 jch Exp $
+#
+# %(Copyright.header)
+#
+BEGIN {
+	# Protocols
+	proto["ASPATHS"] = "ASPATHS";
+	proto["BGP"] = "BGP";
+	proto["DVMRP"] = "DVMRP";
+	proto["EGP"] = "EGP";
+	proto["HELLO"] = "HELLO";
+	proto["ICMP"] = "ICMP";
+	proto["RDISC"] = "RDISC";
+	proto["IGMP"] = "IGMP";
+	proto["OSPF"] = "OSPF";
+	proto["PIM"] = "PIM" ;
+	proto["SLSP"] = "SLSP";
+	proto["RDISC"] = "RDISC";
+	proto["IDPR"] = "IDPR";
+	proto["RIP"] = "RIP" ;
+	proto["ISODE_SNMP"] = "ISODE_SNMP";
+	proto["ISIS"] = "ISIS";
+	proto["IDRP"] = "IDRP";
+	proto["ISO"] = "ISO";
+	proto["INET"] = "INET";
+	proto["SCRAM"] = "SCRAM" ;
+	proto["UNIX"] = "UNIX" ;
+
+	depends["BGP"] = "ASPATHS INET %AUTONOMOUS_SYSTEM %ROUTER_ID";
+	depends["EGP"] = "INET %AUTONOMOUS_SYSTEM" ;
+	depends["DVMRP"] = "INET IGMP %IP_MULTICAST_ROUTING" ;
+	depends["HELLO"] = "INET" ;
+	depends["ICMP"] = "INET";
+	depends["RDISC"] = "INET ICMP %IP_MULTICAST_ROUTING";
+	depends["IGMP"] = "INET %IP_MULTICAST_ROUTING";
+	depends["OSPF"] = "ASPATHS INET %AUTONOMOUS_SYSTEM %ROUTER_ID %FLETCHER_CHECKSUM %MD5_CHECKSUM";
+        depends["RDISC"] = "INET ICMP %PARSE_LINK %ICMP_SEND";
+	depends["PIM"] = "INET IGMP %IP_MULTICAST_ROUTING" ;
+	depends["SCRAM"] = "UNIX";
+	depends["SLSP"] = "INET";
+	depends["RIP"] = "INET %MD5_CHECKSUM";
+	depends["ISODE_SNMP"] = "SNMP %PARSE_PORT";
+	depends["ISIS"] = "INET ISO %FLETCHER_CHECKSUM";
+	depends["IDRP"] = "ISO";
+
+	upper["aspaths"] = "ASPATHS"
+	upper["bgp"] = "BGP"
+	upper["dvmrp"] = "DVMRP"
+	upper["egp"] = "EGP"
+	upper["hello"] = "HELLO"
+	upper["icmp"] = "ICMP"
+	upper["rdisc"] = "RDISC"
+	upper["igmp"] = "IGMP"
+	upper["pim"] = "PIM"
+	upper["ospf"] = "OSPF"
+	upper["slsp"] = "SLSP"
+	upper["idpr"] = "IDPR"
+	upper["rip"] = "RIP"
+	upper["isode_snmp"] = "ISODE_SNMP"
+	upper["isis"] = "ISIS"
+	upper["idrp"] = "IDRP"
+	upper["iso"] = "ISO";
+	upper["scram"] = "SCRAM";
+	upper["unix"] = "UNIX";
+
+	for (p in proto) {
+		protocols[p] = 0;
+		if (depends[proto[p]]) {
+			split(depends[proto[p]], deps, " ") ;
+			for (dep in deps) {
+				if (substr(deps[dep], 1, 1) == "%") {
+					options[substr(deps[dep],2)] = 0;
+				} else {
+					protocols[deps[dep]] = 0;
+				}
+			}
+		}
+	}
+
+	vars = "" ;
+	VARS = "" ;
+
+	# Programs and flags used by make
+	vars = vars " ar awk .c.o cat cc cflags chgrp chmod" ;
+	VARS = VARS " AR AWK .C.O CAT CC CFLAGS CHGRP CHMOD" ;
+	vars = vars " cwflags date head install installflags" ;
+	VARS = VARS " CWFLAGS DATE HEAD INSTALL INSTALLFLAGS" ;
+	vars = vars " ldflags ldothers lex lint lflags" ;
+	VARS = VARS " LDFLAGS LDOTHERS LEX LINT LFLAGS" ;
+	vars = vars " link make mv ranlib rm sed sed_limit size" ;
+	VARS = VARS " LINK MAKE MV RANLIB RM SED SED_LIMIT SIZE" ;
+	vars = vars " tags tee tflags touch yacc yflags" ;
+	VARS = VARS " TAGS TEE TFLAGS TOUCH YACC YFLAGS" ;
+
+	# Paths for gated scripts
+	vars = vars " config_script mkdep sigconv.awk version.awk template" ;
+	VARS = VARS " CONFIG_SCRIPT MKDEP SIGCONV.AWK VERSION.AWK TEMPLATE" ;
+
+	# Stuff used by gdc
+	vars = vars " gdc_mode gdc_group config_mode" ;
+	VARS = VARS " GDC_MODE GDC_GROUP CONFIG_MODE" ;
+
+	# Stuff used by ospf_monitor
+	vars = vars " ospfm_mode ospfm_user" ;
+	VARS = VARS " OSPFM_MODE OSPFM_USER" ;
+
+	# Program names
+	vars = vars " gated gdc ripquery ospf_monitor" ;
+	VARS = VARS " GATED GDC RIPQUERY OSPF_MONITOR" ;
+
+	# Paths used by make
+	vars = vars " bindir destdir mandir objdir utildir sbindir signal_h" ;
+	VARS = VARS " BINDIR DESTDIR MANDIR OBJDIR UTILDIR SBINDIR SIGNAL_H" ;
+
+	vars = vars " srcdir smandir mibdir compatdir utildir" ;
+	VARS = VARS " SRCDIR SMANDIR MIBDIR COMPATDIR UTILDIR" ;
+
+	# Man pages
+	vars = vars " mantype" ;
+	VARS = VARS " MANTYPE" ;
+
+	# SNMP
+	vars = vars " isode_snmpi isode_mosy isode_snmp_include isode_snmp_defs_c isode_snmp_c_o" ;
+	VARS = VARS " ISODE_SNMPI ISODE_MOSY ISODE_SNMP_INCLUDE ISODE_SNMP_DEFS_C ISODE_SNMP_C_O" ;
+
+	i = split(VARS, VAR);
+	for (i = split(vars, var); i; i--) {
+		value[var[i]] = var[i];
+		variable[var[i]] = VAR[i];
+	}
+
+	value["cflags"] = "-O" ;
+	value["cwflags"] = "" ;
+	value["cc_depend"] = "cc -M" ;
+	value[".c.o"] = "@echo \"Compiling:	\"$*.c ; ${CC} -c ${CFLAGS} ${IFLAGS} $*.c" ;
+	value["head"] = "head -25" ;
+	value["installflags"] = "-c -s" ;
+	value["link"] = "ln -s" ;
+	value["ldflags"] = "";
+	value["ldothers"] = "";
+	value["lflags"] = "-v";
+	value["yflags"] = "-d";
+	value["signal_h"] = "/usr/include/signal.h";
+	value["sed_limit"] = 50;
+	value["tags"] = "etags";
+	value["tflags"] = "";
+
+	value["template"] = "Makefile.template" ;
+	value["bindir"] = "/etc";
+	value["sbindir"] = "/etc";
+	value["destdir"] = "";
+	value["objdir"] = "";
+
+	value["srcdir"] = "..";
+	value["smandir"] = "../man" ;
+	value["mandir"] = "/usr/man";
+	value["mantype"] = "bsd42";
+	value["mibdir"] = "mib";
+	value["compatdir"] = "compat";
+	value["utildir"] = "util";
+
+	value["isode_snmp_include"] = "/usr/include/isode/snmp";
+	value["isode_snmpi"] = "snmpi";
+	value["isode_mosy"] = "mosy";
+	value["isode_snmp_defs_c"] = "@${ISODE_SNMPI} -f gated-mib.defs compile -s gated-mib;" ;
+	value["isode_snmp_c_o"] = "@${CC} -c ${CFLAGS} ${IFLAGS} gated-mib.c" ;
+
+	# Paths compiled into gated
+	path["config"] = "/etc/%s.conf"
+	path["dump"] = "/usr/tmp/%s_dump" ;
+	path["dumpdir"] = "/usr/tmp" ;
+	path["pid"] = "/etc/%s.pid" ;
+	path["version"] = "/etc/%s.version" ;
+	path["unix"] = "/vmunix" ;
+
+	# Stuff for gdc
+	value["gdc_mode"] = "4750" ;
+	value["gdc_group"] = "gdmaint" ;
+	value["config_mode"] = "0664" ;
+
+	# Stuff for ospf_monitor
+	value["ospfm_mode"] = "4755" ;
+	value["ospfm_user"] = "root" ;
+
+	# Options
+	options["ENVIRON"] = "environ";
+	options["IBM_6611"] = 0;
+	options["KRT_IFR_MTU"] = "ifr_mtu" ;
+	options["ISODE_SNMP_NODEFS"] = 0 ;
+	options["NEED_HERRNO"] = 0;
+	options["NEED_HERRS"] = 0;
+	options["NEED_FFS"] = 0;
+	options["NEED_SYSCONF"] = 0;
+	options["NEED_UNSETENV"] = 0;
+	options["NEED_STRCASECMP"] = 0;
+	options["NEED_STRERROR"] = 0;
+	options["NEED_INET_ATON"] = 0;
+	options["NEED_SIGNAME"] = 0;
+	options["NEED_SETVBUF"] = 0;
+	options["NEED_FLOCK"] = 0;
+	options["MIB_GATED"] = 0;
+	options["MIB_RIP"] = 0;
+	options["KRT_RTREAD_KMEM"] = 0;
+	options["KRT_RTREAD_KINFO"] = 0;
+	options["KRT_RTREAD_PROC"] = 0;
+	options["KRT_RTREAD_RADIX"] = 0;
+	options["KRT_RTREAD_SUNOS5"] = 0;
+	options["KRT_IFREAD_IOCTL"] = 0;
+	options["KRT_IFREAD_KINFO"] = 0;
+	options["KRT_RT_IOCTL"] = 0;
+	options["KRT_RT_SOCK"] = 0;
+	options["KRT_LLADDR_KMEM"] = 0;
+	options["KRT_LLADDR_LINUX"] = 0;
+	options["KRT_LLADDR_SUNOS4"] = 0;
+	options["KRT_LLADDR_SUNOS5"] = 0;
+	options["KRT_SYMBOLS_NLIST"] = 0;
+	options["KRT_SYMBOLS_PROC"] = 0;
+	options["KRT_SYMBOLS_SUNOS5"] = 0;
+	options["KRT_SYMBOLS_SYSCTL"] = 0;
+	options["KRT_NETOPTS"] = 0;
+	options["KRT_IPMULTI_NOCACHE"] = 0;
+	options["KRT_IPMULTI_RTSOCK"] = 0;
+	options["KRT_IPMULTI_TTL0"] = 0;
+	options["KRT_SOCKET_TYPE"] = "PF_UNIX,SOCK_DGRAM,AF_UNSPEC";
+	options["KVM_TYPE_OTHER"] = 0;
+	options["SIGTYPE"] = "void";
+	options["SIGRETURN"] = "return";
+	options["VOID_T"] = "void *";
+	options["GID_T"] = 0;
+	options["PID_T"] = "pid_t" ;
+	options["KSYM_IPFORWARDING"] = "\"_ipforwarding\"" ;
+	options["KSYM_UDPCKSUM"] = "\"_udpcksum\"" ;
+	options["KSYM_VERSION"] = "\"_version\"" ;
+	options["KSYM_RTHOST"] = "\"_rthost\"" ;
+	options["KSYM_RTNET"] = "\"_rtnet\"" ;
+	options["KSYM_RTHASHSIZE"] = "\"_rthashsize\"" ;
+	options["KSYM_RADIXHEAD"] = "\"_radix_node_head\"" ;
+	options["KSYM_IFNET"] = "\"_ifnet\"" ;
+	options["U_INT8"] = "unsigned char";
+	options["S_INT8"] = "char";
+	options["U_INT16"] = "unsigned short";
+	options["S_INT16"] = "short";
+	options["U_INT32"] = "unsigned int";
+	options["S_INT32"] = "int";
+	options["U_INT64"] = 0;
+	options["S_INT64"] = 0;
+	options["__GATED__"] = 1;
+	options["LOG_OPTIONS"] = "LOG_PID | LOG_CONS | LOG_NDELAY";
+	options["LOG_FACILITY"] = "LOG_DAEMON" ;
+	options["LOCAL_VERSION"] = 0;
+	options["IFL_NAMELEN"] = "16";
+	options["PARSE_ASLIST"] = 0;
+	options["PARSE_PORT"] = 0;
+	options["PARSE_LINK"] = 0;
+	options["PARSE_UTIME"] = 0;
+	options["NLIST_T"] = "struct nlist";
+	options["NLIST(fd,nl,sz)"] = "nlist(fd,nl)";
+	options["GA2S(x)"] = "((u_long)(void_t)(x))";
+	options["GS2A(x)"] = "((void_t)(u_long)(x))";
+
+	error = 0;
+}
+
+#
+#	Ignore comments and blank lines
+#
+/^#.*$/	|| /^[ \t]*$/ {
+	next ;
+}
+
+#
+#	Specify the protocols
+#
+/^[ \t]*protocols[ \t]*.*/ {
+	for (p in protocols) {
+		protocols[p] = 0;
+		if (depends[proto[p]]) {
+			split(depends[proto[p]], deps, " ") ;
+			for (dep in deps) {
+				if (substr(deps[dep], 1, 1) == "%") {
+					options[substr(deps[dep],2)] = 0;
+				} else {
+					protocols[deps[dep]] = 0;
+				}
+			}
+		}
+	}
+	for (i = 2; i <= NF; i++) {
+		p = $i;
+		if (upper[p]) {
+			p = upper[p];
+		}
+		if (!length(proto[p])) {
+			printf "Invalid protocol on %s line %d at '%s'\n", FILENAME, NR, $i ;
+			error++ ;
+			next ;
+		}
+		protocols[proto[p]] = 1;
+		if (depends[proto[p]]) {
+			split(depends[proto[p]], deps, " ") ;
+			for (dep in deps) {
+				if (substr(deps[dep], 1, 1) == "%") {
+					options[substr(deps[dep], 2)] = 1;
+				} else {
+					protocols[deps[dep]] = 1;
+				}
+			}
+		}
+	}
+	next ;
+}
+
+#
+#	Specify compilation options
+#
+$1 == "options" {
+	#	OPTION
+	#	OPTION=sljf
+	#	OPTION="lsjf"
+	#	OPTION="lsjf sls"
+	#	OPTION=""lsjf sljf""
+
+	# Skip leading blanks
+	for (i = length($1) + 1; \
+	     substr($0, i, 1) == " " || substr($0, i, 1) == "	"; \
+	     i++) ;
+
+	for (line = substr($0, i); length(line); line = substr(line, i)) {
+		s = index(line, " ");
+		t = index(line, "	");
+		if (t > 0 && t < s) {
+			s = t;
+		}
+		if (s == 0) {
+			s = length(line) + 1;
+		}
+		e = index(line, "=");
+		if (e > 0 && e < s) {
+			# Has a parameter
+			option = substr(line, 1, e - 1);
+			if (substr(line, e+1, 1) == "\"") {
+				# Quoted
+				ee = index(substr(line, e + 3), "\"") ;
+				if (substr(line, e + 3 + ee, 1) == "\"") {
+					ee = ee + 1 ;
+				}
+				options[option] = substr(line, e + 2, ee)"";
+				i = e + 2 + ee + 2;
+			} else {
+				options[option] = substr(line, e + 1, s - e)"";
+				i = s + 1;
+			}	
+		} else {
+			options[substr(line, 1, s - 1)] = 1;
+			i = s + 1;
+		}
+		for (; substr(line, i, 1) == " " || substr(line, i, 1) == "	"; i++) ;
+	}
+	next ;
+}
+
+#
+#	Specify the paths
+#
+substr($1,1,5) == "path_" && NF == 2 {
+	p = substr($1,6)
+	if (!length(path[p])) {
+		printf "invalid path specification on %s line %d: %s\n", FILENAME, NR, $1;
+		error = 1;
+		next ;
+	}
+	path[p] = $2;
+	next ;
+}
+
+#
+#	Variables
+#
+NF >= 1 {
+	if (!length(variable[$1])) {
+		printf "invalid variable on %s line %d: %s\n", FILENAME, NR, $0;
+		error = 1;
+		next ;
+	}
+	if (NF > 1) {
+		arg = $2 ;
+		for (i = 3 ; i <= NF; i++) {
+			arg = arg" "$i ;
+		}
+	} else {
+		arg = "" ;
+	}
+	value[$1] = arg;
+	next ;
+}
+
+{
+	printf "config.awk: invalid input on %s line %d: %s\n", FILENAME, NR, $0 ;
+	error = 1;
+	exit ;
+}
+
+END {
+	if (error) {
+		exit error ;
+	}
+
+	#
+	#	Output the initial part of the script
+	#
+	printf "#!/bin/sh\n\n" > CONFIG_SCRIPT ;
+	printf "# THIS SCRIPT IS CREATED AUTOMATICALLY - DO NOT EDIT\n\n" > CONFIG_SCRIPT ;
+
+	if (!length(value["objdir"]) && length(OBJDIR)) {
+		value["objdir"] = OBJDIR ;
+	}
+	if (length(SRCDIR)) {
+		value["srcdir"] = SRCDIR ;
+	}
+		
+	#
+	#	Build the conditional list
+	#
+	for (protocol in protocols) {
+		conds["PROTO_"protocol] = protocols[protocol] ;
+	}
+	for (option in options) {
+		conds[option] = options[option] ;
+	}
+	
+	#
+	#	Build the defines list
+	#
+	for (protocol in protocols) {
+		if (protocols[protocol]) {
+			options["PROTO_"protocol] = 1 ;
+		}
+	}
+	printf "/* THIS FILE IS CREATED AUTOMATICALLY - DO NOT EDIT */\n\n" > DEFINES_H ;
+	option_list = "" ;
+	for (option in options) {
+		if (options[option]) {
+#			if (options[option] == 1+0) {
+#				printf "#define\t%s\n", option > DEFINES_H ;				
+#			} else {
+				printf "#define\t%s\t%s\n", option, options[option] > DEFINES_H ;
+#			}
+		}
+	}
+
+	#
+	#	Output Sed commands for paths
+	#
+	limit = value["sed_limit"] ;
+	printf "%s ", value["sed"] > CONFIG_SCRIPT
+	for (p in path) {
+		if ((limit -= 1) <= 0) {
+			limit = value["sed_limit"] ;
+			printf "| \\\n%s ", value["sed"] > CONFIG_SCRIPT
+		}
+		printf "\\\n\t-e 's~@(_path_%s)~%s~g' ", p, path[p] > CONFIG_SCRIPT
+	}
+	
+	#
+	#	Output the make variables
+	#
+	for (i in var) {
+		if ((limit -= 1) <= 0) {
+			limit = value["sed_limit"] ;
+			printf "| \\\n%s ", value["sed"] > CONFIG_SCRIPT
+		}
+		printf "\\\n\t-e 's~@(%s)~%s~g' ", VAR[i], value[var[i]] > CONFIG_SCRIPT
+	}
+
+	#
+	#	Output any interesting options
+	#
+	for (option in options) {
+		if (options[option] && options[option] != 1+0) {
+		    if ((limit -= 1) <= 0) {
+			limit = value["sed_limit"] ;
+			printf "| \\\n%s ", value["sed"] > CONFIG_SCRIPT
+		    }
+			printf "\\\n\t-e 's~@(%s)~%s~g' ", option, options[option] > CONFIG_SCRIPT
+		}
+	}
+	
+	#
+	#	Output the SED commands to remove unused sections of
+	#	the Makefile
+	#
+	for (cond in conds) {
+		if ((limit -= 2) <= 0) {
+			limit = value["sed_limit"] ;
+			printf "| \\\n%s ", value["sed"] > CONFIG_SCRIPT
+		}
+		printf "\\\n\t-e '/^@BEGIN:[ \t]%s[ \t]*$/", cond > CONFIG_SCRIPT
+		if (conds[cond]) {
+			printf "d;" > CONFIG_SCRIPT
+		} else {
+			printf "," > CONFIG_SCRIPT
+		}
+		printf "/^@END:[ \t]%s[ \t]*$/d' ", cond > CONFIG_SCRIPT
+		printf "\\\n\t-e '/^@BEGIN:[ \t]NOT %s[ \t]*$/", cond > CONFIG_SCRIPT
+		if (!conds[cond]) {
+			printf "d;" > CONFIG_SCRIPT
+		} else {
+			printf "," > CONFIG_SCRIPT
+		}
+		printf "/^@END:[ \t]NOT %s[ \t]*$/d' ", cond > CONFIG_SCRIPT
+	}
+	printf "\n" > CONFIG_SCRIPT
+}
+#
+# %(Copyright)
+#

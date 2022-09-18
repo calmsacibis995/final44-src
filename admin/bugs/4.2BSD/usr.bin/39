@@ -1,0 +1,42 @@
+Return-Path: <alex@cca-unix>
+Date: Fri, 4 May 84 10:52:06 edt
+From: alex@cca-unix (Alexis Layton)
+Subject: Nroff sometimes trashes current directory permissions
+Index: 	usr.bin/troff/n1.c 4.2BSD
+
+Description:
+	Nroff will occasionally change the permission of the current directory
+	to be unexecutable by everyone.  (In fact the directory permission
+	becomes the default tty device permission.)  What is happening is that
+	ttyname() is being used twice and the earlier value is being re-used
+	after the second call to ttyname.  (Note we have modified ttyname(3)
+	on our system slightly, so this next assertion may not apply:)
+	ttyname() returns a static char *; and the second call almost always
+	returns NULL but also re-initializes the static buffer to "".
+	This has the effect of doing a chmod("", original-tty-name), which
+	(Viola!) clobbers the current directory permission.
+
+Repeat-By:
+	Unfortunately, I am not quite clear on how to repeat this reliably.
+	I believe you must run nroff with standard output redirected but
+	not standard input or error.  This is a hypothesis only.
+
+Fix:
+	I can't provide good diffs because we changed a few other things in
+	our nroff; but here is a description of the fix.  Basically we are
+	strcpy'ing the first value of ttyname.  To the beginning of the
+	file add a buffer
+
+		char ttynamebuf[128];
+
+	after
+
+		char *ttyp;
+
+	Then, in init2(), after the three lines of if statement inwhich
+	ttyname() plays a major role, add
+
+		if (ttyp)
+			ttyp = strcpy(ttynamebuf, ttyp);
+
+	This should fix the problem.

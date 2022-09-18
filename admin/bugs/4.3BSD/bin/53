@@ -1,0 +1,365 @@
+From decwrl!amdcad!ima!haddock!elvy@ucbvax.Berkeley.EDU  Wed Feb  4 13:09:44 1987
+Date: Wed, 4 Feb 87 15:37:57 EST
+From: decwrl!amdcad!haddock!elvy@ucbvax.Berkeley.EDU (Marc Elvy)
+Subject: expr doesn't recognize that negative numbers are negative
+Index: bin/expr.y 4.3BSD
+
+Description:
+	expr treats negative numbers as text and gives the
+	"non-numeric argument" error if you use a negative
+	number in an algebraic expression.
+
+Repeat-By:
+	expr -1 + 0
+
+===============================================================
+Path: seismo!rutgers!mit-eddie!uw-beaver!ubc-vision!ubc-cs!brachman
+From: brachman@ubc-cs.UUCP (Barry Brachman)
+Newsgroups: comp.bugs.4bsd
+Subject: expr(1) fails on negative values (+new fix)
+Index:	/usr/src/bin/expr.y 4.3BSD
+
+Description:
+	Expr gags on negative numbers as numeric arguments or when an
+	intermediate result is negative.
+	This bug was reported earlier by Amos Shapir <amos@instable.uucp>
+	but his fix was not quite correct.
+
+	By the way, expr accepts both '=' and '==' as equality
+	operators.  This is not documented in the man page.
+
+Repeat-By:
+	Try:
+		expr -1 + 2
+	or:
+		expr 5 - 6 + 3
+	If you've applied Amos Shapir's "fix" try:
+		-4 + --6
+
+Fix:
+	Two sets of context diffs follow.  The first (diffs1) simply corrects
+	the bug.  The second (diffs2) corrects the bug and also cleans up the
+	code so that cc and lint are happier.  Both fixes assume the original
+	source code.
+
+-----
+Barry Brachman		 | {ihnp4!alberta,uw-beaver,seismo}!
+Dept. of Computer Science|	ubc-vision!ubc-cs!brachman
+Univ. of British Columbia| brachman@cs.ubc.cdn
+Vancouver, B.C. V6T 1W5  | brachman%ubc.csnet@csnet-relay.arpa
+(604) 228-4327		 | brachman@ubc.csnet
+
+----- CUT HERE ----- CUT HERE ----- CUT HERE ----- CUT HERE ----- CUT HERE
+: This is a shar archive.  Extract with sh, not csh.
+: This archive ends with exit, so do not worry about trailing junk.
+: Created by brachman@ubc-csgrads on Thu Apr  9 16:21:49 PDT 1987
+echo 'Extracting diffs1'
+sed 's/^X//' > diffs1 << '+ END-OF-FILE diffs1'
+X*** expr.y	Thu Apr  9 13:02:51 1987
+X--- expr.new.y	Thu Apr  9 14:06:24 1987
+X***************
+X*** 113,119 ****
+X  	long i1, i2;
+X  	register char *rv;
+X  
+X! 	if(!(ematch(r1, "[0-9]*$") && ematch(r2, "[0-9]*$")))
+X  		yyerror("non-numeric argument");
+X  	i1 = atol(r1);
+X  	i2 = atol(r2);
+X--- 114,121 ----
+X  	long i1, i2;
+X  	register char *rv;
+X  
+X! 	if(!((ematch(r1, "[0-9]*$") || ematch(r1, "-[0-9]*$")) &&
+X! 	     (ematch(r2, "[0-9]*$") || ematch(r2, "-[0-9]*$"))))
+X  		yyerror("non-numeric argument");
+X  	i1 = atol(r1);
+X  	i2 = atol(r2);
+X
++ END-OF-FILE diffs1
+chmod 'u=rw,g=r,o=r' 'diffs1'
+echo '	-rw-r--r--  1 brachman      533 Apr  9 16:19 diffs1        (as sent)'
+echo -n '	'
+/bin/ls -l diffs1
+echo 'Extracting diffs2'
+sed 's/^X//' > diffs2 << '+ END-OF-FILE diffs2'
+X*** expr.y	Thu Apr  9 13:02:51 1987
+X--- expr.new.y	Thu Apr  9 14:06:24 1987
+X***************
+X*** 18,48 ****
+X  /* a single `expression' is evaluated and printed: */
+X  
+X  expression:	expr NOARG = {
+X! 			printf("%s\n", $1);
+X! 			exit((!strcmp($1,"0")||!strcmp($1,"\0"))? 1: 0);
+X  			}
+X  	;
+X  
+X  
+X  expr:	'(' expr ')' = { $$ = $2; }
+X! 	| expr OR expr   = { $$ = conj(OR, $1, $3); }
+X! 	| expr AND expr   = { $$ = conj(AND, $1, $3); }
+X! 	| expr EQ expr   = { $$ = rel(EQ, $1, $3); }
+X! 	| expr GT expr   = { $$ = rel(GT, $1, $3); }
+X! 	| expr GEQ expr   = { $$ = rel(GEQ, $1, $3); }
+X! 	| expr LT expr   = { $$ = rel(LT, $1, $3); }
+X! 	| expr LEQ expr   = { $$ = rel(LEQ, $1, $3); }
+X! 	| expr NEQ expr   = { $$ = rel(NEQ, $1, $3); }
+X! 	| expr ADD expr   = { $$ = arith(ADD, $1, $3); }
+X! 	| expr SUBT expr   = { $$ = arith(SUBT, $1, $3); }
+X! 	| expr MULT expr   = { $$ = arith(MULT, $1, $3); }
+X! 	| expr DIV expr   = { $$ = arith(DIV, $1, $3); }
+X! 	| expr REM expr   = { $$ = arith(REM, $1, $3); }
+X! 	| expr MCH expr	 = { $$ = match($1, $3); }
+X! 	| MATCH expr expr = { $$ = match($2, $3); }
+X! 	| SUBSTR expr expr expr = { $$ = substr($2, $3, $4); }
+X! 	| LENGTH expr       = { $$ = length($2); }
+X! 	| INDEX expr expr = { $$ = index($2, $3); }
+X  	| A_STRING
+X  	;
+X  %%
+X--- 18,48 ----
+X  /* a single `expression' is evaluated and printed: */
+X  
+X  expression:	expr NOARG = {
+X! 			(void) printf("%s\n", $1);
+X! 			exit((!strcmp((char *) $1,"0")||!strcmp((char *) $1,"\0"))? 1: 0);
+X  			}
+X  	;
+X  
+X  
+X  expr:	'(' expr ')' = { $$ = $2; }
+X! 	| expr OR expr   = { $$ = (YYSTYPE) conj(OR, (char *) $1, (char *) $3); }
+X! 	| expr AND expr  = { $$ = (YYSTYPE) conj(AND, (char *) $1, (char *) $3); }
+X! 	| expr EQ expr   = { $$ = (YYSTYPE) rel(EQ, (char *) $1, (char *) $3); }
+X! 	| expr GT expr   = { $$ = (YYSTYPE) rel(GT, (char *) $1, (char *) $3); }
+X! 	| expr GEQ expr  = { $$ = (YYSTYPE) rel(GEQ, (char *) $1, (char *) $3); }
+X! 	| expr LT expr   = { $$ = (YYSTYPE) rel(LT, (char *) $1, (char *) $3); }
+X! 	| expr LEQ expr  = { $$ = (YYSTYPE) rel(LEQ, (char *) $1, (char *) $3); }
+X! 	| expr NEQ expr  = { $$ = (YYSTYPE) rel(NEQ, (char *) $1, (char *) $3); }
+X! 	| expr ADD expr  = { $$ = (YYSTYPE) arith(ADD, (char *) $1, (char *) $3); }
+X! 	| expr SUBT expr = { $$ = (YYSTYPE)arith(SUBT, (char *) $1, (char *) $3); }
+X! 	| expr MULT expr = { $$ = (YYSTYPE)arith(MULT, (char *) $1, (char *) $3); }
+X! 	| expr DIV expr  = { $$ = (YYSTYPE) arith(DIV, (char *) $1, (char *) $3); }
+X! 	| expr REM expr  = { $$ = (YYSTYPE) arith(REM, (char *) $1, (char *) $3); }
+X! 	| expr MCH expr	 = { $$ = (YYSTYPE) match((char *) $1, (char *) $3); }
+X! 	| MATCH expr expr = { $$ = (YYSTYPE) match((char *) $2, (char *) $3); }
+X! 	| SUBSTR expr expr expr = { $$ = (YYSTYPE) substr((char *) $2, (char *) $3, (char *) $4); }
+X! 	| LENGTH expr       = { $$ = (YYSTYPE) length((char *) $2); }
+X! 	| INDEX expr expr = { $$ = (YYSTYPE) index((char *) $2, (char *) $3); }
+X  	| A_STRING
+X  	;
+X  %%
+X***************
+X*** 60,70 ****
+X  char *malloc();
+X  extern int nbra;
+X  
+X  main(argc, argv) char **argv; {
+X  	Ac = argc;
+X  	Argi = 1;
+X  	Av = argv;
+X! 	yyparse();
+X  }
+X  
+X  char *operators[] = { "|", "&", "+", "-", "*", "/", "%", ":",
+X--- 60,71 ----
+X  char *malloc();
+X  extern int nbra;
+X  
+X+ char *sprintf(), *strcpy(), *strncpy();
+X  main(argc, argv) char **argv; {
+X  	Ac = argc;
+X  	Argi = 1;
+X  	Av = argv;
+X! 	(void) yyparse();
+X  }
+X  
+X  char *operators[] = { "|", "&", "+", "-", "*", "/", "%", ":",
+X***************
+X*** 87,93 ****
+X  		if(EQL(operators[i], p))
+X  			return op[i];
+X  
+X! 	yylval = p;
+X  	return A_STRING;
+X  }
+X  
+X--- 88,94 ----
+X  		if(EQL(operators[i], p))
+X  			return op[i];
+X  
+X! 	yylval = (YYSTYPE) p;
+X  	return A_STRING;
+X  }
+X  
+X***************
+X*** 113,119 ****
+X  	long i1, i2;
+X  	register char *rv;
+X  
+X! 	if(!(ematch(r1, "[0-9]*$") && ematch(r2, "[0-9]*$")))
+X  		yyerror("non-numeric argument");
+X  	i1 = atol(r1);
+X  	i2 = atol(r2);
+X--- 114,121 ----
+X  	long i1, i2;
+X  	register char *rv;
+X  
+X! 	if(!((ematch(r1, "[0-9]*$") || ematch(r1, "-[0-9]*$")) &&
+X! 	     (ematch(r2, "[0-9]*$") || ematch(r2, "-[0-9]*$"))))
+X  		yyerror("non-numeric argument");
+X  	i1 = atol(r1);
+X  	i2 = atol(r2);
+X***************
+X*** 126,132 ****
+X  	case REM: i1 = i1 % i2; break;
+X  	}
+X  	rv = malloc(16);
+X! 	sprintf(rv, "%D", i1);
+X  	return rv;
+X  }
+X  char *conj(op, r1, r2) char *r1, *r2; {
+X--- 128,134 ----
+X  	case REM: i1 = i1 % i2; break;
+X  	}
+X  	rv = malloc(16);
+X! 	(void) sprintf(rv, "%D", i1);
+X  	return rv;
+X  }
+X  char *conj(op, r1, r2) char *r1, *r2; {
+X***************
+X*** 182,188 ****
+X  	while(*s++) ++i;
+X  
+X  	rv = malloc(8);
+X! 	sprintf(rv, "%d", i);
+X  	return rv;
+X  }
+X  
+X--- 184,190 ----
+X  	while(*s++) ++i;
+X  
+X  	rv = malloc(8);
+X! 	(void) sprintf(rv, "%d", i);
+X  	return rv;
+X  }
+X  
+X***************
+X*** 193,199 ****
+X  	for(i = 0; s[i] ; ++i)
+X  		for(j = 0; t[j] ; ++j)
+X  			if(s[i]==t[j]) {
+X! 				sprintf(rv = malloc(8), "%d", ++i);
+X  				return rv;
+X  			}
+X  	return "0";
+X--- 195,201 ----
+X  	for(i = 0; s[i] ; ++i)
+X  		for(j = 0; t[j] ; ++j)
+X  			if(s[i]==t[j]) {
+X! 				(void) sprintf(rv = malloc(8), "%d", ++i);
+X  				return rv;
+X  			}
+X  	return "0";
+X***************
+X*** 200,212 ****
+X  }
+X  
+X  char *match(s, p)
+X  {
+X  	register char *rv;
+X  
+X! 	sprintf(rv = malloc(8), "%d", ematch(s, p));
+X  	if(nbra) {
+X! 		rv = malloc(strlen(Mstring[0])+1);
+X! 		strcpy(rv, Mstring[0]);
+X  	}
+X  	return rv;
+X  }
+X--- 202,215 ----
+X  }
+X  
+X  char *match(s, p)
+X+ char *s, *p;
+X  {
+X  	register char *rv;
+X  
+X! 	(void) sprintf(rv = malloc(8), "%d", ematch(s, p));
+X  	if(nbra) {
+X! 		rv = malloc((unsigned int) (strlen(Mstring[0])+1));
+X! 		(void) strcpy(rv, Mstring[0]);
+X  	}
+X  	return rv;
+X  }
+X***************
+X*** 235,241 ****
+X  		if(nbra == 1) {
+X  			p = braslist[0];
+X  			num = braelist[0] - p;
+X! 			strncpy(Mstring[0], p, num);
+X  			Mstring[0][num] = '\0';
+X  		}
+X  		return(loc2-s);
+X--- 238,244 ----
+X  		if(nbra == 1) {
+X  			p = braslist[0];
+X  			num = braelist[0] - p;
+X! 			(void) strncpy(Mstring[0], p, num);
+X  			Mstring[0][num] = '\0';
+X  		}
+X  		return(loc2-s);
+X***************
+X*** 243,249 ****
+X--- 246,254 ----
+X  	return(0);
+X  }
+X  
+X+ /*ARGSUSED*/
+X  errxx(c)
+X+ int c;
+X  {
+X  	yyerror("RE error");
+X  }
+X***************
+X*** 647,653 ****
+X  register char *str;
+X  {
+X  	low = *str++ & 0377;
+X! 	size = *str == 255 ? 20000 : (*str &0377) - low;
+X  }
+X  
+X  ecmp(a, b, count)
+X--- 652,658 ----
+X  register char *str;
+X  {
+X  	low = *str++ & 0377;
+X! 	size = (int) (*str & 0377) == 255 ? 20000 : (int) (*str &0377) - low;
+X  }
+X  
+X  ecmp(a, b, count)
+X***************
+X*** 663,670 ****
+X  
+X  static char *sccsid = "@(#)expr.y	4.4 (Berkeley) 5/21/84";
+X  yyerror(s)
+X! 
+X  {
+X! 	fprintf(stderr, "%s\n", s);
+X  	exit(2);
+X  }
+X--- 668,675 ----
+X  
+X  static char *sccsid = "@(#)expr.y	4.4 (Berkeley) 5/21/84";
+X  yyerror(s)
+X! char *s;
+X  {
+X! 	(void) fprintf(stderr, "%s\n", s);
+X  	exit(2);
+X  }
++ END-OF-FILE diffs2
+chmod 'u=rw,g=r,o=r' 'diffs2'
+echo '	-rw-r--r--  1 brachman     6755 Apr  9 14:12 diffs2        (as sent)'
+echo -n '	'
+/bin/ls -l diffs2
+exit 0

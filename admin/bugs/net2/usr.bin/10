@@ -1,0 +1,101 @@
+From leres@ee.lbl.gov  Fri Feb 21 13:18:49 1992
+To: bostic@okeeffe.cs.berkeley.edu (Keith Bostic)
+Cc: torek@ee.lbl.gov (Chris Torek)
+Subject: Re: bsd m4
+In-Reply-To: Your message of Tue, 04 Feb 92 18:55:51 PST.
+Date: Wed, 12 Feb 92 20:29:30 PST
+From: Craig Leres <leres@ee.lbl.gov>
+Index: usr.bin/m4 net2
+
+Ok, I finally got a minute to work on this.
+
+> > The old m4 let you specify filename arguments (even "-" for stdin). The
+> > new one doesn't. This breaks (X11's) tvtwm. What would think about
+> > having the new m4 allow filenames?
+> 
+> I think the one on vangogh does, what's your example?  And, '-' is
+> just /dev/stdin, right?
+
+The first problem is that the m4 on vangogh is (was) much newer than
+what we had on elf. I ported it to elf and tried giving it two
+filenames. This caused a core dump (on both elf and vangogh) which
+resulted in the appended patch to m4/main.c which I have tested on elf
+and installed on vangogh. (ilevel was becoming negative as the result
+of the test.)
+
+This still doesn't fix my original problem; namely, tvtwm fires up m4
+with a named temporary file and "-" while stdin aimed at the .twmrc and
+stdout aimed at a pipe. Since the new m4 doesn't recognize "-" as
+stdin, tvtwm fails.
+
+So the question is do we hack tvtwm to sometimes use /dev/stdin and
+sometimes use "-" or do we hack m4 to accept "-" as an alias for
+/dev/stdin? I've installed the appended patch on elf to buy some time
+while you chose the lesser of the evils...
+
+		Craig
+------
+[installed on vangogh and elf]
+*** /tmp/,RCSt1a27365	Thu Feb 13 04:02:46 1992
+--- main.c	Thu Feb 13 04:00:59 1992
+***************
+*** 278,285 ****
+  		else if (t == EOF) {
+  			if (sp > -1)
+  				oops("unexpected end of input", "");
+! 			if (--ilevel < 0)
+  				break;			/* all done thanks.. */
+  			(void) fclose(infile[ilevel+1]);
+  			bufbase = bbase[ilevel];
+  			continue;
+--- 278,286 ----
+  		else if (t == EOF) {
+  			if (sp > -1)
+  				oops("unexpected end of input", "");
+! 			if (ilevel <= 0)
+  				break;			/* all done thanks.. */
++ 			--ilevel;
+  			(void) fclose(infile[ilevel+1]);
+  			bufbase = bbase[ilevel];
+  			continue;
+------
+[only installed on elf]
+*** /tmp/,RCSt1a27558	Thu Feb 13 04:25:11 1992
+--- main.c	Thu Feb 13 04:25:04 1992
+***************
+*** 189,203 ****
+  	}
+          else
+                  while (argc--) {
+!                         if ((ifp = fopen(*argv, "r")) == NULL)
+                                  oops("%s: %s", *argv, strerror(errno));
+!                         else {
+! 				sp = -1;
+! 				fp = 0; 
+! 				infile[0] = ifp;
+! 				macro();
+! 				(void) fclose(ifp);
+! 			}
+                          argv++;
+  		}
+  
+--- 189,207 ----
+  	}
+          else
+                  while (argc--) {
+! 			p = *argv;
+! /* XXX begin hack */
+! 			/* "-" -> "/dev/stdin" */
+! 			if (p[0] == '-' && p[1] == '\0')
+! 				p = "/dev/stdin";
+! /* XXX end hack */
+!                         if ((ifp = fopen(p, "r")) == NULL)
+                                  oops("%s: %s", *argv, strerror(errno));
+! 			sp = -1;
+! 			fp = 0; 
+! 			infile[0] = ifp;
+! 			macro();
+! 			(void) fclose(ifp);
+                          argv++;
+  		}
+  

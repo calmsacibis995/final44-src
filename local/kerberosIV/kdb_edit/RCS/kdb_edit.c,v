@@ -1,0 +1,1836 @@
+head     4.4;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.1 KPATCH4:4.1 KPATCH3:4.1 KPATCH2:4.1 KREL1:4.0 BETA5/24/88:1.10;
+locks    ; strict;
+comment  @ * @;
+
+
+4.4
+date     93.05.16.00.04.33;  author torek;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     92.07.19.13.16.07;  author bostic;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     90.01.09.16.05.09;  author raeburn;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     89.03.23.09.58.18;  author jtkohl;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     89.01.24.21.50.30;  author jtkohl;  state Exp;
+branches ;
+next     1.16;
+
+1.16
+date     89.01.24.17.41.56;  author jon;  state Exp;
+branches ;
+next     1.15;
+
+1.15
+date     89.01.15.15.59.00;  author rfrench;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     89.01.13.18.38.29;  author steiner;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     88.12.09.16.17.03;  author steiner;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     88.12.01.09.05.42;  author jtkohl;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     88.08.26.13.18.22;  author shanzer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     88.04.26.14.38.35;  author steiner;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     88.03.24.18.07.36;  author steiner;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     88.03.17.10.19.59;  author steiner;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     88.02.23.17.32.48;  author steiner;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     88.02.07.14.43.32;  author steiner;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     88.01.13.19.00.10;  author steiner;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     88.01.13.17.40.15;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     87.12.05.16.34.05;  author steiner;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     87.12.05.16.27.33;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.11.30.06.10.15;  author panda;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial checkin.
+@
+
+
+4.4
+log
+@rm unneeded incorrect redeclaration of sys_errlist
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/kdb_edit/RCS/kdb_edit.c,v $
+ * $Author: bostic $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine changes the Kerberos encryption keys for principals,
+ * i.e., users or services. 
+ */
+
+/*
+ * exit returns 	 0 ==> success -1 ==> error 
+ */
+
+#ifndef	lint
+static char rcsid_kdb_edit_c[] =
+"$Id: kdb_edit.c,v 4.3 92/07/19 13:16:07 bostic Exp Locker: torek $";
+#endif	lint
+
+#include <mit-copyright.h>
+
+#include <stdio.h>
+#include <signal.h>
+#include <errno.h>
+#include <strings.h>
+#include <sys/ioctl.h>
+#include <sys/file.h>
+#include "time.h"
+#include <des.h>
+#include <krb.h>
+#include <krb_db.h>
+/* MKEYFILE is now defined in kdc.h */
+#include <kdc.h>
+
+extern char *errmsg();
+extern int errno;
+extern char *strcpy();
+
+void    sig_exit();
+
+#define zaptime(foo) bzero((char *)(foo), sizeof(*(foo)))
+
+char    prog[32];
+char   *progname = prog;
+int     nflag = 0;
+int     cflag;
+int     lflag;
+int     uflag;
+int     debug;
+extern  kerb_debug;
+
+Key_schedule KS;
+C_Block new_key;
+unsigned char *input;
+
+unsigned char *ivec;
+int     i, j;
+int     more;
+
+char   *in_ptr;
+char    input_name[ANAME_SZ];
+char    input_instance[INST_SZ];
+char    input_string[ANAME_SZ];
+
+#define	MAX_PRINCIPAL	10
+Principal principal_data[MAX_PRINCIPAL];
+
+static Principal old_principal;
+static Principal default_princ;
+
+static C_Block master_key;
+static C_Block session_key;
+static Key_schedule master_key_schedule;
+static char pw_str[255];
+static long master_key_version;
+
+#define	gets(buf) _gets(buf, sizeof(buf))	/* hack */
+
+char *
+_gets(p, n)
+	char *p;
+	int n;
+{
+	char *rv, *fgets();
+	
+	if ((rv = fgets(p, n, stdin)) == NULL)
+		return (rv);
+	if (p = index(p, '\n'))
+		*p = '\0';
+	return (rv);
+}
+
+main(argc, argv)
+    int     argc;
+    char   *argv[];
+
+{
+    /* Local Declarations */
+
+    long    n;
+
+    prog[sizeof prog - 1] = '\0';	/* make sure terminated */
+    strncpy(prog, argv[0], sizeof prog - 1);	/* salt away invoking
+						 * program */
+
+    /* Assume a long is four bytes */
+    if (sizeof(long) != 4) {
+	fprintf(stdout, "%s: size of long is %d.\n", sizeof(long), prog);
+	exit(-1);
+    }
+    /* Assume <=32 signals */
+    if (NSIG > 32) {
+	fprintf(stderr, "%s: more than 32 signals defined.\n", prog);
+	exit(-1);
+    }
+    while (--argc > 0 && (*++argv)[0] == '-')
+	for (i = 1; argv[0][i] != '\0'; i++) {
+	    switch (argv[0][i]) {
+
+		/* debug flag */
+	    case 'd':
+		debug = 1;
+		continue;
+
+		/* debug flag */
+	    case 'l':
+		kerb_debug |= 1;
+		continue;
+
+	    case 'n':		/* read MKEYFILE for master key */
+		nflag = 1;
+		continue;
+
+	    default:
+		fprintf(stderr, "%s: illegal flag \"%c\"\n",
+			progname, argv[0][i]);
+		Usage();	/* Give message and die */
+	    }
+	};
+
+    fprintf(stdout, "Opening database...\n");
+    fflush(stdout);
+    kerb_init();
+    if (argc > 0) {
+	if (kerb_db_set_name(*argv) != 0) {
+	    fprintf(stderr, "Could not open altername database name\n");
+	    exit(1);
+	}
+    }
+
+#ifdef	notdef
+    no_core_dumps();		/* diddle signals to avoid core dumps! */
+
+    /* ignore whatever is reasonable */
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+
+#endif
+
+    if (kdb_get_master_key ((nflag == 0), 
+			    master_key, master_key_schedule) != 0) {
+      fprintf (stdout, "Couldn't read master key.\n");
+      fflush (stdout);
+      exit (-1);
+    }
+
+    if ((master_key_version = kdb_verify_master_key(master_key,
+						    master_key_schedule,
+						    stdout)) < 0)
+      exit (-1);
+
+    /* lookup the default values */
+    n = kerb_get_principal(KERB_DEFAULT_NAME, KERB_DEFAULT_INST,
+			   &default_princ, 1, &more);
+    if (n != 1) {
+	fprintf(stderr,
+	     "%s: Kerberos error on default value lookup, %d found.\n",
+		progname, n);
+	exit(-1);
+    }
+    fprintf(stdout, "Previous or default values are in [brackets] ,\n");
+    fprintf(stdout, "enter return to leave the same, or new value.\n");
+
+    while (change_principal()) {
+    }
+
+    cleanup();
+}
+
+change_principal()
+{
+    static char temp[255];
+    int     creating = 0;
+    int     editpw = 0;
+    int     changed = 0;
+    long    temp_long;
+    int     n;
+    struct tm 	*tp, edate, *localtime();
+    long 	maketime();
+
+    fprintf(stdout, "\nPrincipal name: ");
+    fflush(stdout);
+    if (!gets(input_name) || *input_name == '\0')
+	return 0;
+    fprintf(stdout, "Instance: ");
+    fflush(stdout);
+    /* instance can be null */
+    gets(input_instance);
+    j = kerb_get_principal(input_name, input_instance, principal_data,
+			   MAX_PRINCIPAL, &more);
+    if (!j) {
+	fprintf(stdout, "%s.%s not found, Create [y] ? ", input_name,
+	    input_instance);
+	gets(temp);		/* Default case should work, it didn't */
+	if (temp[0] != 'y' && temp[0] != 'Y' && temp[0] != '\0')
+	    return -1;
+	/* make a new principal, fill in defaults */
+	j = 1;
+	creating = 1;
+	strcpy(principal_data[0].name, input_name);
+	strcpy(principal_data[0].instance, input_instance);
+	principal_data[0].old = NULL;
+	principal_data[0].exp_date = default_princ.exp_date;
+	principal_data[0].max_life = default_princ.max_life;
+	principal_data[0].attributes = default_princ.attributes;
+	principal_data[0].kdc_key_ver = (unsigned char) master_key_version;
+	principal_data[0].key_version = 0; /* bumped up later */
+    }
+    tp = localtime(&principal_data[0].exp_date);
+    (void) sprintf(principal_data[0].exp_date_txt, "%4d-%02d-%02d",
+		   tp->tm_year > 1900 ? tp->tm_year : tp->tm_year + 1900,
+		   tp->tm_mon + 1, tp->tm_mday); /* January is 0, not 1 */
+    for (i = 0; i < j; i++) {
+	for (;;) {
+	    fprintf(stdout,
+		    "Principal: %s, Instance: %s, kdc_key_ver: %d\n",
+		    principal_data[i].name, principal_data[i].instance,
+		    principal_data[i].kdc_key_ver);
+	    editpw = 1;
+	    changed = 0;
+	    if (!creating) {
+		/*
+		 * copy the existing data so we can use the old values
+		 * for the qualifier clause of the replace 
+		 */
+		principal_data[i].old = (char *) &old_principal;
+		bcopy(&principal_data[i], &old_principal,
+		      sizeof(old_principal));
+		printf("Change password [n] ? ");
+		gets(temp);
+		if (strcmp("y", temp) && strcmp("Y", temp))
+		    editpw = 0;
+	    }
+	    /* password */
+	    if (editpw) {
+#ifdef NOENCRYPTION
+		placebo_read_pw_string(pw_str, sizeof pw_str,
+		    "New Password: ", TRUE);
+#else
+		des_read_pw_string(pw_str, sizeof pw_str,
+		    "New Password: ", TRUE);
+#endif
+		if (pw_str[0] == '\0' || !strcmp(pw_str, "RANDOM")) {
+		    printf("Random password [y] ? ");
+		    gets(temp);
+		    if (!strcmp("n", temp) || !strcmp("N", temp)) {
+			/* no, use literal */
+#ifdef NOENCRYPTION
+			bzero(new_key, sizeof(C_Block));
+			new_key[0] = 127;
+#else
+			string_to_key(pw_str, new_key);
+#endif
+			bzero(pw_str, sizeof pw_str);	/* "RANDOM" */
+		    } else {
+#ifdef NOENCRYPTION
+			bzero(new_key, sizeof(C_Block));
+			new_key[0] = 127;
+#else
+			random_key(new_key);	/* yes, random */
+#endif
+			bzero(pw_str, sizeof pw_str);
+		    }
+		} else if (!strcmp(pw_str, "NULL")) {
+		    printf("\nNull Key [y] ? ");
+		    gets(temp);
+		    if (!strcmp("n", temp) || !strcmp("N", temp)) {
+			/* no, use literal */
+#ifdef NOENCRYPTION
+			bzero(new_key, sizeof(C_Block));
+			new_key[0] = 127;
+#else
+			string_to_key(pw_str, new_key);
+#endif
+			bzero(pw_str, sizeof pw_str);	/* "NULL" */
+		    } else {
+
+			principal_data[i].key_low = 0;
+			principal_data[i].key_high = 0;
+			goto null_key;
+		    }
+		} else {
+#ifdef NOENCRYPTION
+		    bzero(new_key, sizeof(C_Block));
+		    new_key[0] = 127;
+#else
+		    string_to_key(pw_str, new_key);
+#endif
+		    bzero(pw_str, sizeof pw_str);
+		}
+
+		/* seal it under the kerberos master key */
+		kdb_encrypt_key (new_key, new_key, 
+				 master_key, master_key_schedule,
+				 ENCRYPT);
+		bcopy(new_key, &principal_data[i].key_low, 4);
+		bcopy(((long *) new_key) + 1,
+		    &principal_data[i].key_high, 4);
+		bzero(new_key, sizeof(new_key));
+	null_key:
+		/* set master key version */
+		principal_data[i].kdc_key_ver =
+		    (unsigned char) master_key_version;
+		/* bump key version # */
+		principal_data[i].key_version++;
+		fprintf(stdout,
+			"\nPrincipal's new key version = %d\n",
+			principal_data[i].key_version);
+		fflush(stdout);
+		changed = 1;
+	    }
+	    /* expiration date */
+	    fprintf(stdout, "Expiration date (enter yyyy-mm-dd) [ %s ] ? ",
+		    principal_data[i].exp_date_txt);
+	    zaptime(&edate);
+	    while (gets(temp) && ((n = strlen(temp)) >
+				  sizeof(principal_data[0].exp_date_txt))) {
+	    bad_date:
+		fprintf(stdout, "\07\07Date Invalid\n");
+		fprintf(stdout,
+			"Expiration date (enter yyyy-mm-dd) [ %s ] ? ",
+			principal_data[i].exp_date_txt);
+		zaptime(&edate);
+	    }
+
+	    if (*temp) {
+		if (sscanf(temp, "%d-%d-%d", &edate.tm_year,
+			      &edate.tm_mon, &edate.tm_mday) != 3)
+		    goto bad_date;
+		(void) strcpy(principal_data[i].exp_date_txt, temp);
+		edate.tm_mon--;		/* January is 0, not 1 */
+		edate.tm_hour = 23;	/* nearly midnight at the end of the */
+		edate.tm_min = 59;	/* specified day */
+		if (!(principal_data[i].exp_date = maketime(&edate, 1)))
+		    goto bad_date;
+		changed = 1;
+	    }
+
+	    /* maximum lifetime */
+	    fprintf(stdout, "Max ticket lifetime (*5 minutes) [ %d ] ? ",
+		    principal_data[i].max_life);
+	    while (gets(temp) && *temp) {
+		if (sscanf(temp, "%d", &temp_long) != 1)
+		    goto bad_life;
+		if (temp_long > 255 || (temp_long < 0)) {
+		bad_life:
+		    fprintf(stdout, "\07\07Invalid, choose 0-255\n");
+		    fprintf(stdout,
+			    "Max ticket lifetime (*5 minutes) [ %d ] ? ",
+			    principal_data[i].max_life);
+		    continue;
+		}
+		changed = 1;
+		/* dont clobber */
+		principal_data[i].max_life = (unsigned short) temp_long;
+		break;
+	    }
+
+	    /* attributes */
+	    fprintf(stdout, "Attributes [ %d ] ? ",
+		    principal_data[i].attributes);
+	    while (gets(temp) && *temp) {
+		if (sscanf(temp, "%d", &temp_long) != 1)
+		    goto bad_att;
+		if (temp_long > 65535 || (temp_long < 0)) {
+		bad_att:
+		    fprintf(stdout, "\07\07Invalid, choose 0-65535\n");
+		    fprintf(stdout, "Attributes [ %d ] ? ",
+			    principal_data[i].attributes);
+		    continue;
+		}
+		changed = 1;
+		/* dont clobber */
+		principal_data[i].attributes =
+		    (unsigned short) temp_long;
+		break;
+	    }
+
+	    /*
+	     * remaining fields -- key versions and mod info, should
+	     * not be directly manipulated 
+	     */
+	    if (changed) {
+		if (kerb_put_principal(&principal_data[i], 1)) {
+		    fprintf(stdout,
+			"\nError updating Kerberos database");
+		} else {
+		    fprintf(stdout, "Edit O.K.");
+		}
+	    } else {
+		fprintf(stdout, "Unchanged");
+	    }
+
+
+	    bzero(&principal_data[i].key_low, 4);
+	    bzero(&principal_data[i].key_high, 4);
+	    fflush(stdout);
+	    break;
+	}
+    }
+    if (more) {
+	fprintf(stdout, "\nThere were more tuples found ");
+	fprintf(stdout, "than there were space for");
+      }
+    return 1;
+}
+
+
+no_core_dumps()
+{
+
+    signal(SIGQUIT, sig_exit);
+    signal(SIGILL, sig_exit);
+    signal(SIGTRAP, sig_exit);
+    signal(SIGIOT, sig_exit);
+    signal(SIGEMT, sig_exit);
+    signal(SIGFPE, sig_exit);
+    signal(SIGBUS, sig_exit);
+    signal(SIGSEGV, sig_exit);
+    signal(SIGSYS, sig_exit);
+}
+
+void
+sig_exit(sig, code, scp)
+    int     sig, code;
+    struct sigcontext *scp;
+{
+    cleanup();
+    fprintf(stderr,
+	"\nSignal caught, sig = %d code = %d old pc = 0x%X \nexiting",
+        sig, code, scp->sc_pc);
+    exit(-1);
+}
+
+
+cleanup()
+{
+
+    bzero(master_key, sizeof(master_key));
+    bzero(session_key, sizeof(session_key));
+    bzero(master_key_schedule, sizeof(master_key_schedule));
+    bzero(principal_data, sizeof(principal_data));
+    bzero(new_key, sizeof(new_key));
+    bzero(pw_str, sizeof(pw_str));
+}
+Usage()
+{
+    fprintf(stderr, "Usage: %s [-n]\n", progname);
+    exit(1);
+}
+@
+
+
+4.3
+log
+@check in for Mike Karels by TK
+
+@
+text
+@d3 1
+a3 1
+ * $Author: raeburn $
+d21 1
+a21 1
+"$Id: kdb_edit.c,v 4.2 90/01/09 16:05:09 raeburn Exp Locker: karels $";
+a54 1
+extern char *sys_errlist[];
+@
+
+
+4.2
+log
+@Author: jtkohl.  Auditor: raeburn.
+Got rid of not-for-sale zaptime routine; changed for new maketime().
+@
+text
+@d2 2
+a3 2
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/admin/RCS/kdb_edit.c,v $
+ * $Author: jtkohl $
+d21 1
+a21 1
+"$Id: kdb_edit.c,v 4.1 89/03/23 09:58:18 jtkohl Exp Locker: jtkohl $";
+d82 16
+d218 2
+a219 1
+	fprintf(stdout, "\n\07\07<Not found>, Create [y] ? ");
+d242 1
+a242 1
+		    "\nPrincipal: %s, Instance: %s, kdc_key_ver: %d",
+d255 1
+a255 1
+		printf("\nChange password [n] ? ");
+d264 1
+a264 1
+		    "\nNew Password: ", TRUE);
+d267 1
+a267 1
+		    "\nNew Password: ", TRUE);
+d269 2
+a270 2
+		if (!strcmp(pw_str, "RANDOM")) {
+		    printf("\nRandom password [y] ? ");
+@
+
+
+4.1
+log
+@time code needs to be outside the create code block
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_edit.c,v $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 4.0 89/01/24 21:50:30 jtkohl Locked $";
+d45 2
+d343 1
+a343 2
+		edate.tm_zon = 1;	/* local time, not GMT */
+		if (!(principal_data[i].exp_date = maketime(&edate)))
+a458 38
+}
+
+/* zaptime code taken from: */
+/*
+ * PARTIME		parse date/time string into a TM structure
+ *
+ * Usage:
+ *      #include "time.h"             -- expanded tm structure
+ *	char *str; struct tm *tp;
+ *	partime(str,tp);
+ * Returns:
+ *	0 if parsing failed
+ *	else time values in specified TM structure (unspecified values
+ *		set to TMNULL)
+ * Notes:
+ *	This code is quasi-public; it may be used freely in like software.
+ *	It is not to be sold, nor used in licensed software without
+ *	permission of the author.
+ *	For everyone's benefit, please report bugs and improvements!
+ * 	Copyright 1980 by Ken Harrenstien, SRI International.
+ *	(ARPANET: KLH @@ SRI)
+ */
+
+zaptime(atm)
+register struct tm *atm;
+/* clears atm */
+{
+	atm->tm_sec = TMNULL;
+	atm->tm_min = TMNULL;
+	atm->tm_hour = TMNULL;
+	atm->tm_mday = TMNULL;
+	atm->tm_mon = TMNULL;
+	atm->tm_year = TMNULL;
+	atm->tm_wday = TMNULL;
+	atm->tm_yday = TMNULL;
+	atm->tm_isdst = TMNULL;
+	atm->tm_zon = TMNULL;
+	atm->tm_ampm = TMNULL;
+@
+
+
+4.0
+log
+@no change, up rev # to 4.0
+@
+text
+@d3 1
+a3 1
+ * $Author: jon $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.16 89/01/24 17:41:56 jon Exp $";
+a210 4
+	tp = localtime(&principal_data[0].exp_date);
+	(void) sprintf(principal_data[0].exp_date_txt, "%4d-%2d-%2d",
+		       tp->tm_year > 1900 ? tp->tm_year : tp->tm_year + 1900,
+		       tp->tm_mon + 1, tp->tm_mday); /* January is 0, not 1 */
+d216 4
+@
+
+
+1.16
+log
+@Programmer: wesommer
+Auditor: jon
+allow specifing db name on command (and use new db interface)
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/wesommer/kslave/build/admin/RCS/kdb_edit.c,v $
+ * $Author: rfrench $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.15 89/01/15 15:59:00 wesommer Locked $";
+@
+
+
+1.15
+log
+@Programmer: jtkohl
+Auditor: rfrench
+Changed to use local time.h
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_edit.c,v $
+ * $Author: steiner $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.14 89/01/13 18:38:29 jtkohl Locked $";
+d131 6
+d284 1
+@
+
+
+1.14
+log
+@Programmer: jtkohl
+Auditor: steiner
+changes: fixed time to go past 2000; fixed some
+prompting bugs.
+@
+text
+@d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.13 88/12/09 16:17:03 jtkohl Locked $";
+d32 1
+a32 1
+#include <sys/time.h>
+@
+
+
+1.13
+log
+@NOENCRYPTION changes.
+programmer: jtkohl
+auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.12 88/12/01 09:05:42 jtkohl Locked $";
+d32 1
+d78 1
+d149 3
+a151 1
+    if (kdb_verify_master_key (master_key, master_key_schedule, stdout) < 0)
+d180 2
+d205 4
+a208 2
+	strcpy(principal_data[0].exp_date_txt,
+	       default_princ.exp_date_txt);
+d211 2
+a212 1
+	principal_data[0].kdc_key_ver = default_princ.kdc_key_ver;
+d216 2
+a217 1
+	    fprintf(stdout, "\nPrincipal: %s  Instance: %s m_key_v: %d",
+d302 2
+a303 1
+		principal_data[i].kdc_key_ver = default_princ.kdc_key_ver;
+d313 1
+a313 2
+	    /* This should be sanity checked! */
+	    fprintf(stdout, "Expiration date (enter dd-mm-yy) [ %s ] ? ",
+d315 1
+d317 2
+a318 1
+			    sizeof(principal_data[0].exp_date_txt))) {
+d321 3
+a323 2
+		    "Expiration date (enter dd-mm-yy) [ %s ] ? ",
+		    principal_data[i].exp_date_txt);
+d327 10
+a337 1
+		sscanf(temp, "%s", principal_data[i].exp_date_txt);
+d339 1
+d344 2
+a345 1
+		sscanf(temp, "%d", &temp_long);
+d347 1
+d349 3
+d364 2
+a365 1
+		sscanf(temp, "%d", &temp_long);
+d367 1
+d369 2
+d451 38
+@
+
+
+1.12
+log
+@Programmer: Mike Shanzer
+Auditor: John Kohl
+changes:  fix the test for the user's response to a question
+so it defaults correctly.
+@
+text
+@d3 1
+a3 1
+ * $Author: shanzer $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.11 88/08/26 13:18:22 shanzer Exp $";
+d227 2
+a228 1
+		read_pw_string(pw_str, sizeof pw_str,
+d230 4
+d239 4
+d244 1
+d247 4
+d252 1
+d260 4
+d265 1
+d273 4
+d278 1
+@
+
+
+1.11
+log
+@WHen it ask to to create the data base it now takes any word that starts
+with a "y" or a return as a positive answer..
+Programer: dachurch
+Auditor: shanzer
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.10 88/04/26 14:38:35 steiner Exp $";
+d190 1
+a190 1
+	if (!((temp[0]=='y') && (temp[0]=='Y') && (temp[0]=='\0')))
+@
+
+
+1.10
+log
+@master_key_version wasn't getting initialized - fixed.
+This should actually be done by getting the version from
+the K.M entry, not the "default" entry.
+Programmer: steiner.
+Auditor: jon.
+@
+text
+@d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.9 88/03/24 18:07:36 steiner Exp $";
+d189 2
+a190 2
+	gets(temp);
+	if (strcmp("y", temp) && strcmp("Y", temp))
+@
+
+
+1.9
+log
+@Encrypt in master key rather than key schedule for
+byte-order independence.
+Programmer: jon.
+Auditor: jtkohl.
+@
+text
+@d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.7 88/02/23 17:32:48 steiner Exp $";
+a75 2
+static unsigned char master_key_version;
+static long sig_state;
+a84 3
+    int     in_length;
+    int     kfile;
+    int     ok;
+d203 1
+a203 1
+	principal_data[0].kdc_key_ver = master_key_version;
+d267 1
+a267 1
+		principal_data[i].kdc_key_ver = master_key_version;
+@
+
+
+1.8
+log
+@Fixed logic bug resulting from splitting printf into two
+lines.
+Programmer: steiner.
+Auditor: none.
+@
+text
+@d21 1
+a21 1
+"$Header: kdb_edit.c,v 1.7 88/02/23 17:32:48 steiner Locked $";
+d35 2
+a37 5
+#define	MKEYFILE	"/.k"
+
+#define	TRUE	1
+#define	FALSE 	0
+
+d98 1
+a98 1
+	fprintf(stdout, "\nERROR,  size of long is %d", sizeof(long));
+d103 1
+a103 1
+	fprintf(stderr, "\nERROR, more than 32 signals defined");
+d121 1
+a121 1
+		nflag = 1;	/* Must be the super-user to use this */
+d125 1
+a125 1
+		fprintf(stderr, "%s: illegal flag \"%c\" ",
+d131 1
+a131 1
+    fprintf(stdout, "\nOpening database...");
+a134 14
+    /* lookup the master key version */
+    n = kerb_get_principal(KERB_M_NAME, KERB_M_INST, principal_data,
+			   MAX_PRINCIPAL, &more);
+    if (n != 1) {
+	fprintf(stderr,
+	"\n%s: Kerberos error on master key version lookup, %d found",
+		progname, n);
+	exit(-1);
+    }
+    /* set up the master key */
+    master_key_version = principal_data[0].kdc_key_ver;
+    fprintf(stdout, "\nCurrent Kerberos master key version is %d",
+	    master_key_version);
+
+d145 5
+a149 20
+    if (!nflag)
+	des_read_password(master_key,
+	    "\nEnter current Kerberos master key: ", TRUE);
+    else {
+	if (getuid()) {
+	    fprintf(stderr, "Must be super-user to use -n\n");
+	    exit(1);
+	}
+	kfile = open(MKEYFILE, O_RDONLY, 0600);
+	if (kfile < 0) {
+	    fprintf(stderr, "open failed on key file sys error: %s\n",
+		    sys_errlist[errno]);
+	    exit(1);
+	}
+	if (read(kfile, (char *) master_key, 8) != 8) {
+	    fprintf(stderr, "I/O error on key file sys error: %s\n",
+		    sys_errlist[errno]);
+	    exit(1);
+	}
+	close(kfile);
+a150 1
+    key_sched(master_key, master_key_schedule);
+d152 2
+a153 13
+    /*
+     * now use the master key to decrypt the key in the db, had better
+     * be the same! 
+     */
+    bcopy(&principal_data[0].key_low, session_key, 4);
+    bcopy(&principal_data[0].key_high, ((long *) session_key) + 1, 4);
+    pcbc_encrypt(session_key, session_key, (long) sizeof(session_key),
+		 master_key_schedule, master_key_schedule, 0);
+    /* the decrypted database key had better equal the master key */
+    n = bcmp((char *) master_key, (char *) session_key,
+	sizeof(master_key));
+    bzero(master_key, sizeof(master_key));
+    bzero(session_key, sizeof(session_key));
+a154 8
+    if (n) {
+	fprintf(stderr, "\n\07\07%s: Invalid master key, ", progname);
+	fprintf(stderr, "does not match database");
+	exit(1);
+    }
+    fprintf(stdout, "\nmaster key entered.  BEWARE!\07\07");
+    fflush(stdout);
+
+d160 1
+a160 1
+	     "\n%s: Kerberos error on default value lookup, %d found",
+d164 2
+a165 2
+    fprintf(stdout, "\nPrevious or default values are in [brackets] ,");
+    fprintf(stdout, "\nenter return to leave the same, or new value.");
+d182 1
+a182 1
+    fprintf(stdout, "\n\nPrincipal name: ");
+d263 3
+a265 2
+		pcbc_encrypt(new_key, new_key, (long) sizeof(new_key),
+			 master_key_schedule, master_key_schedule, 1);
+d353 1
+a353 2
+    }
+
+@
+
+
+1.7
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d21 1
+a21 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d401 1
+a401 1
+    if (more)
+d404 1
+@
+
+
+1.6
+log
+@Fixed bug and possible dereferencing of NULL pointer.
+Programmer: Charley Marker.
+Auditor: jon.
+@
+text
+@d2 2
+a3 1
+ * Copyright (c) 1985,1986,1987 Massachusetts Institute of Technology 
+d5 2
+a6 1
+ * $Source: /mit/kerberos/src/admin/RCS/kdb_edit.c,v $ 
+d8 5
+a12 2
+ * This routine changes the Kerberos encryption keys for principals, i.e.
+ * users or services. 
+d19 4
+a22 9
+#include	<stdio.h>
+#include	<signal.h>
+#include	<errno.h>
+#include	<strings.h>
+#include	<sys/ioctl.h>
+#include	<sys/file.h>
+#include	<des.h>
+#include	<krb.h>
+#include	<krb_db.h>
+d24 12
+a39 5
+
+#ifndef	lint
+static char *rcsid_db_edit_c =
+"$Header: kdb_edit.c,v 1.5 88/01/13 19:00:10 steiner Exp $";
+#endif lint
+@
+
+
+1.5
+log
+@Formatted.
+@
+text
+@d31 1
+a31 1
+"$Header: kdb_edit.c,v 1.4 88/01/13 17:40:15 steiner Exp $";
+d102 1
+a102 1
+    while (argc-- > 0 && (*++argv)[0] == '-')
+d193 2
+a194 2
+	fprintf(stderr, "\n\07\07%s: Invalid master key, ");
+	fprintf(stderr, "does not match database", progname);
+@
+
+
+1.4
+log
+@Fixed some bugs.
+@
+text
+@d4 1
+a4 1
+ * $Source: /u1/mit/kerberos/admin/RCS/kdb_edit.c,v $ 
+d31 1
+a31 1
+"$Header: kdb_edit.c,v 1.1 87/11/30 06:10:15 panda Locked $";
+d156 2
+a157 1
+	des_read_password(master_key, "\nEnter current Kerberos master key: ", TRUE);
+d187 2
+a188 1
+    n = bcmp((char *) master_key, (char *) session_key, sizeof(master_key));
+d193 2
+a194 2
+	fprintf(stderr,
+		"\n\07\07%s: Invalid master key, does not match database", progname);
+d209 1
+a209 1
+    fprintf(stdout, "\n\nPrevious or default values are in [brackets] ,");
+d277 2
+a278 1
+		read_pw_string(pw_str, sizeof pw_str, "\nNew Password: ", TRUE);
+d283 2
+a284 1
+			string_to_key(pw_str, new_key);	/* no, use literal */
+d294 2
+a295 1
+			string_to_key(pw_str, new_key);	/* no, use literal */
+d311 2
+a312 1
+		bcopy(((long *) new_key) + 1, &principal_data[i].key_high, 4);
+d330 1
+a330 1
+		   sizeof(principal_data[0].exp_date_txt))) {
+d332 2
+a333 1
+	        fprintf(stdout, "Expiration date (enter dd-mm-yy) [ %s ] ? ",
+d367 2
+a368 1
+		principal_data[i].attributes = (unsigned short) temp_long;
+d378 2
+a379 1
+		    fprintf(stdout, "\nError updating Kerberos database");
+d395 2
+a396 2
+	fprintf(stdout,
+		"\n\07\07There were more tuples found than there were space for");
+d416 1
+a416 1
+void 
+d422 3
+a424 2
+    fprintf(stderr, "\nSignal caught, sig = %d code = %d old pc = 0x%X \nexiting",
+	    sig, code, scp->sc_pc);
+@
+
+
+1.3
+log
+@Formatted.
+@
+text
+@d4 1
+a4 3
+ * $Source: /u2/lockers/kerberos/admin/RCS/kdb_edit.c,v $ $Author: steiner
+ * $ $Locker: steiner $ $Log:	kdb_edit.c,v $ Revision 1.2  87/12/05 
+ * 16:27:33  steiner Chris's changes. 
+a5 33
+ * Revision 1.1  87/11/30  06:10:15  panda Initial revision 
+ *
+ * Revision 4.2  87/09/10  16:10:57  steiner Changed include files
+ * configuration and referencing. 
+ *
+ * Revision 4.1  87/09/01  13:56:31  steiner No change; starting version
+ * 4. 
+ *
+ * Revision 1.4  87/07/18  19:11:25  jis Fixup some flags. Remove obsolete
+ * flags, add -n flag. If password is entered as "NULL", then a null
+ * key may be entered. Default response for "random key" prompt changed
+ * to "yes" 
+ *
+ * Revision 1.3  87/01/15  17:33:47  wesommer Fix reference to
+ * des_read_password. 
+ *
+ * Revision 1.2  86/06/27  15:46:06  ostlund Added ability to generate
+ * random passwords for (service) principals. 
+ *
+ * Revision 1.1  86/06/08  18:53:55  spm Initial revision 
+ *
+ * Revision 1.5  86/03/14  15:59:24  spm *** empty log message *** 
+ *
+ * Revision 1.4  86/01/07  20:12:52  spm cast pcbc length to (long) 
+ *
+ * Revision 1.3  86/01/07  12:31:12  spm numerous changes including change
+ * from cbc mode to pcbc mode 
+ *
+ * Revision 1.2  85/10/18  16:51:23  spm *** empty log message *** 
+ *
+ * Revision 1.1  85/10/09  13:57:16  spm Initial revision 
+ *
+ *
+d30 2
+a31 1
+static char *rcsid_db_edit_c = "$Header: kdb_edit.c,v 1.2 87/12/05 16:27:33 steiner Locked $";
+d227 1
+a227 1
+    if (!gets(input_name))
+d321 1
+a321 1
+	    fprintf(stdout, "Expiration date (enter dd-mmm-yy) [ %s ] ? ",
+d323 2
+a324 2
+	    while (sizeof(gets(temp)) >
+		   sizeof(principal_data[0].exp_date_txt))
+d326 3
+d330 1
+a330 1
+	    if (temp) {
+d337 1
+a337 1
+	    while (gets(temp)) {
+d352 1
+a352 1
+	    while (gets(temp)) {
+@
+
+
+1.2
+log
+@Chris's changes.
+@
+text
+@d1 2
+a2 2
+/* 	Copyright (c) 1985,1986,1987
+ *	Massachusetts Institute of Technology
+d4 39
+a42 46
+ *	$Source: /u1/mit/kerberos/admin/RCS/kdb_edit.c,v $
+ *	$Author: panda $
+ *	$Locker: panda $
+ *	$Log:	kdb_edit.c,v $
+ * Revision 1.1  87/11/30  06:10:15  panda
+ * Initial revision
+ * 
+ * Revision 4.2  87/09/10  16:10:57  steiner
+ * Changed include files configuration and referencing.
+ * 
+ * Revision 4.1  87/09/01  13:56:31  steiner
+ * No change; starting version 4.
+ * 
+ * Revision 1.4  87/07/18  19:11:25  jis
+ * Fixup some flags. Remove obsolete flags, add -n flag.
+ * If password is entered as "NULL", then a null key may be entered.
+ * Default response for "random key" prompt changed to "yes"
+ * 
+ * Revision 1.3  87/01/15  17:33:47  wesommer
+ * Fix reference to des_read_password.
+ * 
+ * Revision 1.2  86/06/27  15:46:06  ostlund
+ * Added ability to generate random passwords for (service) principals.
+ * 
+ * Revision 1.1  86/06/08  18:53:55  spm
+ * Initial revision
+ * 
+ * Revision 1.5  86/03/14  15:59:24  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.4  86/01/07  20:12:52  spm
+ * cast pcbc length to (long)
+ * 
+ * Revision 1.3  86/01/07  12:31:12  spm
+ * numerous changes
+ * including change from cbc mode to pcbc mode
+ * 
+ * Revision 1.2  85/10/18  16:51:23  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  85/10/09  13:57:16  spm
+ * Initial revision
+ * 
+ * 
+ *	This routine changes the Kerberos encryption keys for principals, 
+ * i.e. users or services.
+d45 2
+a46 2
+/*	exit returns 	 0 ==> success
+ *			-1 ==> error
+d65 1
+a65 1
+static char	*rcsid_db_edit_c="$Header: kdb_edit.c,v 1.1 87/11/30 06:10:15 panda Locked $";
+d68 3
+a70 3
+extern 	char	*errmsg();
+extern 	int	errno;
+extern	char	*strcpy();
+d72 1
+a72 1
+void	sig_exit();
+d74 9
+a82 9
+char	prog[32];
+char	*progname = prog;
+int	nflag = 0;
+int	cflag;
+int	lflag;
+int	uflag;
+int	debug ;
+extern	kerb_debug;
+extern  char *sys_errlist[];
+d84 3
+a86 3
+Key_schedule	KS;
+C_Block	new_key;
+unsigned char	*input;
+d88 3
+a90 3
+unsigned char	*ivec;
+int	i,j;
+int	more;
+d92 4
+a95 4
+char	*in_ptr;
+char	input_name[ANAME_SZ];
+char	input_instance[INST_SZ];
+char	input_string[ANAME_SZ];
+d98 1
+a98 1
+Principal	principal_data[MAX_PRINCIPAL];
+d100 2
+a101 2
+static	Principal	old_principal;
+static	Principal	default_princ;
+d103 6
+a108 6
+static	C_Block	master_key;
+static	C_Block	session_key;
+static	Key_schedule	master_key_schedule;
+static	unsigned char	master_key_version;
+static	long	sig_state;
+static	char	pw_str[255];
+d110 3
+a112 3
+main(argc,argv)
+   int	argc;
+   char	*argv[];
+d115 1
+a115 1
+/*  Local Declarations */
+d117 4
+a120 4
+   int	in_length;
+   int  kfile;
+   int	ok;
+   long	n;
+d122 3
+a124 2
+   prog[sizeof prog-1] = '\0';		 /* make sure terminated */
+   strncpy(prog,argv[0],sizeof prog-1);  /* salt away invoking program */
+d126 13
+a138 16
+/* Assume a long is four bytes */
+   if (sizeof(long) != 4) 
+      {
+      fprintf(stdout,"\nERROR,  size of long is %d",sizeof(long));
+      exit(-1);
+      }
+/* Assume <=32 signals*/
+   if (NSIG >32)
+      {
+      fprintf(stderr,"\nERROR, more than 32 signals defined");
+      exit(-1);
+      }
+   
+   while (argc-- > 0 && (*++argv)[0] == '-')
+      for (i=1; argv[0][i] != '\0'; i++) {
+      switch (argv[0][i]) {
+d140 4
+a143 4
+   /*	debug flag */
+      case 'd':
+         debug=1;
+         continue;
+d145 4
+a148 4
+   /*	debug flag */
+      case 'l':
+         kerb_debug |=1;
+         continue;
+d150 3
+a152 3
+      case 'n':			/* read MKEYFILE for master key */
+	 nflag = 1;		/* Must be the super-user to use this */
+	 continue;
+d154 6
+a159 6
+      default :
+         fprintf(stderr, "%s: illegal flag \"%c\" ",
+            progname,argv[0][i]);
+	 Usage();		/* Give message and die */
+      }
+   };
+d161 3
+a163 3
+   fprintf(stdout,"\nOpening database...");
+   fflush(stdout);
+   kerb_init();
+d165 13
+a177 14
+   /* lookup the master key version */
+    n = kerb_get_principal(KERB_M_NAME,KERB_M_INST,principal_data,
+       MAX_PRINCIPAL, &more);
+    if (n != 1)
+       {
+       fprintf(stderr,
+	   "\n%s: Kerberos error on master key version lookup, %d found",
+            progname,n);
+      exit(-1);
+      }
+/* set up the master key */
+   master_key_version = principal_data[0].kdc_key_ver;
+   fprintf(stdout,"\nCurrent Kerberos master key version is %d",
+      master_key_version);
+d180 1
+a180 6
+   no_core_dumps();	/* diddle signals to avoid core dumps! */
+   
+   /* ignore whatever is reasonable */
+   signal(SIGHUP,SIG_IGN);
+   signal(SIGINT,SIG_IGN);
+   signal(SIGTSTP,SIG_IGN);
+d182 5
+d190 1
+a190 1
+      des_read_password(master_key,"\nEnter current Kerberos master key: ",TRUE);
+d192 16
+a207 16
+      if (getuid()) {
+	fprintf(stderr, "Must be super-user to use -n\n");
+	exit (1);
+      }
+      kfile = open(MKEYFILE,O_RDONLY,0600);
+      if (kfile < 0) {
+	fprintf(stderr, "open failed on key file sys error: %s\n",
+	     sys_errlist[errno]);
+	exit (1);
+      }
+      if (read(kfile,(char *)master_key,8) != 8) {
+	fprintf(stderr, "I/O error on key file sys error: %s\n",
+	     sys_errlist[errno]);
+	exit (1);
+      }
+      close(kfile);
+d209 1
+a209 1
+   key_sched(master_key,master_key_schedule);
+d211 4
+a214 3
+   /* now use the master key to decrypt the key in the db, had better be
+    * the same!
+    */
+d216 7
+a222 7
+    bcopy(&principal_data[0].key_high, ((long *)session_key)+1, 4);
+    pcbc_encrypt(session_key,session_key,(long) sizeof(session_key),
+            master_key_schedule, master_key_schedule,0);
+   /* the decrypted database key had better equal the master key */
+   n = bcmp((char *) master_key, (char *) session_key, sizeof(master_key));
+   bzero(master_key,sizeof(master_key));	
+   bzero(session_key,sizeof(session_key));	
+d224 7
+a230 19
+   if (n) {
+     fprintf(stderr,
+	     "\n\07\07%s: Invalid master key, does not match database",progname);
+     exit(1);
+   }
+   
+   fprintf(stdout,"\nmaster key entered.  BEWARE!\07\07");
+   fflush(stdout);
+   
+   /* lookup the default values */
+    n = kerb_get_principal(KERB_DEFAULT_NAME,KERB_DEFAULT_INST,
+    						&default_princ, 1, &more);
+    if (n != 1)
+       {
+       fprintf(stderr,
+	    "\n%s: Kerberos error on default value lookup, %d found",
+            progname,n);
+      exit(-1);
+      }
+d232 11
+a242 2
+   fprintf(stdout,"\n\nPrevious or default values are in [brackets] ,");
+   fprintf(stdout,"\nenter return to leave the same, or new value.");
+d244 4
+a247 5
+   while (change_principal()) 
+      {
+      }
+   
+   cleanup();
+d252 6
+a257 6
+    static      char	temp[255];
+      int	creating = 0;
+      int	editpw = 0;
+      int	changed = 0;
+      long	temp_long;
+      int	n;
+d259 76
+a334 49
+      fprintf(stdout,"\n\nPrincipal name: ");
+      fflush(stdout);
+      if (!gets(input_name)) return 0;
+      fprintf(stdout,"Instance: ");
+      fflush(stdout);
+      /* instance can be null */
+      gets(input_instance);
+      j = kerb_get_principal(input_name,input_instance,principal_data,
+         MAX_PRINCIPAL,&more);
+      if (!j) 
+         {
+         fprintf(stdout,"\n\07\07<Not found>, Create [y] ? ");
+         gets(temp);
+         if ( strcmp("y",temp) && strcmp("Y",temp)) return -1;
+         /* make a new principal, fill in defaults */
+         j =1;
+         creating = 1;
+         strcpy(principal_data[0].name,input_name);
+         strcpy(principal_data[0].instance,input_instance);
+         principal_data[0].old = NULL;
+         principal_data[0].exp_date = default_princ.exp_date;
+         strcpy(principal_data[0].exp_date_txt,
+               default_princ.exp_date_txt);
+         principal_data[0].max_life = default_princ.max_life;
+         principal_data[0].attributes = default_princ.attributes;
+         principal_data[0].kdc_key_ver = master_key_version;
+         }
+      
+      for (i = 0; i < j ; i++)
+         {
+         for (;;)
+            {
+            fprintf(stdout,"\nPrincipal: %s  Instance: %s m_key_v: %d",
+            principal_data[i].name,principal_data[i].instance,
+            principal_data[i].kdc_key_ver);
+            editpw = 1;
+            changed = 0;
+            if (!creating)
+               {
+               /* copy the existing data so we can use the old
+                * values for the qualifier clause of the replace
+                */
+               principal_data[i].old = (char *) &old_principal;
+               bcopy(&principal_data[i],&old_principal,
+                     sizeof(old_principal));
+               printf("\nChange password [n] ? ");
+               gets(temp);
+               if ( strcmp("y",temp) && strcmp("Y",temp)) editpw = 0;
+               }
+d336 24
+a359 31
+            /*  password */
+            if (editpw)
+               {
+	       read_pw_string(pw_str,sizeof pw_str,"\nNew Password: ",TRUE);
+	       if( !strcmp( pw_str, "RANDOM" ) ) {
+                   printf("\nRandom password [y] ? ");
+                   gets(temp);
+                   if ( !strcmp("n",temp) || !strcmp("N",temp)) {
+			string_to_key( pw_str, new_key ); /* no, use literal */
+			bzero( pw_str, sizeof pw_str );   /* "RANDOM" */
+		   }
+		   else {
+			random_key( new_key );		  /* yes, random */
+			bzero( pw_str, sizeof pw_str );
+		   }
+	       }
+	       else if ( !strcmp(pw_str, "NULL")) {
+		 printf("\nNull Key [y] ? ");
+		 gets(temp);
+		 if ( !strcmp("n", temp) || !strcmp("N", temp)) {
+		   string_to_key( pw_str, new_key ); /* no, use literal */
+		   bzero( pw_str, sizeof pw_str );   /* "NULL" */
+		 } else {
+		   principal_data[i].key_low = 0;
+		   principal_data[i].key_high = 0;
+		   goto null_key;
+		 }
+	       } else {
+		   string_to_key( pw_str, new_key );
+		   bzero( pw_str, sizeof pw_str );
+	       }
+d361 18
+a378 17
+               /* seal it under the kerberos master key */
+               pcbc_encrypt(new_key,new_key,(long) sizeof(new_key),
+                     master_key_schedule, master_key_schedule,1);
+               bcopy(new_key,&principal_data[i].key_low,4);
+               bcopy(((long *) new_key)+1,&principal_data[i].key_high,4);
+               bzero(new_key,sizeof(new_key));
+null_key:
+               /* set master key version */
+               principal_data[i].kdc_key_ver = master_key_version;
+               /* bump key version # */
+               principal_data[i].key_version++;
+               fprintf(stdout,
+               "\nPrincipal's new key version = %d\n",
+                  principal_data[i].key_version);
+               fflush(stdout);
+               changed = 1;
+               }
+d380 14
+a393 7
+            /*  expiration date */
+            /*  This should be sanity checked! */
+            fprintf(stdout,"Expiration date (enter dd-mmm-yy) [ %s ] ? ",
+                  principal_data[i].exp_date_txt);
+            while (sizeof(gets(temp)) >
+                      sizeof(principal_data[0].exp_date_txt))
+                        fprintf(stdout,"\07\07Date Invalid\n");
+d395 13
+a407 5
+            if (temp)
+               {
+               changed = 1;
+               sscanf(temp,"%s",principal_data[i].exp_date_txt);
+               }
+a408 17
+            /*  maximum lifetime */
+            fprintf(stdout,"Max ticket lifetime (*5 minutes) [ %d ] ? ",
+                  principal_data[i].max_life);
+            while (gets(temp))
+               {
+               sscanf(temp,"%d",&temp_long);
+               if (temp_long > 255 || (temp_long < 0) )
+                  {
+                  fprintf(stdout,"\07\07Invalid, choose 0-255\n");
+                  continue;
+                  }
+               
+               changed = 1;
+               /* dont clobber */
+               principal_data[i].max_life = (unsigned short) temp_long;
+               break;
+               }
+d410 9
+a418 17
+            /*  attributes */
+            fprintf(stdout,"Attributes [ %d ] ? ",
+                  principal_data[i].attributes);
+            while ( gets(temp) )
+               {
+               sscanf(temp,"%d",&temp_long);
+               if (temp_long > 65535 || (temp_long < 0) )
+                  {
+                  fprintf(stdout,"\07\07Invalid, choose 0-65535\n");
+                  continue;
+                  }
+               
+               changed = 1;
+               /* dont clobber */
+               principal_data[i].attributes = (unsigned short) temp_long;
+               break;
+               }
+d420 2
+a421 19
+            /*  remaining fields -- key versions and mod info,
+             *  should not be directly manipulated
+             */
+            if (changed)
+               {
+               if (kerb_put_principal(&principal_data[i],1))
+                  {
+                  fprintf(stdout,"\nError updating Kerberos database");
+                  }
+               else
+                  {
+                  fprintf(stdout,"Edit O.K.");
+                  }
+               }
+            else
+               {
+               fprintf(stdout,"Unchanged");
+               }
+            
+a422 8
+            bzero(&principal_data[i].key_low,4);
+            bzero(&principal_data[i].key_high,4);
+            fflush(stdout);
+            break;
+            }	
+         }
+      if (more)	fprintf(stdout,
+	"\n\07\07There were more tuples found than there were space for");
+a423 4
+   return 1;
+}
+      
+
+d426 10
+a435 10
+   
+   signal(SIGQUIT,sig_exit);
+   signal(SIGILL,sig_exit);
+   signal(SIGTRAP,sig_exit);
+   signal(SIGIOT,sig_exit);
+   signal(SIGEMT,sig_exit);
+   signal(SIGFPE,sig_exit);
+   signal(SIGBUS,sig_exit);
+   signal(SIGSEGV,sig_exit);
+   signal(SIGSYS,sig_exit);
+d438 4
+a441 3
+void sig_exit(sig,code,scp)
+   int	sig,code;
+   struct sigcontext *scp;
+d443 4
+a446 4
+   cleanup();
+   fprintf(stderr,"\nSignal caught, sig = %d code = %d old pc = 0x%X \nexiting",
+   sig,code,scp->sc_pc);
+   exit(-1);
+d449 1
+a449 1
+   
+d452 7
+a458 7
+   
+   bzero(master_key,sizeof(master_key));	
+   bzero(session_key,sizeof(session_key));	
+   bzero(master_key_schedule,sizeof(master_key_schedule));
+   bzero(principal_data,sizeof(principal_data));
+   bzero(new_key,sizeof(new_key));
+   bzero(pw_str,sizeof(pw_str));
+d462 2
+a463 2
+  fprintf(stderr, "Usage: %s [-n]\n", progname);
+  exit (1);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d4 7
+a10 4
+ *	$Source: /mit/s/t/steiner/kerberos/dbm/util/RCS/db_edit.c,v $
+ *	$Author: steiner $
+ *	$Locker:  $
+ *	$Log:	db_edit.c,v $
+d48 2
+a49 2
+ *	This routine changes the Kerberos encryption keys for principals, i.e.
+ * users or services.
+a51 1
+
+d72 1
+a72 1
+static char	*rcsid_db_edit_c="$Header: db_edit.c,v 4.2 87/09/10 16:10:57 steiner Exp $";
+d265 1
+a265 1
+      static	char	temp[255];
+d274 1
+a274 1
+      if (!get_line(input_name,sizeof(input_name))) return 0;
+d278 1
+a278 1
+      get_line(input_instance,sizeof(input_instance));
+d284 1
+a284 1
+         get_line(temp,sizeof(temp));
+d318 1
+a318 1
+               get_line(temp,sizeof(temp));
+d328 1
+a328 1
+                   get_line(temp,sizeof(temp));
+d340 1
+a340 1
+		 get_line(temp, sizeof(temp));
+d376 1
+a376 1
+            while ( (n = get_line(temp,sizeof(temp))) >
+d380 1
+a380 1
+            if (n)
+d389 1
+a389 1
+            while (n = get_line(temp,sizeof(temp)) )
+d407 1
+a407 1
+            while (n = get_line(temp,sizeof(temp)) )
+@

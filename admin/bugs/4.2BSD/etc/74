@@ -1,0 +1,78 @@
+Return-Path: <dap@teklds>
+From: Damon Permezel <dap%teklds%tektronix.csnet@csnet-relay.arpa>
+Date: Thursday, 8 Nov 84 15:54:10 PST
+Subject: crash possible by confusing interface
+Index:	etc/ifconfig.c 4.2BSD
+
+Description:
+	If , at boot time, one does a "ifconfig il1 host up ...." and "host"
+	is not found in /etc/hosts, the ioctl(SIOCSIFADDR) results in ilinit()
+	being called with a zero address. Ilinit() just returns, without
+	allocating any unibus resources.
+	Next, the ioctl(SIOCIFFLAGS) marks the interface as up.  This
+	means that routes can be allocated through this interface. This
+	means that packets can be sent out on the interface.
+	The first time a packet tries to make it out, ilstart() calls
+	if_wubaput(), which seems to assume that since the interface is up,
+	it has some unibus resources.  Unfortunately, the trap code
+	is unable to handle the ensuing protection fault.
+
+Repeat-By:
+	Get yourself an interlan board
+	(should work for other network devices also)
+	and gen a kernel appropriately.  Add the line
+
+	/etc/ifconfig il0 KGBvax up
+
+	to /etc/rc, and remove the entry for KGBvax from /etc/hosts.
+	Add some entries to the gateways file to cause routes to
+	allocated through the il0 interface.
+	Reboot, and try to rlogin to a host reachable through that
+	network interface.
+
+Fix:
+	Well, as far as I can tell, IFF_RUNNING implies that the interface
+	has allocated all the neccessary resources.
+	So the easiest thing to do is change ifconfig so that it
+	will not mark an interface up unless IFF_RUNNING is set also.
+
+	Whatever you do, you should probably remove the 'up' options to
+	ifconfig in /etc/rc.  Most interfaces that I have looked at set
+	themsleves to be up if they initialise properly, so the 'up' in /etc/rc
+	is dangerous.
+	Check your interface driver code first, though. Some don't set IFF_UP.
+
+	To change ifconfig, in the setifflags() routine, where it says
+		} else
+			ifr.ifr_flags |= value;
+	change it to
+		} else
+			ifr.ifr_flags |= value & ~(ifr.ifr_flags&IFF_RUNNING ?
+							0 : IFF_UP);
+
+	I just looked at a few of the interface drivers.
+	They seem really confused about the meanings of the flags.
+	If you have a css (imp?), it uses neither, just ui_alive.
+	Once you mark that sucker down, you can't mark it up again.
+
+	Other drivers use both IFF_RUNNING and IFF_UP.  Some set
+	RUNNING when they allocate resources successfully, but fail
+	to make sure that it is not set when going through their interface
+	init routine at other times.  A quick look at the code seems to indicate
+	that rmalloc() will be called for each time an ioctl(SIOCSIFADDR)
+	is done on the interface, and one will eventually run out of
+	unibus resources.
+
+	Some of these interface drivers also, if they are denied unibus
+	resources, just set the interface flags to flags &= ~IFF_UP.
+	They should set them to flags &= ~(IFF_UP|IFF_RUNNING), so
+	that the fix mentioned above can prevent system crashes.
+
+	All the interface drivers (except il and hy) in vaxif need to have
+	these slight changes made. Then they will treat these flags
+	consistantly, and this consistant usage can be used by
+	ifconfig to prevent premature system death.
+
+	As far as the fix to ifconfig goes, it would be preferable to
+	have this done in the kernel.  Those mods are left as an excercise
+	for the reader.

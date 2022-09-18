@@ -1,0 +1,17 @@
+h13075
+s 00006/00000/00000
+d D 5.1 88/10/20 18:35:45 bostic 1 0
+c from UUNET; applied patches 1-3
+e
+u
+U
+t
+T
+I 1
+C
+C I/O VARIABLES
+C
+	CHARACTER INBUF(78)
+	COMMON /INPUT/ INLNT,INBUF
+	COMMON /CHAN/ INPCH,OUTCH,DBCH
+E 1

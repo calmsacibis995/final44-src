@@ -1,0 +1,479 @@
+head     1.9;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.9
+date     87.12.15.17.03.01;  author sklower;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     87.12.11.15.49.22;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     84.01.05.18.40.55;  author jkf;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.08.28.17.15.18;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.08.25.19.22.20;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.08.22.13.49.30;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.08.15.19.25.49;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.08.14.01.48.43;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.08.12.02.48.01;  author layer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@low level instruction emulation
+@
+
+
+1.9
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file instr
+   "$Header: /b/users/housel/lisp/liszt/RCS/instr.l,v 1.10 86/12/13 12:00:55 housel Exp $")
+
+;;; ----	i n s t r		emulate machine instructions
+;;;
+;;;				-[Thu Jan  5 18:40:50 1984 by jkf]-
+
+
+;  The routines in this file emulate instructions, usually VAX-11
+; ones.  Routines names with the prefix "e-" take EIADR's, and
+; those with "d-" take IADR's as arguments.
+;  Some of the simple routines are accually macros, and can be found in
+; ../cmacros.l
+
+
+;--- d-add :: emit an add intruction
+; 68000 has a quick add for $1 - $8
+;
+; (the one for the vax is a macro in cmacros.l)
+#+for-68k
+(defun e-add (src dst)
+  (if (and (dtpr src)
+	   (eq '$ (car src))
+	   (and (>& (cadr src) 0) (<& (cadr src) 9)))
+      then (e-write3 'addql src dst)
+      else (e-write3 'addl src dst)))
+
+;--- e-sub :: emit an add intruction (check for quick add: (immed 1 - 8))
+;
+#+for-68k
+(defun e-sub (src dst)
+   (if (and (dtpr src)
+	    (eq '$ (car src))
+	    (zerop (cadr src)))
+       thenret
+    elseif (and (dtpr src)
+		(numberp (cadr src))
+		(and (>& (cadr src) 0) (<& (cadr src) 9)))
+       then (e-write3 'subql src dst)
+       else (e-write3 'subl src dst)))
+
+; NOTE: The cmp routines emis instructions to test the condition codes
+;	by arg1 - arg2 (ie, arg1 is subtracted from arg2).  On the
+;	68000 the args must be reversed.
+
+;--- e-cmp :: compare two EIADR values
+;
+; NOTE: for 68000, this does "cmpl dst,src"
+;
+#+for-68k
+(defun e-cmp (src dst)
+   (if (and (symbolp src)
+	    (memq src '(d0 d7 a0 a1 a2 d3 d1 d2 a3 a4 a5 sp d6 a6 d4 d5)))
+       then ; the form is "cmp <ea>,Rx"
+	    (e-write3 'cmpl dst src)
+    elseif (and (dtpr dst)
+		(or (memq (car dst) '($ \#))
+		    (and (eq '* (car dst))
+			 (eq '\# (cadr dst)))))
+       then ; the form is "cmp #const,<ea>"
+	    (if (and (dtpr src)
+		     (or (memq (car src) '($ \#))
+			 (and (eq '* (car src))
+			      (eq '\# (cadr src)))))
+		then ; we have "cmp #n,#m"
+		     ; and we can't do it in one cmp
+		     (d-regused 'd6)
+		     (e-write3 'movl src 'd6)
+		     (e-write3 'cmpl dst 'd6)
+		else ; we have "cmp #n,<ea>"
+		     (e-write3 'cmpl dst src))
+    elseif (and (dtpr src)
+		(dtpr dst)
+		(eq '+ (car src))
+		(eq '+ (car dst)))
+       then ; the form is "cmp An@@+,Am@@+"
+	    (e-write3 'cmpml dst src)
+       else ; addressing modes are too complicated to
+	    ; do in 1 instruction...
+	    (d-regused 'd6)
+	    (e-write3 'movl src 'd6)
+	    (e-write3 'cmpl dst 'd6)))
+
+;--- e-move :: move value from one place to anther
+; this corresponds to d-move except the args are EIADRS
+;
+(defun e-move (from to)
+   (if (and (dtpr from)
+	    (eq '$ (car from))
+	    (eq 0 (cadr from)))
+       then (e-write2 'clrl to)
+       else (e-write3 'movl from to)))
+
+;--- d-move :: emit instructions to move value from one place to another
+;
+(defun d-move (from to)
+  (makecomment `(from ,(e-uncvt from) to ,(e-uncvt to)))
+  #+(or for-vax for-tahoe)
+  (cond ((eq 'Nil from) (e-move '($ 0) (e-cvt to)))
+	(t (e-move (e-cvt from) (e-cvt to))))
+
+  #+for-68k
+  (let ((froma (e-cvt from))
+	(toa (e-cvt to)))
+       (if (and (dtpr froma)
+		(eq '$ (car froma))
+	        (and (>& (cadr froma) -1) (<& (cadr froma) 65))
+		(atom toa)
+		(eq 'd (nthchar toa 1)))
+           then ;it's a mov #immed,Dn, where 0 <= immed <= 64
+		;  i.e., it's a quick move
+	        (e-write3 'moveq froma toa)
+           else (cond ((eq 'Nil froma) (e-write3 'movl '#.nil-reg toa))
+		      (t (e-write3 'movl froma toa))))))
+
+;--- d-movespec :: move from loc to loc where the first addr given is
+;	           an EIADR
+;	- from : EIADR 
+;	- to   : IADR
+;
+(defun d-movespec (from to)
+  (makecomment `(fromspec ,from to ,(e-uncvt to)))
+  (e-move from (e-cvt to)))
+
+;--- d-ashl :: emit shift code (don't know what direction to shift)
+#+for-68k
+(defun d-ashl (count src dst)
+  (let ((genlab1 (d-genlab))
+	(genlab2 (d-genlab)))
+       (e-write3 'movl src dst)
+       (e-write2 'tstl count)
+       (e-write2 'bmi genlab1)
+       (e-write3 'asll count dst)
+       (e-write2 'bra genlab2)
+       (e-label genlab1)
+       (e-write3 'asrl count dst)
+       (e-writel genlab2)))
+
+;--- d-asrl :: emit shift right code
+#+for-68k
+(defun d-asrl (count src dst)
+   (e-write3 'movl src dst)
+   (if (and (numberp count) (greaterp count 8))
+       then (e-write3 'moveq (concat "#" count) 'd0)
+	    (e-write3 'asrl 'd0 dst)
+       else (e-write3 'asrl (concat "#" count) dst)))
+
+;--- d-asll :: emit shift left code
+#+for-68k
+(defun d-asll (count src dst)
+  (e-write3 'movl src dst)
+  (if (and (numberp count) (greaterp count 8))
+      then (e-write3 'moveq `($ ,count) 'd0)
+           (e-write3 'asll 'd0 dst)
+      else (e-write3 'asll `($ ,count) dst)))
+@
+
+
+1.8
+log
+@Checking in for potential CCI revisions.
+@
+text
+@d3 1
+a3 1
+   "$Header: instr.l,v 1.7 84/01/05 18:40:55 jkf Exp $")
+d99 2
+a100 2
+  #+for-vax
+  (cond ((eq 'Nil from) (e-write2 'clrl (e-cvt to)))
+d102 1
+@
+
+
+1.7
+log
+@fix e-add to check for dtprness before car'ing
+@
+text
+@d3 1
+a3 1
+   "$Header: instr.l,v 1.6 83/08/28 17:15:18 layer Exp $")
+d62 11
+a72 1
+	    (e-write3 'cmpl dst src)
+d77 1
+a77 1
+       then ; the form is "cmp an@@+,am@@+"
+@
+
+
+1.6
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/instr.l,v 1.5 83/08/25 19:22:20 layer Exp $")
+d7 1
+a7 1
+;;;				-[Mon Aug 15 15:19:54 1983 by layer]-
+d23 2
+a24 1
+  (if (and (eq '$ (car src))
+@
+
+
+1.5
+log
+@re-wrote e-cmp for the 68000 (boy, was that shitty code!).
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/instr.l,v 1.4 83/08/22 13:49:30 layer Exp $")
+a76 1
+;.. c-rplaca, c-rplacd
+a85 5
+;.. c-cond, c-do, c-errset, c-list, c-prog, c-rplaca, c-rplacd
+;.. cc-and, cc-arg, cc-cxxr, cc-equal, cc-memq, cc-not
+;.. cc-oneminus, cc-oneplus, cc-or, cc-quote, cc-setq, d-dostore
+;.. d-exp, d-fixnumcode, d-invert, d-noninvert, d-structgen
+;.. d-supercxr, d-superrplacx, e-shallowbind
+a109 1
+;.. cc-cxxr
+@
+
+
+1.4
+log
+@bug in e-cmp for 68000: check for src being an immed constant,
+which is illegal since "cmpl <anyhting>,#const" is illegal, and 
+src and dst are switched on the 68000.
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/instr.l,v 1.3 83/08/15 19:25:49 layer Exp $")
+d52 19
+a70 2
+   (if (and (dtpr src) (memq (car src) '($ \#)))
+       then (d-regused 'd6)
+d72 1
+a72 15
+	    (e-write3 'cmpl dst 'd6)
+    elseif (and (dtpr src) (eq '+ (car src))
+		(dtpr dst) (eq '+ (car dst)))
+       then ;special "cmpm" instr
+	    (e-write3 'cmpml dst src)
+       else (if (or (and (eq 'a (d-regtype src))
+			 (memq dst '(d0 d1 d2 d3 d4 d5 d6 d7
+					a0 a1 a2 a3 a4 a5 a6 sp)))
+		    (and (eq 'd (d-regtype src))
+			 (eq 'a (d-regtype dst))))
+		then (e-write3 'cmpl dst src)
+		else ;src is too complex to do in one instr
+		     (d-regused 'd6)
+		     (e-write3 'movl src 'd6)
+		     (e-write3 'cmpl dst 'd6))))
+@
+
+
+1.3
+log
+@bug in e-cmp: if 'src' was an immediate constant, then the 
+instruction generated was 'cmpl foo,#const', which is illegal.
+So, if 'src' in immediate mode, then copy the value to d6, then
+do the cmp.
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/instr.l,v 1.2 83/08/14 01:48:43 layer Exp $")
+d52 1
+a52 1
+   (if (and (dtpr src) (eq '\# (car src)))
+@
+
+
+1.2
+log
+@made some of the one liners macros, and moved them
+to cmacros.l
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/instr.l,v 1.1 83/08/12 02:48:01 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sat Aug 13 17:50:50 1983 by layer]-
+d48 2
+d52 6
+a57 2
+   (if (and (dtpr src) (eq '+ (car src))
+	    (dtpr dst) (eq '+ (car dst)))
+d62 1
+a62 1
+					 a0 a1 a2 a3 a4 a5 a6 sp)))
+d66 1
+a66 1
+		else ;arg1 is too complex to do in one instr
+@
+
+
+1.1
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 22:22:58 1983 by layer]-
+d13 2
+d20 1
+a27 20
+#+for-vax
+(defun e-add (src dst)
+   (e-write3 'addl2 src dst))
+
+;--- e-add3 :: add from two sources and store in the dest
+; WARNING:  if the destination is an autoincrement addressing mode, then
+;	this will not work for the 68000, because multiple instructions
+;	are generated:
+;		(e-add3 a b "sp@@+")
+;	is
+;		movl b,sp@@+
+;		addl a,sp@@+	(or addql)
+(defun e-add3 (s1 s2 dest)
+   #+for-vax
+   (e-write4 'addl3 s1 s2 dest)
+   #+for-68k
+   (progn
+       (e-write3 'movl s2 dest)
+       (e-add s1 dest)))
+
+a41 4
+#+for-vax
+(defun e-sub (src dst)
+   (e-write3 'subl2 src dst))
+
+d46 1
+a46 2
+;--- e-cmp :: emit code to compare the two given args
+;	- arg1, arg2 : EIADRs
+d48 16
+a63 3
+(defun e-cmp (arg1 arg2)
+  #+for-vax (e-write3 'cmpl arg1 arg2)
+  #+for-68k (e-write3 'cmpl arg2 arg1))
+a64 47
+;--- d-cmp :: compare two IADR values
+;
+;.. cc-eq
+(defun d-cmp (src dst)
+   #+for-vax (e-write3 'cmpl (e-cvt src) (e-cvt dst))
+   #+for-68k
+   (let ((xdst (e-cvt dst))
+	 (xsrc (e-cvt src)))
+       (makecomment `(d-cmp ,dst ,src))
+       (if (and (dtpr xdst) (eq '+ (car xdst))
+		(dtpr xsrc) (eq '+ (car xsrc)))
+	   then ;special "cmpm" instr
+		(e-write3 'cmpml xdst xsrc)
+	   else (if (or (and (eq 'a (d-regtype xdst))
+			     (memq xsrc '(d0 d1 d2 d3 d4 d5 d6 d7
+					      a0 a1 a2 a3 a4 a5 a6 sp)))
+			(and (eq 'd (d-regtype xdst))
+			     (eq 'a (d-regtype xsrc))))
+		    then (e-write3 'cmpl xdst xsrc)
+		    else ;arg1 is too complex to do in one instr
+			 (d-regused 'd6)
+			 (e-write3 'movl xsrc 'd6)
+			 (e-write3 'cmpl xdst 'd6)))))
+
+;--- e-cmpnil :: compare an EIADR to nil
+;
+(defun e-cmpnil (eiadr)
+   #+for-vax (break 'e-cmpnil)
+   #+for-68k (e-write3 'cmpl eiadr '#.nil-reg))
+
+;--- d-cmpnil :: compare an IADR to nil
+;
+(defun d-cmpnil (iadr)
+   #+for-vax (d-tst iadr)
+   #+for-68k (d-cmp '#.nil-reg iadr))
+
+;--- e-tst :: test the given value
+;
+(defun e-tst (src)
+   (e-write2 'tstl src))
+
+;--- d-tst :: test the given value (set the cc)
+;
+;.. d-exp
+(defun d-tst (arg)
+  (e-tst (e-cvt arg)))
+
+d87 1
+a87 1
+	(t (e-write3 'movl (e-cvt from) (e-cvt to))))
+a142 8
+
+(defun e-quick-call (what)
+   (e-write2 #+for-vax "jsb"
+	     #+for-68k "jbsr"
+	     what))
+
+(defun e-call-qnewint ()
+   (e-quick-call '_qnewint))
+@

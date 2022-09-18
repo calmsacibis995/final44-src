@@ -1,0 +1,43 @@
+Return-Path: <chris@maryland>
+Date: Mon, 22 Oct 84 14:23:01 edt
+From: chris@maryland (Chris Torek)
+Message-Id: <8410221823.AA05363@maryland.ARPA>
+Subject: 4.2BSD fsck can dump core (with fix)
+
+Index: etc/fsck 4.2BSD Fix
+
+Description:
+	Under certain uncommon conditions, fsck will die with a
+	segmentation fault instead of repairing a damaged file
+	system.  The reason is that in order to calculate the number
+	of disk blocks used by any particular inode, one must round
+	up.  This is done by the ``howmany'' macro as follows:
+
+		#define	howmany(x, y)	(((x)+((y)-1))/(y))
+
+	if x is sufficiently large, then adding y-1 may make it
+	negative.  This is precisely what happens to fsck.
+
+Repeat-By:
+	Create a file system error such that an inode has a di_size
+	of 0x7fffffff (or something very close to but not greater
+	than that), and run ``fsck'' on that file system.
+
+Fix:
+	Replace the test for negative sizes with a test for either
+	a negative size or one that is too large:
+
+RCS file: RCS/fsck.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff  -r1.1 -r1.2
+620c620,621
+< 				if (dp->di_size < 0) {
+---
+> 				if (dp->di_size < 0 ||
+> 				    dp->di_size + sblock.fs_bsize - 1 < 0) {
+
+	(For those of you who need context, this is right above an
+	if (debug) printf() line that prints a message about a bad
+	size.  Or you can just search for di_size ... there's only
+	the one nearby.)

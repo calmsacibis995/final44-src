@@ -1,0 +1,115 @@
+Return-Path: <mike@BRL-VGR.ARPA>
+Date:     Wed, 22 Aug 84 3:03:54 EDT
+From: Mike Muuss <mike@BRL-VGR.ARPA>
+Subject:  frexp
+Sender: Mike Muuss <mike@BRL-VGR.ARPA>
+
+Index:	lib/libc.a 4.2BSD fix
+
+Description:
+	When executing a program that uses sqrt() heavily, more time
+	is spent in frexp() (called by sqrt()) than in sqrt() itself!
+	frexp() just returns the fractional & exponent parts of a
+	floating point number.  It's problem is that it's written
+	in a nice machine independent manner which is quite portable,
+	but also foolish and slow.
+
+	Also, frexp( 1.0, &i ) will return a fractional part of 1.0
+	and an exponent of 0, even though the documentation explicitly
+	states that the return is LESS THAN 1.0 -- I have fixed this
+	problem in both the vax and !vax code, below.
+
+Repeat-By:
+	Write a program to use sqrt() a lot.  Profile it with -pg -lm_p
+	and count the cycles.
+Fix:
+
+/*
+ *			F R E X P . C
+ *
+ * $Revision: 1.2 $
+ *
+ * $Log:	frexp.c,v $
+ * Revision 1.2  84/08/22  02:19:10  mike
+ * Created VAX-specific version, much faster!
+ * (Even correct, and to spec)
+ * 
+ */
+/* @(#)frexp.c	4.1 (Berkeley) 12/21/80 */
+/*
+	the call
+		x = frexp(arg,&exp);
+	must return a double fp quantity x which is <1.0
+	and the corresponding binary exponent "exp".
+	such that
+		arg = x*2^exp
+*/
+
+double
+frexp(x,i)
+double x;
+int *i;
+{
+#ifdef vax
+	register short *ip;
+
+	ip = (short *) &x;
+	*i = ((*ip>>7) & 0xFF) - 128;
+	*ip = (*ip & 0x807F) | (128<<7);
+	return(x);
+#else
+	int neg;
+	int j;
+	j = 0;
+	neg = 0;
+	if(x<0){
+		x = -x;
+		neg = 1;
+		}
+	if(x>=1.0)		/* was incorrectly x>1.0 */
+		while(x>=1.0){
+			j = j+1;
+			x = x/2;
+			}
+	else if(x<0.5)
+		while(x<0.5){
+			j = j-1;
+			x = 2*x;
+			}
+	*i = j;
+	if(neg) x = -x;
+	return(x);
+#endif vax
+}
+
+For real speed demons, this might well be coded in VAX assembler.
+The following code is UNTESTED, but ought to work:
+
+	.text
+	.globl	_frexp
+	.align	2
+_frexp:	.word	0x0000
+	movd	4(ap),r0		# (r0,r1) := value
+	extzv	$7,$8,r0,*12(ap)	# Fetch exponent
+	jeql	fr1			# If exponent zero, we're done
+	subl2	$128,*12(ap)		# Bias the exponent appropriately
+	insv	$128,$7,$8,r0		# Force result exponent to biased 0
+fr1:	ret
+
+Best,
+ -Mike Muuss
+
+(301)-278-6678
+  AV  283-6678
+  FTS 939-6678
+
+ArpaNet:  Mike @ BRL
+UUCP:     ...!{decvax,cbosgd}!brl-bmd!mike
+Postal:
+  Mike Muuss
+  Leader, Advanced Computer Systems Team
+  Computer Techniques and Analysis Branch
+  Systems Engineering and Concepts Analysis Division
+  U.S. Army Ballistic Research Laboratory
+  Attn: DRXBR-SECAD (Muuss)
+  APG, MD  21005

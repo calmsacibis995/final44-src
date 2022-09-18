@@ -1,0 +1,101 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:05:59 1988
+Date: Mon, 18 Apr 88 13:26:25 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) makelabel propogates partition sizing errors
+#Index: /etc/makelabel MORE/bsd 4.3 (10/5/87)
+Index: etc/makelabel 4.3BSD
+
+Description:
+	The bad144(8) manual page notes that
+
+	     The bad sector information and replacement sectors are con-
+	     ventionally only accessible through the `c' file system par-
+	     tition of the disk.
+
+	And, indeed, the partition sizes that appear in /etc/disktab
+	reflect this:  for example, in the RM80 entry we see
+
+		rm80|RM80|DEC RM80:\
+			:ty=winchester:ns#31:nt#14:nc#559:sf:\
+			...
+			:pc#242606:oc#0:bc#8192:fc#1024:\
+			...
+			:pg#192510:og#49910:bg#8192:fg#1024:
+			...
+
+	Now the disk has 242,606 sectors in all, as shown by the size of
+	the "c" partition ("pc").  Since the "g" partition begins at
+	sector 49,910 ("og") you might expect its size to be
+			242,606 - 49,910
+	or 192,696 sectors.  Yet the size in the table--192,510 ("pg")--is a
+	bit smaller--sufficiently smaller to account for the bad sector area.
+	(For the sticklers in the audience:  the bad sector area encompasses
+	the last track on the disk, plus the 126 sectors preceding the last
+	track.  Since the number of sectors per track, given by ns above, is
+	31, this means the bad sector area is 126 + 31 or 157 sectors here.
+	This means that the "g" partition should contain at most
+
+			  242,606	total disk size
+			-  49,910	sector where g partition starts
+			-     157	size of bad sector area
+			---------
+			= 192,539	sectors
+
+	The powers that be decided to round this down so that the partition
+	wouldn't contain any partial tracks--don't ask me why.  The important
+	thing is that the 192,510 in the
+			:pg#192510:...
+	line of /etc/disktab is smaller than the limit computed above.)
+	
+	So far so good.  Now on MORE/bsd systems predating the 10/5/87
+	maintenance release, partition size information was hard-wired
+	into the kernel, in tables compiled from a file named
+	"/sys/vax/dksizes.c".  And in some cases these hard-wired sizes
+	did *not* correctly account for the bad sector area, meaning that
+	end-of-disk partitions (other than "c" partitions) were too large. 
+	For example:
+
+		struct	size	rm80_sizes[8] = {
+			...
+			242606,	0,		/* C=cyl 0 thru 558 */
+			...
+			192603,	115,		/* G=cyl 115 thru 558 */
+			...
+
+	where we note that the 192603 above is greater than the 192510 in
+	/etc/disktab (and also greater than the 192539 limit computed above).
+
+	The bad news:  the "makelabel" program (using a function named
+	"findend") uses the wired-in partition size rather than the correct
+	/etc/disktab size when labeling disk packs.
+
+Repeat-By:
+	Find a has-always-been-vanilla Mt. Xinu system with an RM80 (or any
+	"bad144" disk where the wired-in "g" partition size is "too large")
+	that's performed the 10/5/87 upgrade, and run disklabel on the disk
+	in question.  Note that the "g" partition size is the old, improper,
+	wired-in value rather than the /etc/disktab value.
+
+	For a *real* headache, find a system with two RM80's, units 2 and 3
+	for the sake of example.  After unmounting the file systems in
+	question, do a
+		dd if=/dev/rhp2g of=/dev/rhp3g
+	and clobber the bad sector area of drive 3.
+
+	Alternately, define the g partition to be a swapping area and clobber
+	the bad sector area.
+	
+Fix:
+	Since folks have already run "makelabel" and now have incorrect sizes
+	on their disk labels, and since "makelabel" is supposed to be a one-shot
+	affair, fixing makelabel probably isn't the thing to do.
+	Two possibilities (not mutually exclusive):
+
+	1.  Alert users to the problem and provide instructions on how use
+	    the disklabel program to correct the partition sizes.
+	2.  Set up fsck to alert users when a partition other than the "c"
+	    partition overlaps the bad sector area.  Heck, maybe even have
+	    fsck automatically relabel the disk if "correct" partition size
+	    is at least large as the size of the file system stored in the
+	    partition.
+

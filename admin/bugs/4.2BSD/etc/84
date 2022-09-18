@@ -1,0 +1,104 @@
+Return-Path: <arizona!noao!rwolff>
+Date: Fri, 5 Jul 85 10:11:11 mst
+From: arizona!noao!rwolff (Richard Wolff)
+Subject: Unwanted "resync" messages from restore
+Index: 	etc/restore/tape.c 4.2BSD  Fix
+
+Description:
+	When restoring a dump tape made on a file system with a fragment
+	size greater than the tape block size (TP_BSZE, 1K), restore constantly
+	loses "sync" and prints a message.  No harm is done, but the message
+	stream is annoying and irrelevant.
+Repeat-By:
+	Do a restore from a dump tape made from a file system with
+	a fragment size of 2, 4, or 8K.
+Fix:
+	It would no doubt be better to change "dump", but we are running
+	Don Speck's fast version, with which I do not want to mess.  So,...
+	Make the following changes in /usr/src/etc/restore/tape.c
+
+	*** tape.c.old	Fri Jun 28 09:14:45 1985
+	--- tape.c	Fri Jun 28 11:03:46 1985
+	***************
+	*** 3,8
+	  #endif
+	  
+	  /* Copyright (c) 1983 Regents of the University of California */
+	  
+	  #include "restore.h"
+	  #include <dumprestor.h>
+
+	--- 3,15 -----
+	  #endif
+	  
+	  /* Copyright (c) 1983 Regents of the University of California */
+	+ /*
+	+  * Modified rjw, 6/28/85, NOAO to account for dumps taken on systems
+	+  * with fragment size greater than TP_BSIZE.  Files on these systems
+	+  * have inode sizes that may be a small fraction of the fragment size
+	+  * but the dump will include the full fragment.  Restore was losing
+	+  * sync.  see getfile()
+	+  */
+	  
+	  #include "restore.h"
+	  #include <dumprestor.h>
+	***************
+	*** 419,424
+		off_t size = spcl.c_dinode.di_size;
+		static char clearedbuf[MAXBSIZE];
+		char buf[MAXBSIZE / TP_BSIZE][TP_BSIZE];
+  
+  	if (checktype(&spcl, TS_END) == GOOD)
+  		panic("ran off end of tape\n");
+
+	--- 426,432 -----
+		off_t size = spcl.c_dinode.di_size;
+		static char clearedbuf[MAXBSIZE];
+		char buf[MAXBSIZE / TP_BSIZE][TP_BSIZE];
+	+ 	char junk[TP_BSIZE];
+	  
+		if (checktype(&spcl, TS_END) == GOOD)
+			panic("ran off end of tape\n");
+	***************
+	*** 447,453
+				(*f2)(clearedbuf, size > TP_BSIZE ?
+					(long) TP_BSIZE : size);
+			}
+	! 		if ((size -= TP_BSIZE) <= 0)
+				break;
+		}
+		if (readhdr(&spcl) == GOOD && size > 0) {
+
+	--- 455,463 -----
+				(*f2)(clearedbuf, size > TP_BSIZE ?
+					(long) TP_BSIZE : size);
+			}
+	! 		if ((size -= TP_BSIZE) <= 0) {
+	!			for (i++; i < spcl.c_count; i++)
+	!				if (spcl.c_addr[i])
+	!					readtape(junk);
+				break;
+			}
+		}
+	***************
+	*** 449,454
+			}
+			if ((size -= TP_BSIZE) <= 0)
+				break;
+		}
+		if (readhdr(&spcl) == GOOD && size > 0) {
+			if (checktype(&spcl, TS_ADDR) == GOOD)
+
+	--- 459,465 -----
+				for (i++; i < spcl.c_count; i++)
+  				readtape(junk);
+  			break;
+	+ 		}
+		}
+		if (readhdr(&spcl) == GOOD && size > 0) {
+			if (checktype(&spcl, TS_ADDR) == GOOD)
+
+
+Richard Wolff, National Optical Astronomy Observatories, Tucson, AZ
+Usenet:   {allegra,arizona,astrovax,decvax,hao,ihnp4}  !noao!rwolff
+Arpa:     noao!rwolff@lbl-csam

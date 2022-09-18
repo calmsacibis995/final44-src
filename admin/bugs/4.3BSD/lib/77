@@ -1,0 +1,154 @@
+From arnold@emory.arpa  Mon Aug 10 15:05:14 1987
+Date: Mon, 10 Aug 87 17:25:10 EDT
+From: "Arnold D. Robbins {EUCC}" <arnold@emory.arpa>
+Subject: f77 -O breaks certain expressions
+Index: lib/{c2,pcc}/??? 4.3BSD
+
+Description:
+	Quoted directly from the original user:
+
+	It seems that the optimizer is doing some funny things with
+	expressions such as A(MOD(I - 1 + L, L), J) or A(MOD(I + 1, L), J)
+	which are passed directly to a subroutine (such as the WRITE statements
+	below), as opposed to indirectly through assignment.  These expressions
+	refer to (lower and upper) neighbors of the site A(I, J) on a lattice
+	with periodic boundary conditions.  If A(15, 0) is set to some value,
+	then the lower neighbor of A(0, J) and the upper neighbor of A(14, J)
+	as calculated above result in that value independent of the value of J
+	(as long as J is a variable rather than a constant).  In each of the
+	WRITE statements below, the value 0 is printed out for each expression
+	except the last, which should also be 0.
+Repeat-By:
+
+	PROGRAM TEST
+
+	INTEGER L, N
+	PARAMETER (L = 16, N = L - 1)
+	INTEGER A(0:N, 0:N)
+
+	INTEGER I, J, B
+
+	DO 310 I = 0, N
+	    DO 310 J = 0, N
+		A(I, J) = 0
+  310	CONTINUE
+
+	A(15, 0) = 1
+	I = 15
+	J = 1
+C	Position (15, J) prints correctly:
+	B = A(MOD(I + 0, L), J)
+	WRITE (6, *) B, A(MOD(I + 0, L), J)
+	WRITE (6, *) ''
+
+	I = 0
+	J = 1
+C	Position (15, J) blows it:
+	B = A(MOD(I + N, L), J)
+	WRITE (6, *) B, A(MOD(0 + N, L), J), A(MOD(I + N, L), 1),
+&	    A(MOD(I + N, L), J)
+C	Position (1, J) prints correctly:
+	B = A(MOD(I + 1, L), J)
+	WRITE (6, *) B, A(MOD(I + 1, L), J)
+	WRITE (6, *) ''
+
+	I = 14
+	J = 1
+C	Position (13, J) prints correctly:
+	B = A(MOD(I + N, L), J)
+	WRITE (6, *) B, A(MOD(I + N, L), J)
+C	Position (15, J) blows it:
+	B = A(MOD(I + 1, L), J)
+	WRITE (6, *) B, A(MOD(14 + 1, L), J), A(MOD(I + 1, L), 1),
+&	    A(I + 1, J), A(MOD(I + 1, L), J)
+	WRITE (6, *) ''
+
+	STOP
+	END
+
+Arnold Robbins
+Emory U. Computing Center
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+From donn@cs.utah.edu Mon Apr  4 01:27:09 1988
+Date: Mon, 4 Apr 88 02:26:20 MDT
+From: donn@cs.utah.edu (Donn Seeley)
+To: arnold@emory.arpa
+Subject: Re: f77 -O breaks certain expressions [4.3BSD/lib/77]
+
+Sorry to take so long at this; I have less time for Fortran now than
+before.  Plus I tried your example and it didn't seem to have an
+obvious solution the first time(!).
+
+As a reminder, here's the gist of the complaint:
+
+	It seems that the optimizer is doing some funny things with
+	expressions such as A(MOD(I - 1 + L, L), J) or A(MOD(I + 1, L),
+	J) which are passed directly to a subroutine (such as the WRITE
+	statements below), as opposed to indirectly through assignment.
+
+Expressions like this would screw up because the final subscript was
+always treated as zero.
+
+As it turns out, this was a really sordid bug in the c2 peephole
+optimizer that took me most of a day to find and fix.  The optimizer
+was busily reducing the stack push code to produce a nice compact
+indexed addressing mode and inadvertently passed a pointer to a deleted
+node on to the data flow routine.  This in turn caused the computation
+of the offset for the last subscript to be eliminated as dead code,
+effectively producing an offset of 0.  Here's what I did to fix the
+problem, in the function bmove() in c2/c21.c:
+
+------------------------------------------------------------------------
+*** /tmp/,RCSt1021299	Mon Apr  4 02:22:45 1988
+--- c21.c	Mon Apr  4 02:22:37 1988
+***************
+*** 234,247 ****
+  			if (shfrom >= 0)	/* ashl $N,r*,r0 */
+  			{
+  				delnode(p);
+  				if (shfrom != shto)
+  				{
+! 					uses[shto] = NULL; splitrand(pf);
+  					cp2=regs[RT1]; while (*cp2++!='[');
+  					cp1=regfrom; while (*cp2++= *cp1++);
+  					*--cp2 = ']';
+  					*++cp2 = '\0';
+! 					newcode(pf);
+  				}
+  			}
+  			else
+--- 234,261 ----
+  			if (shfrom >= 0)	/* ashl $N,r*,r0 */
+  			{
+  				delnode(p);
++ 				p = pf;
+  				if (shfrom != shto)
+  				{
+! 					uses[shto] = NULL; splitrand(p);
+  					cp2=regs[RT1]; while (*cp2++!='[');
+  					cp1=regfrom; while (*cp2++= *cp1++);
+  					*--cp2 = ']';
+  					*++cp2 = '\0';
+! 					newcode(p);
+! 				}
+! 				if (p->op == MOVA)
+! 				{
+! 					int movato;
+! 
+! 					splitrand(p);
+! 					if ((movato = isreg(regs[RT2])) >= 0
+! 					    && movato < NUSE)
+! 						/*
+! 						 * this register is dead;
+! 						 * resurrect it temporarily
+! 						 */
+! 						uses[movato] = p;
+  				}
+  			}
+  			else
+------------------------------------------------------------------------
+
+If nothing else, this will let Keith update his records,
+
+Donn
+

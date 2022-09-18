@@ -1,0 +1,396 @@
+From jlb@apollo.com  Mon Jan 16 23:59:17 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA06114; Mon, 16 Jan 89 23:59:17 -0800
+Received: from [129.248.0.1] by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA13640; Mon, 16 Jan 89 23:56:21-0800
+Message-Id: <8901170756.AA13640@ucbvax.Berkeley.EDU>
+Received: by apollo.com id AA00300; Mon, 16 Jan 89 19:00:47 EST    
+Date: Mon, 16 Jan 89 19:00:47 EST
+From: Joel Breazeale <jlb@apollo.com>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Cc: jlb@apollo.com
+Subject: sendmail dies on requeue of message when using SMTP mailer (third try to send this)
+Index: usr.lib/sendmail/src/savemail.c 4.3BSD
+
+Description:
+
+   This is tough, but here it goes...  I have a configuration where
+   sendmail uses one or more calls to SMTP mailers to deliver mail.
+
+   Example:  We have two targets, A and B, which require two calls
+   to the SMTP mailer.  In the first case the delivery to target A
+   fails due to 'no such user'.  The delivery for target B fails but
+   should be retried.
+
+   The failure happens when main calls finis which calls dropenvelope
+   which calls queueup.  At this point we find that CurEnv, the envelope,
+   is clobbered, the last entry in CurEnv->e_errorqueue points to garbage.
+
+   Now, how did the clobbering of the envelope happen?  I can give you a
+   few hints.  The error envelope in returntosender is allocated on the
+   stack and the 'from' address of MAILER-DAEMON somehow finds its way
+   into CurEnv->e_parent.
+
+   Here is the statement in sendall, called by returntosender, which puts
+   data from the stack into the error envelope (ee in returntosender):
+
+      (void) recipient(&e->e_from, &e->e_sendqueue);
+
+   'ee' was created by this call in returntosender:
+
+	ee = newenvelope(&errenvelope);
+
+   When returntosender exits &e->e_from becomes a stale pointer.  CurEnv
+   becomes CurEnv->e_parent and dropenvelope encounters the bad error queue.
+
+   What I propose below may be considered a workaround.  I didn't try to find
+   out how the parent envelope was affected by allocating and manipulating
+   the error envelope.
+
+Repeat-By:
+   Use the above example as a test case.  You may call sendmail -bs
+   as the mailer:
+
+   Example with the SMTP commands:
+
+      $ //uucp/usr/lib/sendmail -v xyzzy@jlb2.mbx jlb@jlb.mbx
+      To: xyzzy, jlb
+      From: jlb
+      Subject: test
+      
+      hi
+      *** EOF *** 
+      xyzzy@jlb2.mbx... Connecting to jlb2.mbx...
+      220 jlb2.ch.apollo.com Sendmail 5.51.2/smail2.2/03-09-87 ready at Wed, 11 Jan 89 13:40:27 EST
+      >>> HELO snail.ch.apollo.COM
+      250 jlb2.ch.apollo.com Hello snail.ch.apollo.COM, pleased to meet you
+      >>> MAIL From:<jlb>
+      250 <jlb>... Sender ok
+      >>> RCPT To:<xyzzy>
+      550 <xyzzy>... User unknown
+      xyzzy@jlb2.mbx... User unknown
+      >>> QUIT
+      221 jlb2.ch.apollo.com closing connection
+      jlb@jlb.mbx... Connecting to jlb.mbx...
+      451 Unable to reach target mailbox //jlb/sys/node_data/systmp/mbxsmtpd.mbx
+      >>> QUIT
+      451 try again!
+      jlb@jlb.mbx... Deferred: Unable to reach target mailbox //jlb/sys/node_data/systmp/mbxsmtpd.mbx
+
+   Example without which shows the failure:
+
+      $ //uucp/usr/lib/sendmail -v xyzzy@jlb2.mbx jlb@jlb.mbx
+      To: xyzzy, jlb
+      From: jlb
+      Subject: test
+      
+      hi
+      *** EOF *** 
+      xyzzy@jlb2.mbx... Connecting to jlb2.mbx...
+      jlb@jlb.mbx... Connecting to jlb.mbx...
+      jlb@jlb.mbx... Deferred: Unable to reach target mailbox //jlb/sys/node_data/systmp/mbxsmtpd.mbx
+      root... Connecting to .mlocal...
+      root... Sent
+      ?(sh) "//uucp/usr/lib/sendmail" - reference to illegal address (OS/MST manager)
+      $ tb
+      Process        508 (parent 500, group 0)
+      Time           89/01/11.14:45(EST)
+      Program        //uucp/bsd4.3/usr/lib/sendmail
+      Status         00040004: reference to illegal address (OS/MST manager)
+      In routine     "queueup" line 164
+      Called from    "dropenvelope" line 146
+      Called from    "finis" line 773
+      Called from    "main" line 743
+      Called from    "unix_$main" line 114
+      Called from    "_start" line 51
+      Called from    "PM_$CALL" line 171
+      Called from    "pgm_$load_run" line 747
+
+   The sendmail.cf:
+
+	#######################################################################
+	#
+	#		SENDMAIL CONFIGURATION FILE
+	#
+	#    This is a bare bones configuration file that should work without
+	#    modification for most sites that are connected to UUCP.
+	#    However, it is not sophisticated and sites may wish to modify it.
+	#
+	#######################################################################
+	
+	
+	
+	############################################################
+	###	local info
+	############################################################
+	
+	# ARPA domain that I am in.
+	DDapollo.COM
+	
+	# my host name
+	#Dw
+	
+	# my third-level domain
+	DTch
+	
+	# official hostname
+	Dj$w.$T.$D
+	
+	# fixed local spool users
+	CUMAILER-DAEMON root
+	
+	# varying local spool users
+	FU/etc/users.local
+	
+	############################################################
+	#
+	#	General configuration information
+	#
+	#	This information is basically just "boiler-plate"; it must be
+	#	there, but is essentially constant.
+	#
+	#	Information in this file should be independent of location --
+	#	i.e., although there are some policy decisions made, they are
+	#	not specific to Berkeley per se.
+	#
+	############################################################
+	
+	DV4.7
+	
+	
+	##########################
+	###   Special macros   ###
+	##########################
+	
+	# my name
+	DnMAILER-DAEMON
+	# UNIX header format
+	DlFrom $g  $d
+	# delimiter (operator) characters
+	Do.:%@!^=/[]
+	# format of a total name
+	Dq$g$?x ($x)$.
+	# SMTP login message
+	De$j Sendmail $v/$V ready at $b
+	
+	###################
+	###   Options   ###
+	###################
+	
+	# location of alias file
+	OA/etc/mail/aliases
+	# default delivery mode (deliver in background)
+	Odb
+	# (don't) connect to "expensive" mailers
+	#Oc
+	# temporary file mode
+	OF0644
+	# default GID
+	Og1
+	# location of help file
+	OH/etc/mail/sendmail.hf
+	# log level
+	OL9
+	# default messages to old style
+	Oo
+	# queue directory
+	OQ/usr/spool/mqueue
+	# read timeout -- violates protocols
+	Or2h
+	# status file
+	OS/etc/mail/sendmail.st
+	# queue up everything before starting transmission
+	Os
+	# default timeout interval
+	OT3d
+	# time zone names (V6 only)
+	OtPST,PDT
+	# default UID
+	Ou1
+	# wizard's password
+	OW*
+	# Disposition of errors
+	Oee
+	
+	###############################
+	###   Message precedences   ###
+	###############################
+	
+	Pfirst-class=0
+	Pspecial-delivery=100
+	Pjunk=-100
+	
+	#########################
+	###   Trusted users   ###
+	#########################
+	
+	Troot
+	Tdaemon
+	Tuucp
+	Tnetwork
+	
+	#############################
+	###   Format of headers   ###
+	#############################
+	
+	H?P?Return-Path: <$g>
+	HReceived: $?sfrom $s $.by $j; $b    
+	H?D?Resent-Date: $a
+	H?D?Date: $a
+	H?F?Resent-From: $q
+	H?F?From: $q
+	H?x?Full-Name: $x
+	HSubject:
+	# HPosted-Date: $a
+	# H?l?Received-Date: $b
+	
+	###########################
+	###   Rewriting rules   ###
+	###########################
+	
+	
+	################################
+	#  Sender Field Pre-rewriting  #
+	################################
+	S1
+	
+	###################################
+	#  Recipient Field Pre-rewriting  #
+	###################################
+	S2
+	
+	#################################
+	#  Final Output Post-rewriting  #
+	#################################
+	S4
+	
+	R@			$@				handle <> error addr
+	
+	# UUCP must always be presented in old form
+	R$+@$-.UUCP		$2!$1				u@h.UUCP => h!u
+	
+	###########################
+	#  Name Canonicalization  #
+	###########################
+	S3
+	
+	# handle "from:<>" special case
+	R<>			$@@				turn into magic token
+	
+	# basic textual canonicalization
+	R$*<$+>$*		$2				basic RFC821/822 parsing
+	R$+ at $+		$1@$2				"at" -> "@" for RFC 822
+	
+	R$+@$w.UUCP		$@$1
+	R$+@$w			$@$1
+	R$+@$j			$@$1
+	R$+@$D			$@$1
+	R$+@$w.$D		$@$1
+	R$+@$T.$D		$@$1
+	
+	R$+@$+.UUCP		$@$1@$2.UUCP
+	R$+@$+			$@$1@$2
+	R$-!$+			$@$2@$1.UUCP
+	
+	############################################################
+	############################################################
+	#####
+	#####		RULESET ZERO PREAMBLE
+	#####
+	#####	The beginning of ruleset zero is constant through all
+	#####	configurations.
+	#####
+	############################################################
+	############################################################
+	
+	S0
+	
+	# first make canonical
+	R$+			$:$>3$1				make canonical
+	
+	# handle special cases.....
+	R@			$#local$:MAILER-DAEMON		handle <> form
+	
+	# User is in local /usr/spool/mail
+	R$=U			$#mlocal$:$1
+	
+	# Mailing list references - post one at a time
+	R$-:			$#mdpss$:$1:
+	
+	# Simple names go to dpss directly
+	R$-			$#local$:$1		local names
+	
+	# Reference a node directly for smtp/mbx
+	R$+@$-.mbx		$#mbx$@$2$:$1
+	
+	# everything else goes to sendmail via //xuucp
+	R$+			$#ether$@xuucp$:$1		non-local names
+	
+	############################################################
+	############################################################
+	#####
+	#####		Local and Program Mailer specification
+	#####
+	############################################################
+	############################################################
+	
+	Mmlocal, P=/bin/mail, F=lDFhumnrs, S=10, R=20, A=mail -r $g -d $u
+	Mlocal, P=/usr/lib/mailer/dpss_post, F=lSFDnm, S=10, R=20,
+		A=dpss_post $u -nnv
+	Mmdpss, P=/usr/lib/mailer/dpss_post, F=lSFDn, S=10, R=20,
+		A=dpss_post $u -nnv
+	Mprog,	P=/bin/sh,   F=lsDFMe, S=10, R=20, A=sh -c $u
+	
+	S10
+	R@			MAILER-DAEMON			errors to mailer-daemon
+	
+	############################################################
+	#
+	#    		SMTP ethernet mailer
+	#
+	############################################################
+	
+	Mether,	P=[IPC], F=msDFMuCX, A=IPC $h
+	
+	
+	############################################################
+	############################################################
+	#
+	#    		MBX/SMTP mailer
+	#
+	############################################################
+	############################################################
+	
+	Mmbx, P=/usr/lib/mailer/mbxsmtp, F=FDhum, S=10, R=20,
+		A=mbxsmtp -n //$h
+	
+	
+Fix:
+
+   In returntosender, xalloc space for the error envelope:
+
+   Declaration changes:
+
+	register ENVELOPE *ee;
+	extern ENVELOPE *newenvelope();
+	ENVELOPE *errenvelope;           <<< added
+
+   Old Code:
+
+	SendBody = sendbody;
+	define('g', "\001f", CurEnv);
+	ee = newenvelope(&errenvelope);
+	define('a', "\001b", ee);
+
+
+   Code changes:
+
+	SendBody = sendbody;
+	define('g', "\001f", CurEnv);
+	errenvelope = xalloc(sizeof *errenvelope);  <<< added
+	ee = newenvelope(errenvelope);              <<< changed
+	define('a', "\001b", ee);
+
+Joel Breazeale
+Apollo Computer, Inc.
+(508) 256-6600 x6201

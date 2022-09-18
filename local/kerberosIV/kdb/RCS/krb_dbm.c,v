@@ -1,0 +1,1496 @@
+head     4.12;
+branch   ;
+access   ;
+symbols  PATCH8:4.9 PATCH7:4.9 KPATCH6:4.9 ASRSNAP1001:4.9 PATCH5:4.9 KPATCH4:4.9 KPATCH3:4.9 KPATCH2:4.9 KREL1:4.8 BETA5/24/88:4.5;
+locks    ; strict;
+comment  @ * @;
+
+
+4.12
+date     92.12.01.11.52.19;  author sklower;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     91.03.07.23.50.29;  author bostic;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     90.06.25.20.52.39;  author kfall;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     89.04.18.16.15.13;  author wesommer;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     89.01.24.18.09.55;  author jon;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     89.01.05.15.51.34;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.07.14.11.57.11;  author shanzer;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.02.24.15.06.11;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.02.24.14.31.09;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.28.13.58.31;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.09.31;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.13.51.29;  author steiner;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.07.18.17.38.59;  author jis;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial checkin
+@
+
+
+4.12
+log
+@.pag files don't exist anymore, .dir --> .db
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/kdb/RCS/krb_dbm.c,v $
+ * $Author: bostic $ 
+ *
+ * Copyright 1988 by the Massachusetts Institute of Technology. 
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>. 
+ */
+
+#ifndef	lint
+static char rcsid_krb_dbm_c[] =
+"$Header: /usr/src/kerberosIV/kdb/RCS/krb_dbm.c,v 4.11 91/03/07 23:50:29 bostic Exp Locker: sklower $";
+#endif	lint
+
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/resource.h>
+#include <sys/errno.h>
+#include <sys/file.h>
+#include <netinet/in.h>
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <string.h>
+#include <des.h>
+#include <krb.h>
+#include <krb_db.h>
+#include <ndbm.h>
+
+#define KERB_DB_MAX_RETRY 5
+
+#ifdef DEBUG
+extern int debug;
+extern long kerb_debug;
+extern char *progname;
+#endif
+extern char *malloc();
+extern int errno;
+
+static  init = 0;
+static char default_db_name[] = DBM_FILE;
+static char *current_db_name = default_db_name;
+static void encode_princ_key(), decode_princ_key();
+static void encode_princ_contents(), decode_princ_contents();
+static void kerb_dbl_fini();
+static int kerb_dbl_lock();
+static void kerb_dbl_unlock();
+
+static struct timeval timestamp;/* current time of request */
+static int non_blocking = 0;
+
+/*
+ * This module contains all of the code which directly interfaces to
+ * the underlying representation of the Kerberos database; this
+ * implementation uses a DBM or NDBM indexed "file" (actually
+ * implemented as two separate files) to store the relations, plus a
+ * third file as a semaphore to allow the database to be replaced out
+ * from underneath the KDC server.
+ */
+
+/*
+ * Locking:
+ * 
+ * There are two distinct locking protocols used.  One is designed to
+ * lock against processes (the admin_server, for one) which make
+ * incremental changes to the database; the other is designed to lock
+ * against utilities (kdb_util, kpropd) which replace the entire
+ * database in one fell swoop.
+ *
+ * The first locking protocol is implemented using flock() in the 
+ * krb_dbl_lock() and krb_dbl_unlock routines.
+ *
+ * The second locking protocol is necessary because DBM "files" are
+ * actually implemented as two separate files, and it is impossible to
+ * atomically rename two files simultaneously.  It assumes that the
+ * database is replaced only very infrequently in comparison to the time
+ * needed to do a database read operation.
+ *
+ * A third file is used as a "version" semaphore; the modification
+ * time of this file is the "version number" of the database.
+ * At the start of a read operation, the reader checks the version
+ * number; at the end of the read operation, it checks again.  If the
+ * version number changed, or if the semaphore was nonexistant at
+ * either time, the reader sleeps for a second to let things
+ * stabilize, and then tries again; if it does not succeed after
+ * KERB_DB_MAX_RETRY attempts, it gives up.
+ * 
+ * On update, the semaphore file is deleted (if it exists) before any
+ * update takes place; at the end of the update, it is replaced, with
+ * a version number strictly greater than the version number which
+ * existed at the start of the update.
+ * 
+ * If the system crashes in the middle of an update, the semaphore
+ * file is not automatically created on reboot; this is a feature, not
+ * a bug, since the database may be inconsistant.  Note that the
+ * absence of a semaphore file does not prevent another _update_ from
+ * taking place later.  Database replacements take place automatically
+ * only on slave servers; a crash in the middle of an update will be
+ * fixed by the next slave propagation.  A crash in the middle of an
+ * update on the master would be somewhat more serious, but this would
+ * likely be noticed by an administrator, who could fix the problem and
+ * retry the operation.
+ */
+
+/* Macros to convert ndbm names to dbm names.
+ * Note that dbm_nextkey() cannot be simply converted using a macro, since
+ * it is invoked giving the database, and nextkey() needs the previous key.
+ *
+ * Instead, all routines call "dbm_next" instead.
+ */
+
+#define dbm_next(db,key) dbm_nextkey(db)
+
+/*
+ * Utility routine: generate name of database file.
+ */
+
+static char *gen_dbsuffix(db_name, sfx)
+    char *db_name;
+    char *sfx;
+{
+    char *dbsuffix;
+    
+    if (sfx == NULL)
+	sfx = ".ok";
+
+    dbsuffix = malloc (strlen(db_name) + strlen(sfx) + 1);
+    strcpy(dbsuffix, db_name);
+    strcat(dbsuffix, sfx);
+    return dbsuffix;
+}
+
+/*
+ * initialization for data base routines.
+ */
+
+kerb_db_init()
+{
+    init = 1;
+    return (0);
+}
+
+/*
+ * gracefully shut down database--must be called by ANY program that does
+ * a kerb_db_init 
+ */
+
+kerb_db_fini()
+{
+}
+
+/*
+ * Set the "name" of the current database to some alternate value.
+ *
+ * Passing a null pointer as "name" will set back to the default.
+ * If the alternate database doesn't exist, nothing is changed.
+ */
+
+kerb_db_set_name(name)
+	char *name;
+{
+    DBM *db;
+
+    if (name == NULL)
+	name = default_db_name;
+    db = dbm_open(name, 0, 0);
+    if (db == NULL)
+	return errno;
+    dbm_close(db);
+    kerb_dbl_fini();
+    current_db_name = name;
+    return 0;
+}
+
+/*
+ * Return the last modification time of the database.
+ */
+
+long kerb_get_db_age()
+{
+    struct stat st;
+    char *okname;
+    long age;
+    
+    okname = gen_dbsuffix(current_db_name, ".ok");
+
+    if (stat (okname, &st) < 0)
+	age = 0;
+    else
+	age = st.st_mtime;
+
+    free (okname);
+    return age;
+}
+
+/*
+ * Remove the semaphore file; indicates that database is currently
+ * under renovation.
+ *
+ * This is only for use when moving the database out from underneath
+ * the server (for example, during slave updates).
+ */
+
+static long kerb_start_update(db_name)
+    char *db_name;
+{
+    char *okname = gen_dbsuffix(db_name, ".ok");
+    long age = kerb_get_db_age();
+    
+    if (unlink(okname) < 0
+	&& errno != ENOENT) {
+	    age = -1;
+    }
+    free (okname);
+    return age;
+}
+
+static long kerb_end_update(db_name, age)
+    char *db_name;
+    long age;
+{
+    int fd;
+    int retval = 0;
+    char *new_okname = gen_dbsuffix(db_name, ".ok#");
+    char *okname = gen_dbsuffix(db_name, ".ok");
+    
+    fd = open (new_okname, O_CREAT|O_RDWR|O_TRUNC, 0600);
+    if (fd < 0)
+	retval = errno;
+    else {
+	struct stat st;
+	struct timeval tv[2];
+	/* make sure that semaphore is "after" previous value. */
+	if (fstat (fd, &st) == 0
+	    && st.st_mtime <= age) {
+	    tv[0].tv_sec = st.st_atime;
+	    tv[0].tv_usec = 0;
+	    tv[1].tv_sec = age;
+	    tv[1].tv_usec = 0;
+	    /* set times.. */
+	    utimes (new_okname, tv);
+	    fsync(fd);
+	}
+	close(fd);
+	if (rename (new_okname, okname) < 0)
+	    retval = errno;
+    }
+
+    free (new_okname);
+    free (okname);
+
+    return retval;
+}
+
+static long kerb_start_read()
+{
+    return kerb_get_db_age();
+}
+
+static long kerb_end_read(age)
+    u_long age;
+{
+    if (kerb_get_db_age() != age || age == -1) {
+	return -1;
+    }
+    return 0;
+}
+
+/*
+ * Create the database, assuming it's not there.
+ */
+
+kerb_db_create(db_name)
+    char *db_name;
+{
+    char *okname = gen_dbsuffix(db_name, ".ok");
+    int fd;
+    register int ret = 0;
+    DBM *db;
+
+    db = dbm_open(db_name, O_RDWR|O_CREAT|O_EXCL, 0600);
+    if (db == NULL)
+	ret = errno;
+    else
+	dbm_close(db);
+
+    if (ret == 0) {
+	fd = open (okname, O_CREAT|O_RDWR|O_TRUNC, 0600);
+	if (fd < 0)
+	    ret = errno;
+	close(fd);
+    }
+    return ret;
+}
+
+/*
+ * "Atomically" rename the database in a way that locks out read
+ * access in the middle of the rename.
+ *
+ * Not perfect; if we crash in the middle of an update, we don't
+ * necessarily know to complete the transaction the rename, but...
+ */
+
+kerb_db_rename(from, to)
+    char *from;
+    char *to;
+{
+    char *fromdir = gen_dbsuffix (from, ".db");
+    char *todir = gen_dbsuffix (to, ".db");
+    char *fromok = gen_dbsuffix(from, ".ok");
+    long trans = kerb_start_update(to);
+    int ok = 0;
+    
+    if (rename (fromdir, todir) == 0) {
+	(void) unlink (fromok);
+	ok = 1;
+    }
+
+    free (fromok);
+    free (fromdir);
+    free (todir);
+    if (ok)
+	return kerb_end_update(to, trans);
+    else
+	return -1;
+}
+
+/*
+ * look up a principal in the data base returns number of principals
+ * found , and whether there were more than requested. 
+ */
+
+kerb_db_get_principal(name, inst, principal, max, more)
+    char   *name;		/* could have wild card */
+    char   *inst;		/* could have wild card */
+    Principal *principal;
+    unsigned int max;		/* max number of name structs to return */
+    int    *more;		/* where there more than 'max' tuples? */
+
+{
+    int     found = 0, code;
+    extern int errorproc();
+    int     wildp, wildi;
+    datum   key, contents;
+    char    testname[ANAME_SZ], testinst[INST_SZ];
+    u_long trans;
+    int try;
+    DBM    *db;
+
+    if (!init)
+	kerb_db_init();		/* initialize database routines */
+
+    for (try = 0; try < KERB_DB_MAX_RETRY; try++) {
+	trans = kerb_start_read();
+
+	if ((code = kerb_dbl_lock(KERB_DBL_SHARED)) != 0)
+	    return -1;
+
+	db = dbm_open(current_db_name, O_RDONLY, 0600);
+
+	*more = 0;
+
+#ifdef DEBUG
+	if (kerb_debug & 2)
+	    fprintf(stderr,
+		    "%s: db_get_principal for %s %s max = %d",
+		    progname, name, inst, max);
+#endif
+
+	wildp = !strcmp(name, "*");
+	wildi = !strcmp(inst, "*");
+
+	if (!wildi && !wildp) {	/* nothing's wild */
+	    encode_princ_key(&key, name, inst);
+	    contents = dbm_fetch(db, key);
+	    if (contents.dptr == NULL) {
+		found = 0;
+		goto done;
+	    }
+	    decode_princ_contents(&contents, principal);
+#ifdef DEBUG
+	    if (kerb_debug & 1) {
+		fprintf(stderr, "\t found %s %s p_n length %d t_n length %d\n",
+			principal->name, principal->instance,
+			strlen(principal->name),
+			strlen(principal->instance));
+	    }
+#endif
+	    found = 1;
+	    goto done;
+	}
+	/* process wild cards by looping through entire database */
+
+	for (key = dbm_firstkey(db); key.dptr != NULL;
+	     key = dbm_next(db, key)) {
+	    decode_princ_key(&key, testname, testinst);
+	    if ((wildp || !strcmp(testname, name)) &&
+		(wildi || !strcmp(testinst, inst))) { /* have a match */
+		if (found >= max) {
+		    *more = 1;
+		    goto done;
+		} else {
+		    found++;
+		    contents = dbm_fetch(db, key);
+		    decode_princ_contents(&contents, principal);
+#ifdef DEBUG
+		    if (kerb_debug & 1) {
+			fprintf(stderr,
+				"\tfound %s %s p_n length %d t_n length %d\n",
+				principal->name, principal->instance,
+				strlen(principal->name),
+				strlen(principal->instance));
+		    }
+#endif
+		    principal++; /* point to next */
+		}
+	    }
+	}
+
+    done:
+	kerb_dbl_unlock();	/* unlock read lock */
+	dbm_close(db);
+	if (kerb_end_read(trans) == 0)
+	    break;
+	found = -1;
+	if (!non_blocking)
+	    sleep(1);
+    }
+    return (found);
+}
+
+/*
+ * Update a name in the data base.  Returns number of names
+ * successfully updated.
+ */
+
+kerb_db_put_principal(principal, max)
+    Principal *principal;
+    unsigned int max;		/* number of principal structs to
+				 * update */
+
+{
+    int     found = 0, code;
+    u_long  i;
+    extern int errorproc();
+    datum   key, contents;
+    DBM    *db;
+
+    gettimeofday(&timestamp, NULL);
+
+    if (!init)
+	kerb_db_init();
+
+    if ((code = kerb_dbl_lock(KERB_DBL_EXCLUSIVE)) != 0)
+	return -1;
+
+    db = dbm_open(current_db_name, O_RDWR, 0600);
+
+#ifdef DEBUG
+    if (kerb_debug & 2)
+	fprintf(stderr, "%s: kerb_db_put_principal  max = %d",
+	    progname, max);
+#endif
+
+    /* for each one, stuff temps, and do replace/append */
+    for (i = 0; i < max; i++) {
+	encode_princ_contents(&contents, principal);
+	encode_princ_key(&key, principal->name, principal->instance);
+	if (dbm_store(db, key, contents, DBM_REPLACE) == -1) {
+		found = -1;
+		perror("dbm_store");
+		break;
+	}
+#ifdef DEBUG
+	if (kerb_debug & 1) {
+	    fprintf(stderr, "\n put %s %s\n",
+		principal->name, principal->instance);
+	}
+#endif
+	found++;
+	principal++;		/* bump to next struct			   */
+    }
+
+    dbm_close(db);
+    kerb_dbl_unlock();		/* unlock database */
+    return (found);
+}
+
+static void
+encode_princ_key(key, name, instance)
+    datum  *key;
+    char   *name, *instance;
+{
+    static char keystring[ANAME_SZ + INST_SZ];
+
+    bzero(keystring, ANAME_SZ + INST_SZ);
+    strncpy(keystring, name, ANAME_SZ);
+    strncpy(&keystring[ANAME_SZ], instance, INST_SZ);
+    key->dptr = keystring;
+    key->dsize = ANAME_SZ + INST_SZ;
+}
+
+static void
+decode_princ_key(key, name, instance)
+    datum  *key;
+    char   *name, *instance;
+{
+    strncpy(name, key->dptr, ANAME_SZ);
+    strncpy(instance, key->dptr + ANAME_SZ, INST_SZ);
+    name[ANAME_SZ - 1] = '\0';
+    instance[INST_SZ - 1] = '\0';
+}
+
+static void
+encode_princ_contents(contents, principal)
+    datum  *contents;
+    Principal *principal;
+{
+    contents->dsize = sizeof(*principal);
+    contents->dptr = (char *) principal;
+}
+
+static void
+decode_princ_contents(contents, principal)
+    datum  *contents;
+    Principal *principal;
+{
+    bcopy(contents->dptr, (char *) principal, sizeof(*principal));
+}
+
+kerb_db_get_stat(s)
+    DB_stat *s;
+{
+    gettimeofday(&timestamp, NULL);
+
+
+    s->cpu = 0;
+    s->elapsed = 0;
+    s->dio = 0;
+    s->pfault = 0;
+    s->t_stamp = timestamp.tv_sec;
+    s->n_retrieve = 0;
+    s->n_replace = 0;
+    s->n_append = 0;
+    s->n_get_stat = 0;
+    s->n_put_stat = 0;
+    /* update local copy too */
+}
+
+kerb_db_put_stat(s)
+    DB_stat *s;
+{
+}
+
+delta_stat(a, b, c)
+    DB_stat *a, *b, *c;
+{
+    /* c = a - b then b = a for the next time */
+
+    c->cpu = a->cpu - b->cpu;
+    c->elapsed = a->elapsed - b->elapsed;
+    c->dio = a->dio - b->dio;
+    c->pfault = a->pfault - b->pfault;
+    c->t_stamp = a->t_stamp - b->t_stamp;
+    c->n_retrieve = a->n_retrieve - b->n_retrieve;
+    c->n_replace = a->n_replace - b->n_replace;
+    c->n_append = a->n_append - b->n_append;
+    c->n_get_stat = a->n_get_stat - b->n_get_stat;
+    c->n_put_stat = a->n_put_stat - b->n_put_stat;
+
+    bcopy(a, b, sizeof(DB_stat));
+    return;
+}
+
+/*
+ * look up a dba in the data base returns number of dbas found , and
+ * whether there were more than requested. 
+ */
+
+kerb_db_get_dba(dba_name, dba_inst, dba, max, more)
+    char   *dba_name;		/* could have wild card */
+    char   *dba_inst;		/* could have wild card */
+    Dba    *dba;
+    unsigned int max;		/* max number of name structs to return */
+    int    *more;		/* where there more than 'max' tuples? */
+
+{
+    *more = 0;
+    return (0);
+}
+
+kerb_db_iterate (func, arg)
+    int (*func)();
+    char *arg;			/* void *, really */
+{
+    datum key, contents;
+    Principal *principal;
+    int code;
+    DBM *db;
+    
+    kerb_db_init();		/* initialize and open the database */
+    if ((code = kerb_dbl_lock(KERB_DBL_SHARED)) != 0)
+	return code;
+
+    db = dbm_open(current_db_name, O_RDONLY, 0600);
+
+    for (key = dbm_firstkey (db); key.dptr != NULL; key = dbm_next(db, key)) {
+	contents = dbm_fetch (db, key);
+	/* XXX may not be properly aligned */
+	principal = (Principal *) contents.dptr;
+	if ((code = (*func)(arg, principal)) != 0)
+	    return code;
+    }
+    dbm_close(db);
+    kerb_dbl_unlock();
+    return 0;
+}
+
+static int dblfd = -1;
+static int mylock = 0;
+static int inited = 0;
+
+static kerb_dbl_init()
+{
+    if (!inited) {
+	char *filename = gen_dbsuffix (current_db_name, ".ok");
+	if ((dblfd = open(filename, 0)) < 0) {
+	    fprintf(stderr, "kerb_dbl_init: couldn't open %s\n", filename);
+	    fflush(stderr);
+	    perror("open");
+	    exit(1);
+	}
+	free(filename);
+	inited++;
+    }
+    return (0);
+}
+
+static void kerb_dbl_fini()
+{
+    close(dblfd);
+    dblfd = -1;
+    inited = 0;
+    mylock = 0;
+}
+
+static int kerb_dbl_lock(mode)
+    int     mode;
+{
+    int flock_mode;
+    
+    if (!inited)
+	kerb_dbl_init();
+    if (mylock) {		/* Detect lock call when lock already
+				 * locked */
+	fprintf(stderr, "Kerberos locking error (mylock)\n");
+	fflush(stderr);
+	exit(1);
+    }
+    switch (mode) {
+    case KERB_DBL_EXCLUSIVE:
+	flock_mode = LOCK_EX;
+	break;
+    case KERB_DBL_SHARED:
+	flock_mode = LOCK_SH;
+	break;
+    default:
+	fprintf(stderr, "invalid lock mode %d\n", mode);
+	abort();
+    }
+    if (non_blocking)
+	flock_mode |= LOCK_NB;
+    
+    if (flock(dblfd, flock_mode) < 0) 
+	return errno;
+    mylock++;
+    return 0;
+}
+
+static void kerb_dbl_unlock()
+{
+    if (!mylock) {		/* lock already unlocked */
+	fprintf(stderr, "Kerberos database lock not locked when unlocking.\n");
+	fflush(stderr);
+	exit(1);
+    }
+    if (flock(dblfd, LOCK_UN) < 0) {
+	fprintf(stderr, "Kerberos database lock error. (unlocking)\n");
+	fflush(stderr);
+	perror("flock");
+	exit(1);
+    }
+    mylock = 0;
+}
+
+int kerb_db_set_lockmode(mode)
+    int mode;
+{
+    int old = non_blocking;
+    non_blocking = mode;
+    return old;
+}
+@
+
+
+4.11
+log
+@check for error return on dbm_store, init ok variable
+@
+text
+@d3 1
+a3 1
+ * $Author: kfall $ 
+d13 1
+a13 1
+"$Header: /usr/src/kerberosIV/kdb/RCS/krb_dbm.c,v 4.10 90/06/25 20:52:39 kfall Exp Locker: bostic $";
+d310 2
+a311 4
+    char *fromdir = gen_dbsuffix (from, ".dir");
+    char *todir = gen_dbsuffix (to, ".dir");
+    char *frompag = gen_dbsuffix (from , ".pag");
+    char *topag = gen_dbsuffix (to, ".pag");
+d316 1
+a316 2
+    if ((rename (fromdir, todir) == 0)
+	&& (rename (frompag, topag) == 0)) {
+a323 2
+    free (frompag);
+    free (topag);
+@
+
+
+4.10
+log
+@rip out non-ndbm stuff
+@
+text
+@d3 1
+a3 1
+ * $Author: wesommer $ 
+d13 1
+a13 1
+"$Header: /usr/src/kerberosIV/kdb/RCS/krb_dbm.c,v 4.9 89/04/18 16:15:13 wesommer Exp Locker: kfall $";
+d316 1
+a316 1
+    int ok;
+d476 5
+a480 1
+	dbm_store(db, key, contents, DBM_REPLACE);
+@
+
+
+4.9
+log
+@Test on return code of dbminit was backwards.
+Programmer: jtkohl
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/kdb/RCS/krb_dbm.c,v $
+ * $Author: jon $ 
+d13 1
+a13 1
+"$Header: krb_dbm.c,v 4.8 89/01/24 18:09:55 jtkohl Locked $";
+a15 2
+#include <mit-copyright.h>
+#include <stdio.h>
+a16 1
+#include <netinet/in.h>
+d22 5
+a26 1
+#include <strings.h>
+a27 7
+#include <sys/file.h>
+#ifdef NDBM
+#include <ndbm.h>
+#else /*NDBM*/
+#include <dbm.h>
+#endif /*NDBM*/
+/* before krb_db.h */
+d30 1
+a113 10
+#ifndef NDBM
+typedef char DBM;
+
+#define dbm_open(file, flags, mode) ((dbminit(file) == 0)?"":((char *)0))
+#define dbm_fetch(db, key) fetch(key)
+#define dbm_store(db, key, content, flag) store(key, content)
+#define dbm_firstkey(db) firstkey()
+#define dbm_next(db,key) nextkey(key)
+#define dbm_close(db) dbmclose()
+#else
+a114 1
+#endif
+a280 1
+#ifdef NDBM
+a287 3
+#else
+    char *dirname = gen_dbsuffix(db_name, ".dir");
+    char *pagname = gen_dbsuffix(db_name, ".pag");
+a288 14
+    fd = open(dirname, O_RDWR|O_CREAT|O_EXCL, 0600);
+    if (fd < 0)
+	ret = errno;
+    else {
+	close(fd);
+	fd = open (pagname, O_RDWR|O_CREAT|O_EXCL, 0600);
+	if (fd < 0)
+	    ret = errno;
+	else
+	    close(fd);
+    }
+    if (dbminit(db_name) < 0)
+	ret = errno;
+#endif
+@
+
+
+4.8
+log
+@Programmer: wesommer
+Auditor: jon
+new locking and db naming routines
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/wesommer/kslave/build/lib/kdb/RCS/krb_dbm.c,v $
+ * $Author: jtkohl $ 
+d13 1
+a13 1
+"$Header: krb_dbm.c,v 4.7 89/01/05 15:51:34 wesommer Locked $";
+d122 1
+a122 1
+#define dbm_open(file, flags, mode) ((dbminit(file) != 0)?"":((char *)0))
+@
+
+
+4.7
+log
+@Programmer: Win Treese
+Auditor: John Kohl
+changes: old 4.2 DBM support.
+@
+text
+@d2 2
+a3 2
+ * $Source: /source2/Athena/kerberos/src/lib/kdb/RCS/krb_dbm.c,v $
+ * $Author: treese $ 
+d13 1
+a13 1
+"$Header: krb_dbm.c,v 1.1 88/12/17 19:52:38 treese Exp $";
+d22 1
+d24 1
+d37 2
+d44 2
+a45 1
+extern char *strcpy();
+d48 7
+d57 1
+a57 1
+static FILE *dba_file;
+d60 6
+a65 1
+ * initialization routine for data base 
+d68 87
+a157 1
+    kerb_dbl_init();		/* initialize locking functions */
+d162 1
+a162 1
+ * gracefully shut down ingres--must be called by ANY program that does
+d171 199
+d382 1
+a382 1
+    int     found = 0;
+d387 2
+a388 1
+#ifdef NDBM
+a389 1
+#endif /*NDBM*/
+a392 1
+    kerb_dbl_lock(0);		/* shareable lock (read lock) */
+d394 2
+a395 5
+#ifdef NDBM
+    db = dbm_open(DBM_FILE, O_RDONLY, 0600);
+#else
+    dbminit(DBM_FILE);
+#endif /*NDBM*/
+d397 2
+a398 1
+    *more = 0;
+d400 1
+a400 6
+#ifdef DEBUG
+    if (kerb_debug & 2)
+	fprintf(stderr,
+	    "%s: db_get_principal for %s %s max = %d",
+	    progname, name, inst, max);
+#endif
+d402 1
+a402 2
+    wildp = !strcmp(name, "*");
+    wildi = !strcmp(inst, "*");
+a403 9
+    if (!wildi && !wildp) {	/* nothing's wild */
+	encode_princ_key(&key, name, inst);
+	contents = dbm_fetch(db, key);
+	if (contents.dptr == NULL) {
+	    dbm_close(db);
+	    kerb_dbl_unlock();	/* unlock */
+	    return (0);
+	}
+	decode_princ_contents(&contents, principal);
+d405 4
+a408 6
+	if (kerb_debug & 1) {
+	    fprintf(stderr, "\t found %s %s p_n length %d t_n length %d\n",
+		principal->name, principal->instance,
+		strlen(principal->name),
+		strlen(principal->instance));
+	}
+a409 5
+	dbm_close(db);
+	kerb_dbl_unlock();	/* unlock */
+	return (1);
+    }
+    /* process wild cards by looping through entire database */
+d411 11
+a421 15
+    for (key = dbm_firstkey(db); key.dptr != NULL;
+#ifdef NDBM
+	key = dbm_nextkey(db)) {
+#else
+	key = nextkey(key)) {
+#endif /*NDBM*/
+	decode_princ_key(&key, testname, testinst);
+	if ((wildp || !strcmp(testname, name)) &&
+	    (wildi || !strcmp(testinst, inst))) {	/* have a match */
+	    if (found >= max)
+		*more = 1;
+	    else {
+		found++;
+		contents = dbm_fetch(db, key);
+		decode_princ_contents(&contents, principal);
+d423 2
+a424 3
+		if (kerb_debug & 1) {
+		    fprintf(stderr,
+			"\tfound %s %s p_n length %d t_n length %d\n",
+d428 29
+a457 2
+#endif
+		principal++;	/* point to next */
+d460 9
+a469 2
+    kerb_dbl_unlock();		/* unlock read lock */
+    dbm_close(db);
+d474 2
+a475 2
+ * update a name in the data base returns number of names successfully
+ * updated 
+d484 1
+a484 1
+    int     found = 0;
+a487 1
+#ifdef NDBM
+a488 1
+#endif /*NDBM*/
+d495 2
+a496 1
+    kerb_dbl_lock(1);		/* exclusive mode lock (write lock) */
+d498 1
+a498 5
+#ifdef NDBM
+    db = dbm_open(DBM_FILE, O_RDWR, 0600);
+#else
+    dbminit(DBM_FILE);
+#endif /*NDBM*/
+d526 1
+a526 1
+static 
+d540 1
+a540 1
+static 
+d551 1
+a551 1
+static 
+d560 1
+a560 1
+static 
+d627 112
+@
+
+
+4.6
+log
+@dbm_nextkey was called with two arguments when it only takes one.
+Programmer: wesommer
+Auditor: shanzer
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/kdb/RCS/krb_dbm.c,v $
+ * $Author: steiner $ 
+d13 1
+a13 1
+"$Header: krb_dbm.c,v 4.5 88/02/24 15:06:11 steiner Exp $";
+d25 2
+d28 4
+a31 2
+#include <sys/file.h>
+/* before kerb_db.h */
+d84 2
+d87 1
+a87 1
+    char    testname[ANAME_SZ], testinst[INST_SZ];
+d92 2
+d95 3
+d135 1
+d137 3
+d182 1
+d184 1
+d192 2
+d195 3
+@
+
+
+4.5
+log
+@Formatted.
+@
+text
+@d13 1
+a13 1
+"$Header: krb_dbm.c,v 4.4 88/02/24 14:31:09 steiner Locked $";
+d124 1
+a124 1
+	key = dbm_nextkey(db, key)) {
+@
+
+
+4.4
+log
+@Copyright notice, etc.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+ * $Author: steiner $
+d5 1
+a5 1
+ * Copyright 1988 by the Massachusetts Institute of Technology.
+d8 1
+a8 1
+ * <mit-copyright.h>.
+d13 1
+a13 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d27 1
+a27 1
+/* before kerb_db.h						   */
+d32 3
+a34 3
+extern	int		debug;
+extern	long	kerb_debug;
+extern	char	*progname;
+d36 1
+a36 1
+extern	char	*strcpy();
+d38 1
+a38 1
+static		init = 0;
+d40 2
+a41 2
+static	struct timeval	timestamp; /* current time of request */
+static  FILE *dba_file;
+d44 1
+a44 1
+ *	initialization routine for data base
+d49 3
+a51 3
+	init = 1;
+	kerb_dbl_init();	/* initialize locking functions */
+	return(0);
+d55 2
+a56 2
+ *	gracefully shut down ingres--must be called by ANY program
+ *	that does a kerb_db_init
+a62 1
+
+d64 3
+a66 10
+*	look up a principal in the data base
+*	returns number of principals found , and whether there were more than
+*	requested.
+*/
+kerb_db_get_principal(name, inst, principal, max, more )
+char	*name;	/* could have wild card */
+char	*inst;	/* could have wild card */
+Principal	*principal;
+unsigned int	max;		/* max number of name structs to return */
+int	*more;			/* where there more than 'max' tuples? */
+d68 7
+d76 6
+a81 6
+     int found = 0;
+     extern int errorproc();
+     int wildp, wildi;
+     datum key,contents;
+     DBM *db;
+     char testname[ANAME_SZ], testinst[INST_SZ];
+d83 4
+a86 3
+     if (!init) kerb_db_init();	/* initialize database routines */
+     kerb_dbl_lock(0);	/* shareable lock (read lock) */
+     db = dbm_open(DBM_FILE, O_RDONLY, 0600);
+d88 2
+a89 2
+     *more = 0;
+     
+d91 4
+a94 3
+     if (kerb_debug & 2) fprintf(stderr,
+				 "%s: db_get_principal for %s %s max = %d",
+				 progname,name,inst,max);
+d96 8
+a103 8
+     
+     wildp = !strcmp (name, "*");
+     wildi = !strcmp (inst, "*");
+     
+     if (!wildi && !wildp) {	/* nothing's wild */
+	  encode_princ_key (&key, name, inst);
+	  contents = dbm_fetch (db, key);
+	  if (contents.dptr == NULL) {
+d107 2
+a108 2
+	  }
+	  decode_princ_contents (&contents, principal);
+d110 6
+a115 6
+	  if(kerb_debug & 1) {
+	       fprintf(stderr,"\t found %s %s p_n length %d t_n length %d\n",
+		       principal->name,principal->instance,
+		       strlen(principal->name),
+		       strlen(principal->instance));
+	  }
+d117 5
+a121 4
+	  dbm_close(db);
+	  kerb_dbl_unlock();	/* unlock */
+	  return (1);
+     }
+d123 11
+a133 12
+     /* process wild cards by looping through entire database */
+
+     for (key = dbm_firstkey (db); key.dptr != NULL; key = dbm_nextkey (db, key)) {
+	  decode_princ_key(&key, testname, testinst);
+	  if ((wildp || !strcmp (testname, name)) &&
+	      (wildi || !strcmp (testinst, inst))) {	/* have a match */
+               if (found >= max)
+		    *more = 1;
+	       else {
+		    found++;
+		    contents = dbm_fetch(db, key);
+		    decode_princ_contents(&contents,principal);
+d135 7
+a141 7
+		    if(kerb_debug & 1) {
+			 fprintf(stderr,
+				 "\tfound %s %s p_n length %d t_n length %d\n",
+				 principal->name,principal->instance,
+				 strlen(principal->name),
+				 strlen(principal->instance));
+		    }
+d143 7
+a149 7
+		    principal++;			/* point to next */
+	       }
+	  }
+     }
+     kerb_dbl_unlock();		/* unlock read lock */
+     dbm_close(db);
+     return(found);
+d153 2
+a154 2
+ *	update a name in the data base
+ *	returns number of names successfully updated 
+d156 1
+d158 3
+a160 2
+Principal	*principal;
+unsigned int	max;		/* number of principal structs to update */
+d163 5
+a167 5
+     int found = 0;
+     u_long i;
+     extern int errorproc();
+     datum key,contents;
+     DBM *db;
+d169 1
+a169 1
+     gettimeofday(&timestamp,NULL);
+d171 2
+a172 1
+     if (!init) kerb_db_init();
+d174 2
+a175 2
+     kerb_dbl_lock(1);	/* exclusive mode lock (write lock) */
+     db = dbm_open(DBM_FILE, O_RDWR, 0600);
+d178 3
+a180 2
+     if (kerb_debug & 2) fprintf(stderr,"%s: kerb_db_put_principal  max = %d",
+	progname,max);
+d183 5
+a187 5
+     /* for each one, stuff temps, and do replace/append*/
+     for (i = 0; i < max ; i++) {
+	  encode_princ_contents(&contents,principal);
+	  encode_princ_key(&key, principal -> name, principal -> instance);
+	  dbm_store(db, key,contents, DBM_REPLACE);
+d189 4
+a192 4
+	  if (kerb_debug & 1) {
+	       fprintf(stderr,"\n put %s %s\n",
+		       principal->name,principal->instance);
+	  }
+d194 7
+a200 7
+	  found++;
+	  principal++;					/* bump to next struct			   */
+     }
+		
+     dbm_close(db);
+     kerb_dbl_unlock();	/* unlock database */
+     return (found);
+d203 4
+a206 3
+static encode_princ_key (key, name, instance)
+datum *key;
+char *name,*instance;
+d208 1
+a208 1
+     static char keystring[ANAME_SZ+INST_SZ];
+d210 5
+a214 5
+     bzero(keystring, ANAME_SZ+INST_SZ);
+     strncpy (keystring, name, ANAME_SZ);
+     strncpy (&keystring[ANAME_SZ], instance, INST_SZ);
+     key -> dptr = keystring;
+     key -> dsize = ANAME_SZ+ INST_SZ;
+d217 4
+a220 3
+static decode_princ_key (key, name, instance)
+datum *key;
+char *name,*instance;
+d222 4
+a225 4
+     strncpy (name, key -> dptr, ANAME_SZ);
+     strncpy (instance, key -> dptr + ANAME_SZ, INST_SZ);
+     name [ANAME_SZ-1] = '\0';
+     instance [INST_SZ-1] = '\0';
+d228 4
+a231 3
+static encode_princ_contents (contents, principal)
+datum *contents;
+Principal *principal;
+d233 2
+a234 2
+     contents -> dsize = sizeof (*principal);
+     contents -> dptr = (char *) principal;
+d237 4
+a240 3
+static decode_princ_contents (contents, principal)
+datum *contents;
+Principal *principal;
+d242 1
+a242 1
+     bcopy (contents -> dptr, (char *) principal, sizeof (*principal));
+a244 1
+
+d246 1
+a246 1
+	DB_stat	*s;
+d248 1
+a248 1
+	gettimeofday(&timestamp,NULL);
+d251 11
+a261 11
+	s->cpu = 0;
+	s->elapsed = 0;
+	s->dio =  0;
+	s->pfault = 0;
+	s->t_stamp = timestamp.tv_sec;
+	s->n_retrieve = 0;
+	s->n_replace = 0;
+	s->n_append = 0;
+	s->n_get_stat = 0;
+	s->n_put_stat = 0;
+				/* update local copy too */
+d265 1
+a265 1
+ DB_stat	*s;
+d269 2
+a270 2
+delta_stat(a,b,c)
+DB_stat	*a,*b,*c;
+d272 15
+a286 15
+				/* c = a - b then b = a for the next time */
+	
+	c->cpu = a->cpu - b->cpu;
+	c->elapsed = a->elapsed - b->elapsed;
+	c->dio = a->dio - b->dio;
+	c->pfault = a->pfault - b->pfault;
+	c->t_stamp = a->t_stamp - b->t_stamp;
+	c->n_retrieve = a->n_retrieve - b->n_retrieve;
+	c->n_replace = a->n_replace - b->n_replace;
+	c->n_append = a->n_append - b->n_append;
+	c->n_get_stat = a->n_get_stat - b->n_get_stat;
+	c->n_put_stat = a->n_put_stat - b->n_put_stat;
+	
+	bcopy(a,b,sizeof(DB_stat));
+	return;
+d290 2
+a291 3
+ *	look up a dba in the data base
+ *	returns number of dbas found , and whether there were more than
+ *	requested.
+a292 6
+kerb_db_get_dba(dba_name, dba_inst, dba, max, more )
+char	*dba_name;	/* could have wild card*/
+char	*dba_inst;	/* could have wild card*/
+Dba	*dba;
+unsigned int	max;		/* max number of name structs to return*/
+int	*more;			/* where there more than 'max' tuples? */
+d294 7
+d302 2
+a303 2
+        *more = 0;
+	return(0);
+@
+
+
+4.3
+log
+@DBM_FILE (was DBM_PRINCIPAL_FILE) is now defined in krb_db.h.
+@
+text
+@d2 7
+a8 3
+ *		$Source: /mit/s/t/steiner/kerberos/dbm/lib/RCS/krb_dbm.c,v $
+ *		$Author: steiner $
+ *		$Locker: steiner $
+d11 6
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d2 1
+a2 1
+ *		$Source: /mit/s/t/steiner/kerberos/dbm/lib/RCS/kerb_dbm.c,v $
+a20 3
+#define DBM_PRINCIPAL_FILE "/kerberos/principal"
+#define DBA_FILE "dba"
+
+d76 1
+a76 1
+     db = dbm_open(DBM_PRINCIPAL_FILE, O_RDONLY, 0600);
+d161 1
+a161 1
+     db = dbm_open(DBM_PRINCIPAL_FILE, O_RDWR, 0600);
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d2 2
+a3 2
+ *		$Source: /mit/s/t/steiner/kerberos/db/util/dbm/RCS/kerb_dbm.c,v $
+ *		$Author: jis $
+d19 1
+a19 1
+#include "kerb_db.h"
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 3
+a4 3
+ *		$Source: /mit/projects/auth/src/db/util/RCS/kerb_db.qc,v $
+ *		$Author: root $
+ *		$Locker:  $
+@

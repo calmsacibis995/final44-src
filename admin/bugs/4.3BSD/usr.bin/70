@@ -1,0 +1,306 @@
+Path: seismo!husc6!think!ames!ucbcad!zen!ucbvax!decvax!gsg!lew
+From: lew@gsg.UUCP (Paul Lew)
+Newsgroups: comp.bugs.4bsd
+Subject: enhancement (or bug fix?) for 4.3 find
+Index: usr.bin/find/find.c 4.3BSD
+
+Description:
+	(1) Enhancement: Bigram database is not portable across
+	    machines, i.e., you might not be able to read the bigram
+	    database that was generated on different machine.  This is
+	    because find.c reads the database with getw() and code.c
+	    generates the database with putw().  Change it to use
+	    getc() make it portable. [See patch for code.c]
+	(2) Addition: added the checking of environment variable
+	    FCODES in fastfind(), if defined, that file will be used
+	    instead of default: /usr/lib/find/find.codes. This simple
+	    change makes find very useful, you can have a whole
+	    collection of compressed namelist files for all your
+	    machines and it takes seconds to find the location of any
+	    file.  I have a script (164 lines) that interface with
+	    this new feature. If there is enough interest, I will post
+	    it to the net.
+	(3) Addition: -depth n feature (ala Sys5)
+
+Repeat-By:
+	run updatedb.csh on one machine and move the database onto a
+	different type machine (e.g., Vax to PC).  Find will not work
+	properly.
+
+Fix: 
+	Apply the following diff to find.c, Line numbers may be off
+	because of other local changes.
+
+*** find.c.orig	Thu Jul  9 12:07:00 1987
+--- find.c.new	Thu Jul  9 16:24:15 1987
+***************
+*** 33,38
+  int	Wct = 2560;
+  long	Newer;
+  int	Xdev = 1;	/* true if SHOULD cross devices (file systems) */
+  struct	stat Devstat;	/* stats of each argument path's file system */
+
+--- 33,40 -----
+  int	Wct = 2560;
+  long	Newer;
++ int	Depth;		/* depth of directory hierachy, 0 on top level.
++ 			   Maintained by descend() */
+  int	Xdev = 1;	/* true if SHOULD cross devices (file systems) */
+  struct	stat Devstat;	/* stats of each argument path's file system */
+***************
+*** 49,54
+  long	Blocks;
+  char *rindex();
+  char *sbrk();
+  /*
+   * SEE ALSO:	updatedb, bigram.c, code.c
+
+--- 51,57 -----
+  long	Blocks;
+  char *rindex();
+  char *sbrk();
++ char *getenv();
+  /*
+   * SEE ALSO:	updatedb, bigram.c, code.c
+***************
+*** 124,130
+  		exit(1);
+  	}
+  	for(Pi = 1; Pi < paths; ++Pi) {
+! 		sp = 0;
+  		chdir(Home);
+  		strcpy(Pathname, Argv[Pi]);
+  		if(cp = rindex(Pathname, '/')) {
+
+--- 127,133 -----
+  		exit(1);
+  	}
+  	for(Pi = 1; Pi < paths; ++Pi) {
+! 		sp = 0;  Depth = -1;
+  		chdir(Home);
+  		strcpy(Pathname, Argv[Pi]);
+  		if(cp = rindex(Pathname, '/')) {
+***************
+*** 197,203
+  struct anode *e3() { /* parse parens and predicates */
+  	int exeq(), ok(), glob(),  mtime(), atime(), user(),
+  		group(), size(), perm(), links(), print(),
+! 		type(), ino(), cpio(), newer(),
+  		nouser(), nogroup(), ls(), dummy();
+  	struct anode *p1;
+  	int i;
+
+--- 200,206 -----
+  struct anode *e3() { /* parse parens and predicates */
+  	int exeq(), ok(), glob(),  mtime(), atime(), user(),
+  		group(), size(), perm(), links(), print(),
+! 		type(), ino(), cpio(), newer(), depth(),
+  		nouser(), nogroup(), ls(), dummy();
+  	struct anode *p1;
+  	int i;
+***************
+*** 246,251
+  		}
+  		return(mk(user, (struct anode *)i, (struct anode *)s));
+  	}
+  	else if(EQ(a, "-inum"))
+  		return(mk(ino, (struct anode *)atoi(b), (struct anode *)s));
+  	else if(EQ(a, "-group")) {
+
+--- 249,263 -----
+  		}
+  		return(mk(user, (struct anode *)i, (struct anode *)s));
+  	}
++ 	else if(EQ(a, "-depth")) {
++ 		if (s == '+') b--;		/* undo */
++ 		switch (*b) {
++ 			case '+': s = '+'; b++;	break;
++ 			case '-': s = '-'; b++;	break;
++ 			default:  s = '=';
++ 		}
++ 		return mk(depth, (struct anode *)atoi(b), (struct anode *)s);
++ 	}
+  	else if(EQ(a, "-inum"))
+  		return(mk(ino, (struct anode *)atoi(b), (struct anode *)s));
+  	else if(EQ(a, "-group")) {
+***************
+*** 516,521
+  	close(ifile);
+  	return;
+  }
+  newer(p)
+  struct anode *p;
+  {
+
+--- 528,543 -----
+  	close(ifile);
+  	return;
+  }
++ depth (p)
++ register struct { int func, dep, type; } *p;
++ {
++ 	char	cmptype = p->type;
++ 	switch (cmptype) {
++ 		case '+': return (Depth >  p->dep);
++ 		case '-': return (Depth <  p->dep);
++ 		case '=': return (Depth == p->dep);
++ 	}
++ }
+  newer(p)
+  struct anode *p;
+  {
+***************
+*** 634,639
+  	int rv = 0;
+  	char *endofname;
+  	if (lstat(fname, &Statb)<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+  		return(0);
+
+--- 656,662 -----
+  	int rv = 0;
+  	char *endofname;
++ 	Depth++;
+  	if (lstat(fname, &Statb)<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+  		rv = 0; goto end;
+***************
+*** 636,642
+  	if (lstat(fname, &Statb)<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+! 		return(0);
+  	}
+  	(*exlist->F)(exlist);
+  	if((Statb.st_mode&S_IFMT)!=S_IFDIR ||
+
+--- 659,665 -----
+  	Depth++;
+  	if (lstat(fname, &Statb)<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+! 		rv = 0; goto end;
+  	}
+  	(*exlist->F)(exlist);
+  	if((Statb.st_mode&S_IFMT)!=S_IFDIR ||
+***************
+*** 641,647
+  	(*exlist->F)(exlist);
+  	if((Statb.st_mode&S_IFMT)!=S_IFDIR ||
+  	   !Xdev && Devstat.st_dev != Statb.st_dev)
+! 		return(1);
+  	for (c1 = name; *c1; ++c1);
+  	if (*(c1-1) == '/')
+
+--- 664,670 -----
+  	(*exlist->F)(exlist);
+  	if((Statb.st_mode&S_IFMT)!=S_IFDIR ||
+  	   !Xdev && Devstat.st_dev != Statb.st_dev)
+! 		{ rv = 1; goto end; }
+  	for (c1 = name; *c1; ++c1);
+  	if (*(c1-1) == '/')
+***************
+*** 649,655
+  	endofname = c1;
+  	if (chdir(fname) == -1)
+! 		return(0);
+  	if ((dir = opendir(".")) == NULL) {
+  		fprintf(stderr, "find: cannot open < %s >\n", name);
+  		rv = 0;
+
+--- 672,678 -----
+  	endofname = c1;
+  	if (chdir(fname) == -1)
+! 		{ rv = 0; goto end; }
+  	if ((dir = opendir(".")) == NULL) {
+  		fprintf(stderr, "find: cannot open < %s >\n", name);
+  		rv = 0;
+***************
+*** 681,686
+  		fprintf(stderr, "find: bad directory <%s>\n", name);
+  		rv = 1;
+  	}
+  	return(rv);
+  }
+--- 704,711 -----
+  		fprintf(stderr, "find: bad directory <%s>\n", name);
+  		rv = 1;
+  	}
++ end:
++ 	Depth--;
+  	return(rv);
+  }
+***************
+*** 832,837
+  {
+  	register char *p, *s;
+  	register int c; 
+  	char *q, *index(), *patprep();
+  	int i, count = 0, globflag;
+  	FILE *fp, *fopen();
+
+--- 857,863 -----
+  {
+  	register char *p, *s;
+  	register int c; 
++ 	char *fname = getenv ("FCODES");	/* make it flexible */
+  	char *q, *index(), *patprep();
+  	int i, count = 0, globflag = NO;
+  	FILE *fp, *fopen();
+***************
+*** 833,839
+  	register char *p, *s;
+  	register int c; 
+  	char *q, *index(), *patprep();
+! 	int i, count = 0, globflag;
+  	FILE *fp, *fopen();
+  	char *patend, *cutoff;
+  	char path[1024];
+
+--- 859,865 -----
+  	register int c; 
+  	char *fname = getenv ("FCODES");	/* make it flexible */
+  	char *q, *index(), *patprep();
+! 	int i, count = 0, globflag = NO;
+  	FILE *fp, *fopen();
+  	char *patend, *cutoff;
+  	char path[1024];
+***************
+*** 840,847
+  	char bigram1[128], bigram2[128];
+  	int found = NO;
+! 	if ( (fp = fopen ( FCODES, "r" )) == NULL ) {
+! 		fprintf ( stderr, "find: can't open %s\n", FCODES );
+  		exit ( 1 );
+  	}
+  	for ( i = 0; i < 128; i++ ) 
+
+--- 866,874 -----
+  	char bigram1[128], bigram2[128];
+  	int found = NO;
+! 	if (fname == NULL) fname = FCODES;
+! 	if ( (fp = fopen ( fname, "r" )) == NULL ) {
+! 		fprintf ( stderr, "find: can't open %s\n", fname );
+  		exit ( 1 );
+  	}
+  	for ( i = 0; i < 128; i++ ) 
+***************
+*** 854,860
+  	c = getc ( fp );
+  	for ( ; ; ) {
+! 		count += ( (c == ESCCODE) ? getw ( fp ) : c ) - OFFSET;
+  		for ( p = path + count; (c = getc ( fp )) > ESCCODE; )	/* overlay old path */
+  			if ( c < 0200 )	
+
+--- 881,891 -----
+  	c = getc ( fp );
+  	for ( ; ; ) {
+! 		if (c == ESCCODE) {
+! 			c = getc ( fp );
+! 			c = ((char)c << 8) | getc ( fp );
+! 		}
+! 		count += c - OFFSET;
+  		for ( p = path + count; (c = getc ( fp )) > ESCCODE; )	/* overlay old path */
+  			if ( c < 0200 )	
+
+
+Paul Lew			{olivea,harvard,decvax}!gsg!lew	(UUCP)
+General Systems Group, 51 Main Street, Salem, NH 03079	(603) 893-1000

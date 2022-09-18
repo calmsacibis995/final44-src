@@ -1,0 +1,92 @@
+Return-Path: <dlw@ucbopal.CC>
+Date: Thu, 1 Mar 84 22:10:42 pst
+From: dlw@ucbopal.CC (David L Wasley)
+To: 4bsd-bugs@arpa
+Subject: Serious bug in dump/restore
+
+Index:	etc/restore	4.2BSD	Fix
+
+Description:
+	There is an extremely serious bug in the 4.2bsd restore.
+	You may NOT be able to restore a multi-level dump, even
+	though the tape is readable and everything is there.
+
+	The problem is actually in ``dump''. However, the kludge
+	given below will allow (most) existing incremental dumps
+	to be read. I will post a fix to dump asap.
+
+	The problem is that the number of inodes in a filesystem
+	is not recorded directly in the dump tape. restore infers
+	the number from the size of the bit maps at the beginning
+	of the tape. But the bit maps are truncated to the smallest
+	possible size by dump before they are recorded. Thus, if
+	the last inode USED is 3216, the map will be (roughly)
+	that size, instead of the ``real'' number in the filesystem.
+
+	Unlike any previous dump/restore, this version saves the
+	inode and symbol table between incremental restores.
+	If you do a level 0 on a new filesystem, few inodes
+	are actually ``used''. Thus the map will be small. Several
+	days later you do a level 3 dump. Lots of inodes are used.
+	The maps are much bigger. NOW, assume you have a head crash.
+	The level 0 restore will have made a small map and symtable
+	because of what is on the level 0 tape. When you go to
+	put on the level 3, BINGO! restore will complain of "corrupted
+	directories", "expected inode M, got N", etc. This is because
+	the inodes it finds on the tape are outside the level 0 map, etc.
+
+	The ``real'' fix is to have dump always record the full map.
+	(It isn't THAT big.) Then restore would ``work''. However,
+	we (and you) have racks of dump tapes already. The fix
+	below causes restore to always use a large map. This
+	``works'' as long as MAXINO is larger than required for your
+	biggest filesystem. See the output of newfs for the number
+	you require (which is ipg * ncg).
+
+Repeat-By:
+	See above.
+
+Fix:
+	Below is a diff of tape.c. The line numbers are slightly
+	off because we have a few other changes in there. While
+	I was debugging this, I was frustrated by the fact that verbose
+	& debug output comes out randomly out of sync on stdout and stderr
+	due to buffering. I modified restore.h to cause everything to
+	come out on stdout. It was simpler that way.
+-------
+diff restore.h.old restore.h
+-------
+6a7,9
+> 
+> #undef	stderr
+> #define	stderr	stdout
+-------
+diff tape.c.old tape.c
+-------
+14a15,16
+> #define	MAXINO	65535	/* KLUDGE! */
+> 
+148,150c150,152
+< 	maxino = (spcl.c_count * TP_BSIZE * NBBY) + 1;
+< 	dprintf(stdout, "maxino = %d\n", maxino);
+< 	map = calloc((unsigned)1, (unsigned)howmany(maxino, NBBY));
+---
+> 	maxino = (spcl.c_count * TP_BSIZE * NBBY) + 1;	/* WRONG! */
+> 	dprintf(stdout, "ino map size = %d\n", maxino);
+> 	map = calloc((unsigned)1, (unsigned)howmany(maxino>MAXINO?maxino:MAXINO, NBBY));
+160c162
+< 	map = calloc((unsigned)1, (unsigned)howmany(maxino, NBBY));
+---
+> 	map = calloc((unsigned)1, (unsigned)howmany(maxino>MAXINO?maxino:MAXINO, NBBY));
+165a168,169
+> 	if (MAXINO > maxino)
+> 		maxino = MAXINO;	/* Kludge, since we don't really know */
+
+****** context of the 2 lines above ******
+	dumpmap = map;
+	curfile.action = USING;
+	getfile(xtrmap, xtrmapskip);
+	if (MAXINO > maxino)
+		maxino = MAXINO;	/* Kludge, since we don't really know */
+}
+******************************************

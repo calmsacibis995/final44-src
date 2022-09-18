@@ -1,0 +1,57 @@
+Path: seismo!ut-sally!husc6!linus!philabs!micomvax!musocs!mcgill-vision!mouse
+From: mouse@mcgill-vision.UUCP (der Mouse)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: 4.3bsd can mistake p-to-p interfaces
+Index: sys 4.3BSD
+
+We are running mtXinu 4.3+NFS, and there is a bug in netinet/in_pcb.c.
+I can't be certain, but I expect that this is present in 4.3 because it
+is an obvious mistake once noticed; in fact earlier in the file there
+is another opportunity for the same bug but someone noticed it.  The
+symptom is that packets being sent over UDP sockets, such as used by
+routed(8), get stamped with the wrong "from" address.  This is because
+in_pcbsetaddr() is calling ifa_ifwithdstaddr() with the socket address
+it is looking for, instead of a socket address with a zero port number.
+Ifa_ifwithdstaddr is then comparing the entire 14 bytes of sockaddr
+data to the data in the ifaddr entry, and of course the sockaddr in the
+ifaddr entry has a zero port number.  So the compare fails.  The
+earlier code I referred to is a similar call to ifa_ifwithaddr(); look
+for yourself for the fix used.  The fix I used is similar; here is the
+original code:
+
+		if (ia == 0) {
+			ia = (struct in_ifaddr *)
+			    ifa_ifwithdstaddr((struct sockaddr *)sin);
+			if (ia == 0)
+				ia = in_iaonnetof(in_netof(sin->sin_addr));
+			if (ia == 0)
+				ia = in_ifaddr;
+			if (ia == 0)
+				return (EADDRNOTAVAIL);
+		}
+
+and here is my fixed version (I know it isn't pretty, I didn't care
+about esthetics when I fixed it):
+
+		if (ia == 0) {
+int oldport;
+oldport = sin->sin_port;
+sin->sin_port = 0; /* for ifa_ifwithdstaddr */
+			ia = (struct in_ifaddr *)
+			    ifa_ifwithdstaddr((struct sockaddr *)sin);
+			if (ia == 0)
+				ia = in_iaonnetof(in_netof(sin->sin_addr));
+sin->sin_port = oldport;
+			if (ia == 0)
+				ia = in_ifaddr;
+			if (ia == 0)
+				return (EADDRNOTAVAIL);
+		}
+
+					der Mouse
+
+Smart mailers: mouse@mcgill-vision.uucp
+USA: {ihnp4,decvax,akgua,utzoo,etc}!utcsri!musocs!mcgill-vision!mouse
+     think!mosart!mcgill-vision!mouse
+ARPAnet: think!mosart!mcgill-vision!mouse@harvard.harvard.edu
+

@@ -1,0 +1,156 @@
+Return-Path: <kre@ucbmonet>
+Date: Sun, 23 Oct 83 18:24:20 pdt
+From: kre@ucbmonet (Robert Elz)
+Subject: System inode ref count bug (et al).
+Index: sys/sys/various.c 4.2BSD
+
+Description:
+This just might, I say might, cause I'm not sure yet, be that
+elusive inode bug we've been having.  It certainly is an inode bug,
+but I'm yet to be convinced that all the problems we've been having
+ultimately descend from this (which is either 1 or 2 bugs, depending
+on how that you look at it).
+
+The scenario is something like this ...
+
+Process is closing a char device, most probably a terminal,
+close calls closef() and when it returns, sets u_ofile to NULL.
+closef() calls ino_close() which does an iput() on the inode, then
+calls *(devsw[].d_close)().  Now imagine that the close routine
+is going to need to wait for output queues to drain, or whatever,
+so it sleeps, and while its asleep, a signal occurs.  The longjmp(u_qsave)
+exits back to syscall() which (lets say for simplicity) calls psig()
+and then exit().  exit(), noticing a u_ofile that is != NULL (close()
+doesn't set it to NULL till closef() returns, which its not going to do)
+then calls closef() again (nb: exit sets u_ofile to NULL before closef())
+closef() again calls ino_close, which does another iput(), causing
+the inode reference count to end up at -1 (and most probably
+doing many other nasty things).
+
+To fix that, I have just moved the u.u_ofile[..] = NULL; to
+before the close (I did the same thing with u_pofile[] = 0 (*pf = 0)
+but I am less sure that that is important).
+
+While I was looking at that, I saw a related, and somewhat messier bug.
+
+The scenario this time starts out the same way, down as far as the
+iput() in ino_close().  Just after that, in a line marked with XXX,
+f_count is set to 0.  Then the routine belts off to the devsw[].d_close
+routine (or maybe just doing the itrunc(), ifree(), dqrele() sequence).
+Anything that has a sleep() in it.  We don't need an interruptible
+sleep this time.  While process is sleeping, some other proc does
+a falloc(), and finds our file slot, that we've generously given away
+before we're really finished with it.  It then grabs it, carefully
+setting f_count to 1 (or whatever) to mark the file in use.  Then
+our process finishes its sleep, and returns from ino_close to
+closef() which then sets f_count to zero.  A little later, the second
+process does a close, which noticing that f_count < 1, does all the
+right things, and no problems ensue.  But, if in the meantime, some
+third process has found this file slot, with its f_count == 0, and
+grabbed it again, there are now 2 refs, & a ref count of 1.  As each
+of them close it, they both do an iput(), making the ref count go to -1,
+and generally stuffing things.  My fix to this is a real kludge, and
+is explained below.  It should be done properly.
+
+Repeat-By: Make the load average very high (say 50 to 60 or more)
+with large numbers of processes opening and closing files, etc.
+(You need that because of the way that falloc() scans the file table).
+Run the system like that continuously for a day or so.  Do a "pstat -i"
+and look for something with a ref count of 255 (which is really 65535
+or -1, pstat conveniently masks the i_count with 0377, but that is
+another bug entirely).
+
+Fix: Diff listings follow that may have line numbers out a bit from your
+files, cause of RCS header line added locally, and maybe a few other
+local mods, so I will annotate with a description of what is happening,
+wherever the change isn't totally obvious.
+
+RCS file: RCS/kern_descrip.c,v
+retrieving revision 1.2
+diff  -r1.2 kern_descrip.c
+				First part moves these 2 lines so that
+				that are the last in close().
+				(May be alternatively viewed as moving
+				the 2 lines that were the last 2 to
+				just before these, which is what I
+				actually did).
+				This "fixes" the first, easy bug.
+248,249d247
+< 	closef(fp);
+< 	/* WHAT IF u.u_error ? */
+251a250,251
+> 	closef(fp);
+> 	/* WHAT IF u.u_error ? */
+
+				The rest of this, is a Kludge fix
+				to the second bug, still in
+				kern_descrip.c.  Reason for this
+				is explained in comments below.
+388,389c388,389
+< 	(*fp->f_ops->fo_close)(fp);
+< 	fp->f_count = 0;
+---
+> 	if ((*fp->f_ops->fo_close)(fp))		/** ZZ kludge !! **/
+> 		fp->f_count = 0;
+===================================================================
+RCS file: RCS/sys_inode.c,v
+retrieving revision 1.3
+diff  -r1.3 sys_inode.c
+339c339
+< 		return;
+---
+> 		return (0);		/** ZZ Kludge: 0-> f_count == 0 */
+352c352
+< 			return;
+---
+> 			return (0);	/* ZZ Kludge */
+363a364,370
+> 	/*							ZZ
+> 	 * the following '0' is to inform closef() that f_count ZZ
+> 	 * was set to zero some time ago, and accordingly, the  ZZ
+> 	 * file may have been re-allocated by someone else.	ZZ
+> 	 * closef() must not repeat the assignment to f_count	ZZ
+> 	 */
+> 	return (0);			/* ZZ Kludge */
+===================================================================
+RCS file: RCS/sys_socket.c,v
+retrieving revision 1.1
+					this goes immediately before
+					the "return (error)" in soo_close().
+diff  -r1.1 sys_socket.c
+144a145,157
+> 
+> 	/*	kludge							ZZ
+> 	 * soo_close() is only ever called indirectly via fo_close	ZZ
+> 	 * and only ever then from closef() which doesn't check our	ZZ
+> 	 * return code.  However, closef() (cause of stupidities in	ZZ
+> 	 * ino_close()) does need to know if we have set f_count to	ZZ
+> 	 * 0 or not.  We could just do that always, & relieve fclose()	ZZ
+> 	 * of the responsibility, but that doesn't seem quite right.	ZZ
+> 	 * ino_close() is what should be fixed.  So we will usurp the	ZZ
+> 	 * return code here & use it as an indication that we have not	ZZ
+> 	 * set f_count to 0, and that therefore, closef() should.	ZZ
+> 	 */
+> 	error = 1					/* Kludge	ZZ */
+===================================================================
+
+I hope that this is really THE problem, I will await your decision on
+a sensible fix to the second bug.  Probably, a setjmp(u_qsave) really
+will need to be inserted somewhere in the close stuff (in ino_close ??).
+The whole area of errors or signals when closing files/sockets needs
+careful examination.  (What CAN you do if in exit() something refuses
+to close???  You can hardly resurrect the process and tell it its
+not permitted to die just yet.  Perhaps a flag should be handed down
+to close routines, to tell them whether or not they are required to
+terminate the connection (whetever) or whether they may refuse in
+the expectation of being called again later).
+
+The second (messy) bug just might be our problem, I'm certainly hoping!
+
+					Robert
+
+ps: I tried to send this a couple of days ago (Fri arvo your time I think)
+but addressed to 4bsd-bugs@Berkeley - I tried sendmail -v & it just sat
+there doing nothing, so I just ran it without the -v & hoped.  Just
+looked in /ra/bugs on arpa & can't see this, so I'll try again.  Apologies
+if anyone gets duplicate mail.

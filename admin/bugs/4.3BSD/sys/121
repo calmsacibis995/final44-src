@@ -1,0 +1,155 @@
+From kwlalonde%orchid.waterloo.edu@relay.cs.net  Thu May 14 20:29:38 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA25643; Thu, 14 May 87 20:29:38 PDT
+Received: by ucbvax.Berkeley.EDU (5.57/1.25)
+	id AA09994; Thu, 14 May 87 20:29:21 PDT
+Received: from relay2.cs.net by RELAY.CS.NET id ac07507; 14 May 87 23:22 EDT
+Received: from waterloo by csnet-relay.csnet id aa18409; 14 May 87 23:17 EDT
+Received: from orchid.uucp by watmath; Thu, 14 May 87 23:16:20 EDT
+Received: by orchid; Thu, 14 May 87 23:16:02 EDT
+Date: Thu, 14 May 87 23:16:02 EDT
+From: Ken Lalonde <kwlalonde%orchid.waterloo.edu@relay.cs.net>
+Message-Id: <8705150316.AA00284@orchid.uucp>
+Subject: matchc instruction is incorrectly emulated
+Index: 	sys/vax/emulate.s 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	If the source string length in a matchc instruction is zero,
+	matchc on a 4.3BSD microvax returns success.  It should fail.
+	This turned up when we ran a variant of the mod.sources
+	"bm" (fast grep) called "match", which uses matchc.
+
+	Also r2 is not set to the value required by the definition
+	of matchc (I know, big deal, but it's easy to fix).
+
+Repeat-By:
+	
+	Run the following script on a vax and a 4.3 mvax.
+cat >matchc.c << "EOF"
+/*
+ * Search strings on stdin against a single argument substring
+ * using the VAX matchc instruction.
+ */
+#include <stdio.h>
+
+int r0,r2;	/* copies of r0..r3 after matchc instruction */
+char *r1,*r3;
+char src[100], obj[100];	/* src and object(substring) strings */
+			/* These are global to keep addresses constant */
+
+main(argc, argv)
+char **argv;
+{
+	int r, objlen, srclen;
+
+#define assert(x) if (!(x)) { printf("assertion x failed\n"); goto fail; }
+	strcpy(obj, argv[1]);
+	objlen = strlen(obj);
+	while (gets(src)) {
+		srclen = strlen(src);
+		r = matchc(obj, objlen, src, srclen);
+		/*
+		 * Check that the values of r0..r3 satisfy
+		 * the relationships on p. 301 of the
+		 * VAX architecture handbook (1981).
+		 */
+		if (r) {
+			printf("yes\n");
+			assert(r0 == 0);
+			assert(r1 == obj+objlen);
+			assert(r3 >= src && r3 <= src+srclen);
+			assert(bcmp(r3-objlen,obj,objlen)==0);
+			assert(r3+r2 == src+srclen);
+		} else {
+			printf("no\n");
+			assert(r0 == objlen);
+			assert(r1 == obj);
+			assert(r2 == 0);
+			assert(r3 == src+srclen);
+		}
+	}
+	return;
+fail:
+	printf("src=%x srclen=%d obj=%x objlen=%d\n",
+		src,srclen,obj,objlen);
+	printf("r0=%d r1=%x r2=%d r3=%x\n", r0,r1,r2,r3);
+}
+
+int matched;
+
+matchc(obj, objlen, src, srclen)
+char *obj, *src;
+{
+
+	matched = 1;
+	asm("	matchc	8(ap),*4(ap),16(ap),*12(ap)");
+	asm("	jeql	found");
+	matched = 0;
+asm("found:");
+	/* save r0..r3 */
+	asm("	movl r0,_r0; movl r1,_r1; movl r2,_r2; movl r3,_r3");
+	return matched;
+}
+EOF
+cc matchc.c -o matchc
+echo Match abc against the null string:
+echo '' | ./matchc abc
+echo Match abc against itself:
+echo abc | ./matchc abc
+
+Fix:
+	This patch is relative to emulate.s
+	from the 4.3 tape, and includes two fixes from
+	Ed Gould posted a while ago.
+
+*** emulate.s.distr	Thu May 14 22:48:13 1987
+--- emulate.s	Thu May 14 22:49:31 1987
+***************
+*** 144,149 ****
+--- 144,151 ----
+  	arguw(3,r2)		# (3) source length == r2
+  	argl(4,r3)		# (4) source address == r3
+  	arguw(1,r11)		# (1) substring length == r11
++ 	movl	r10,r1
++ 	movl	r11,r0
+  	jeql	Lmatchc_out	# temp source address == r1
+  	addl2	r10,r11		# temp substring address == r0
+  	tstl	r2
+***************
+*** 160,174 ****
+  	jeql	Lmatchc_2loop
+  Lmatchc_fail:
+  	incl	r3
+! 	decl	r2
+! 	jneq	Lmatchc_loop
+  	movl	r10,r1
+  	subl3	r10,r11,r0
+  	jbr	Lmatchc_out
+  Lmatchc_succ:	
+  	movl	r11,r1
+  	clrl	r0
+  Lmatchc_out:
+  	savepsl
+  	return
+  
+--- 162,179 ----
+  	jeql	Lmatchc_2loop
+  Lmatchc_fail:
+  	incl	r3
+! 	sobgtr	r2,Lmatchc_loop
+  	movl	r10,r1
+  	subl3	r10,r11,r0
+  	jbr	Lmatchc_out
+  Lmatchc_succ:	
++ 	subl3	r3,r1,r0
++ 	subl2	r0,r2
++ 	movl	r1,r3
+  	movl	r11,r1
+  	clrl	r0
+  Lmatchc_out:
++ 	tstl	r0
+  	savepsl
+  	return
+  
+

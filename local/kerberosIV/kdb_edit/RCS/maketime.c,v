@@ -1,0 +1,400 @@
+head     4.2;
+branch   ;
+access   ;
+symbols  PATCH8:4.1 PATCH7:4.1 KPATCH6:4.1 ASRSNAP1001:4.1 PATCH5:4.0 KPATCH4:4.0 KPATCH3:4.0 KPATCH2:4.0 KREL1:4.0;
+locks    ; strict;
+comment  @ * @;
+
+
+4.2
+date     90.01.09.15.54.51;  author raeburn;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     89.08.31.15.30.22;  author jtkohl;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     89.01.23.09.45.59;  author jtkohl;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     88.12.20.17.38.52;  author wesommer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Convert from a "struct tm" to a UNIX time.
+@
+
+
+4.2
+log
+@Author: jtkohl.  Auditor: raeburn.
+New implementation, not restricted from sale.  Different calling
+sequence.
+@
+text
+@/*
+ * $Source: /mit/kerberos/src/prototypes/RCS/prototype.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1990 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * Convert a struct tm * to a UNIX time.
+ */
+
+#ifndef	lint
+static char rcsid_maketime_c[] =
+"$Id: prototype.c,v 4.0 89/01/23 10:20:52 jtkohl Exp $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <sys/time.h>
+
+#define daysinyear(y) (((y) % 4) ? 365 : (((y) % 100) ? 366 : (((y) % 400) ? 365 : 366)))
+
+#define SECSPERDAY 24*60*60
+#define SECSPERHOUR 60*60
+#define SECSPERMIN 60
+
+static int cumdays[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334,
+			     365};
+
+static int leapyear[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+static int nonleapyear[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+long
+maketime(tp, local)
+register struct tm *tp;
+int local;
+{
+    register long retval;
+    int foo;
+    int *marray;
+
+    if (tp->tm_mon < 0 || tp->tm_mon > 11 ||
+	tp->tm_hour < 0 || tp->tm_hour > 23 ||
+	tp->tm_min < 0 || tp->tm_min > 59 ||
+	tp->tm_sec < 0 || tp->tm_sec > 59) /* out of range */
+	return 0;
+
+    retval = 0;
+    if (tp->tm_year < 1900)
+	foo = tp->tm_year + 1900;
+    else
+	foo = tp->tm_year;
+
+    if (foo < 1901 || foo > 2038)	/* year is too small/large */
+	return 0;
+
+    if (daysinyear(foo) == 366) {
+	if (tp->tm_mon > 1)
+	    retval+= SECSPERDAY;	/* add leap day */
+	marray = leapyear;
+    } else
+	marray = nonleapyear;
+
+    if (tp->tm_mday < 0 || tp->tm_mday > marray[tp->tm_mon])
+	return 0;			/* out of range */
+
+    while (--foo >= 1970)
+	retval += daysinyear(foo) * SECSPERDAY;
+
+    retval += cumdays[tp->tm_mon] * SECSPERDAY;
+    retval += (tp->tm_mday-1) * SECSPERDAY;
+    retval += tp->tm_hour * SECSPERHOUR + tp->tm_min * SECSPERMIN + tp->tm_sec;
+
+    if (local) {
+	/* need to use local time, so we retrieve timezone info */
+	struct timezone tz;
+	struct timeval tv;
+	if (gettimeofday(&tv, &tz) < 0) {
+	    /* some error--give up? */
+	    return(retval);
+	}
+	retval += tz.tz_minuteswest * SECSPERMIN;
+    }
+    return(retval);
+}
+@
+
+
+4.1
+log
+@Programmer: Kevin Fall
+Auditor: John Kohl
+changes: use gettimeofday() for timezone info.
+[really should use TZ environ variable on BSD43...]
+@
+text
+@d2 2
+a3 1
+ * MAKETIME		derive 32-bit time value from TM structure.
+d5 1
+a5 5
+ * Usage:
+ *	long t,maketime();
+ *	struct tm *tp;	Pointer to TM structure from <time.h>
+ *			NOTE: this must be extended version!!!
+ *	t = maketime(tp);
+d7 4
+a10 10
+ * Returns:
+ *	0 if failure; parameter out of range or nonsensical.
+ *	else long time-value.
+ * Notes:
+ *	This code is quasi-public; it may be used freely in like software.
+ *	It is not to be sold, nor used in licensed software without
+ *	permission of the author.
+ *	For everyone's benefit, please report bugs and improvements!
+ * 	Copyright 1981 by Ken Harrenstien, SRI International.
+ *	(ARPANET: KLH @@ SRI)
+d13 4
+a16 1
+static char rcsid[]= "$Id: maketime.c,v 4.0 89/01/23 09:45:59 jtkohl Exp Locker: jtkohl $";
+d18 2
+a19 11
+/* $Log:	maketime.c,v $
+ * Revision 4.0  89/01/23  09:45:59  jtkohl
+ * No change, incrementing vno to 4.x
+ * 
+ * Revision 1.1  88/12/20  17:38:52  wesommer
+ * Initial revision
+ * 
+ * Revision 1.1  82/05/06  11:38:00  wft
+ * Initial revision
+ * 
+ */
+d21 1
+d23 3
+a25 1
+#include "time.h"
+d27 2
+a28 3
+int daytb[] = {   /* # days in year thus far, indexed by month (0-12!!) */
+	0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365
+};
+d30 2
+a31 1
+struct tm *localtime();
+d33 8
+a40 6
+long maketime(atm)
+struct tm *atm;
+{	register struct tm *tp;
+	register int i;
+	int year, yday, mon, day, hour, min, sec, zone, dst, leap;
+	long tres, curtim, time();
+d42 5
+a46 5
+	(void) time(&curtim);
+	tp = localtime(&curtim);        /* Get breakdowns of current time */
+	year = tp->tm_year;		/* Use to set up defaults */
+	mon = tp->tm_mon;
+	day = tp->tm_mday;
+d48 5
+d54 2
+a55 4
+#ifdef DEBUG
+printf("first YMD: %d %d %d, T=%ld\n",year,mon,day,tres);
+#endif DEBUG
+	tp = atm;
+d57 6
+a62 17
+	/* First must find date, using specified year, month, day.
+	 * If one of these is unspecified, it defaults either to the
+	 * current date (if no more global spec was given) or to the
+	 * zero-value for that spec (i.e. a more global spec was seen).
+	 * Start with year... note 32 bits can only handle 135 years.
+	 */
+	if(tp->tm_year != TMNULL)
+	  {	if((year = tp->tm_year) >= 1900)	/* Allow full yr # */
+	  		year -= 1900;			/* by making kosher */
+		mon = 0;		/* Since year was given, default */
+		day = 1;		/* for remaining specs is zero */
+	  }
+	if(year < 70 || 70+134 < year )	/* Check range */
+		return(0);		/* ERR: year out of range */
+	/* See if leap year */
+	leap = year&03 ? 0 : ((year+1900) % 100) ? 1 : ((year+1900) % 400) ? 0 : 1;
+	year -= 70;			/* UNIX time starts at 1970 */
+d64 2
+a65 23
+	/*
+	 * Find day of year.
+	 * YDAY is used only if it exists and either the month or day-of-month
+	 * is missing.
+	 */
+	if (tp->tm_yday != TMNULL
+	 && (tp->tm_mon == TMNULL || tp->tm_mday == TMNULL))
+		yday = tp->tm_yday;
+	else
+	  {	if(tp->tm_mon  != TMNULL)
+		  {	mon = tp->tm_mon;	/* Month was specified */
+			day = 1;		/* so set remaining default */
+		  }
+		if(mon < 0 || 11 < mon) return(0);	/* ERR: bad month */
+		if(tp->tm_mday != TMNULL) day = tp->tm_mday;
+		if(day < 1
+		 || (((daytb[mon+1]-daytb[mon]) < day)
+			&& (day!=29 || mon!=1 || !leap) ))
+				return(0);		/* ERR: bad day */
+		yday = daytb[mon]	/* Add # of days in months so far */
+		  + ((leap		/* Leap year, and past Feb?  If */
+		      && mon>1)? 1:0)	/* so, add leap day for this year */
+		  + day-1;		/* And finally add # days this mon */
+d67 2
+a68 5
+                if (tp->tm_yday != TMNULL       /* Confirm that YDAY correct */
+                 && tp->tm_yday != yday) return(0);     /* ERR: conflict */
+	  }
+	if(yday < 0 || (leap?366:365) <= yday)
+		return(0);		/* ERR: bad YDAY or maketime bug */
+d70 3
+a72 3
+	tres = year*365			/* Get # days of years so far */
+		+ ((year+1)>>2)		/* plus # of leap days since 1970 */
+		+ yday;			/* and finally add # days this year */
+d74 11
+a84 107
+        if((i = tp->tm_wday) != TMNULL) /* Check WDAY if present */
+                if(i < 0 || 6 < i       /* Ensure within range */
+                  || i != (tres+4)%7)   /* Matches? Jan 1,1970 was Thu = 4 */
+                        return(0);      /* ERR: bad WDAY */
+
+#ifdef DEBUG
+printf("YMD: %d %d %d, T=%ld\n",year,mon,day,tres);
+#endif DEBUG
+	/*
+	 * Now determine time.  If not given, default to zeros
+	 * (since time is always the least global spec)
+	 */
+	tres *= 86400L;			/* Get # seconds (24*60*60) */
+	hour = min = sec = 0;
+	if(tp->tm_hour != TMNULL) hour = tp->tm_hour;
+	if(tp->tm_min  != TMNULL) min  = tp->tm_min;
+	if(tp->tm_sec  != TMNULL) sec  = tp->tm_sec;
+	if( min < 0 || 60 <= min
+	 || sec < 0 || 60 <= sec) return(0);	/* ERR: MS out of range */
+	if(hour < 0 || 24 <= hour)
+		if(hour != 24 || (min+sec) !=0)	/* Allow 24:00 */
+			return(0);		/* ERR: H out of range */
+
+	/* confirm AM/PM if there */
+	switch(tp->tm_ampm)
+	  {	case 0: case TMNULL:	/* Ignore these values */
+			break;
+		case 1:			/* AM */
+		case 2:			/* PM */
+			if(hour > 12) return(0);  /* ERR: hrs 13-23 bad */
+			if(hour ==12) hour = 0;	/* Modulo 12 */
+			if(tp->tm_ampm == 2)	/* If PM, then */
+				hour += 12;	/*   get 24-hour time */
+			break;
+		default: return(0);	/* ERR: illegal TM_AMPM value */
+	  }
+
+	tres += sec + 60L*(min + 60L*hour);	/* Add in # secs of time */
+
+#ifdef DEBUG
+printf("HMS: %d %d %d T=%ld\n",hour,min,sec,tres);
+#endif DEBUG
+	/*
+	 * We now have the GMT date/time and must make final
+	 * adjustment for the specified time zone.  If none is specified,
+	 * the local time-zone is assumed.
+	 */
+	if((zone = tp->tm_zon) == TMNULL	/* If unspecified */
+	 || (zone == 1))			/* or local-zone requested */
+		zone = localzone();		/* then set to local zone */
+	if(zone < 0 || 24*60 <= zone)
+		return(0);			/* ERR: zone out of range */
+
+	/* See if must apply Daylight Saving Time shift.
+	 * Note that if DST is specified, validity is not checked.
+	 */
+	if((dst = tp->tm_isdst) == TMNULL)	/* Must we figure it out? */
+	  {	curtim = tres +localzone()*60L;	/* Yuck.  Get equiv local */
+		dst = localtime(&curtim)->tm_isdst;     /* time, and ask. */
+	  }
+	tres += zone*60L -(dst?3600:0);	/* Add in # seconds of zone adj */
+
+	return(tres);
+}
+
+
+/* LOCALZONE		return local timezone in # mins west of GMT
+ *
+ */
+
+#include <sys/param.h>
+#if	BSD >= 42
+#define	KERNEL	/* hack to not get /usr/include/time.h */
+#include <sys/time.h>
+#undef	KERNEL
+#else
+#ifdef V6
+extern timezone;
+#else /* V7 */
+#include <sys/types.h>
+#include <sys/timeb.h>
+#endif V6/7
+#endif
+
+int _lclzon = -1;
+localzone()
+{
+#if BSD >= 42
+	struct	timezone	tz;
+	if (gettimeofday((struct timeval *) 0, &tz) < 0)
+		return (-1);
+	_lclzon = tz.tz_minuteswest;
+	return (_lclzon);
+#else
+#ifdef V6
+	return(_lclzon >= 0 ? _lclzon : (_lclzon = timezone/60));
+#else /* V7 */
+	struct timeb tb;
+
+	if(_lclzon < 0)
+	  {	ftime(&tb);
+		_lclzon = tb.timezone;
+	  }
+	return(_lclzon);
+
+#endif V6/7
+#endif
+@
+
+
+4.0
+log
+@No change, incrementing vno to 4.x
+@
+text
+@d22 1
+a22 1
+static char rcsid[]= "$Id: maketime.c,v 1.1 82/05/06 11:38:00 wft Exp $";
+d25 3
+d186 6
+d198 1
+d203 7
+d222 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d25 3
+@

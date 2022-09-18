@@ -1,0 +1,82 @@
+From bostic@okeeffe.Berkeley.EDU  Fri Mar  6 09:25:59 1987
+Date: Fri, 6 Mar 87 09:23:54 PST
+Path: seismo!ll-xn!ames!amdahl!rtech!jas
+From: rtech!jas@okeeffe.Berkeley.EDU (Jim Shankland)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: concurrent write(2) calls write bad data to file
+Index: sys 4.3BSD
+
+Has anyone ever encountered this one before?
+
+The small program below forks, and then both parent and child
+write the integers from 0 to 20000, one to a line, to stdout.
+The parent prefixes each integer with 'P', the child with 'C'.
+A separate write(2) call is used for each line, so stdio buffering
+doesn't figure in here.
+
+What we should all expect to see in the output file (remember, parent
+and child share a seek pointer) is some interleaving of the parent's
+output lines and the child's.  But on many 4.2-derived systems (see below),
+about 20 of the 40,000 total write(2) calls result in nulls being
+written to the file, instead of the data pointed at in the write(2) call.
+
+Repeat-by:  Run the program below, directing stdout into a file.
+Check the output file for nulls.
+
+This bug appears to exist only on 4.2-derived systems.  So far, I have
+found it on the following machines:
+
+Microvax running Ultrix
+CCI Power-6 running CCI's 4.2bsd port
+CCI Power-6 running CCI's System V (internally, it's still derived from 4.2)
+Sequent Balance/whatever
+Pyramid 90x
+Sun 3/whatever
+
+The bug is NOT on:
+
+AT&T 3B15 and 3B20 running you-know-what
+
+I think I'm also running into a variant of this problem involving
+spurious nulls being written to a pipe when a signal occurs at just
+the wrong time, and another pipe write is done in the signal handler.
+I haven't been able to duplicate that one (yet) in a simple test case, though.
+
+Any of you kernel types care to dig into this one?  Otherwise, I'll have
+to, sooner or later.
+
+------------------------ BEGIN TEST PROGRAM -------------------------------
+/*
+** Do concurrent write(2) calls to the same file; on lots of
+** 4.2-derived systems, bad data shows up on the file.
+*/
+
+main()
+
+{
+    register int seqno = 0;
+    register int len;
+    register int pid;
+    char buf[32];
+
+    if ( ( pid = fork() ) < 0 )
+    {
+	perror( "fork" );
+	exit( 1 );
+    }
+    for ( seqno = 0; seqno != 20000; ++seqno )
+    {
+	sprintf( buf, "%c%d\n", pid ? 'P' : 'C', seqno );
+	len = strlen( buf );
+	if ( write( 1, buf, len ) != len )
+	    perror( "write" );
+    }
+    exit( 0 );
+}
+------------------------ END TEST PROGRAM -------------------------
+-- 
+Jim Shankland
+ ..!ihnp4!cpsc6a!\
+                  rtech!jas
+..!ucbvax!mtxinu!/
+

@@ -1,0 +1,96 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:11:08 1988
+Date: Mon, 18 Apr 88 13:27:12 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) kermit does CR strips, not CR-LF->NL maps--w/fix
+#Index: new/kermit/ckcfns.c MORE/bsd 4.3 (10/5/87)
+Index: new/kermit/ckcfns.c 4.3BSD
+
+(This may be fixed in versions of C-Kermit later than version 4C(057), which
+we're running.)
+
+Description:
+	The kermit command strips all carriage returns, rather than
+	mapping CR-LF sequences to NL.  This causes problems when transferring
+	(to the VAX) the output of programs that do underlining by outputing
+	a line of characters, doing a return, then outputing underlines in
+	the desired places.
+
+Fix:
+	Note that even with this fix in place, if a file has a CR as its very
+	last character the CR will be (inappropriately) stripped.  Then again,
+	we're not kermit gurus around here.
+
+*** 1.1/ckcfns.c	Wed Mar  2 17:17:32 1988
+--- 1.3/ckcfns.c	Wed Mar  2 17:17:43 1988
+***************
+*** 131,136 ****
+--- 131,140 ----
+  /* Call with string to be decoded and an output function. */
+  /* Returns 0 on success, -1 on failure (e.g. disk full).  */
+  
++ #ifdef NLCHAR
++ static int	sawcr;
++ #endif /* defined NLCHAR */
++ 
+  decode(buf,fn) char *buf; int (*fn)(); {
+      unsigned int a, a7, b8;		/* Low order 7 bits, and the 8th bit */
+  
+***************
+*** 158,172 ****
+  	}
+  	a |= b8;			/* OR in the 8th bit */
+  	if (rpt == 0) rpt = 1;		/* If no repeats, then one */
+- #ifdef NLCHAR
+- 	if (!binary) {			/* If in text mode, */
+- 	    if (a == CR) continue;	/* discard carriage returns, */
+-     	    if (a == LF) a = NLCHAR; 	/* convert LF to system's newline. */
+-     	}
+- #endif
+  	for (; rpt > 0; rpt--) {	/* Output the char RPT times */
+! 	    ffc++, tfc++;		/* Count the character */
+  	    if ((*fn)(a) < 0) return(-1); /* Send it to the output function. */
+  	}
+      }
+      return(0);
+--- 162,189 ----
+  	}
+  	a |= b8;			/* OR in the 8th bit */
+  	if (rpt == 0) rpt = 1;		/* If no repeats, then one */
+  	for (; rpt > 0; rpt--) {	/* Output the char RPT times */
+! 	    ffc++;			/* Count the character */
+! #ifdef NLCHAR
+! 	    if (!binary) {
+! 		if (a == CR) {
+! 		    if (sawcr == 0) {
+! 			sawcr = 1;
+! 			continue;
+! 		    }
+! 		} else {
+! 	    	    if (sawcr)
+! 			if (a == LF)
+! 			    a = NLCHAR;
+! 			else if ((*fn)(CR) < 0)
+! 			    return -1;
+! 			else ++tfc;
+! 		    sawcr = 0;
+! 		}
+! 	    }
+! #endif /* defined NLCHAR */
+  	    if ((*fn)(a) < 0) return(-1); /* Send it to the output function. */
++ 	    ++tfc;
+  	}
+      }
+      return(0);
+***************
+*** 424,429 ****
+--- 441,449 ----
+  rcvfil() {
+      int x;
+      ffc = flci = flco = 0;		/* Init per-file counters */
++ #ifdef NLCHAR
++     sawcr = 0;
++ #endif /* defined NLCHAR */
+      srvptr = srvcmd;			/* Decode file name from packet. */
+      decode(data,putsrv);
+      if (*srvcmd == '\0')		/* Watch out for null F packet. */
+

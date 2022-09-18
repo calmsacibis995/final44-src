@@ -1,0 +1,45 @@
+Return-Path: <root@ucbopal.CC>
+Date: Wed, 6 Feb 85 15:36:28 pst
+From: root@ucbopal.CC (Charlie Root)
+Subject: Sharing of non-text segments
+Index: 	sys/sys/vm_text.c 4.2BSD
+
+Description:
+	xalloc allows shared "text" on segments that are not tagged as text
+	segments. This (minimally) creates a security hole.
+Repeat-By:
+	Copy your favorite shell into your current directory under the
+	name "x". Run "adb -w /bin/nm", :s the resulting process until
+	adb reports that it is running. Now feed adb the following line:
+
+		0?W 8fdd0000 1b 0defdd 2fb0000 0ef 0bc000000 1900780b 0 0
+
+	(this is a short program to execl x). ^Z out of adb, and run
+	/bin/nm. Note that you are now running a the shell copied into x.
+Fix:
+	Convince xalloc that it shouldn't use non-text segments as shared
+	text. To fix the above behavior, ptrace could be modified to tag
+	the written-on segment in some other way.  Both fixes might be
+	appropriate.  The fix to xalloc looks like so:
+
+*** vm_text.co	Wed Feb  6 15:19:45 1985
+--- vm_text.c	Wed Feb  6 11:09:40 1985
+***************
+*** 75,80
+  				xp1 = xp;
+  			continue;
+  		}
+  		if ((xp->x_count > 0 || (xp->x_iptr->i_mode&ISVTX)) && xp->x_iptr == ip) {
+  			if (xp->x_flag&XLOCK) {
+  				xwait(xp);
+
+--- 75,83 -----
+  				xp1 = xp;
+  			continue;
+  		}
++ 		/* If this isn't a text segment, we can't share it */
++ 		if ((xp->x_iptr->i_flag&ITEXT)==0)
++ 			continue;
+  		if ((xp->x_count > 0 || (xp->x_iptr->i_mode&ISVTX)) && xp->x_iptr == ip) {
+  			if (xp->x_flag&XLOCK) {
+  				xwait(xp);

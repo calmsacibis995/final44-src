@@ -1,0 +1,125 @@
+/*-
+ * Copyright (c) 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#ifndef lint
+static char copyright[] =
+"@(#) Copyright (c) 1993\n\
+	The Regents of the University of California.  All rights reserved.\n";
+#endif /* not lint */
+
+#ifndef lint
+static char sccsid[] = "@(#)mount_wafs.c	8.1 (Berkeley) 6/8/93";
+#endif /* not lint */
+
+#include <sys/param.h>
+#include <sys/mount.h>
+
+#include <err.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define DEFAULT_ROOTUID -2	/* copied from mount's UFS code */
+
+void usage __P((void));
+
+int verbose;
+
+int
+main(argc, argv)
+	int argc;
+	char *argv[];
+{
+	struct ufs_args args;
+	int ch, mntflags;
+	int noclean;
+	char *fs_name;
+	char *other_fs;
+
+	mntflags = 0;
+	other_fs = NULL;
+	while ((ch = getopt(argc, argv, "F:f:v")) != EOF)
+		switch(ch) {
+		case 'v':
+			verbose = 1;
+			break;
+		case 'F':
+			mntflags = atoi(optarg);
+			break;
+		case 'f':
+			other_fs = optarg;
+			break;
+		case '?':
+		default:
+			usage();
+		}
+	argc -= optind;
+	argv += optind;
+
+	if (argc != 2)
+		usage();
+
+        args.fspec = argv[0];	/* the name of the device file */
+	fs_name = argv[1];	/* the mount point */
+
+	/* copied from mount's UFS code */
+	args.export.ex_root = DEFAULT_ROOTUID;
+	if (mntflags & MNT_RDONLY)
+		args.export.ex_flags = MNT_EXRDONLY;
+	else
+		args.export.ex_flags = 0;
+
+	args.log_fs = other_fs;
+	if (verbose)
+		(void)fprintf(stderr, "mount_wafs: About to mount %s on %s\n",
+		    args.fspec, fs_name);
+	if (mount(MOUNT_WAFS, fs_name, mntflags, &args)) {
+		(void)fprintf(stderr, "mount_wafs: %s\n", strerror(errno));
+		exit(1);
+	}
+	if (verbose)
+		(void)fprintf(stderr, "mount_wafs: mount successful\n");
+
+	exit(0);
+}
+
+void
+usage()
+{
+	(void)fprintf(stderr,
+	    "usage: mount_wafs [ -f otherfs ] [ -F fsoptions ] device mount_point\n");
+	exit(1);
+}
+

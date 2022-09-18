@@ -1,0 +1,40 @@
+Return-Path: <sun!gorodish!guy>
+Return-Path: <guy@gorodish>
+Date: Sat, 22 Jun 85 05:23:30 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: "ftp" throws away reply codes
+Index: 	ucb/ftp/ftp.c 4.2BSD
+
+Description:
+	When "ftp" is waiting for a reply code from the FTP server on
+	the other end, it loops, reading reply codes, until the
+	standard I/O buffer it's reading into is empty and there
+	is no more data to read from the descriptor for the connection
+	to the server.
+
+	This means that if the server sends two replies to a command
+	(i.e., a "Positive Preliminary Reply", like "Opening data
+	connection for...", followed by a "Positive Completion Reply",
+	like "Transfer complete"), and the two replies arrive in rapid
+	enough sequence, only the second reply will be seen.
+
+	A typical case where this causes a problem is in a "get" command.
+	"ftp" sends a "RETR" command and waits for a Positive Preliminary
+	Reply.  A Positive Preliminary Reply comes back, indicating that
+	the connection is opened; the data is sent, and a Positive
+	Completion Reply is sent indicating that the transfer is complete.
+	If all this data arrives before the "getreply" routine gets around
+	to reading the reply code or checking whether the socket is empty,
+	after reading the Positive Preliminary Reply it reads the Positive
+	Completion Reply, decides that it's not what it was expecting
+	(it's expecting a Positive Preliminary Reply), and doesn't bother
+	reading the data nor notifying the user that it didn't do any
+	reading (other than reporting 0 bytes transferred).
+Repeat-By:
+	I saw it while talking to a CCI Power 5/20 with UNET; it was
+	not reliably repeatable.  However, after the fix mentioned below
+	was applied, it never happened again.
+Fix:
+	Get rid of the test "if (expecteof || empty(cin))" before
+	the "return (n - '0')" in the "getreply" routine, as well as
+	the routine "empty".

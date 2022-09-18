@@ -1,0 +1,29 @@
+Return-Path: <williams@ucbmerlin>
+Date: Sun, 29 Sep 85 19:47:09 PDT
+From: williams@ucbmerlin (Christopher Williams)
+Subject: poor simulation of carrier drop in pseudo-terminals.
+Index: 	sys/tty_pty.c 4.3BSD
+
+Description:
+	If there are characters on the outq of a pseudo-terminal that is
+	in NTTYDISC, and the control side tries to close without reading the
+	characters, then the control blocks indefinitely.
+Repeat-By:
+	Set up the situation of the sentence above.
+Fix:
+	In ptcclose, remove the two lines:
+		if (tp->tp_line)
+			(*linesw[tp->tp_line].l_close)(tp);
+	This code is, and should only be, in ptsclose.
+	If you're using NTTYDISC, this results in a call to ttywait(),
+	which blocks until the output has flushed.
+	ttywait() isn't going to go anywhere if the control side is blocked.
+	Without the ttywait(), ptcclose it will drop to the flush, which
+	is more in line with simulating a physical terminal carrier drop.
+
+	The user-painful method is to do an ioctl(TIOCFLUSH) before the close,
+	but that just substitues a race condition for simple deadlock.
+
+	Even more fun is to write a program that does the FLUSH, and have
+	the superuser apply it to the slave side of pseudo-terminals
+	that are locked up.

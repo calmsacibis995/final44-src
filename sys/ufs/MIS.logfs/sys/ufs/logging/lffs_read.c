@@ -1,0 +1,68 @@
+/*
+ * Application specific log reading code.
+ * Input:
+ *	fd	File desriptor of log.
+ *	bufpp	Pointer to the buf pointer (may be realloc'd)
+ *	len	Pointer to the length of the buf region.
+ * Output:
+ *	type	Physical type of log record written.
+ * Return:
+ *	pointer to a structure corresponding to the physical type.
+ */
+#include <stddef.h>
+#include <db.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+#include <sys/vnode.h>
+#include "lffs.h"
+#include "lffs_auto.h"
+
+#define	INITIAL_BUF_SIZE	4096
+
+void *
+lffs_read(fd, bufpp, len, typep)
+	int fd;
+	char **bufpp;
+	size_t *len;
+	long *typep;
+{
+	char *retp;
+	size_t nbytes, to_read;
+
+	*typep = LFFS_ERROR;
+	if (*bufpp == NULL) {
+		if ((*bufpp = (char *)malloc(INITIAL_BUF_SIZE)) == NULL)
+			return(NULL);
+		*len = INITIAL_BUF_SIZE;
+	}
+	retp = *bufpp;	
+	to_read = *len;
+	do {
+		nbytes = read(fd, retp, to_read);
+		if (nbytes < 0) /* ERROR */
+			return(NULL);
+		else if (nbytes == 0) {
+			/* EOF */
+			*typep = LFFS_EOF;
+			return(NULL);
+		} else if (nbytes > *len) {
+			retp = (char *)realloc(*bufpp, nbytes);
+			if (retp == NULL) {
+				return(NULL);
+			}
+			*bufpp = retp;
+			retp += to_read;
+			*len = nbytes;
+			to_read = nbytes - to_read;
+		}
+	} while (nbytes > to_read);
+
+	/*
+	 * At this point we should have a complete record.
+	 * Figure out what type it is and then return a structure
+	 * of the appropriate type.
+	 */
+	 bcopy(*bufpp, typep, sizeof(*typep));
+	 return(lffs_switch(*bufpp + sizeof(*typep), *typep));
+}

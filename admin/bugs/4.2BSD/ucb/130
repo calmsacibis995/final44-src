@@ -1,0 +1,288 @@
+Return-Path: <smoot@ut-sally.ARPA>
+Date: Fri, 27 Jan 84 08:29:54 cst
+From: smoot@ut-sally.ARPA (Smoot Carl-Mitchell)
+Subject: Fixup reply command in Mail
+Index: 	ucb/Mail/cmd3.c 4.2BSD
+
+Description:
+	The reply command in Mail does not handle replies properly.
+	Currently the To: list in the original message is placed
+	in the To: list of the reply.  It should be placed in the
+	Cc: field.  Also the resulting address list is blank 
+	delimited instead of comma delimited as it should be.
+
+	Another problem is that the heuristic for deleting the
+	receipients name from the reply list often does not work,
+	especially for network mail.  This fix adds an "ownname"
+	function which uses a slightly more powerful heuristic,
+	especially for internet and uucp mail.  Note that the
+	calls to "mapf" have been ifdef'ed out also.  There is
+	no reason for Mail to know about the network topology,
+	since sendmail knows about it.
+
+Repeat-By:
+
+Fix:
+diff -c of cmd3.c 2.14 (Berkeley) 8/11/83 and changes
+***************
+*** 191,198
+  {
+  	struct message *mp;
+  	char *cp, *cp2, *cp3, *rcv, *replyto;
+! 	char buf[2 * LINESIZE], **ap;
+! 	struct name *np;
+  	struct header head;
+  
+  	if (msgvec[1] != 0) {
+
+--- 191,198 -----
+  {
+  	struct message *mp;
+  	char *cp, *cp2, *cp3, *rcv, *replyto;
+! 	char buf[2 * LINESIZE], buf2[2 * LINESIZE], **ap;
+! 	struct name *np, *np1;
+  	struct header head;
+  	int ownname();
+  
+***************
+*** 194,199
+  	char buf[2 * LINESIZE], **ap;
+  	struct name *np;
+  	struct header head;
+  
+  	if (msgvec[1] != 0) {
+  		printf("Sorry, can't reply to multiple messages at once\n");
+
+--- 194,200 -----
+  	char buf[2 * LINESIZE], buf2[2 * LINESIZE], **ap;
+  	struct name *np, *np1;
+  	struct header head;
++ 	int ownname();
+  
+  	if (msgvec[1] != 0) {
+  		printf("Sorry, can't reply to multiple messages at once\n");
+***************
+*** 212,222
+  	strcpy(buf, "");
+  	if (replyto != NOSTR)
+  		strcpy(buf, replyto);
+! 	else {
+! 		cp = skin(hfield("to", mp));
+! 		if (cp != NOSTR)
+! 			strcpy(buf, cp);
+! 	}
+  	np = elide(extract(buf, GTO));
+  	/* rcv = rename(rcv); */
+  	mapf(np, rcv);
+
+--- 213,220 -----
+  	strcpy(buf, "");
+  	if (replyto != NOSTR)
+  		strcpy(buf, replyto);
+! 	else
+! 		strcpy(buf, rcv);
+  	np = elide(extract(buf, GTO));
+  	/* rcv = rename(rcv); */
+  #ifdef notdef
+***************
+*** 219,224
+  	}
+  	np = elide(extract(buf, GTO));
+  	/* rcv = rename(rcv); */
+  	mapf(np, rcv);
+  	/*
+  	 * Delete my name from the reply list,
+
+--- 217,223 -----
+  		strcpy(buf, rcv);
+  	np = elide(extract(buf, GTO));
+  	/* rcv = rename(rcv); */
++ #ifdef notdef
+  	mapf(np, rcv);
+  #endif
+  	/*
+***************
+*** 220,225
+  	np = elide(extract(buf, GTO));
+  	/* rcv = rename(rcv); */
+  	mapf(np, rcv);
+  	/*
+  	 * Delete my name from the reply list,
+  	 * and with it, all my alternate names.
+
+--- 219,225 -----
+  	/* rcv = rename(rcv); */
+  #ifdef notdef
+  	mapf(np, rcv);
++ #endif
+  	/*
+  	 * Delete my name from the reply list,
+  	 * and with it, all my alternate names.
+***************
+*** 224,230
+  	 * Delete my name from the reply list,
+  	 * and with it, all my alternate names.
+  	 */
+! 	np = delname(np, myname, icequal);
+  	if (altnames)
+  		for (ap = altnames; *ap; ap++)
+  			np = delname(np, *ap, icequal);
+
+--- 224,230 -----
+  	 * Delete my name from the reply list,
+  	 * and with it, all my alternate names.
+  	 */
+! 	np = delname(np, myname, ownname);
+  	if (altnames)
+  		for (ap = altnames; *ap; ap++)
+  			np = delname(np, *ap, icequal);
+***************
+*** 229,235
+  		for (ap = altnames; *ap; ap++)
+  			np = delname(np, *ap, icequal);
+  	head.h_seq = 1;
+! 	cp = detract(np, 0);
+  	if (cp != NOSTR && replyto == NOSTR) {
+  		strcpy(buf, cp);
+  		strcat(buf, " ");
+
+--- 229,235 -----
+  		for (ap = altnames; *ap; ap++)
+  			np = delname(np, *ap, icequal);
+  	head.h_seq = 1;
+! 	cp = detract(np, GCOMMA);
+  	if (cp != NOSTR && replyto == NOSTR) {
+  		strcpy(buf, cp);
+  	}
+***************
+*** 232,239
+  	cp = detract(np, 0);
+  	if (cp != NOSTR && replyto == NOSTR) {
+  		strcpy(buf, cp);
+- 		strcat(buf, " ");
+- 		strcat(buf, rcv);
+  	}
+  	else {
+  		if (cp == NOSTR && replyto != NOSTR)
+
+--- 232,237 -----
+  	cp = detract(np, GCOMMA);
+  	if (cp != NOSTR && replyto == NOSTR) {
+  		strcpy(buf, cp);
+  	}
+  	else {
+  		if (cp == NOSTR && replyto != NOSTR)
+***************
+*** 249,254
+  		head.h_subject = hfield("subj", mp);
+  	head.h_subject = reedit(head.h_subject);
+  	head.h_cc = NOSTR;
+  	if (replyto == NOSTR) {
+  		cp = hfield("cc", mp);
+  		if (cp != NOSTR) {
+
+--- 247,253 -----
+  		head.h_subject = hfield("subj", mp);
+  	head.h_subject = reedit(head.h_subject);
+  	head.h_cc = NOSTR;
++ 	strcpy(buf2, "");
+  	if (replyto == NOSTR) {
+  		cp = hfield("cc", mp);
+  		if (cp != NOSTR)
+***************
+*** 251,265
+  	head.h_cc = NOSTR;
+  	if (replyto == NOSTR) {
+  		cp = hfield("cc", mp);
+! 		if (cp != NOSTR) {
+! 			np = elide(extract(cp, GCC));
+! 			mapf(np, rcv);
+! 			np = delname(np, myname, icequal);
+! 			if (altnames != 0)
+! 				for (ap = altnames; *ap; ap++)
+! 					np = delname(np, *ap, icequal);
+! 			head.h_cc = detract(np, 0);
+! 		}
+  	}
+  	head.h_bcc = NOSTR;
+  	mail1(&head);
+
+--- 250,266 -----
+  	strcpy(buf2, "");
+  	if (replyto == NOSTR) {
+  		cp = hfield("cc", mp);
+! 		if (cp != NOSTR)
+! 			np = extract(cp, GCC);
+! 		cp = hfield("to", mp);
+! 		if (cp != NOSTR)
+! 			np1 = extract(cp, GTO);
+! 		np = elide(cat(np, np1));
+! 		np = delname(np, myname, ownname);
+! 		if (altnames != 0)
+! 			for (ap = altnames; *ap; ap++)
+! 				np = delname(np, *ap, icequal);
+! 		head.h_cc = detract(np, GCOMMA);
+  	}
+  	head.h_bcc = NOSTR;
+  	mail1(&head);
+***************
+*** 263,268
+  	}
+  	head.h_bcc = NOSTR;
+  	mail1(&head);
+  	return(0);
+  }
+  
+
+--- 264,314 -----
+  	}
+  	head.h_bcc = NOSTR;
+  	mail1(&head);
++ 	return(0);
++ }
++ 
++ /* heuristic for own name matching */
++ 
++ int
++ ownname(name, myname)
++ char *name, *myname;
++ {
++ 	char host[BUFSIZ];
++ 	char namebuf[BUFSIZ];
++ 	char *cp, *cp1;
++ 
++ 	/* the simple case */
++ 	if (icequal(name, myname))
++ 		return(1);
++ 
++ 	/* harder */
++ 	gethostname(host, BUFSIZ);
++ 	strcpy(namebuf, skin(name));
++ 	/* strip our hostname */
++ 	if ((cp = index(namebuf, '@')) != NULL) {
++ 		if ((cp1 = index(cp, '.')) != NULL)
++ 			*cp1 = '\0';
++ 	    	if (icequal(cp+1, host))
++ 			*cp = '\0';
++ 	}
++ 	if (icequal(namebuf, myname))
++ 		return(1);
++ 
++ 	/* uucp case */
++ 	/* strip trailing @host */
++ 	if ((cp = index(namebuf, '@')) != NULL)
++ 		*cp = '\0';
++ 	/* find the last '!' and strip myname */
++ 	if ((cp = rindex(namebuf, '!')) != NULL && icequal(cp+1, myname)) {
++ 		*cp = '\0';
++ 		/* find preceding hostname */
++ 		if ((cp = rindex(namebuf, '!')) == NULL)
++ 			cp = namebuf;
++ 		else
++ 			cp++;
++ 		if (icequal(cp, host))
++ 			return(1);
++ 	}
+  	return(0);
+  }
+  

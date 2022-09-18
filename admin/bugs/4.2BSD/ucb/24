@@ -1,0 +1,212 @@
+Return-Path: <sun!dg>
+Date: Sat, 28 Apr 84 22:45:59 pst
+From: sun!dg (David Goldberg)
+Subject: Talk doesn't work betwen sun's and vaxes
+Index:	ucb/talk 4.2BSD
+
+Description:
+	The Talk(1) command does not work between sun's and vaxes.
+Repeat-By:
+	Try
+		talk name@vax-machine
+	from a sun, or vice-versa.
+Fix:
+	There are changes to look_up.c and talkd.c
+	Here is a diff -c:
+
+*** talkd.c	Wed May 11 20:28:19 1983
+--- /tmp/talkd.c	Sat Apr 28 22:12:00 1984
+***************
+*** 30,35
+  
+  int debug = 0;
+  
+  main(argc)
+  int argc;
+  {
+
+--- 30,37 -----
+  
+  int debug = 0;
+  
++ CTL_MSG swapmsg();
++ 
+  main(argc)
+  int argc;
+  {
+***************
+*** 104,109
+  	    if (debug) printf("Request received : \n");
+  	    if (debug) print_request(&request);
+  
+  	    process_request(&request, &response);
+  
+  	    if (debug) printf("Response sent : \n");
+
+--- 106,112 -----
+  	    if (debug) printf("Request received : \n");
+  	    if (debug) print_request(&request);
+  
++ 	    request = swapmsg(request);
+  	    process_request(&request, &response);
+  
+  	    if (debug) printf("Response sent : \n");
+***************
+*** 190,193
+  	    }
+  	} while (val != pid);
+      }
+  }
+
+--- 193,222 -----
+  	    }
+  	} while (val != pid);
+      }
++ }
++ 
++ #define swapshort(a) (((a << 8) | ((unsigned short) a >> 8)) & 0xffff)
++ #define swaplong(a) ((swapshort(a) << 16) | (swapshort(((unsigned)a >> 16))))
++ 
++ /*  
++  * heuristic to detect if need to swap bytes
++  */
++ 
++ CTL_MSG
++ swapmsg(req)
++ 	CTL_MSG req;
++ {
++ 	CTL_MSG swapreq;
++ 	
++ 	if (req.ctl_addr.sin_family == swapshort(AF_INET)) {
++ 		swapreq = req;
++ 		swapreq.id_num = swaplong(req.id_num);
++ 		swapreq.pid = swaplong(req.pid);
++ 		swapreq.addr.sin_family = swapshort(req.addr.sin_family);
++ 		swapreq.ctl_addr.sin_family =
++ 			swapshort(req.ctl_addr.sin_family);
++ 		return swapreq;
++ 	}
++ 	else
++ 		return req;
+  }
+
+
+
+*** look_up.c	Wed May 11 20:28:27 1983
+--- /tmp/look_up.c	Sat Apr 28 22:12:06 1984
+***************
+*** 4,9
+  
+      /* see if the local daemon has a invitation for us */
+  
+  check_local()
+  {
+      CTL_RESPONSE response;
+
+--- 4,11 -----
+  
+      /* see if the local daemon has a invitation for us */
+  
++ CTL_RESPONSE swapresponse();
++ 
+  check_local()
+  {
+      CTL_RESPONSE response;
+***************
+*** 26,31
+  
+      current_state = "Waiting to connect with caller";
+  
+      while (connect(sockt, &response.addr, sizeof(response.addr)) != 0) {
+  	if (errno == ECONNREFUSED) {
+  
+
+--- 28,34 -----
+  
+      current_state = "Waiting to connect with caller";
+  
++     response = swapresponse(response);
+      while (connect(sockt, &response.addr, sizeof(response.addr)) != 0) {
+  	if (errno == ECONNREFUSED) {
+  
+***************
+*** 76,78
+  	    return(0);
+      }
+  }
+
+--- 79,152 -----
+  	    return(0);
+      }
+  }
++ 
++ /*  
++  * heuristic to detect if need to reshuffle CTL_RESPONSE structure
++  */
++ 
++ #define swapshort(a) (((a << 8) | ((unsigned short) a >> 8)) & 0xffff)
++ #define swaplong(a) ((swapshort(a) << 16) | (swapshort(((unsigned)a >> 16))))
++ 
++ #ifdef sun
++ struct ctl_response_vax {
++ 	char type;
++ 	char answer;
++ 	short junk;
++ 	int id_num;
++ 	struct sockaddr_in addr;
++ };
++ 
++ CTL_RESPONSE
++ swapresponse(rsp)
++ 	CTL_RESPONSE rsp;
++ {
++ 	struct ctl_response_vax swaprsp;
++ 	
++ 	if (rsp.addr.sin_family != AF_INET) {
++ 		bcopy(&rsp, &swaprsp, sizeof(CTL_RESPONSE));
++ 		swaprsp.addr.sin_family = swapshort(swaprsp.addr.sin_family);
++ 		if (swaprsp.addr.sin_family == AF_INET) {
++ 			rsp.addr = swaprsp.addr;
++ 			rsp.type = swaprsp.type;
++ 			rsp.answer = swaprsp.answer;
++ 			rsp.id_num = swaplong(swaprsp.id_num);
++ 		}
++ 	}
++ 	return rsp;
++ }
++ #endif
++ 
++ #ifdef vax
++ struct ctl_response_sun {
++ 	char type;
++ 	char answer;
++ 	unsigned short id_num2;
++ 	unsigned short id_num1;
++ 	short sin_family;
++ 	short sin_port;
++ 	short sin_addr2;
++ 	short sin_addr1;
++ };
++ 
++ CTL_RESPONSE
++ swapresponse(rsp)
++ 	CTL_RESPONSE rsp;
++ {
++ 	struct ctl_response_sun swaprsp;
++ 	
++ 	if (rsp.addr.sin_family != AF_INET) {
++ 		bcopy(&rsp, &swaprsp, sizeof(struct ctl_response_sun));
++ 		if (swaprsp.sin_family == swapshort(AF_INET)) {
++ 			rsp.type = swaprsp.type;
++ 			rsp.answer = swaprsp.answer;
++ 			rsp.id_num = swapshort(swaprsp.id_num1)
++ 			    | (swapshort(swaprsp.id_num2) << 16);
++ 			rsp.addr.sin_family = swapshort(swaprsp.sin_family);
+ 			rsp.addr.sin_port = swaprsp.sin_port;
++ 			rsp.addr.sin_addr.s_addr =
++ 			    swaprsp.sin_addr2 | (swaprsp.sin_addr1 << 16);
++ 		}
++ 	}
++ 	return rsp;
++ }
++ #endif

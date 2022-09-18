@@ -1,0 +1,553 @@
+From casey@vangogh.berkeley.edu  Tue Apr  7 19:56:55 1987
+Date: Tue, 7 Apr 87 18:56:30 PST
+From: casey@vangogh.berkeley.edu (Casey Leedom)
+Subject: New ctime printf problems
+Index: lib/libc/gen/ctime.c 4.3BSD
+
+Description:
+	The new ctime distributed in March of 1987 uses an undocumented
+	printf formating directive ("%.2d") and a `precision' specification
+	in a string formating directive ("%.3s").  The VAX doprnt interprets
+	"%.2d" to mean "%02d".  The "%.3s" format is not an error, but does
+	cause the user contributed editor jove to misbehave (the "%.2d"
+	also causes jove problems).
+Repeat-By:
+	Try to compile and use the new ctime on a system which doesn't support
+	the VAX "%.2d" semantics.  Try to compile and run jove with the new
+	ctime.
+Fix:
+	Following are fixes to ctime.c and jove/fmt.c.  I've also included
+	a small fix to jove/io.c that jove's author Jon Payne published
+	to fix a buffer management problem.
+
+% diff -c ctime.c-bad ctime.c
+*** ctime.c-bad	Tue Apr  7 19:46:28 1987
+--- ctime.c	Tue Apr  7 19:46:54 1987
+***************
+*** 39,45 ****
+  	};
+  	static char	result[26];
+  
+! 	(void) sprintf(result, "%.3s %.3s%3d %.2d:%.2d:%.2d %d\n",
+  		wday_name[timeptr->tm_wday],
+  		mon_name[timeptr->tm_mon],
+  		timeptr->tm_mday, timeptr->tm_hour,
+--- 39,45 ----
+  	};
+  	static char	result[26];
+  
+! 	(void) sprintf(result, "%.3s %.3s%3d %02d:%02d:%02d %d\n",
+  		wday_name[timeptr->tm_wday],
+  		mon_name[timeptr->tm_mon],
+  		timeptr->tm_mday, timeptr->tm_hour,
+
+% diff -c io.c-bad io.c
+*** io.c-bad	Tue Apr  7 19:45:06 1987
+--- io.c	Tue Apr  7 19:30:38 1987
+***************
+*** 862,869 ****
+  	if (bno >= NMBLKS)
+  		error("Tmp file too large.  Get help!");
+  	nleft = BUFSIZ - off;
+! 	if (lastb != 0 && lastb->b_bno == bno)
+  		return lastb->b_buf + off;
+  
+  	/* The requested block already lives in memory, so we move
+  	   it to the end of the LRU list (making it Most Recently Used)
+--- 862,871 ----
+  	if (bno >= NMBLKS)
+  		error("Tmp file too large.  Get help!");
+  	nleft = BUFSIZ - off;
+! 	if (lastb != 0 && lastb->b_bno == bno) {
+! 		lastb->b_dirty |= iof;
+  		return lastb->b_buf + off;
++ 	}
+  
+  	/* The requested block already lives in memory, so we move
+  	   it to the end of the LRU list (making it Most Recently Used)
+
+% diff -c fmt.c-bad fmt.c
+*** fmt.c-bad	Tue Apr  7 19:44:58 1987
+--- fmt.c	Tue Apr  7 19:54:48 1987
+***************
+*** 56,67 ****
+  }
+  
+  static
+! putld(leftadj, width, d, base)
+  long	d;
+  {
+  	int	length = 1;
+  	long	tmpd = d;
+  
+  	while (tmpd = (tmpd / base))
+  		length++;
+  	if (d < 0)
+--- 56,78 ----
+  }
+  
+  static
+! putld(leftadj, width, precision, d, base)
+  long	d;
+  {
+  	int	length = 1;
+  	long	tmpd = d;
+  
++ #ifdef vax
++ 	/*
++ 	 * Simulate undocumented printf logic: "%.Nd" -> "%N.Nd".
++ 	 * We only support this because the ctime distributed
++ 	 * by CSRG, UC Berkeley in March 1987 used this feature.
++ 	 */
++ 	if (width == 0 && precision) {
++ 		width = precision;
++ 		padc = '0';
++ 	}
++ #endif
+  	while (tmpd = (tmpd / base))
+  		length++;
+  	if (d < 0)
+***************
+*** 89,100 ****
+  }
+  
+  static
+! puts(leftadj, width, str)
+  char	*str;
+  {
+  	int	length;
+! 	register char	*cp,
+! 			c;
+  
+  	if (str == 0)
+  #if pyr
+--- 100,110 ----
+  }
+  
+  static
+! puts(leftadj, width, maxwidth, str)
+  char	*str;
+  {
+  	int	length;
+! 	register char	*cp;
+  
+  	if (str == 0)
+  #if pyr
+***************
+*** 103,113 ****
+  		str = "(null)";
+  #endif
+  	length = strlen(str);
+  	cp = str;
+  	if (!leftadj)
+  		pad(' ', width - length);
+! 	while (c = *cp++)
+! 		putc(c, curiop);
+  	if (leftadj)
+  		pad(' ', width - length);
+  }
+--- 113,128 ----
+  		str = "(null)";
+  #endif
+  	length = strlen(str);
++ 	if (maxwidth == 0 || length < maxwidth)
++ 		maxwidth = length;
++ 	else
++ 		length = maxwidth;
++ 
+  	cp = str;
+  	if (!leftadj)
+  		pad(' ', width - length);
+! 	while (maxwidth--)
+! 		putc(*cp++, curiop);
+  	if (leftadj)
+  		pad(' ', width - length);
+  }
+***************
+*** 129,135 ****
+  {
+  	register char	c;
+  	int	leftadj,
+! 		width;
+  	File	*pushiop = curiop;
+  
+  	curiop = sp;
+--- 144,151 ----
+  {
+  	register char	c;
+  	int	leftadj,
+! 		width,
+!  		precision;
+  	File	*pushiop = curiop;
+  
+  	curiop = sp;
+***************
+*** 141,147 ****
+  		}
+  
+  		padc = ' ';
+! 		leftadj = width = 0;
+  		c = *fmt++;
+  		if (c == '-') {
+  			leftadj++;
+--- 157,163 ----
+  		}
+  
+  		padc = ' ';
+! 		leftadj = width = precision = 0;
+  		c = *fmt++;
+  		if (c == '-') {
+  			leftadj++;
+***************
+*** 155,160 ****
+--- 171,183 ----
+  			width = width * 10 + (c - '0');
+  			c = *fmt++;
+  		}
++ 		if (c == '.') {
++ 			c = *fmt++;
++ 			while (c >= '0' && c <= '9') {
++ 				precision = precision * 10 + (c - '0');
++ 				c = *fmt++;
++ 			}
++ 		}
+  		if (c == '*') {
+  			width = va_arg(ap, int);
+  			c = *fmt++;
+***************
+*** 171,185 ****
+  			break;
+  	
+  		case 'o':
+! 			putld(leftadj, width, (long) va_arg(ap, int), 8);
+  			break;
+  	
+  		case 'd':
+! 			putld(leftadj, width, (long) va_arg(ap, int), 10);
+  			break;
+  	
+  		case 'D':
+! 			putld(leftadj, width, va_arg(ap, long), 10);
+  			break;
+  	
+  		case 'p':
+--- 194,208 ----
+  			break;
+  	
+  		case 'o':
+! 			putld(leftadj, width, precision, (long) va_arg(ap, int), 8);
+  			break;
+  	
+  		case 'd':
+! 			putld(leftadj, width, precision, (long) va_arg(ap, int), 10);
+  			break;
+  	
+  		case 'D':
+! 			putld(leftadj, width, precision, va_arg(ap, long), 10);
+  			break;
+  	
+  		case 'p':
+***************
+*** 187,203 ****
+  		    	char	cbuf[20];
+  
+  		    	PPchar(va_arg(ap, int), cbuf);
+! 		    	puts(leftadj, width, cbuf);
+  		    	break;
+  		    }
+  
+  		case 'n':
+  			if (va_arg(ap, int) != 1)
+! 				puts(leftadj, width, "s");
+  			break;
+  
+  		case 's':
+! 			puts(leftadj, width, va_arg(ap, char *));
+  			break;
+  		
+  		case 'c':
+--- 210,226 ----
+  		    	char	cbuf[20];
+  
+  		    	PPchar(va_arg(ap, int), cbuf);
+! 		    	puts(leftadj, width, precision, cbuf);
+  		    	break;
+  		    }
+  
+  		case 'n':
+  			if (va_arg(ap, int) != 1)
+! 				puts(leftadj, width, precision, "s");
+  			break;
+  
+  		case 's':
+! 			puts(leftadj, width, precision, va_arg(ap, char *));
+  			break;
+  		
+  		case 'c':
+***************
+*** 205,211 ****
+  			break;
+  	
+  		case 'f':	/* current command name gets inserted here! */
+! 			puts(leftadj, width, LastCmd->Name);
+  			break;
+  
+  		default:
+--- 228,234 ----
+  			break;
+  	
+  		case 'f':	/* current command name gets inserted here! */
+! 			puts(leftadj, width, precision, LastCmd->Name);
+  			break;
+  
+  		default:
+
+=====================================================================
+From casey@vangogh.Berkeley.EDU Wed Apr  8 01:21:22 1987
+Date: Wed, 8 Apr 87 00:21:18 PST
+From: casey@vangogh.berkeley.edu (Casey Leedom)
+To: bostic@vangogh.Berkeley.EDU
+Subject: jove/fmt.c diff - I fucked up.
+
+  Andy Beals did nearly the same fix to jove separately.  I saw an error in
+my fix as I looked over his change.  Here's the correct diff.  Sorry.
+
+*** /p/usr/src/new/jove/fmt.c	Thu Mar 27 17:54:35 1986
+--- fmt.c	Wed Apr  8 01:12:48 1987
+***************
+*** 56,67 ****
+  }
+  
+  static
+! putld(leftadj, width, d, base)
+  long	d;
+  {
+  	int	length = 1;
+  	long	tmpd = d;
+  
+  	while (tmpd = (tmpd / base))
+  		length++;
+  	if (d < 0)
+--- 56,78 ----
+  }
+  
+  static
+! putld(leftadj, width, precision, d, base)
+  long	d;
+  {
+  	int	length = 1;
+  	long	tmpd = d;
+  
++ #ifdef vax
++ 	/*
++ 	 * Simulate undocumented printf logic: "%.Nd" -> "%N.Nd".
++ 	 * We only support this because the ctime distributed
++ 	 * by CSRG, UC Berkeley in March 1987 used this feature.
++ 	 */
++ 	if (width == 0 && precision) {
++ 		width = precision;
++ 		padc = '0';
++ 	}
++ #endif
+  	while (tmpd = (tmpd / base))
+  		length++;
+  	if (d < 0)
+***************
+*** 89,100 ****
+  }
+  
+  static
+! puts(leftadj, width, str)
+  char	*str;
+  {
+  	int	length;
+! 	register char	*cp,
+! 			c;
+  
+  	if (str == 0)
+  #if pyr
+--- 100,110 ----
+  }
+  
+  static
+! puts(leftadj, width, precision, str)
+  char	*str;
+  {
+  	int	length;
+! 	register char	*cp;
+  
+  	if (str == 0)
+  #if pyr
+***************
+*** 103,113 ****
+  		str = "(null)";
+  #endif
+  	length = strlen(str);
+  	cp = str;
+  	if (!leftadj)
+  		pad(' ', width - length);
+! 	while (c = *cp++)
+! 		putc(c, curiop);
+  	if (leftadj)
+  		pad(' ', width - length);
+  }
+--- 113,128 ----
+  		str = "(null)";
+  #endif
+  	length = strlen(str);
++ 	if (precision == 0 || length < precision)
++ 		precision = length;
++ 	else
++ 		length = precision;
++ 
+  	cp = str;
+  	if (!leftadj)
+  		pad(' ', width - length);
+! 	while (precision--)
+! 		putc(*cp++, curiop);
+  	if (leftadj)
+  		pad(' ', width - length);
+  }
+***************
+*** 129,135 ****
+  {
+  	register char	c;
+  	int	leftadj,
+! 		width;
+  	File	*pushiop = curiop;
+  
+  	curiop = sp;
+--- 144,151 ----
+  {
+  	register char	c;
+  	int	leftadj,
+! 		width,
+!  		precision;
+  	File	*pushiop = curiop;
+  
+  	curiop = sp;
+***************
+*** 141,147 ****
+  		}
+  
+  		padc = ' ';
+! 		leftadj = width = 0;
+  		c = *fmt++;
+  		if (c == '-') {
+  			leftadj++;
+--- 157,163 ----
+  		}
+  
+  		padc = ' ';
+! 		leftadj = width = precision = 0;
+  		c = *fmt++;
+  		if (c == '-') {
+  			leftadj++;
+***************
+*** 159,164 ****
+--- 175,191 ----
+  			width = va_arg(ap, int);
+  			c = *fmt++;
+  		}
++ 		if (c == '.') {
++ 			c = *fmt++;
++ 			while (c >= '0' && c <= '9') {
++ 				precision = precision * 10 + (c - '0');
++ 				c = *fmt++;
++ 			}
++ 			if (c == '*') {
++ 				precision = va_arg(ap, int);
++ 				c = *fmt++;
++ 			}
++ 		}
+  	reswitch:
+  		/* At this point, fmt points at one past the format letter. */
+  		switch (c) {
+***************
+*** 171,185 ****
+  			break;
+  	
+  		case 'o':
+! 			putld(leftadj, width, (long) va_arg(ap, int), 8);
+  			break;
+  	
+  		case 'd':
+! 			putld(leftadj, width, (long) va_arg(ap, int), 10);
+  			break;
+  	
+  		case 'D':
+! 			putld(leftadj, width, va_arg(ap, long), 10);
+  			break;
+  	
+  		case 'p':
+--- 198,212 ----
+  			break;
+  	
+  		case 'o':
+! 			putld(leftadj, width, precision, (long) va_arg(ap, int), 8);
+  			break;
+  	
+  		case 'd':
+! 			putld(leftadj, width, precision, (long) va_arg(ap, int), 10);
+  			break;
+  	
+  		case 'D':
+! 			putld(leftadj, width, precision, va_arg(ap, long), 10);
+  			break;
+  	
+  		case 'p':
+***************
+*** 187,203 ****
+  		    	char	cbuf[20];
+  
+  		    	PPchar(va_arg(ap, int), cbuf);
+! 		    	puts(leftadj, width, cbuf);
+  		    	break;
+  		    }
+  
+  		case 'n':
+  			if (va_arg(ap, int) != 1)
+! 				puts(leftadj, width, "s");
+  			break;
+  
+  		case 's':
+! 			puts(leftadj, width, va_arg(ap, char *));
+  			break;
+  		
+  		case 'c':
+--- 214,230 ----
+  		    	char	cbuf[20];
+  
+  		    	PPchar(va_arg(ap, int), cbuf);
+! 		    	puts(leftadj, width, precision, cbuf);
+  		    	break;
+  		    }
+  
+  		case 'n':
+  			if (va_arg(ap, int) != 1)
+! 				puts(leftadj, width, precision, "s");
+  			break;
+  
+  		case 's':
+! 			puts(leftadj, width, precision, va_arg(ap, char *));
+  			break;
+  		
+  		case 'c':
+***************
+*** 205,211 ****
+  			break;
+  	
+  		case 'f':	/* current command name gets inserted here! */
+! 			puts(leftadj, width, LastCmd->Name);
+  			break;
+  
+  		default:
+--- 232,238 ----
+  			break;
+  	
+  		case 'f':	/* current command name gets inserted here! */
+! 			puts(leftadj, width, precision, LastCmd->Name);
+  			break;
+  
+  		default:
+

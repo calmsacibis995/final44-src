@@ -1,0 +1,144 @@
+From cgd@postgres.Berkeley.EDU Mon May  3 20:50:50 1993
+To: karels@bsdi.com, bostic@vangogh.CS.Berkeley.EDU
+Cc: cgd@postgres.Berkeley.EDU
+Precedence: special-delivery
+X-Phone: (510) 549-3563
+Subject: bug in net/2 i386 network interrupt handling
+Date: Mon, 03 May 93 20:51:02 -0700
+From: cgd@postgres.Berkeley.EDU
+X-Mts: smtp
+Index: sys/i386/isa/isa.c net2
+
+i found this in a 386bsd-derived system, but it's present in net/2
+as well.  i'm not sure if either of you are interested in this,
+so you both get it.
+
+repeat by:
+	boot a kernel which has *only* the loopback interface config'd in.
+	ifconfig the loopback interface
+	start up an inetd
+	telnet localhost
+
+	machine reboots without a panic.
+	(further investigation leads to the diagnosis that the
+	kernel is overflowing its stack.)
+
+diagnosis:
+	because netmask is 0, the splx(s) at the end of looutput
+	gets handled as an splnone, which calls the networking
+	code's interrupt service routine code.
+	in infinite loop of:
+	looutput -> splnone -> ipintr -> tcp_input -> tcp_output ->
+		ip_output -> looutput
+	results, and the machine goes foom.
+
+enclosed below is the patch that i used to fix it.  unfortunately,
+the i386-bsd interrupt architecture as present in net/2 & 386bsd
+is pretty nasty, and i can't find an appealing fix for this.
+we're (the netbsd gang) are hopefully going to be replacing
+the interrupt system soon...
+
+basically, the fix uses the same mask (actually, apparently,
+pseudo-mask) for the netmask that splsoftclock uses to indicate that
+the system is at that spl level.  this is hack, at best, i think.
+
+
+enjoy,
+
+chris
+===================================================================
+RCS file: /b/source/CVS/src/sys/i386/isa/isa.c,v
+retrieving revision 1.6
+diff -c -r1.6 isa.c
+*** 1.6	1993/04/15 07:57:57
+--- isa.c	1993/05/04 02:37:13
+***************
+*** 105,110 ****
+--- 105,120 ----
+  	netmask |= ttymask;
+  	ttymask |= netmask;
+  #endif
++ 
++ 	/* and the problem is... if netmask == 0, then the loopback
++ 	 * code can do some really ugly things.
++ 	 * workaround for this: if netmask == 0, set it to 0x8000, which
++ 	 * is the value used by splsoftclock.  this is nasty, but it
++ 	 * should work until this interrupt system goes away. -- cgd
++ 	 */
++ 	if (netmask == 0)
++ 		netmask = 0x8000;	/* same as for softclock.  XXX */
++ 
+  	/* biomask |= ttymask ;  can some tty devices use buffers? */
+  	/* printf("biomask %x ttymask %x netmask %x\n", biomask, ttymask, netmask); */
+  	splnone();
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From mycroft@gnu.ai.mit.edu Mon May  3 21:54:51 1993
+Received: from albert.gnu.ai.mit.edu (albert.gnu.ai.mit.edu [128.52.46.31]) by vangogh.CS.Berkeley.EDU (ALPHA-6.55/6.25) id VAA02894; Mon, 3 May 1993 21:54:50 -0700
+Received: from hal.gnu.ai.mit.edu by albert.gnu.ai.mit.edu (5.65/4.0) with SMTP
+	id <AA11510@albert.gnu.ai.mit.edu>; Tue, 4 May 93 00:54:56 -0400
+Received: by hal.gnu.ai.mit.edu (AIX 3.2/UCB 5.64/4.0)
+	id <AA16711@hal.gnu.ai.mit.edu>; Tue, 4 May 1993 00:54:55 -0400
+From: mycroft@gnu.ai.mit.edu
+Message-Id: <9305040454.AA16711@hal.gnu.ai.mit.edu>
+Subject: Re: fixed loopback == nuke problem.
+To: cgd@postgres.berkeley.edu
+Date: Tue, 4 May 1993 00:54:54 -0500 (EDT)
+Cc: hackers@sun-lamp.cs.berkeley.edu, karels@bsdi.com,
+        bostic@vangogh.CS.Berkeley.EDU
+In-Reply-To: <9305040355.AA13187@crucifixion.CS.Berkeley.EDU> from "cgd@postgres.berkeley.edu" at May 3, 93 08:55:02 pm
+X-Mailer: ELM [version 2.4 PL21]
+Mime-Version: 1.0
+Content-Type: text/plain; charset=US-ASCII
+Content-Transfer-Encoding: 7bit
+Content-Length: 1051      
+Status: R
+
+
+> 	because netmask is 0, the splx(s) at the end of looutput
+> 	gets handled as an splnone, which calls the networking
+> 	code's interrupt service routine code.
+> 	in infinite loop of:
+> 	looutput -> splnone -> ipintr -> tcp_input -> tcp_output ->
+> 		ip_output -> looutput
+
+I recommend the following diff:
+
+===================================================================
+RCS file: /b/source/CVS/src/sys/netinet/ip_input.c,v
+retrieving revision 1.1
+retrieving revision 1.3
+diff -c -2 -r1.1 -r1.3
+*** 1.1 1993/03/21 09:46:09
+--- 1.3 1993/05/04 03:49:59
+***************
+*** 142,146 ****
+--- 142,150 ----
+  	register struct in_ifaddr *ia;
+  	int hlen, s;
++ 	static int busy = 0;
+  
++ 	if (busy)
++ 		return;
++ 	++busy;
+  next:
+  	/*
+***************
+*** 151,156 ****
+  	IF_DEQUEUE(&ipintrq, m);
+  	splx(s);
+! 	if (m == 0)
+  		return;
+  #ifdef	DIAGNOSTIC
+  	if ((m->m_flags & M_PKTHDR) == 0)
+--- 155,162 ----
+  	IF_DEQUEUE(&ipintrq, m);
+  	splx(s);
+! 	if (m == 0) {
+! 		--busy;
+  		return;
++ 	}
+  #ifdef	DIAGNOSTIC
+  	if ((m->m_flags & M_PKTHDR) == 0)
+
+

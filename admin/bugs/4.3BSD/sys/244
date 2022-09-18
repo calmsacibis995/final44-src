@@ -1,0 +1,198 @@
+From jak@okeeffe.Berkeley.EDU  Mon Apr 23 15:32:37 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.62/1.37)
+	id AA06357; Mon, 23 Apr 90 15:32:37 -0700
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.62/1.41)
+	id AA21131; Mon, 23 Apr 90 15:32:45 -0700
+Received: by okeeffe.Berkeley.EDU (5.62/1.37)
+	id AA06349; Mon, 23 Apr 90 15:32:25 -0700
+Date: Mon, 23 Apr 90 15:32:25 -0700
+From: jak@okeeffe.Berkeley.EDU (John A. Kunze)
+Message-Id: <9004232232.AA06349@okeeffe.Berkeley.EDU>
+Subject: select(2) incorrectly (?) reports data that is ready
+Index: sys 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Select doesn't distinguish between data ready to read and an EOF.
+	I believe (hope) that is not the intended behavior, but the man
+	page doesn't say.  In searching my mind to justify why someone
+	would want EOF to look like ready data, I thought that maybe a
+	call to read() would clear the indication -- unfortunately that
+	happens not to work.  One application where select() fails
+	completely is in watching to see when a file grows; once your
+	read() hits EOF, it always looks like there's more data to read
+	whether there actually is any or not.
+
+Repeat-By:
+	The following output was produced with the "selbug" program that
+	follows it (cc -o selbug selbug.c).  It exercises select() in a
+	few different ways.
+
+Script started on Mon Apr 23 15:12:43 1990
+
+jak@okeeffe jak 1 % selbug
+
+Usage:  selbug N
+	N=0:  select on various open files, and a closed file
+	N=1:  select on open file with no data to read, append data later
+	N=2:  select on a pipe
+jak@okeeffe jak 2 % selbug 0
+On open file /dev/null:
+    Descriptor mask 10 to start (in=3)
+    Descriptor mask 10 after select, 1 inputs ready
+On open file /dev/tty:
+    Descriptor mask 10 to start (in=3)
+    Descriptor mask 0 after select, 0 inputs ready
+On open file /etc/motd:
+    Descriptor mask 10 to start (in=3)
+    Descriptor mask 10 after select, 1 inputs ready
+On closed file descriptor (was /etc/motd):
+    Descriptor mask 10 to start (in=3)
+    Select Error: Bad file descriptor
+Conclusion - EOF means ready input to select, but a closed file does not.
+jak@okeeffe jak 3 % selbug 1
+On open, truncated file /tmp/app321:
+    Descriptor mask 20 to start (in=4)
+    Descriptor mask 20 after select, 1 inputs ready
+    But read returns 0 bytes.
+Maybe the EOF just returned by read() was considered to be unread data
+by select() -- but, no, the next select() still indicates ready data:
+    Descriptor mask 20 to start (in=4)
+    Descriptor mask 20 after select, 1 inputs ready
+Now I'll append some bytes and try select() again:
+    Descriptor mask 20 to start (in=4)
+    Descriptor mask 20 after select, 1 inputs ready
+    Read returns :hello: 6 bytes.
+Conclusion - select can't distinguish between ready input and EOF.
+jak@okeeffe jak 4 % selbug 2
+On read end of pipe:
+    Descriptor mask 10 to start (in=3)
+    Descriptor mask 0 after select, 0 inputs ready
+On read end of pipe with closed write end:
+    Descriptor mask 10 to start (in=3)
+    Descriptor mask 10 after select, 1 inputs ready
+Conclusion - closed write end of pipe looks like data to read (case 1).
+
+Script done on Mon Apr 23 15:13:00 1990
+
+====================== selbug.c =======================
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/file.h>
+
+#define STDFILE		"/etc/motd"
+#define TTYFILE		"/dev/tty"
+#define NULFILE		"/dev/null"
+#define APPFILE		"/tmp/app321"
+
+int bug;
+
+main(argc, argv)
+	int argc;
+	char *argv[];
+{
+	int t2opipe[2];		/* target-to-origin pipe */
+	int pid, n;
+	int in, out;
+	char buf[BUFSIZ];
+
+	if (argc == 1) {
+		printf("Usage:  %s N\n\t%s\n\t%s\n\t%s\n", argv[0],
+			"N=0:  select on various open files, and a closed file",
+			"N=1:  select on open file with no data to read, append data later",
+			"N=2:  select on a pipe");
+		exit(1);
+	}
+	if ((bug = atoi(argv[1])) < 0)
+		bug = 0;
+
+	switch (bug) {
+
+#define tryfile(name)  \
+		if ((in = open(name, O_RDONLY, 0)) < 0) \
+			perror(name); \
+		printf("On open file %s:\n", name); \
+		do_select(in); \
+		if (close(in) != 0) \
+			perror(name);
+
+	case 0:
+		tryfile(NULFILE);
+		tryfile(TTYFILE);
+		tryfile(STDFILE);
+		printf("On closed file descriptor (was %s):\n", STDFILE);
+		do_select(in);
+		printf("Conclusion - EOF means ready input to select, but a closed file does not.\n");
+		exit(0);
+
+	case 1:
+		out = open(APPFILE, O_CREAT|O_TRUNC|O_WRONLY|O_APPEND, 0666);
+		if (out < 0)
+			perror(APPFILE);
+		if ((in = open(APPFILE, O_RDONLY, 0)) < 0)
+			perror(APPFILE);
+		printf("On open, truncated file %s:\n", APPFILE);
+		do_select(in);
+		if ((n = read(in, buf, BUFSIZ)) < 0)
+			perror(APPFILE);
+		else if (n > 0)
+			printf("Oops, %s should have zero length.\n", APPFILE);
+		else	/* n == 0 */
+			printf("    But read returns %d bytes.\n", n);
+		printf("Maybe the EOF just returned by read() was considered to be unread data\n");
+		printf("by select() -- but, no, the next select() still indicates ready data:\n");
+		do_select(in);
+		printf("Now I'll append some bytes and try select() again:\n", APPFILE);
+		if (write(out, "hello", 6) < 0)
+			perror("Write failed");
+		do_select(in);
+		if ((n = read(in, buf, BUFSIZ)) < 0)
+			perror(APPFILE);
+		else
+			printf("    Read returns :%s: %d bytes.\n", buf, n);
+		printf("Conclusion - select can't distinguish between ready input and EOF.\n");
+		exit(0);
+
+	case 2:
+		if (pipe(t2opipe) < 0)
+			perror("t2opipe");
+		printf("On read end of pipe:\n");
+		do_select(t2opipe[0]);
+		printf("On read end of pipe with closed write end:\n");
+		if (close(t2opipe[1]) != 0)
+			perror("write end of pipe");
+		do_select(t2opipe[0]);
+		printf("Conclusion - closed write end of pipe looks like data to read (case 1).\n");
+		exit(0);
+
+	default:
+		printf("Try a number from 0 to 2\n");
+		exit(0);
+	}
+}
+
+struct timeval poll;		/* zero struct to select effects a poll */
+
+do_select(in)
+	int in;
+{
+	int maxfd;		/* largest file descriptor to check */
+	fd_set rfds;		/* file descriptors for reading */
+	int n;
+
+	maxfd = in + 1;
+
+	FD_ZERO(&rfds);
+	FD_SET(in, &rfds);
+	printf("    Descriptor mask %o to start (in=%d)\n",
+		rfds.fds_bits[0], in);
+
+	n = select(maxfd, &rfds, 0, 0, &poll);
+
+	if (n < 0)
+		perror("    Select Error");
+	else
+		printf("    Descriptor mask %o after select, %d inputs ready\n",
+			rfds.fds_bits[0], n);
+}

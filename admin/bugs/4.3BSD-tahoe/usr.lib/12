@@ -1,0 +1,128 @@
+From litwack@operations.dccs.upenn.edu  Mon Apr  2 15:26:46 1990
+Posted-Date: Mon, 02 Apr 90 18:26:31 EDT
+Message-Id: <9004022226.AA12161@litwack.dccs.upenn.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: sendmail reports wrong problem when SMTP delivery fails
+Index: usr.lib/sendmail/src/usersmtp.c 4.3BSD-tahoe
+Date: Mon, 02 Apr 90 18:26:31 EDT
+From: Mark Litwack <litwack@operations.dccs.upenn.edu>
+
+Description:
+	Sendmail concludes the wrong reason for failure when the user SMTP
+	session dies.  The reason is entered wrong in syslog and in the
+	return message to the sender (if unable to deliver for 3 days).
+
+Repeat-By:
+	Have sendmail deliver a message to another mailer which says
+	nothing upon connect and then hangs up after 5 seconds.
+	This simulates a network failure.  Sendmail will record
+	this in syslog as:
+
+		stat=Deferred: Bad file number
+
+	It should say:
+
+		stat=Deferred: Connection reset by peer during
+		     greeting wait with host.xyz.edu
+
+Fix:
+	Sendmail gets the error message by examining errno.  Unfortunately,
+	errno is not preserved in a couple of routines before the actual
+	error message is generated.  message() and reply() both change errno.
+	reply() does a close of the already closed user SMTP socket and
+	causes errno to be set to "Bad file number".  message(), for reasons
+	unknown to me, just likes to set errno to 0.
+
+	The patch is to preserve errno before calling these routines.  The
+	real fix is not to use errno at all for passing around arguments
+	to other routines.  Here is a context diff for sendmail/usersmtp.c
+	version 5.61 for preserving errno:
+
+*** usersmtp.c.orig	Mon Apr  2 17:49:35 1990
+--- usersmtp.c	Mon Apr  2 18:19:08 1990
+***************
+*** 357,362
+  	}
+  
+  	/* now actually close the connection */
+  	(void) fclose(SmtpIn);
+  	(void) fclose(SmtpOut);
+  	SmtpIn = SmtpOut = NULL;
+
+--- 357,363 -----
+  	}
+  
+  	/* now actually close the connection */
++ 	i = errno;
+  	(void) fclose(SmtpIn);
+  	(void) fclose(SmtpOut);
+  	errno = i;
+***************
+*** 359,364
+  	/* now actually close the connection */
+  	(void) fclose(SmtpIn);
+  	(void) fclose(SmtpOut);
+  	SmtpIn = SmtpOut = NULL;
+  	SmtpState = SMTP_CLOSED;
+  
+
+--- 360,366 -----
+  	i = errno;
+  	(void) fclose(SmtpIn);
+  	(void) fclose(SmtpOut);
++ 	errno = i;
+  	SmtpIn = SmtpOut = NULL;
+  	SmtpState = SMTP_CLOSED;
+  
+***************
+*** 411,416
+  		{
+  			extern char MsgBuf[];		/* err.c */
+  			extern char Arpa_TSyserr[];	/* conf.c */
+  
+  			/* if the remote end closed early, fake an error */
+  			if (errno == 0)
+
+--- 413,419 -----
+  		{
+  			extern char MsgBuf[];		/* err.c */
+  			extern char Arpa_TSyserr[];	/* conf.c */
++ 			int terrno;
+  
+  			/* if the remote end closed early, fake an error */
+  			if (errno == 0)
+***************
+*** 420,425
+  				errno = EPIPE;
+  # endif ECONNRESET
+  
+  			message(Arpa_TSyserr, "reply: read error");
+  			/* if debugging, pause so we can see state */
+  			if (tTd(18, 100))
+
+--- 423,429 -----
+  				errno = EPIPE;
+  # endif ECONNRESET
+  
++ 			terrno = errno;
+  			message(Arpa_TSyserr, "reply: read error");
+  			errno = terrno;
+  			/* if debugging, pause so we can see state */
+***************
+*** 421,426
+  # endif ECONNRESET
+  
+  			message(Arpa_TSyserr, "reply: read error");
+  			/* if debugging, pause so we can see state */
+  			if (tTd(18, 100))
+  				pause();
+
+--- 425,431 -----
+  
+  			terrno = errno;
+  			message(Arpa_TSyserr, "reply: read error");
++ 			errno = terrno;
+  			/* if debugging, pause so we can see state */
+  			if (tTd(18, 100))
+  				pause();
+

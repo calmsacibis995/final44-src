@@ -1,0 +1,102 @@
+From aho@j.cc.purdue.edu  Tue Jan 10 14:28:11 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA05213; Tue, 10 Jan 89 14:28:11-0800
+Received: from j.cc.purdue.edu by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA29133; Tue, 10 Jan 89 14:26:09-0800
+Received: by j.cc.purdue.edu (5.54/1.14)
+	id AA28698; Tue, 10 Jan 89 17:24:35 EST
+Date: Tue, 10 Jan 89 17:24:35 EST
+From: aho@j.cc.purdue.edu (Scott Guthridge)
+Message-Id: <8901102224.AA28698@j.cc.purdue.edu>
+Subject: change to allow syslogd to attempt recovery from EIO
+Index: 	etc/syslogd.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Occationally after a weekly reboot, we've had syslogd fail
+	with EIO when trying to use writev to the console device.  After
+	this happens, syslogd marks the console slot as "not used" and
+	doesn't log anything to the console until it receives a hangup.
+	It has only happened on three out of the 7 vax780's we run and
+	on those three, it has happened repeatedly.  We suspect that
+	it may be caused by a race between syslogd and something else
+	that does ioctls on the console.  I am sending a fairly simple
+	change to syslogd that attempts to recover from EIO by closing
+	and reopened the offending file.
+
+Repeat-By:
+	Difficult to reproduce intentionally.
+
+Fix:
+	*** /tmp/,RCSt1027732	Tue Jan 10 16:58:26 1989
+	--- syslogd.c	Tue Jan 10 16:43:14 1989
+	***************
+	*** 587,609 ****
+					v->iov_len = 1;
+				}
+				if (writev(f->f_file, iov, 6) < 0) {
+	! 				int e = errno;
+					(void) close(f->f_file);
+					/*
+	! 				 * Check for EBADF on TTY's due to vhangup() XXX
+					 */
+	! 				if (e == EBADF && f->f_type != F_FILE) {
+	! 					f->f_file = open(f->f_un.f_fname, O_WRONLY|O_APPEND);
+	! 					if (f->f_file < 0) {
+	! 						f->f_type = F_UNUSED;
+	! 						logerror(f->f_un.f_fname);
+	! 					}
+	! 				} else {
+	! 					f->f_type = F_UNUSED;
+						errno = e;
+	! 					logerror(f->f_un.f_fname);
+					}
+	! 			} else if (flags & SYNC_FILE)
+					(void) fsync(f->f_file);
+				break;
+	  
+	--- 587,630 ----
+					v->iov_len = 1;
+				}
+				if (writev(f->f_file, iov, 6) < 0) {
+	! 				auto char ac[100];
+	! 				auto int e;
+	! 				auto short oldtype;
+	! 
+	! 				e = errno;
+	! 				oldtype = f->f_type;	/* avoid loop	*/
+	! 				f->f_type = F_UNUSED;
+	! 				sprintf(ac, "%s: writev to CONSOLE|TTY|FILE", f->f_un.f_fname);
+	! 				errno = e;
+	! 				logerror(ac);
+					(void) close(f->f_file);
+					/*
+	! 				 * Check for EBADF on TTY's due to vhangup()
+	! 				 * and try EIO's too (/dev/console causes these)
+					 */
+	! 				if ((e != EBADF && e != EIO) || oldtype == F_FILE) {
+	! 					break;
+	! 				}
+	! 				/*
+	! 				 * try to reopen the tty
+	! 				 */
+	! 				f->f_file = open(f->f_un.f_fname, O_WRONLY|O_APPEND);
+	! 				if (-1 == f->f_file) {
+	! 					e = errno;
+	! 					sprintf(ac, "%s: (attempt to reopen after error failed)", f->f_un.f_fname);
+						errno = e;
+	! 					logerror(ac);
+	! 					break;
+					}
+	! 				untty();
+	! 				sprintf(ac, "%s: (reopened after error)", f->f_un.f_fname);
+	! 				errno = 0;
+	! 				logerror(ac);
+	! 				f->f_type = oldtype;
+	! 				break;
+	! 
+	! 			}
+	! 			if (flags & SYNC_FILE)
+					(void) fsync(f->f_file);
+				break;
+	  

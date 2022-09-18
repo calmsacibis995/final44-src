@@ -1,0 +1,140 @@
+Return-Path: <@UTAH-CS.ARPA:UTAH-GR.thomas@utah-cs>
+Date: 27 Apr 83 22:36 MDT
+From: Spencer W. Thomas  <UTAH-GR.thomas@utah-cs>
+Subject: C compiler line numbering bug and fix
+
+Index: lib/cpp/cpp.c 4.2BSD Fix
+
+
+Description:
+	Line numbers on compiler error messages (sometimes) do not
+	match the line actually in error.  Usually the reported line
+	numbers are too big.
+
+Repeat-By:
+
+	Run this input through cc (without the line numbers):
+
+     1  #define twice(a)	a;a
+
+     3  main()
+     4  {
+     5  	int a;
+     6  	twice(a =
+     7  		0);
+     8  	while;
+     9  }
+
+	Cc produces the following error message:
+	"tmp.c", line 9: syntax error
+
+	Note that the message has the wrong line number.  Inserting a
+	#if 0, #endif pair will cause the line number to be even
+	further off (because the preprocessor has seen 3 newlines while
+	expanding the macro).
+
+Fix:
+
+	The explanation:
+	Invoking a macro with arguments, and putting a newline into the
+	argument list can cause the preprocessor and the compiler to
+	count the wrong number of lines.  If the actual which contains
+	the newline is only used once in the expansion, then the
+	compiler will count right, but the preprocessor will count
+	wrong.  If the actual is not used or is used more than once,
+	both will count wrong, but they will disagree on the "correct"
+	line number.  The preprocessor counts wrong all the time
+	because it rescans the substituted text, thus counting each
+	newline multiple times.
+
+	The fix involves two steps:
+	1. Get the preprocessor to count the newlines properly.
+	2. Make the preprocessor put out exactly as many newlines in
+	   the output as it saw in the input.  Since newlines are
+	   exactly the same as spaces (except in quoted strings, see
+	   below) turning the excess newlines into spaces will produce
+	   this effect.  Bare newlines are illegal in quoted strings,
+	   so this will not have any effect on LEGAL code.  Backslash
+	   quoted newlines are allowed in quoted strings, but are
+	   ignored, thus the preprocessor can ignore both the backslash
+	   and the newline in this case.
+
+
+Diff listing (please note, this is NOT my usual coding style).  The
+	   line numbers will probably not match your cpp.c, we have run
+	   ours through a pretty printer.  (these changes all occur in
+	   the routine subst()).
+
+*** /tmp/,RCSt1006926	Wed Apr 27 10:26:41 1983
+--- cpp.c	Wed Apr 27 10:22:55 1983
+***************
+*** 864,865
+  	char *actual[MAXFRM]; /* actual[n] is text of nth actual */
+  	char acttxt[BUFSIZ]; /* space for actuals */
+
+--- 864,866 -----
+  	char *actual[MAXFRM]; /* actual[n] is text of nth actual */
++ 	char actused[MAXFRM]; /* for newline processing in actuals */
+  	char acttxt[BUFSIZ]; /* space for actuals */
+***************
+*** 865,866
+  	char acttxt[BUFSIZ]; /* space for actuals */
+  
+
+--- 866,868 -----
+  	char acttxt[BUFSIZ]; /* space for actuals */
++ 	int nlines;
+  
+***************
+*** 903,905
+  				if (pa>= &actual[MAXFRM]) ppwarn(match,sp->name);
+! 				else *pa++=ca;
+  			}
+
+--- 905,907 -----
+  				if (pa>= &actual[MAXFRM]) ppwarn(match,sp->name);
+! 				else { actused[pa-actual]=0; *pa++=ca; }
+  			}
+***************
+*** 905,906
+  			}
+  		}
+
+--- 907,911 -----
+  			}
++ 			nlines = lineno[ifno] - maclin;
++ 			lineno[ifno] = maclin;	/* don't count any newlines */
++ 						/* they get counted later */
+  		}
+***************
+*** 919,921
+  				if (bob(p)) {outp=inp=p; p=unfill(p);}
+! 				*--p= *ca;
+  			}
+
+--- 924,932 -----
+  				if (bob(p)) {outp=inp=p; p=unfill(p);}
+! 				/* 
+! 				 * Actuals with newlines screw up line #s
+! 				 */
+! 				if (*ca == '\n' && actused[*vp-1])
+! 				    if (*(ca-1) == '\\') ca--;
+! 				    else *--p = ' ';
+! 				else { *--p= *ca; if (*ca == '\n') nlines--; }
+  			}
+***************
+*** 921,923
+  			}
+! 		} else break;
+  	}
+
+--- 932,940 -----
+  			}
+! 			actused[*vp-1] = 1;
+! 		} else {
+! 		    if (nlines > 0)
+! 			while (nlines-- > 0)
+! 			    *--p = '\n';
+! 		    break;
+! 		}
+  	}

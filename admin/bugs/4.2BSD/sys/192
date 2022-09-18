@@ -1,0 +1,56 @@
+Return-Path: <mwm@ucbtopaz.CC>
+Subject: Mounting non file systems
+Index: sys/sys/ufs_mount.c 4.2BSD
+Date: 06 Feb 85 17:21:37 PST (Wed)
+From: mwm@ucbtopaz.CC
+
+Description:
+	The mount system will crash the system if the mounted fs doesn't
+	have a bad superblock (everybody knows that, right?), even if
+	FS_MAGIC in the sblock is wrong.
+Repeat-By:
+	Scribble garbage on an unused file system and verify that it has
+	a bad FS_MAGIC by trying to fsck it.  Mount the file system, and
+	watch the system crash.
+Fix:
+	Move the test for bad FS_MAGIC and bad MAXBSIZE to before trying
+	the geteblk. Diffs follow:
+	
+*** ufs_mount.co	Wed Feb  6 17:07:11 1985
+--- ufs_mount.c		Wed Feb  6 16:12:28 1985
+***************
+*** 87,92
+  	mp->m_bufp = tp;	/* just to reserve this slot */
+  	mp->m_dev = NODEV;
+  	fs = tp->b_un.b_fs;
+  	bp = geteblk((int)fs->fs_sbsize);
+  	mp->m_bufp = bp;
+  	bcopy((caddr_t)tp->b_un.b_addr, (caddr_t)bp->b_un.b_addr,
+
+--- 87,94 -----
+  	mp->m_bufp = tp;	/* just to reserve this slot */
+  	mp->m_dev = NODEV;
+  	fs = tp->b_un.b_fs;
++ 	if (fs->fs_magic != FS_MAGIC || fs->fs_bsize > MAXBSIZE)
++ 		goto out;
+  	bp = geteblk((int)fs->fs_sbsize);
+  	mp->m_bufp = bp;
+  	bcopy((caddr_t)tp->b_un.b_addr, (caddr_t)bp->b_un.b_addr,
+***************
+*** 94,101
+  	brelse(tp);
+  	tp = 0;
+  	fs = bp->b_un.b_fs;
+- 	if (fs->fs_magic != FS_MAGIC || fs->fs_bsize > MAXBSIZE)
+- 		goto out;
+  	fs->fs_ronly = (ronly != 0);
+  	if (ronly == 0)
+  		fs->fs_fmod = 1;
+
+--- 96,101 -----
+  	brelse(tp);
+  	tp = 0;
+  	fs = bp->b_un.b_fs;
+  	fs->fs_ronly = (ronly != 0);
+  	if (ronly == 0)
+  		fs->fs_fmod = 1;

@@ -1,0 +1,43 @@
+Return-Path: <sun!gorodish!guy@ucbvax.Berkeley.EDU>
+Date: Tue, 29 Jul 86 15:42:28 PDT
+From: sun!gorodish!guy@ucbvax.Berkeley.EDU (Guy Harris)
+Subject: "link" system call doesn't check whether the link count overflows
+Index: 	sys/sys/ufs_syscalls.c 4.3BSD
+
+Description:
+	(Thanks to Don Cragun here for pointing this one out and providing
+	the fix)
+	Some system verification tests fail because the link() sytem call code
+	in sys/ufs_syscalls.c does not check for the link count overflowing a
+	signed short.  In fact, the code will allow 65535 links to be created,
+	but none of the links can be removed after 32767 links have been
+	created.  If 65535 links to a file exist and another link is made, the
+	link will succeed, but all further attempts to use the file will fail
+	because the link count will have wrapped to 0.
+Repeat-By:
+        You don't want to repeat this.  It will cause severe headaches while
+        trying to patch the destroyed file system back to a sane state.  It
+        could be repeated by using the following in the Bourne shell:
+                i=2
+                >1 
+                while [ $i -lt 32769 ]
+                do
+                        ln 1 $i
+                        i=`expr $i + 1`
+                done
+        Note that the C version of this will run for over 30 hours on a Sun-2,
+	and probably for some similarly large time on other machines.
+Fix:
+	Put the "#define MAXLINK 32767" back in param.h and change the
+	following line of code in link():
+                ip->i_nlink++;
+        to:
+                if (ip->i_nlink == MAXLINK) {
+			u.u_error = EMLINK;
+                        iput(ip);
+                        return;
+                }
+                ip->i_nlink++;
+	
+	Note: You may want to define MAXLINK as some smaller value.  System
+	V uses 1000.

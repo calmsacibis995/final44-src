@@ -1,0 +1,107 @@
+Return-Path: <obrien@rand-unix>
+Date: Wednesday, 11 Jan 1984 23:40-PST
+Subject: lib/ccom
+From: obrien@rand-unix
+
+Description:
+	In "pcc" as Berkeley distributes it, there's a bug in
+type conversion with assignment operators.  +=, -=, *=, and /=
+with an int on the left and float or double on the right convert
+the float first, then do the operation.
+
+To reproduce:
+	Compile:
+	int a = 6;
+	main() {
+		a *= 0.5;
+		printf("%d\n", a);
+	}
+	You'll get "0" instead of "3".
+
+Know Fix:
+	Ed Hall here at Rand came up with the following:
+
+====================
+
+
+Relay-Version: version B 2.10.1 6/24/83; site randvax.ARPA
+Posting-Version: version B 2.10.1 6/24/83; site randvax.ARPA
+Path: randvax!edhall
+From: edhall@randvax.ARPA (Ed Hall)
+Newsgroups: net.bugs.4bsd,net.bugs.usg
+Subject: integer op= floating evaluated incorrectly by C compiler
+Message-ID: <1625@randvax.ARPA>
+Date: Wed, 11-Jan-84 00:13:26 PST
+Article-I.D.: randvax.1625
+Posted: Wed Jan 11 00:13:26 1984
+Date-Received: Wed, 11-Jan-84 00:13:26 PST
+Organization: Rand Corp., Santa Monica
+Lines: 67
+
+------------------------------------
+This bug may affect all pre-5.0USG C compilers, and perhaps earlier
+5.0USG compilers as well.  The below fix only works for PCC-derived
+compilers (such as the BSD VAX C compiler).
+
+Index:  usr.lib/ccom 4.2BSD 4.1BSD 3.0USG
+
+Description:
+	When assignement operators such as *= are used with an integer
+	Left-Hand Side and a floating-point expression on the Right-
+	Hand Side, results are incorrect.  For example:
+
+		int i = 6;
+		i *= .5;
+
+	leaves a value of 0 in i, rather than 3.  The +=, -=, and /=
+	operators are similarly affected.
+
+Caused by:
+	Conversion of RHS of assignment to type of LHS before application
+	of the operator.
+
+Fixed by:
+	The fix is in two parts.  First, the automatic forcing of type
+	conversion to the LHS of an assignment op must be shut off in
+	appropriate circumstances.  This requires a change to tymatch()
+	in mip/trees.c:
+
+1031c1031,1035
+< 	if( t != t2 || o==CAST ) p->in.right = makety( p->in.right, tu, 0, (int)tu );
+---
+> 	if( o==CAST || (t != t2
+> 	  && ( (dope[o]&(FLOFLG|ASGOPFLG)) != (FLOFLG|ASGOPFLG)
+> 	  || t != INT || (t2 != DOUBLE && t2 != FLOAT) )) ) {
+> 		p->in.right = makety( p->in.right, tu, 0, (int)tu );
+> 		}
+
+	This causes certain assignment ops (+=, -=, *=, /=, i.e. the ones
+	appropriate in floating-point) to remain in the parse tree without
+	`balanced' operand types.  When these get to code-generation the
+	compiler would break unless the template table had the proper pieces
+	added to it.  Thus, in pcc/table.c:
+
+712a713,729
+>
+> /* begin new stuff */
+>
+> ASG OPFLOAT,    INAREG|FOREFF|FORCC,
+>       SAREG|AWD,      TWORD|TCHAR|TSHORT,
+>       SAREG|AWD,      TDOUBLE,
+>               NAREG,  RLEFT|RESCC,
+>               "       cvtZLd  AL,A1\n OD2     AR,A1\n cvtdZL  A1,AL\n",
+>
+> ASG OPFLOAT,    INAREG|FOREFF|FORCC,
+>       SAREG|AWD,      TWORD|TCHAR|TSHORT,
+>       SAREG|AWD,      TFLOAT,
+>               NAREG,  RLEFT|RESCC,
+>               "       cvtZLf  AL,A1\n OF2     AR,A1\n cvtfZL  A1,AL\n",
+>
+> /* end new stuff */
+>
+
+	-Ed Hall
+	Rand Corporation
+	Santa Monica, CA
+	decvax!randvax!edhall   (UUCP)
+	edhall@rand-unix        (ARPA)

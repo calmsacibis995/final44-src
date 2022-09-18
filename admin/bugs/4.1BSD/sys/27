@@ -1,0 +1,33 @@
+Date: 13 May 83 16:13 MDT
+From: Jay Lepreau <lepreau@utah-cs>
+Subject: Fix for Interlan driver breaking after a ubareset
+
+Index:	sys/vaxif/if_il.c 4.1BSD Fix
+
+Description:
+	After a ubareset, all the packets sent by that host get thrown out
+	in ilrint() with a bad type field.  Turns out that the interlan
+	goes into "insert source address" mode after the ubareset.
+	Evidently the CISA cmd in ilinit() does not work if the device
+	is ONLINE.  From inspection of current code on monet this is
+	still a problem in 4.1c.
+Repeat-By:
+	Issue a resuba() call.  ruptime shows all hosts up execpt for
+	this one.  Etc.
+Fix:
+	Set it offline first in ilinit(), which is called by ilreset().
+	Here's the relevant portion of ilinit().
+
+	/*
+	 * Turn off source address insertion (it's faster this way),
+!	 * and set board online.  Former doesn't work if board is
++	 * already online (happens on ubareset), so we put it offline
++	 * first.
+	 */
+	s = splimp();
++	addr->il_csr = ILC_OFFLINE;
++	while ((addr->il_csr & IL_CDONE) == 0)
++		;
+	addr->il_csr = ILC_CISA;
+	while ((addr->il_csr & IL_CDONE) == 0)
+		;

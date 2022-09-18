@@ -1,0 +1,76 @@
+Return-Path: <mjb%Brown@UDel-Relay>
+Date:     27 Sep 83 (Tuesday) 11:34 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  Setting "cooked" and "tandem" mode loses
+
+Index:	sys/sys/tty.c 4.1BSD Fix
+Description:
+	Setting TANDEM when in cooked mode loses big. When the input
+	queue gets bigger than TTYHOG/2 a STOP char is sent, but a
+	START char will never be sent because the input queue won't
+	get smaller until a break character is received. Since the
+	sender is blocked, it can't send the break character!
+Repeat-By:
+	Get on a terminal that does ^S ^Q protocol. Type "stty tandem".
+	Then type enough characters that the terminal locks. Notice
+	how the terminal never unlocks.
+Fix:
+	The solution is "deferred blocking", i.e. set TS_BLOCK but
+	don't send the ^S until a break character is received.
+	/*	tty.c	4.40	83/02/10	*/
+	*** tty.c.ucb	Thu Feb 10 19:04:14 1983
+	--- tty.c	Wed Sep 21 08:32:55 1983
+	***************
+	*** 171,178
+		x = tp->t_rawq.c_cc + tp->t_canq.c_cc;
+		if (tp->t_rawq.c_cc > TTYHOG) {
+			flushtty(tp, FREAD|FWRITE);
+			tp->t_state &= ~TS_TBLOCK;
+		}
+	! 	if (x >= TTYHOG/2 && putc(tp->t_stopc, &tp->t_outq) == 0) {
+	! 		tp->t_state |= TS_TBLOCK;
+	! 		ttstart(tp);
+		}
+	  }
+	--- 171,183 -----
+		x = tp->t_rawq.c_cc + tp->t_canq.c_cc;
+		if (tp->t_rawq.c_cc > TTYHOG) {
+			flushtty(tp, FREAD|FWRITE);
+			tp->t_state &= ~TS_TBLOCK;
+		}
+	! 	if (x >= TTYHOG/2) {
+	!		if ((tp->t_flags & (RAW|CBREAK)) == 0)
+	!	 	/* Deferred blocking for cooked mode */
+	!			tp->t_state |= TS_TBLOCK;
+	!		else if (putc(tp->t_stopc, &tp->t_outq) == 0) {
+	!			tp->t_state |= TS_TBLOCK;
+	!			ttstart(tp);
+	!		}
+		}
+	  }
+	***************
+	*** 753,758
+				tp->t_rocount = 0;
+				catq(&tp->t_rawq, &tp->t_canq);
+				ttwakeup(tp);
+			} else if (tp->t_rocount++ == 0)
+				tp->t_rocol = tp->t_col;
+			tp->t_state &= ~TS_QUOT;
+	--- 758,782 -----
+				tp->t_rocount = 0;
+				catq(&tp->t_rawq, &tp->t_canq);
+				ttwakeup(tp);
+	+
+	+ 			/* Process delayed block in cooked mode */
+	+ 			if (tp->t_state & TS_TBLOCK) {
+	+ 				if (putc(tp->t_stopc, &tp->t_outq) == 0)
+	+ 					ttstart(tp);
+	+ 				else
+	+ 					tp->t_state &= ~TS_TBLOCK;
+	+ 			}
+	+ 
+			} else if (tp->t_rocount++ == 0)
+				tp->t_rocol = tp->t_col;
+			tp->t_state &= ~TS_QUOT;
+	====END OF FIX====

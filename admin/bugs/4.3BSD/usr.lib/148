@@ -1,0 +1,63 @@
+From edelsohn@tapir.Caltech.EDU  Tue Nov 28 00:05:41 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA28858; Tue, 28 Nov 89 00:05:41 -0800
+Received: from groucho.tapir.caltech.edu by ucbvax.Berkeley.EDU (5.61/1.39)
+	id AA19654; Tue, 28 Nov 89 00:05:49 -0800
+Received: by groucho.tapir.Caltech.EDU (5.61/Ultrix3.1)
+	id AA05805; Tue, 28 Nov 89 00:05:58 -0800
+Date: Tue, 28 Nov 89 00:05:58 -0800
+From: edelsohn@tapir.Caltech.EDU (David Edelsohn)
+Message-Id: <8911280805.AA05805@groucho.tapir.Caltech.EDU>
+Subject: sendmail-5.61 incorrectly handles MX records with equal precedence
+Index: usr.lib 4.3BSD
+Apparently-To: 4bsd-bugs@berkeley.edu
+
+Description:
+
+	I was just looking up the source to sendmail-5.61 to see why the
+mail load is not being evenly distributed between my two hosts pointed to
+by MX records with the same preference level.  In domain.c, the MX records
+are sorted by preference with a special case if the preferences are identical.
+The condition is as follows:
+
+	if ((prefer[i] > prefer[j]) ||
+		(prefer[i] == prefer[j] && rand() % 1 == 0) {
+			...SWAP ENTRIES...
+	}
+
+rand() is not guaranteed to be random in the lowest bits as random() is
+suppose to be, but shouldn't the test be (rand() & 01) or (rand() % 2)? 
+(rand() % 1) is always 0!
+	Not only does rand() % 1 always return 0, not only does rand() & 1
+alternate between 0 and 1 regularly at each call (as long as the load is
+balanced it doesn't really matter), but since sendmail is called directly
+by Mail, the random number generator is reset to the same value each time
+(for both rand() and random()), i.e there is no call to srandom() with the
+PID or time-of-day.
+	This appears to be the only use of a random number generator within
+sendmail so only one MX record of equal precedence will be used assuming that
+the records are always returned in the same order at each DNS resolver call.
+The only saving grace would be if a queued message has the MX host
+re-calculated by the daemonized sendmail if it ever needs to handle the
+message, but with (rand % 1) this is irrelevent in sendmail-5.61.
+
+Repeat-By:
+
+	Notice that all mail to a hostname with two equal MX preferences
+is always delivered to only one of the addresses.
+
+Fix:
+
+	1) Change "rand % 1" to "rand & 1"
+	2) No matter which random number generator is used (rand() or
+random()), use the appropriate seed initializer call during the initial
+startup (in main.c?).
+
+					David
+===============================================================================
+David Edelsohn                                         Theoretical Astrophysics
+INTERNET:  edelsohn@tapir.Caltech.EDU                  Caltech 130-33
+                                                       Pasadena, CA  91125
+"It's only a dream away ..." -- from Time Bandits ending credits song
+"... Nature cannot be fooled." -- Richard Feynman
+

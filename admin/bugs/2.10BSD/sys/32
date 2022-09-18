@@ -1,0 +1,122 @@
+From sms@WLV.IMSD.CONTEL.COM  Sun Feb  4 00:58:03 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA02264; Sun, 4 Feb 90 00:58:03 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA13880; Sun, 4 Feb 90 00:58:09 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA14074; Sun, 4 Feb 90 00:57:56 -0800
+Date: Sun, 4 Feb 90 00:57:56 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9002040857.AA14074@WLV.IMSD.CONTEL.COM>
+Subject: checksys underestimates system size +FIX
+Index: 	sys/conf/checksys.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	the checksys program underestimates the kernel's memory requirements
+	by a rather large amount, especially if the discquotas or
+	external inode times (and the recently announced namei name cache)
+	selected.  Granted, it's not a terribly important problem, but it
+	was annoying.
+
+Repeat-By:
+	Examination of the sources, it's obvious that several contributors
+	to system size were being ignored.
+
+Fix:
+	Apply the following patch to /sys/conf/checksys.c.
+
+*** checksys.c.old	Sun Jan 28 00:24:30 1990
+--- checksys.c	Sun Jan 28 00:35:11 1990
+***************
+*** 3,9 ****
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)checksys.c	1.1 (2.10BSD Berkeley) 12/1/86
+   */
+  
+  /*
+--- 3,9 ----
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)checksys.c	1.2 (2.10BSD Berkeley) 1/27/90
+   */
+  
+  /*
+***************
+*** 18,23 ****
+--- 18,24 ----
+  #include "clist.h"
+  #include "a.out.h"
+  #include "stdio.h"
++ #include "namei.h"
+  
+  /* Round up to a click boundary. */
+  #define	cround(bytes)	((bytes + ctob(1) - 1) / ctob(1) * ctob(1));
+***************
+*** 29,37 ****
+--- 30,42 ----
+  #define	N_BSIZE		1
+  #define	N_NBUF		2
+  #define	N_PROC		5
++ #define	N_NINODE	10
+  #define	N_CLIST		15
+  #define	N_NOKA5		16
+  #define	N_RAM		17
++ #define	N_XITDESC	18
++ #define	N_QUOTDESC	19
++ #define	N_NAMECACHE	20
+  
+  struct nlist nl[] = {
+  	{ "_end" },			/*  0 */
+***************
+*** 52,57 ****
+--- 57,65 ----
+  	{ "_nclist" },			/* 15 */
+  	{ "_noka5" },			/* 16 */
+  	{ "_ram_siz" },			/* 17 */
++ 	{ "_xitdesc" },			/* 18 */
++ 	{ "_quotdes" },			/* 19 */
++ 	{ "_namecac" },			/* 20 */
+  	{ "" },
+  };
+  
+***************
+*** 65,71 ****
+  {
+  	register int i;
+  	long size, totsize, ramdisk, getval();
+! 	int errs = 0, texterrs = 0;
+  
+  	if (argc != 2) {
+  		fputs("usage: checksys unix-binary\n", stderr);
+--- 73,79 ----
+  {
+  	register int i;
+  	long size, totsize, ramdisk, getval();
+! 	int errs = 0, texterrs = 0, ninode;
+  
+  	if (argc != 2) {
+  		fputs("usage: checksys unix-binary\n", stderr);
+***************
+*** 195,200 ****
+--- 203,213 ----
+  		puts("\"noka5\" not found in namelist.");
+  		exit(-1);
+  	}
++ 	if (!nl[N_NINODE].n_type) {
++ 		puts("\"ninode\" not found in namelist.");
++ 		exit(-1);
++ 	}
++ 	ninode = getval(N_NINODE);
+  	if (!texterrs)
+  		if (getval(N_NOKA5)) {
+  			if (nl[N_END].n_value >= 0120000) {
+***************
+*** 215,220 ****
+--- 228,239 ----
+  		totsize += cround(getval(N_CLIST) * (long)sizeof(struct cblock));
+  	if (nl[N_RAM].n_type)
+  		totsize += getval(N_RAM)*512;

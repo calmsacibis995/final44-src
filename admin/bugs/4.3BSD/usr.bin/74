@@ -1,0 +1,109 @@
+From @relay.cs.net,@math.waterloo.edu:kwlalonde@orchid.waterloo.edu  Wed Jul 15 23:56:17 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA08252; Wed, 15 Jul 87 23:56:17 PDT
+Received: from RELAY.CS.NET by ucbvax.Berkeley.EDU (5.58/1.27)
+	id AA14031; Wed, 15 Jul 87 23:55:45 PDT
+Received: from math.waterloo.edu by RELAY.CS.NET id aa23764; 16 Jul 87 2:32 EDT
+Received: from orchid.uucp by watmath; Thu, 16 Jul 87 02:18:50 EDT
+Received: by orchid; Thu, 16 Jul 87 02:18:21 EDT
+Date: Thu, 16 Jul 87 02:18:21 EDT
+From: Ken Lalonde <kwlalonde%orchid.waterloo.edu@relay.cs.net>
+Message-Id: <8707160618.AA24976@orchid.uucp>
+Subject: tip security problem: can give user a setuid uucp shell
+Index: 	usr.bin/tip 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Tip is setuid uucp in order to open the acu
+	and create a uucp lock.  After doing that, it swaps
+	real and effective uid/gid, so that any file operations
+	are done as the user, but it can still swap back
+	to remove the uucp lock.  Unfortunately it does
+	not reset its real uid when doing a shell escape command.
+	The users shell runs with real uid = uucp.
+
+	I also included one other minor improvement while I
+	have your ear: tip faults on longish device names, due
+	to small buffer sizes in uucplock.c.
+
+Repeat-By:
+	% tip anything
+	connected
+	~!
+	$
+	Run this program:
+		main() { setuid(getuid()); execl("/bin/sh", "sh", 0); }
+	$ whoami
+	uucp
+
+Fix:
+
+This fixes the security problem:
+*** ../otip/cmds.c	Thu Jul 16 01:52:22 1987
+--- ./cmds.c	Thu Jul 16 02:04:10 1987
+***************
+*** 547,552 ****
+--- 547,554 ----
+  			cp = value(SHELL);
+  		else
+  			cp++;
++ 		setgid(gid);
++ 		setuid(uid);
+  		execl(value(SHELL), cp, 0);
+  		printf("\r\ncan't execl!\r\n");
+  		exit(1);
+
+This fixes the long device name problem:
+*** ../otip/uucplock.c	Thu Jul 16 01:52:29 1987
+--- ./uucplock.c	Thu Jul 16 02:00:23 1987
+***************
+*** 11,17 ****
+  /*
+   * defs that come from uucp.h
+   */
+! #define NAMESIZE 32
+  #define FAIL -1
+  #define SAME 0
+  #define SLCKTIME 28800	/* system/device timeout (LCK.. files) in seconds (8 hours) */
+--- 11,17 ----
+  /*
+   * defs that come from uucp.h
+   */
+! #define NAMESIZE 512
+  #define FAIL -1
+  #define SAME 0
+  #define SLCKTIME 28800	/* system/device timeout (LCK.. files) in seconds (8 hours) */
+***************
+*** 196,202 ****
+  delock(s)
+  	char *s;
+  {
+! 	char ln[30];
+  
+  	sprintf(ln, "%s.%s", LOCKPRE, s);
+  	rmlock(ln);
+--- 196,202 ----
+  delock(s)
+  	char *s;
+  {
+! 	char ln[NAMESIZE];
+  
+  	sprintf(ln, "%s.%s", LOCKPRE, s);
+  	rmlock(ln);
+***************
+*** 212,218 ****
+  mlock(sys)
+  	char *sys;
+  {
+! 	char lname[30];
+  	sprintf(lname, "%s.%s", LOCKPRE, sys);
+  	return (ulockf(lname, (time_t) SLCKTIME ) < 0 ? FAIL : 0);
+  }
+--- 212,218 ----
+  mlock(sys)
+  	char *sys;
+  {
+! 	char lname[NAMESIZE];
+  	sprintf(lname, "%s.%s", LOCKPRE, sys);
+  	return (ulockf(lname, (time_t) SLCKTIME ) < 0 ? FAIL : 0);
+  }

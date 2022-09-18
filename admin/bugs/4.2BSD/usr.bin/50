@@ -1,0 +1,137 @@
+Return-Path: <fluke!joe@uw-beaver.arpa>
+Date: Tue, 6 Nov 84 11:52:07 pst
+From: joe@fluke (Joe Kelsey)
+Subject: uuxqt bug with a badly logjammed spool directory
+Index: 	usr.bin/uucp/{anlwrk,uuxqt}.c 4.2 BSD
+
+Description:
+	When uuxqt accumulates more than 20 X. files with no associated
+	D. files, all work comes to a screeching halt.
+Repeat-By:
+	Start running uucp connections.  Wait for anywhere from an hour
+	to a week or two, depending on traffic.  Check with "uusnap" for
+	accumulated X. files.
+Fix:
+	uuxqt can only work on 20 files at any given time.  If these X.
+	files do not have the associated D. files, and if enough high
+	grade orphan X. files accumulate, uuxqt will eventually stop
+	processing anything.  Fix gtwrkf() in uuxqt.c so that it checks
+	for "old" orphan X. files and either logs a message or unlinks the
+	files, depending on a compile switch.  There are also some changes
+	to anlwrk.c and uucp.h.  First, uuxqt.c
+
+
+uuxqt.c log:
+----------------------------
+version 1.6        
+date: 84/10/08 14:43:21;  author: joe;  state: Exp;  lines added/del: 2/1
+Fix editing (really formatting) mistake which crept into v1.5
+----------------------------
+version 1.5        
+date: 84/10/04 12:00:27;  author: joe;  state: Exp;  lines added/del: 3/2
+Add log message for old X. files if UNLINK_OLDX is not defined.
+This way, you can check the LOGFILE for old files and unlink them
+by hand.
+----------------------------
+version 1.4        
+date: 84/04/10 15:02:34;  author: joe;  state: Exp;  lines added/del: 2/0
+Made unlinking of work files conditionally compiled on switch
+UNLINK_OLDX.  Default is not to include the code.
+----------------------------
+version 1.3        
+date: 84/02/29 14:04:53;  author: joe;  state: Exp;  lines added/del: 3/2
+Fixed problem with previous fix whereby uuxqt would not process any
+work files if the first one it encounters did not 'gotfiles()'.  I
+moved the second iswrk call in gtxfile() to after the while loop which
+looks for old X. files and conditionally return 0 if no work, otherwise
+I go back and loop some more.
+
+----------------------------
+version 1.2        
+date: 84/02/21 13:33:51;  author: joe;  state: Exp;  lines added/del: 23/0
+Modified gtxfiles() so that if an X. file exists but does not have all
+of its associated D. files and it is older than 1 day, we try to unlink
+it to keep the X. queue from overflowing and messing up things.  Change
+suggested by Tom Truscott via rlgvax.
+----------------------------
+version 1.1        
+date: 84/01/24 11:29:15;  author: lcp;  state: Exp;  
+Initial version
+=============================================================================
+
+< uuxqt.c.r1.1
+> uuxqt.c.r1.6
+27a28,30
+> /* Nfiles is set in anlwrk.c. fluke!joe */
+> extern int Nfiles;
+> 
+306a310
+>  * Mod to check for old X. files, Feb. 1984, fluke!joe.
+313a318,320
+> 	time_t ystrdy;		/* yesterday */
+> 	extern time_t time();
+> 	struct stat stbuf;	/* for X file age */
+335a343,363
+> 	/* check for old X. file with no work files and remove them. */
+> 	/* suggested by Tom Truscott. fluke!joe */
+> 	if (Nfiles > LLEN/2) {
+> 	    time(&ystrdy);
+> 	    ystrdy -= (24 * 3600);		/* yesterday */
+> 	    DEBUG(4, "gtxfile: Nfiles > LLEN/2\n", "");
+> 	    while (gtwrkf(Spool, file) && !gotfiles(file)) {
+> 		if (stat(subfile(file), &stbuf) == 0)
+> 		    if (stbuf.st_mtime <= ystrdy) {
+> 			DEBUG(4, "gtxfile: unlink %s \n", file);
+> #ifdef UNLINK_OLDX
+> 			unlink(subfile(file));
+> #else
+> 			logent(file, "OLD X. FILE");
+> #endif UNLINK_OLDX
+> 		    }
+> 	    }
+> 	    DEBUG(4, "iswrk\n", "");
+> 	    if (!iswrk(file, "get", Spool, pre))
+> 		return 0;
+> 	}
+
+anlwrk.c log:
+----------------------------
+version 1.2        
+date: 84/02/21 13:32:26;  author: joe;  state: Exp;  lines added/del: 8/6
+Moved LLEN and MAXRQST to uucp.h.  Made Nfiles global for use
+by uuxqt.c/gtxfiles().
+----------------------------
+version 1.1        
+date: 84/01/24 11:14:11;  author: lcp;  state: Exp;  
+Initial version
+=============================================================================
+
+< anlwrk.c.r1.1
+> anlwrk.c.r1.2
+52,54c52,54
+< 
+< #define LLEN 20
+< #define MAXRQST 250
+---
+> /*
+>  * fluke!joe moved LLEN and MAXRQST to uucp.h.
+>  */
+58a59,60
+>  * Not now they aren't!  uuxqt.c/gtxfile() uses Nfiles and LLEN to avoid
+>  * problems with too many X files with no D files.  fluke!joe Feb. 1984
+60,61c62,63
+< static	int Nfiles = 0;
+< static	char Filent[LLEN][NAMESIZE];
+---
+> int Nfiles = 0;
+> char Filent[LLEN][NAMESIZE];
+248c250
+< /* LOCAL only */
+---
+> /* EXTERNALLY CALLED fluke!joe */
+
+Obviously, you also have to #define LLEN and MAXRQST in uucp.h.  I leave
+that as an exercise for the reader.
+
+/Joe Kelsey	John Fluke Mfg. Co., Inc.	PO Box C9090
+(206)356 5933	Everett, WA  98206

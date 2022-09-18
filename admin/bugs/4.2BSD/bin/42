@@ -1,0 +1,58 @@
+Return-Path: <decvax!philabs!sbcs!nyit!rick>
+Date: Wed, 10 Apr 85 17:17:05 est
+Subject: easy way to speed up diff
+
+Index:  bin/diff 4.2BSD
+
+Description:
+	diff is one of my favorite programs.  In the spirit of 4.3bsd,
+	I managed to cut its execution time in half for some files
+	with a few small mods.
+
+Repeat-By:
+	Just run diff... it takes longer than it should.
+
+Fix:
+	These changes apply to diffreg.c.  Our version is 4.7 2/28/83,
+	but the changes are probably valid for other versions too.
+	Most of them are very easy to apply from the instructions below.
+
+	1.  Add `register' storage class to the 4th formal parameter (c)
+	of stone().
+
+	2.  In search(), replace
+		while((l=(i+j)/2) > i) {
+	with
+		while (1) {
+			l = i + j;
+			if ((l >>= 1) <= i) 
+				break;
+
+	3.  Add `register' storage class to the `f' formal parameter
+	of readhash().  BIG WIN HERE!
+
+	4.  In readhash(), there are two statements containing the
+	expression `shift%=HALFLONG'.  Since `shift' is an unsigned
+	integer, these expressions compile into calls to urem; these
+	are expensive because they happen FREQUENTLY.  Replace both
+		shift%=HALFLONG
+	with
+		shift &= HALFLONG - 1
+	(This is probably the biggest win of them all).
+
+	5.  If you're really ambitious, look at the assembly code from
+	the getc() macro in <stdio.h>.  Now add this new macro to diffreg.c:
+		#define FASTERGETC(p,t) if (--(p)->_cnt < 0) t = _filbuf(p);\ 
+			  else { t = *(p)->_ptr & 0xFF; (p)->_ptr++; }
+	and change getc() references of the form:
+		LVALUE = getc(FILEPTR);
+	to be
+		FASTERGETC(FILEPTR,LVALUE)
+	Note that FASTERGETC cannot provide implicit assignment;
+	invocations of getc() that rely on its expression-oid semantics
+	must be recoded to undo this dependency.  For example, replace
+		switch (t=getc(f)) {
+	with
+		FASTERGETC(f,t)
+		switch (t) {
+	Don't worry... you always get faster object code.

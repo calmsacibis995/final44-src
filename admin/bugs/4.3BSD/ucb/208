@@ -1,0 +1,237 @@
+From ray@j.cc.purdue.edu  Sun Apr 24 12:37:10 1988
+Date: Sun, 24 Apr 88 14:33:14 EST
+From: ray@j.cc.purdue.edu (Ray Moody)
+Subject: Improvement to ucb/window.  Use scrolling regions.
+Index: ucb/window/ttgeneric.c 4.3BSD
+
+Description:
+	I have a patch to window that will allow it to use scrolling regions.
+	Scrolling regions provide smoother scrolling than can be obtained
+	by using insert-line and delete-line.  Some terminals (like, for
+	example, the VT-100) don't have insert-line and delete-line and thus
+	cannot scroll without this patch.
+
+Repeat-By:
+	Run window on a terminal that supports scrolling regions.
+
+Fix:
+	Here are three patches:
+	=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+*** /usr/src/ucb/window/ttgeneric.c	Mon Dec 22 11:47:11 1986
+--- ttgeneric.c	Mon Apr 18 15:24:55 1988
+***************
+*** 61,66 ****
+--- 61,69 ----
+  struct tt_str *gen_AE;
+  struct tt_str *gen_XS;
+  struct tt_str *gen_XE;
++ struct tt_str *gen_CS;
++ struct tt_str *gen_SF;
++ struct tt_str *gen_SR;
+  char gen_MI;
+  char gen_MS;
+  char gen_AM;
+***************
+*** 194,199 ****
+--- 197,209 ----
+  gen_move(row, col)
+  register char row, col;
+  {
++ 	if (row < tt.tt_top || row > tt.tt_bot) {
++ 		tttgoto(gen_CS, tt.tt_nrow - 1, 0); /* not really moving yet */
++ 		tt.tt_top = 0;
++ 		tt.tt_bot = tt.tt_nrow - 1;
++ 		tttgoto(gen_CM, col, row);
++ 		goto out;
++ 	}
+  	if (tt.tt_row == row && tt.tt_col == col)
+  		return;
+  	if (!gen_MI && tt.tt_insert)
+***************
+*** 246,255 ****
+--- 256,269 ----
+  	tt.tt_col = tt.tt_row = 0;
+  	tt.tt_ninsert = tt.tt_insert = 0;
+  	tt.tt_nmodes = tt.tt_modes = 0;
++ 	tt.tt_top = 0;
++ 	tt.tt_bot = tt.tt_nrow - 1;
+  }
+  
+  gen_end()
+  {
++ 	if (gen_CS)
++ 		gen_scroll_up(0, tt.tt_nrow - 1);
+  	if (gen_TE)
+  		ttxputs(gen_TE);
+  	if (gen_VE)
+***************
+*** 282,287 ****
+--- 296,335 ----
+  	tttputs(gen_DC, gen_CO - tt.tt_col);
+  }
+  
++ gen_scroll_up(top, bot)
++ int top;
++ int bot;
++ {
++ 	if (top != tt.tt_top || bot != tt.tt_bot) {
++ 		tttgoto(gen_CS, bot, top);	/* not really going anywhere */
++ 		tt.tt_top = top;
++ 		tt.tt_bot = bot;
++ 		tttgoto(gen_CM, 0, bot);
++ 		tt.tt_row = bot;
++ 		tt.tt_col = 0;
++ 	} else {
++ 		gen_move(bot, 0);
++ 	}
++ 	tttputs(gen_SF, tt.tt_bot - tt.tt_top);
++ }
++ 		
++ gen_scroll_down(top, bot)
++ int top;
++ int bot;
++ {
++ 	if (top != tt.tt_top || bot != tt.tt_bot) {
++ 		tttgoto(gen_CS, bot, top);	/* not really going anywhere */
++ 		tt.tt_top = top;
++ 		tt.tt_bot = bot;
++ 		tttgoto(gen_CM, 0, top);
++ 		tt.tt_row = top;
++ 		tt.tt_col = 0;
++ 	} else {
++ 		gen_move(top, 0);
++ 	}
++ 	tttputs(gen_SR, tt.tt_bot - tt.tt_top);
++ }
++ 
+  tt_generic()
+  {
+  	gen_PC = tttgetstr("pc");
+***************
+*** 316,321 ****
+--- 364,372 ----
+  	gen_AE = ttxgetstr("ae");
+  	gen_XS = ttxgetstr("XS");
+  	gen_XE = ttxgetstr("XE");
++ 	gen_CS = ttxgetstr("cs");
++ 	gen_SF = ttxgetstr("sf");
++ 	gen_SR = ttxgetstr("sr");
+  	gen_MI = tgetflag("mi");
+  	gen_MS = tgetflag("ms");
+  	gen_AM = tgetflag("am");
+***************
+*** 335,340 ****
+--- 386,394 ----
+  		static struct tt_str bc = { "\b", 1 };
+  		gen_BC = &bc;
+  	}
++ 	if (gen_SF == 0) {
++ 		gen_SF = gen_NL;
++ 	}
+  	BC = gen_BC ? gen_BC->ts_str : 0;
+  	UP = gen_UP ? gen_UP->ts_str : 0;
+  	if (gen_CL == 0 || gen_OS || gen_CM == 0)
+***************
+*** 362,367 ****
+--- 416,425 ----
+  		tt.tt_availmodes |= WWM_GRP;
+  	if (gen_XS)
+  		tt.tt_availmodes |= WWM_USR;
++ 	if (gen_CS)
++ 		tt.tt_scroll_down = gen_scroll_down;
++ 	if (gen_CS && gen_SR)
++ 		tt.tt_scroll_up = gen_scroll_up;
+  	tt.tt_hasinsert = gen_IM != 0;
+  	tt.tt_wrap = gen_AM;
+  	tt.tt_retain = gen_DB;
+	=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+*** tt.h	Wed Jan 27 22:20:47 1988
+--- /usr/src/ucb/window/tt.h	Mon Dec 22 11:45:24 1986
+***************
+*** 26,33 ****
+  	int (*tt_clreol)();
+  	int (*tt_clreos)();
+  	int (*tt_clear)();
+- 	int (*tt_scroll_up)();		/* set scrolling region & scroll up */
+- 	int (*tt_scroll_down)();	/* set scrolling region & scroll down */
+  	int (*tt_setinsert)();		/* set insert mode */
+  	int (*tt_setmodes)();		/* set display modes */
+  
+--- 26,31 ----
+***************
+*** 38,45 ****
+  	char tt_ninsert;		/* insert mode on next write */
+  	int tt_row;			/* cursor row */
+  	int tt_col;			/* cursor column */
+- 	int tt_top;			/* top of scrolling region */
+- 	int tt_bot;			/* bottom of scrolling region */
+  
+  		/* terminal info */
+  	int tt_nrow;			/* number of display rows */
+--- 36,41 ----
+	=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+*** wwscroll.c	Sun Apr 10 13:08:37 1988
+--- /usr/src/ucb/window/wwscroll.c	Mon Dec 22 12:21:04 1986
+***************
+*** 82,131 ****
+  		nvis += w->ww_nvis[i];
+  
+  	/*
+- 	 * If it's a good idea to use a scrolling region
+- 	 * and the terminal can, then do it.
+- 	 */
+- 	if (nvis > nvismax / 2 && tt.tt_scroll_down && tt.tt_scroll_up ) {
+- 		register union ww_char *tmp;
+- 		register union ww_char **cpp, **cqq;
+- 
+- 		if (dir > 0) {
+- 			if (row2x < wwnrow) {
+- 				(*tt.tt_scroll_up)(row1x, row2x - 1);
+- 			} else {
+- 				(*tt.tt_scroll_up)(row1x, wwnrow - 1);
+- 			}
+- 
+- 			/*
+- 			 * Fix up the old screen.
+- 			 */
+- 			cpp = &wwos[row1x];
+- 			cqq = cpp + 1;
+- 			tmp = *cpp;
+- 			for (i = row2x - row1x; --i > 0;)
+- 				*cpp++ = *cqq++;
+- 			*cpp = tmp;
+- 		} else {
+- 			(*tt.tt_scroll_down)(row1x, row2x - 1);
+- 
+- 			/*
+- 			 * Fix up the old screen.
+- 			 */
+- 			cpp = &wwos[row2x];
+- 			cqq = cpp - 1;
+- 			tmp = *cqq;
+- 			for (i = row2x - row1x; --i > 0;)
+- 				*--cpp = *--cqq;
+- 			*cqq = tmp;
+- 		}
+- 		for (i = wwncol; --i >= 0;)
+- 			tmp++->c_w = ' ';
+- 		deleted++;
+- 	/*
+  	 * If it's a good idea to use delete and insert line
+  	 * and the terminal can, then do it.
+  	 */
+! 	} else if (nvis > nvismax / 2 && tt.tt_delline && tt.tt_insline) {
+  		register union ww_char *tmp;
+  		register union ww_char **cpp, **cqq;
+  
+--- 82,91 ----
+  		nvis += w->ww_nvis[i];
+  
+  	/*
+  	 * If it's a good idea to use delete and insert line
+  	 * and the terminal can, then do it.
+  	 */
+! 	if (nvis > nvismax / 2 && tt.tt_delline && tt.tt_insline) {
+  		register union ww_char *tmp;
+  		register union ww_char **cpp, **cqq;
+  

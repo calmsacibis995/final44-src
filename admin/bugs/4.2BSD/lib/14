@@ -1,0 +1,149 @@
+Return-Path: <sdcsvax!sdcc3!steve@Nosc>
+Date: Tue, 4 Sep 84 04:43:57 pdt
+From: sdcsvax!sdcc3!steve@Nosc (steve serocki)
+Errors-To: sdcsvax!sdcc3!steve@Nosc (steve serocki)
+
+Subject: PCC's Indefensible Argument Processing -- "bad arg temp" bug
+Index:  lib/mip/pftn.c 4.2BSD
+
+Description:
+	Error checking in the portable C compiler's semantic analysis
+	phase has always been less than rigorous, to the point now of
+	being the butt of cruel jokes comparing the pcc in robustness
+	to the C shell.  Recent ridicule (*) has been directed
+	especially at the comic handling of irregular parameter 
+	declarations.
+
+	The pcc will disdain catching parameters described as "static",
+	or "extern" storage class in semantic analysis, ultimately
+	falling on its nose in codegen, or worse.  A catch is described
+	in a companion bug report.
+
+	The pcc will often respond to missing parameters with a "bad
+	arg temp" warning, and then go on to generate incorrect code.
+	If the missing parameter is in addition (improperly) declared 
+	"static" or "external" no warning will be given and the result
+	will be even more bizarre.  A catch for the "bad arg temp" bug is 
+	described here.
+
+	[(*) Refs: 3015@utah-cs.UUCP, 8180-8181@ucmp-cs.UUCP]
+
+
+Repeat-By:
+	"bad arg temp":
+
+	Give the following C program to the pcc and compile
+	with the -S option.  The compiler will give the "bad arg temp"
+	warning and display a ridiculous stack offset for
+	the parameter.
+
+	-------the program:------
+	int imp;
+
+	main(perverse )
+		int imp;	/* "imp" missing from param list */
+	{
+		imp = 6969;
+	}
+	-------the .s file:-------
+
+	LL0:
+		.data
+		.comm	_imp,4
+		.text
+		.align	1
+		.globl	_main
+	_main:
+		.word	L13
+		jbr 	L15
+	L16:
+	"foo.c", line 6: warning: bad arg temp
+		cvtwl	$6969,-1275(ap)
+		ret
+		.set	L13,0x0
+	L15:
+	jbr 	L16
+	.data
+
+
+	Even more bizarre:
+
+	Give the following C program to the pcc and compile
+	with the -S option.  The compile will complete 
+	normally and silently.  L13 will be undefined in the
+	output.
+
+	int imp;
+
+	main(perverse )
+		static int imp;	/* "imp" missing from param list */
+	{
+		imp = 6969;
+	}
+
+Fix:
+	The problem seems to be an errant "if" statement sifting out
+	(incorrectly)  cases that should be caught as errors
+	in the first "switch" [if...switch(class)] in defid().  
+	The case of (blevel == 1 && { ident type not FunctionArg }
+			    && { ident defined somewhere though})
+	was not being caught.  Moving the switch up and
+	out of the if statement solves the problem, catching 
+	the extra cases without side effects.  The changed compiler
+	clones itself.
+
+
+*** pftn.c	Sun Jul 17 13:37:05 1983
+--- jess.pftn.c	Tue Sep  4 04:09:07 1984
+***************
+*** 79,85
+  
+  	if( stp == FTN && p->sclass == SNULL )goto enter;
+  		/* name encountered as function, not yet defined */
+- 	if( stp == UNDEF|| stp == FARG ){
+  		if( blevel==1 && stp!=FARG ) switch( class ){
+  
+  		default:
+
+--- 79,84 -----
+  
+  	if( stp == FTN && p->sclass == SNULL )goto enter;
+  		/* name encountered as function, not yet defined */
+  		if( blevel==1 && stp!=FARG ) switch( class ){
+  
+  		default:
+***************
+*** 97,102
+  		case TYPEDEF:
+  			;
+  			}
+  		goto enter;
+  		}
+  
+
+--- 96,103 -----
+  		case TYPEDEF:
+  			;
+  			}
++ 
++ 	if( stp == UNDEF|| stp == FARG )
+  		goto enter;
+  
+  	if( type != stp ) goto mismatch;
+***************
+*** 98,104
+  			;
+  			}
+  		goto enter;
+- 		}
+  
+  	if( type != stp ) goto mismatch;
+  	/* test (and possibly adjust) dimensions */
+
+--- 99,104 -----
+  
+  	if( stp == UNDEF|| stp == FARG )
+  		goto enter;
+  
+  	if( type != stp ) goto mismatch;
+  	/* test (and possibly adjust) dimensions */

@@ -1,0 +1,78 @@
+From jch@devvax.TN.CORNELL.EDU  Tue Oct  2 18:52:51 1990
+Date: Tue, 2 Oct 90 21:52:46 -0400
+From: jch@devvax.TN.CORNELL.EDU (Jeffrey C Honig)
+Subject: Mount and umount abort on NFS file systems
+Index: lib/librpc/auth_unix.c 4.3BSD-reno
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Mount and umount abort on NFS file systems when root is in more
+	than 8 groups. 
+
+	The RPC function authunix_create_default() does a getgroups()
+	system call with a group limit of NGRP, defined for RPC to be 8.
+	The system limit is 16.  If the effective user is in more than 8
+	groups, getgroups() returns -1 and authunix_create_default calls
+	abort. 
+
+Repeat-By:
+	Add root to more than 8 groups in /etc/group and mount or
+	unmount an NFS file system.
+
+Fix:
+	The patch below for /usr/src/lib/librpc/auth_unix.c calls
+	getgroups() with NGROUP, the system defined maximum number of
+	groups.  If more than NGRP groups are returned, NGRP is
+	substituted for the actual value.
+
+*** _auth_unix.c	Thu Mar 22 21:26:59 1990
+--- auth_unix.c	Tue Oct  2 14:38:36 1990
+***************
+*** 44,49 ****
+--- 44,50 ----
+  
+  #include <stdio.h>
+  #include "types.h"
++ #include <sys/param.h>
+  #include <sys/time.h>
+  #include "xdr.h"
+  #include "auth.h"
+***************
+*** 163,169 ****
+  	char machname[MAX_MACHINE_NAME + 1];
+  	register int uid;
+  	register int gid;
+! 	int gids[NGRPS];
+  
+  	if (gethostname(machname, MAX_MACHINE_NAME) == -1)
+  		abort();
+--- 164,170 ----
+  	char machname[MAX_MACHINE_NAME + 1];
+  	register int uid;
+  	register int gid;
+! 	int gids[NGROUPS];
+  
+  	if (gethostname(machname, MAX_MACHINE_NAME) == -1)
+  		abort();
+***************
+*** 170,178 ****
+  	machname[MAX_MACHINE_NAME] = 0;
+  	uid = geteuid();
+  	gid = getegid();
+! 	if ((len = getgroups(NGRPS, gids)) < 0)
+  		abort();
+! 	return (authunix_create(machname, uid, gid, len, gids));
+  }
+  
+  /*
+--- 171,179 ----
+  	machname[MAX_MACHINE_NAME] = 0;
+  	uid = geteuid();
+  	gid = getegid();
+! 	if ((len = getgroups(NGROUPS, gids)) < 0)
+  		abort();
+! 	return (authunix_create(machname, uid, gid, len < NGRPS ? len : NGRPS, gids));
+  }
+  
+  /*
+

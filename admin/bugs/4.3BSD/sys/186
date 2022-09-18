@@ -1,0 +1,124 @@
+From cpw%sneezy@lanl.gov  Mon Feb 29 12:30:33 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.58/1.26)
+	id AA00649; Mon, 29 Feb 88 12:30:33 PST
+Received: from beta.lanl.gov by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA02707; Mon, 29 Feb 88 10:55:55 PST
+Received: by LANL.GOV (5.54/1.14)
+	id AA14425; Mon, 29 Feb 88 09:45:19 MST
+Received: by sneezy.lanl.gov (3.2/5.17)
+	id AA14556; Mon, 29 Feb 88 09:45:14 MST
+Date: Mon, 29 Feb 88 09:45:14 MST
+From: cpw%sneezy@lanl.gov (C. Philip Wood)
+Message-Id: <8802291645.AA14556@sneezy.lanl.gov>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: 4.3BSD IP Option / Fragmentation Bug Fix
+Index: 	sys/netinet/ip_output.c 4.3BSD FIX
+
+Introduction:
+
+If a fix already exists, then excuse me.  I have
+shown an IP Option/fragmentation problem to exist by generating IP
+Security Option packets large enough to be fragmented.  I was able to
+see the corruption via SUN's 'etherfind' on a 4.0beta LAN.  And,
+consequently, fixed the problem.  Success being a "correct" response
+to an ICMP Echo with IP Security Option, packet size > 1500 bytes,
+generating 2 fragments.  I personally would have liked to see the
+Security option come back, but what the hey, I got the Echo Reply!.
+
+Description:
+
+When sending IP packets which have to be fragmented, ip_output would
+do strange things if any IP Options were included.   The result was that
+the packets were discarded by Gateways, or thrown out by receiving
+hosts because:
+
+	IP options were essentially copied twice to the outgoing
+	fragment due to having incorrectly set the offset
+	for copies from the source mbuf.  The IHL was not taken into
+	account.  This generated a bogus data portion in the packet.
+
+	If the IP option was one that should only appear in the first
+	fragment, then the checksum was calculated wrong on the second
+	and succeeding fragments due to the use of the original IHL which
+	included the option section length.
+
+	I assume that this is only a problem with packet origination, and
+	not with the 'ip forwarding mode'.
+Fix:
+	Apply the diffs shown below, if you are not a feared of viruses.
+
+Signed:
+
+	Phil Wood, cpw@lanl.gov
+
+*** ip_output.c.orig	Tue Jul 28 10:27:53 1987
+--- ip_output.c	Wed Feb 24 00:48:34 1988
+***************
+*** 5,7 ****
+   *
+!  *	@(#)ip_output.c	7.1 (Berkeley) 6/5/86
+   */
+--- 5,7 ----
+   *
+!  *	@(#)ip_output.c	7.1 (LANL)  2/24/88
+   */
+***************
+*** 44,46 ****
+  	register struct ifnet *ifp;
+! 	int len, hlen = sizeof (struct ip), off, error = 0;
+  	struct route iproute;
+--- 44,46 ----
+  	register struct ifnet *ifp;
+! 	int len, hlen = sizeof (struct ip), off, error = 0, ohlen;
+  	struct route iproute;
+***************
+*** 177,180 ****
+  	 */
+! 	m->m_len -= sizeof (struct ip);
+! 	m->m_off += sizeof (struct ip);
+  	for (off = 0; off < ip->ip_len-hlen; off += len) {
+--- 177,181 ----
+  	 */
+! 	m->m_len -= hlen;
+! 	m->m_off += hlen;
+! 	ohlen = hlen;
+  	for (off = 0; off < ip->ip_len-hlen; off += len) {
+***************
+*** 182,183 ****
+--- 183,185 ----
+  		struct ip *mhip;
++ 		register olen = 0;
+  
+***************
+*** 191,194 ****
+  		if (hlen > sizeof (struct ip)) {
+! 			int olen = ip_optcopy(ip, mhip, off);
+! 			mh->m_len = sizeof (struct ip) + olen;
+  		} else
+--- 193,198 ----
+  		if (hlen > sizeof (struct ip)) {
+! 			olen = ip_optcopy(ip, mhip, off);
+! 			ohlen = sizeof (struct ip) + olen;
+! 			mh->m_len = ohlen;
+! 			mhip->ip_hl = ohlen >> 2;
+  		} else
+***************
+*** 204,206 ****
+  		}
+! 		mhip->ip_len += sizeof (struct ip);
+  		mhip->ip_len = htons((u_short)mhip->ip_len);
+--- 208,210 ----
+  		}
+! 		mhip->ip_len += sizeof (struct ip) + olen;
+  		mhip->ip_len = htons((u_short)mhip->ip_len);
+***************
+*** 214,216 ****
+  		mhip->ip_sum = 0;
+! 		mhip->ip_sum = in_cksum(mh, hlen);
+  		if (error = (*ifp->if_output)(ifp, mh, (struct sockaddr *)dst))
+--- 218,220 ----
+  		mhip->ip_sum = 0;
+! 		mhip->ip_sum = in_cksum(mh, ohlen );
+  		if (error = (*ifp->if_output)(ifp, mh, (struct sockaddr *)dst))
+
+

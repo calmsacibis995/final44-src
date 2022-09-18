@@ -1,0 +1,35 @@
+Return-Path: <lepreau@utah-cs>
+Date: Sat, 5 Nov 83 23:11:39 MST
+From: lepreau@utah-cs (Jay Lepreau)
+To: 4bsd-bugs@ucb-arpa
+Subject: Yet another ifconfig bug: can't set address and option at same time
+
+Index:	etc/ifconfig.c 4.2BSD Fix
+
+Description:
+	Even with Tom Lyons' fixes, it did not work when setting
+	the address of an interface the 1st time and also setting
+	a flag.  Problem was that the SIFADDR ioctl can change the
+	value of the flags, e.g., RUNNING and BROADCAST, but a later
+	option setting will use the original value of flags.
+
+Repeat-By:
+	E.g., in /etc/rc.local, for an interlan, do:
+		/etc/ifconfig il0 `hostname` -arp
+	You should get an interface that's UP but not broadcast or running,
+	which breaks a number of things (like rwhod).
+
+Fix:
+	This is to sid 4.5 on monet.  Add this code to the end of setifaddr().
+-------------
+	/* 
+	 * SIFADDR ioctl above can change the flags value if it is
+	 * the first time the address has been set.  Must get the
+	 * new flags so that we don't store outdated ones later on.
+	 */
+	if (ioctl(s, SIOCGIFFLAGS, (caddr_t)&ifr) < 0) {
+		Perror("ioctl (SIOCGIFFLAGS) 2");
+		exit(1);
+	}
+	flags = ifr.ifr_flags;
+-------------

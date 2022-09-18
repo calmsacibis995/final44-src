@@ -1,0 +1,80 @@
+From glenn@mathcs.emory.edu  Fri Aug 25 22:21:08 1989
+Return-Path: glenn@mathcs.emory.edu
+Date: Sat, 26 Aug 89 01:27:03 EDT
+From: glenn@mathcs.emory.edu (Glenn Barry)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU, sunbugs@sun.com
+Index: ucb/mail 4.3BSD-tahoe
+Subject: ucb Mail (mailx for System V) bug
+
+
+Problem:
+
+Mail crashes when processing an 'alias' command (in the .mailrc file) that is
+slightly greater than BUFSIZ bytes *and* uses continuation lines (end preceding 
+line with backslash).
+
+Systems:  
+
+4.3BSD, 4.3-tahoe
+System V, Release 2 and 3
+SunOS 4.0.{0,1,3} 
+(probably any Unix system derived from 4.XBSD and System V)
+
+
+Caveat:  
+
+Using continuation lines in the .mailrc is not in the man page but the code
+supports it (well, almost:-) and it's "common" practice.
+
+
+Repeat By:  
+
+MAILRC=mailrc.boom Mail 
+		
+where the file mailrc.boom is the follwing:
+
+
+alias t_fc nobody%asabet.DEC@decwrl.dec.com rayssd!raybed2.RAY.COM!nobody \
+        nobody@bbn.com nobody@beach.cis.ufl.edu nobody@csri.toronto.edu \
+        nobody@theory.cs.cmu.edu nobody@uhura.cc.rochester.edu attunix!nobody \
+        nobody!nobody nobody@bbn.com nobody@MSU.BITNET \
+        nobody%compsci.bristol.ac.uk@NSFnet-Relay.AC.UK \
+        nobody@isis.berkeley.edu att!cblpn!nobody sun!terrapin!nobody \
+        nobody%etive.edinburgh.ac.uk@NSFnet-Relay.AC.UK  nobody@wellesley.edu \
+        nobody@usceast.UUCP nobody@eos.arc.nasa.gov nobody@dgbt.crc.dnd.ca \
+        nobody%ukc.ac.uk@NSFnet-Relay.AC.UK \
+        nobody%fulcrum.bt.co.uk@NSFnet-Relay.AC.UK nobody@cup.portal.com \
+        nobody.nobody%brunel.ac.uk@NSFnet-Relay.AC.UK nobody@dewey.udel.edu \
+        nobody@telesci.UUCP nobody@boulder.colorado.edu \
+        nobody%tisl.decnet@tisl.af.mil nobody-nobody@cs.yale.edu \
+        nobody@ifi.uio.no gatech!cs.utexas.edu!halley!nobody \
+        nobody.nobody@K.GP.CS.CMU.EDU cbnewsi.ATT.COM!nobody \
+        attbl!homxc!nobody homxc!nobody tridom!nobody \
+        nobody@blake.acs.washington.edu  nobody@whoball.uucp
+
+Slightly more detailed description:
+
+When reading one's .mailrc file and encountering an 'alias' command,
+commands() (lex.c)  calls readline() (fio.c) for each line of input
+from the file (this includes individual continuation lines).   A check is made
+that the line read is not greater than the size of the input buffer (LINESIZE =
+BUFSIZ = (usually) 1024).  The problem is that the input line as a whole (the 
+sum of the continuation lines) is not checked against LINESIZE, just each 
+individual line (from the file) is checked.
+
+Thus, if the alias command "line" is slightly greater than LINESIZE, nasty
+things happen, like the stack gets blown away.
+
+
+Fix:  
+
+(for the SunOS 4.0 Mail, derived from System V Release 2 mailx,
+this will not work for the 4.3BSD Mail because readline() has
+been changed to use fgets(3))
+
+A possible (but  kludgey) fix is to add another parameter to readline() 
+which is a char ptr (or just use the input array, itself) pointing to the 
+*start* of the input buffer.  And then use it to check (in readline()) 
+against the current input position to see if the buffer is "full".  
+Also, the input buffer should probably be increased to allow bigger
+aliases.

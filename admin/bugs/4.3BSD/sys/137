@@ -1,0 +1,97 @@
+Path: seismo!mcnc!tas
+From: tas@mcnc.UUCP (Tim Seaver)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.3 BSD can crash if an ARP table hash bucket fills up
+Index: sys/netinet/if_ether.c 4.3BSD
+
+Description:
+	There is a bug in the arptnew kernel routine that keeps the
+	system from re-using an ARP entry when an ARP table hash bucket
+	is full. Elsewhere in the kernel it is assumed that arptnew
+	can always find a free ARP table entry, by re-using the oldest
+	entry in the hash bucket if no slots are free. The bug and the
+	assumption lead to an attempt to use a NULL ARP entry pointer
+	and hence a system crash when the system tries to add a new
+	ARP entry to a full hash bucket.
+
+	The bug is that arptnew compares the unsigned ARP table
+	entry timer to a signed variable initialized to -1. The
+	comparison is done unsigned, so the -1 is always larger
+	than the timer and the code to track the oldest entry is
+	never executed. My fix checks the variable for a magic
+	cookie and kick-starts the oldest-entry tracking code
+	when the first valid entry is processed.
+
+Repeat-By:
+	Figure out 10 real or fake addresses on your local ethernet
+	that hash to the same ARP bucket (hosts 1, 20, 39, etc.
+	on a class A or B network should work, since the hash function
+	is just the address as a 32 bit word mod 19). Ping them all
+	or otherwise send network packets toward them.
+	THIS WILL CRASH YOUR SYSTEM!
+
+Fix:
+	Apply the following diff to /sys/netinet/if_ether.c. The
+	first change should not be necessary given the others, but
+	I'm playing it safe. Line numbers may be off because of
+	other local changes.
+
+*** if_ether.c.old	Wed Jul  1 16:15:13 1987
+--- if_ether.c	Wed Jul  1 14:44:29 1987
+***************
+*** 183,190 ****
+  			return (1);
+  		} else {
+  			at = arptnew(destip);
+! 			at->at_hold = m;
+! 			arpwhohas(ac, destip);
+  			splx(s);
+  			return (0);
+  		}
+--- 183,196 ----
+  			return (1);
+  		} else {
+  			at = arptnew(destip);
+! 			if (at == NULL) {
+! 				log(LOG_INFO, "Arp bucket full, %x dropped.\n",
+! 					destip->s_addr);
+! 				m_freem(m);
+! 			} else {
+! 				at->at_hold = m;
+! 				arpwhohas(ac, destip);
+! 			}
+  			splx(s);
+  			return (0);
+  		}
+***************
+*** 436,442 ****
+  	struct in_addr *addr;
+  {
+  	register n;
+! 	int oldest = -1;
+  	register struct arptab *at, *ato = NULL;
+  	static int first = 1;
+--- 442,448 ----
+  	struct in_addr *addr;
+  {
+  	register n;
+! 	unsigned oldest = 0xffffffff;
+  	register struct arptab *at, *ato = NULL;
+  	static int first = 1;
+***************
+*** 450,456 ****
+  			goto out;	 /* found an empty entry */
+  		if (at->at_flags & ATF_PERM)
+  			continue;
+! 		if (at->at_timer > oldest) {
+  			oldest = at->at_timer;
+  			ato = at;
+  		}
+--- 456,462 ----
+  			goto out;	 /* found an empty entry */
+  		if (at->at_flags & ATF_PERM)
+  			continue;
+! 		if (at->at_timer > oldest || oldest == 0xffffffff) {
+  			oldest = at->at_timer;
+  			ato = at;
+  		}

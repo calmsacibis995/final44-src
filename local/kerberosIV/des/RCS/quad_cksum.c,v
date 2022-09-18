@@ -1,0 +1,990 @@
+head     4.13;
+branch   ;
+access   ;
+symbols  PATCH8:4.13 PATCH7:4.12 KPATCH6:4.12 ASRSNAP1001:4.12 PATCH5:4.12 ADAMS_NSA:4.11 KPATCH4:4.11 KPATCH3:4.11 KPATCH2:4.11 KREL1:4.11 BETA5/24/88:4.8;
+locks    ; strict;
+comment  @ * @;
+
+
+4.13
+date     90.01.02.13.46.34;  author jtkohl;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     89.07.25.18.17.37;  author qjb;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     88.12.01.13.35.51;  author shanzer;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     88.11.15.11.39.06;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.07.11.13.12.37;  author shanzer;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.02.24.14.23.02;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.01.14.18.46.24;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     87.12.15.17.40.17;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     87.11.02.06.19.22;  author raeburn;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.23.10.46.40;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.09.10.16.17.24;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.04.14.55.27;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.41.52;  author steiner;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     87.01.13.16.37.31;  author wesommer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     86.08.14.23.12.07;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.08.14.18.47.49;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.02.12.16.22.27;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.13
+log
+@change $Header$ to $Id$
+@
+text
+@/*
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/quad_cksum.c,v $
+ * $Author: qjb $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * Quadratic Congruential Manipulation Dectection Code
+ *
+ * ref: "Message Authentication"
+ *		R.R. Jueneman, S. M. Matyas, C.H. Meyer
+ *		IEEE Communications Magazine,
+ *		Sept 1985 Vol 23 No 9 p 29-40
+ *
+ * This routine, part of the Athena DES library built for the Kerberos
+ * authentication system, calculates a manipulation detection code for
+ * a message.  It is a much faster alternative to the DES-checksum
+ * method. No guarantees are offered for its security.	Refer to the
+ * paper noted above for more information
+ *
+ * Implementation for 4.2bsd
+ * by S.P. Miller	Project Athena/MIT
+ */
+
+/*
+ * Algorithm (per paper):
+ *		define:
+ *		message to be composed of n m-bit blocks X1,...,Xn
+ *		optional secret seed S in block X1
+ *		MDC in block Xn+1
+ *		prime modulus N
+ *		accumulator Z
+ *		initial (secret) value of accumulator C
+ *		N, C, and S are known at both ends
+ *		C and , optionally, S, are hidden from the end users
+ *		then
+ *			(read array references as subscripts over time)
+ *			Z[0] = c;
+ *			for i = 1...n
+ *				Z[i] = (Z[i+1] + X[i])**2 modulo N
+ *			X[n+1] = Z[n] = MDC
+ *
+ *		Then pick
+ *			N = 2**31 -1
+ *			m = 16
+ *			iterate 4 times over plaintext, also use Zn
+ *			from iteration j as seed for iteration j+1,
+ *			total MDC is then a 128 bit array of the four
+ *			Zn;
+ *
+ *			return the last Zn and optionally, all
+ *			four as output args.
+ *
+ * Modifications:
+ *	To inhibit brute force searches of the seed space, this
+ *	implementation is modified to have
+ *	Z	= 64 bit accumulator
+ *	C	= 64 bit C seed
+ *	N	= 2**63 - 1
+ *  S	= S seed is not implemented here
+ *	arithmetic is not quite real double integer precision, since we
+ *	cant get at the carry or high order results from multiply,
+ *	but nontheless is 64 bit arithmetic.
+ */
+
+#ifndef	lint
+static char rcsid_quad_cksum_c[] =
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/quad_cksum.c,v 4.12 89/07/25 18:17:37 qjb Exp Locker: jtkohl $";
+#endif	lint
+
+#include <mit-copyright.h>
+
+/* System include files */
+#include <stdio.h>
+#include <errno.h>
+
+/* Application include files */
+#include <des.h>
+#include "des_internal.h"
+/* Definitions for byte swapping */
+
+#ifdef LSBFIRST
+#ifdef MUSTALIGN
+static unsigned long vaxtohl();
+static unsigned short vaxtohs();
+#else /* ! MUSTALIGN */
+#define vaxtohl(x) *((unsigned long *)(x))
+#define vaxtohs(x) *((unsigned short *)(x))
+#endif /* MUSTALIGN */
+#else /* !LSBFIRST */
+static unsigned long four_bytes_vax_to_nets();
+#define vaxtohl(x) four_bytes_vax_to_nets((char *)(x))
+static unsigned short two_bytes_vax_to_nets();
+#define vaxtohs(x) two_bytes_vax_to_nets((char *)(x))
+#endif
+
+/* Externals */
+extern char *errmsg();
+extern int errno;
+extern int des_debug;
+
+/*** Routines ***************************************************** */
+
+unsigned long
+des_quad_cksum(in,out,length,out_count,c_seed)
+    des_cblock *c_seed;		/* secret seed, 8 bytes */
+    unsigned char *in;		/* input block */
+    unsigned long *out;		/* optional longer output */
+    int out_count;		/* number of iterations */
+    long length;		/* original length in bytes */
+{
+
+    /*
+     * this routine both returns the low order of the final (last in
+     * time) 32bits of the checksum, and if "out" is not a null
+     * pointer, a longer version, up to entire 32 bytes of the
+     * checksum is written unto the address pointed to.
+     */
+
+    register unsigned long z;
+    register unsigned long z2;
+    register unsigned long x;
+    register unsigned long x2;
+    register unsigned char *p;
+    register long len;
+    register int i;
+
+    /* use all 8 bytes of seed */
+
+    z = vaxtohl(c_seed);
+    z2 = vaxtohl((char *)c_seed+4);
+    if (out == NULL)
+	out_count = 1;		/* default */
+
+    /* This is repeated n times!! */
+    for (i = 1; i <=4 && i<= out_count; i++) {
+	len = length;
+	p = in;
+	while (len) {
+	    if (len > 1) {
+		x = (z + vaxtohs(p));
+		p += 2;
+		len -= 2;
+	    }
+	    else {
+		x = (z + *(char *)p++);
+		len = 0;
+	    }
+	    x2 = z2;
+	    z  = ((x * x) + (x2 * x2)) % 0x7fffffff;
+	    z2 = (x * (x2+83653421))   % 0x7fffffff; /* modulo */
+	    if (des_debug & 8)
+		printf("%d %d\n",z,z2);
+	}
+
+	if (out != NULL) {
+	    *out++ = z;
+	    *out++ = z2;
+	}
+    }
+    /* return final z value as 32 bit version of checksum */
+    return z;
+}
+#ifdef MSBFIRST
+
+static unsigned short two_bytes_vax_to_nets(p)
+    char *p;
+{
+    union {
+	char pieces[2];
+	unsigned short result;
+    } short_conv;
+
+    short_conv.pieces[0] = p[1];
+    short_conv.pieces[1] = p[0];
+    return(short_conv.result);
+}
+
+static unsigned long four_bytes_vax_to_nets(p)
+    char *p;
+{
+    static union {
+	char pieces[4];
+	unsigned long result;
+    } long_conv;
+
+    long_conv.pieces[0] = p[3];
+    long_conv.pieces[1] = p[2];
+    long_conv.pieces[2] = p[1];
+    long_conv.pieces[3] = p[0];
+    return(long_conv.result);
+}
+
+#endif
+#ifdef LSBFIRST
+#ifdef MUSTALIGN
+static unsigned long vaxtohl(x)
+char *x;
+{
+    unsigned long val;
+    bcopy(x, (char *)&val, sizeof(val));
+    return(val);
+} 
+
+static unsigned short vaxtohs(x)
+char *x;
+{
+    unsigned short val;
+    bcopy(x, (char *)&val, sizeof(val));
+    return(val);
+} 
+#endif /* MUSTALIGN */
+#endif /* LSBFIRST */
+@
+
+
+4.12
+log
+@Added support for LSBFIRST machines that have MUSTALLIGN.
+Author: jtkohl
+Auditor: qjb
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/quad_cksum.c,v $
+ * $Author: shanzer $
+d71 1
+a71 1
+"$Header: quad_cksum.c,v 4.11 88/12/01 13:35:51 shanzer Exp $";
+@
+
+
+4.11
+log
+@Programmer: John Kohl
+Auditor: Mike Shanzer
+Now it includes des_internal.h
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d71 1
+a71 1
+"$Header: quad_cksum.c,v 4.10 88/11/15 11:39:06 jtkohl Locked $";
+d86 4
+d92 2
+a93 1
+#else
+d198 19
+@
+
+
+4.10
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@d2 2
+a3 2
+ * $Source: //ra/mit/wesommer/des/RCS/quad_cksum.c,v $
+ * $Author: shanzer $
+d71 1
+a71 1
+"$Header: quad_cksum.c,v 4.9 88/07/11 13:12:37 shanzer Exp $";
+d82 1
+@
+
+
+4.9
+log
+@the quad_checksum code now returns the same thing on the vax and on the
+RT.
+Programmer: kubitron
+Auditor: jtkohl
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/quad_cksum.c,v $
+ * $Author: steiner $
+d71 1
+a71 1
+"$Header: quad_cksum.c,v 4.8 88/02/24 14:23:02 steiner Exp $";
+d88 1
+a88 1
+unsigned long four_bytes_vax_to_nets();
+d90 1
+a90 1
+unsigned short two_bytes_vax_to_nets();
+d102 2
+a103 2
+quad_cksum(in,out,length,out_count,c_seed)
+    C_Block *c_seed;		/* secret seed, 8 bytes */
+d163 1
+a163 12
+union {
+    char pieces[2];
+    unsigned short result;
+} short_conv;
+
+union {
+    char pieces[4];
+    unsigned long result;
+} long_conv;
+
+
+unsigned short two_bytes_vax_to_nets(p)
+d166 5
+d176 1
+a176 1
+unsigned long four_bytes_vax_to_nets(p)
+d179 5
+@
+
+
+4.8
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d71 1
+a71 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d82 1
+d84 10
+d104 1
+a104 1
+    unsigned short *in;		/* input block */
+d121 1
+a121 1
+    register unsigned short *p;
+a123 3
+#ifdef MUSTALIGN
+    unsigned long temp_1,temp_2;
+#endif
+a125 13
+#ifdef MUSTALIGN
+    if ((long) c_seed & 3) {
+	bcopy(c_seed,&temp_1,sizeof(temp_1));
+	z = temp_1;
+	bcopy((unsigned long *) c_seed+1,&temp_2,sizeof(temp_2));
+	z2 = temp_2;
+    }
+    else
+#endif
+    {
+	z = *(( unsigned long *) c_seed);
+	z2 = *(( unsigned long *) c_seed+1);
+    }
+d127 2
+d138 3
+a140 12
+#ifdef MUSTALIGN
+		if ((long) p & 1) {
+		    bcopy(p++,&temp_1,sizeof(*p));
+		    x = temp_1 + z;
+		}
+		else
+#endif
+		{
+		    x  = (z + *p++);
+		}
+
+		len -=2;
+d154 2
+a155 14
+#ifdef MUSTALIGN
+	    if ((long) out & 3) {
+		temp_1 = z;
+		temp_2 = z2;
+		bcopy(&temp_1,out++,sizeof(temp_1));
+		bcopy(&temp_2,out++,sizeof(temp_2));
+	    }
+	    else
+#endif
+	    {
+		*out++ = z;
+		*out++ = z2;
+	    }
+
+d161 32
+@
+
+
+4.7
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d2 2
+a3 1
+ * Copyright	1985	by the Massachusetts Institute of Technology
+d5 2
+a6 1
+ *	des_quad_cksum.c
+d8 3
+a17 7
+ *	Implementation for 4.2bsd
+ *	by S.P. Miller	Project Athena/MIT
+ *
+ *	$Source: /mit/kerberos/lib/des/RCS/quad_cksum.c,v $
+ *	$Author: steiner $
+ *	$Locker:  $
+ *
+d23 3
+d69 4
+d74 2
+a86 9
+
+/* Globals */
+
+#ifndef lint
+static char rcsid[] =
+    "$Header: quad_cksum.c,v 4.6 87/12/15 17:40:17 steiner Exp $";
+static char copyright[] =
+    "Copyright 1985 by the Massachusetts Institute of Technology";
+#endif /* lint */
+@
+
+
+4.6
+log
+@Ken's changes.  All are formatting except:
+temp_1, temp_2 used to be static, now not.
+And only declared #ifdef MUSTALIGN
+@
+text
+@d17 2
+a18 2
+ *	$Author: raeburn $
+ *	$Locker: raeburn $
+d23 1
+a23 1
+ * method. No guarantees are offered for its security.  Refer to the
+d77 3
+a79 3
+extern char 	*errmsg();
+extern int 		errno;
+extern int		des_debug;
+d83 1
+a83 1
+#ifndef	lint
+d85 1
+a85 1
+    "$Header: quad_cksum.c,v 4.5 87/11/02 06:19:22 raeburn Locked $";
+d88 1
+a88 1
+#endif lint
+d108 7
+a114 7
+    register unsigned long	z;
+    register unsigned long	z2;
+    register unsigned long	x;
+    register unsigned long	x2;
+    register unsigned short	*p;
+    register long		len;
+    register int		i;
+d116 1
+a116 1
+    unsigned long	temp_1,temp_2;
+d143 1
+a143 1
+#ifdef MUSTALIGN		/* ibm rt, not efficient for this */
+d150 1
+a150 1
+	        {
+d168 1
+a168 1
+#ifdef MUSTALIGN		/* ibm rt */
+a183 1
+
+@
+
+
+4.5
+log
+@Renamed debug to des_debug.
+@
+text
+@d1 2
+a2 1
+/*	Copyright	1985	by the Massachusetts Institute of Technology
+d8 4
+a11 2
+ * ref: "Message Authentication" R.R. Jueneman, S. M. Matyas, C.H. Meyer
+ *		IEEE Communications Magazine, Sept 1985 Vol 23 No 9 p 29-40
+d13 2
+a14 1
+ *	Implementation for 4.2bsd by S.P. Miller	Project Athena/MIT
+d16 2
+a17 2
+ *	$Source: /paris/u3/kerberos.new/lib/des/bsd/RCS/des_quad_cksum.c,v $
+ *	$Author: steiner $
+d19 6
+a24 6
+ * 
+ *	This routine, part of the Athena des library built for the Kerberos
+ *	authentication system, calculates a manipulation detection code
+ *  for a message.  It is a much faster alternative to the des-checksum
+ *	method.	No guarantees are offered for its security.  Refer to the
+ *	paper noted above for more information
+d27 2
+a28 1
+/* Algorithm (per paper):
+d39 1
+a39 1
+ *			( read array references as subscripts over time )	
+d41 2
+a42 1
+ *			Z[i] = (Z[i+1] + X[i])**2 modulo N	for i = 1...n 
+d48 4
+a51 4
+ *			iterate 4 times over plaintext, also use Zn from iteration j
+ *			as seed for iteration j+1,
+ *			total MDC is then a 128 bit array of the four Zn ;
+ *			return the last Zn and optionally, all four as output args.
+d53 3
+d57 2
+a58 2
+ *	To inhibit brute force searches of the seed space, this implementation
+ *	is modified to have
+d69 3
+a71 3
+/* System include files													   */
+# include	<stdio.h>
+# include	<errno.h>
+d73 2
+a74 2
+/* Application include files											   */
+# include	<des.h>
+d76 1
+a76 1
+/* Externals															   */
+d81 1
+a81 1
+/* Globals																   */
+d84 4
+a87 3
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 4.4 87/10/23 10:46:40 raeburn Locked $";
+static char		*copyright = 
+				"Copyright 1985 by the Massachusetts Institute of Technology";
+d90 1
+a90 1
+/*** Routines ************************************************************** */
+d94 5
+a98 5
+	C_Block			*c_seed;	/* secret seed, 8 bytes					   */
+	unsigned short	*in;		/* input block							   */
+	unsigned long	*out;		/* optional longer output				   */
+	int				out_count;	/* number of iterations and output C_BLock   */
+	long 			length;		/* original length in bytes				   */
+a99 5
+/* this routine both returns the low order of the final (last in time)
+ * 32bits of the checksum, and if "out" is not a null pointer, a longer
+ * version, up to entire 32 bytes of
+ * the checksum is written unto the address pointed to.
+ */
+d101 6
+a106 8
+	register unsigned long	z;
+	register unsigned long	z2;
+	register unsigned long	x;
+	register unsigned long	x2;
+	register unsigned short	*p;
+	register long	len;
+	register int	i;
+	static	unsigned long	temp_1,temp_2;
+d108 39
+a146 8
+	/* use all 8 bytes of seed											   */
+#ifdef	MUSTALIGN
+	if ((long) c_seed & 3)
+		{
+		bcopy(c_seed,&temp_1,sizeof(temp_1));
+		z = temp_1;
+		bcopy((unsigned long *) c_seed+1,&temp_2,sizeof(temp_2));
+		z2 = temp_2;
+d148 1
+a148 1
+	else
+d150 2
+a151 3
+		{
+		z = *(( unsigned long *) c_seed);
+		z2 = *(( unsigned long *) c_seed+1);
+d154 12
+a165 35
+	if (out == NULL) out_count = 1;	/* default							   */
+	
+	/* This is repeated n times!!								   */
+	for (i = 1; i <=4 && i<= out_count; i++)
+		{	
+		len = length;
+		p = in;
+		while (len)
+			{
+			if (len > 1)
+				{
+#ifdef	MUSTALIGN				/* ibm rt, not efficient for this		   */
+				if ((long) p & 1)
+					{
+					bcopy(p++,&temp_1,sizeof(*p));
+					x = temp_1 + z;
+					}
+				else
+#endif
+					{
+					x  = (z + *p++);
+					}
+				
+					len -=2;
+				}
+			else 
+				{
+				x = (z + *(char *)p++);
+				len = 0;
+				}
+			x2 = z2;
+			z  = ((x * x) + (x2 * x2)) % 0x7fffffff;
+			z2 = (x * (x2+83653421))   % 0x7fffffff; /*	 modulo			   */
+			if (des_debug & 8) fprintf(stdout,"\n%d %d",z,z2);
+			}
+d167 9
+a175 11
+		if (out != NULL)
+			{
+#ifdef	MUSTALIGN				/* ibm rt								   */
+			if ((long) out & 3)
+				{
+				temp_1 = z;
+				temp_2 = z2;
+				bcopy(&temp_1,out++,sizeof(temp_1));
+				bcopy(&temp_2,out++,sizeof(temp_2));
+				}
+			else
+d177 4
+a180 7
+			{
+			*out++ = z;
+			*out++ = z2;
+			}
+		
+			}
+		}	
+d182 5
+a186 2
+/* return final z value as 32 bit version of checksum					   */
+	return	z;
+a187 1
+
+@
+
+
+4.4
+log
+@Moved ./des_conf.h to .../include/krb_conf.h; .../include/des.h
+includes it now.
+@
+text
+@d12 1
+a12 1
+ *	$Source: /u3/kerberos.new/lib/des/bsd/RCS/des_quad_cksum.c,v $
+d14 1
+a14 1
+ *	$Locker: steiner $
+d70 1
+a70 1
+extern int		debug;
+d75 1
+a75 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 4.3 87/09/10 16:17:24 steiner Locked $";
+d154 1
+a154 1
+			if (debug & 8) fprintf(stdout,"\n%d %d",z,z2);
+@
+
+
+4.3
+log
+@Changed include files configuration and referencing.
+@
+text
+@d12 1
+a12 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_quad_cksum.c,v $
+a14 3
+ *	$Log:	des_quad_cksum.c,v $
+ * Revision 4.2  87/09/04  14:55:27  steiner
+ * Changes for PC compatibility, from Jerry Saltzer.
+a15 14
+ * Revision 1.4  87/01/13  16:37:31  wesommer
+ * Added include of des_conf.h
+ * 
+ * Revision 1.3  86/08/14  23:12:07  spm
+ * add alignment fix for RT
+ * 
+ * Revision 1.2  86/08/14  18:47:49  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  86/02/12  16:22:27  spm
+ * Initial revision
+ * 
+ * 
+ * 
+a60 1
+#include "des_conf.h"
+d75 1
+a75 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 4.2 87/09/04 14:55:27 steiner Locked $";
+@
+
+
+4.2
+log
+@Changes for PC compatibility, from Jerry Saltzer.
+@
+text
+@d12 3
+a14 3
+ *	$Source: /source/kerberos/lib/des/bsd/RCS/des_quad_cksum.c,v $
+ *	$Author: wesommer $
+ *	$Locker:  $
+d16 3
+d78 1
+a78 1
+#include "./des_conf.h"
+d83 1
+a83 1
+# include	"des.h"
+d93 1
+a93 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 1.4 87/01/13 16:37:31 wesommer Exp $";
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d12 1
+a12 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_quad_cksum.c,v $
+d14 1
+a14 1
+ *	$Locker: steiner $
+a76 1
+# include	<signal.h>
+d90 1
+a90 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 1.4 87/01/13 16:37:31 steiner Locked $";
+@
+
+
+1.4
+log
+@Added include of des_conf.h
+@
+text
+@d12 3
+a14 3
+ *	$Source: /altsource/kerberos/lib/des/vax/RCS/des_quad_cksum.c,v $
+ *	$Author: spm $
+ *	$Locker: wesommer $
+d16 3
+d91 1
+a91 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 1.3 86/08/14 23:12:07 wesommer Locked $";
+@
+
+
+1.3
+log
+@add alignment fix for RT
+@
+text
+@d12 1
+a12 1
+ *	$Source: /mit/projects/auth/src/lib/des/vax/RCS/des_quad_cksum.c,v $
+d14 1
+a14 1
+ *	$Locker: spm $
+d16 3
+d72 1
+d88 1
+a88 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 1.2 86/08/14 18:47:49 spm Exp $";
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d16 3
+d84 1
+a84 1
+static char		*rcsid_xxx_c="$Header: des_quad_cksum.c,v 1.1 86/02/12 16:22:27 spm Exp $";
+d112 1
+d115 14
+a128 2
+	z = *(( unsigned long *) c_seed);
+	z2 = *(( unsigned long *) c_seed+1);
+d141 13
+a153 2
+				x  = (z + *p++);
+				len -=2;
+d168 11
+d181 2
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d12 6
+a17 4
+ *	$Source$
+ *	$Author$
+ *	$Locker$
+ *	$Log$
+d20 1
+d23 1
+a23 1
+ *  for a message.  It is a musch faster alternative to the des-checksum
+d28 1
+a28 1
+/* Algorithm:
+d51 11
+a61 1
+ *			the optional S seed is not implemented here.
+d64 1
+d76 1
+d81 1
+a81 1
+static char		*rcsid_xxx_c="$Header$";
+d93 1
+a93 1
+	long			out_count;	/* number of iterations and output longs   */
+d96 3
+a98 3
+/* this routine both returns the final (last in time) 32bits of the
+ * checksum, and if "out" is not a null pointer, a longer version, up
+ * to entire 16 bytes of
+d103 1
+d105 1
+d111 3
+a113 2
+	z = *( unsigned long *) c_seed;
+	z = *( unsigned long *) c_seed+1;
+d121 1
+a121 1
+		while (len > 1)
+d123 14
+a136 3
+			x = (z + *p++);
+			z = (x * x) & 0x7fffffff; /*	use & for modulo			   */
+			len -= 2;
+d138 1
+a138 6
+		if (len)
+			{
+			x = (z + *(char *)p++);
+			z = (x * x) & 0x7fffffff; /* use & for modulo					   */
+			len -= 1;
+			}
+d142 1
+@

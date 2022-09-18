@@ -1,0 +1,64 @@
+Return-Path: <hpda!hpdsd!hpdsa!mojo>
+Date: Tue, 14 Feb 84 15:50:31 pst
+From: hpda!hpdsd!hpdsa!mojo (Joe Moran)
+Subject: atrun group permissions
+Index: usr.lib/atrun.c 4.2BSD
+
+Description:
+	When atrun is used to run a shell script created by at(1),
+	it sets the uid and gid to that of the file ownership.
+	Because initgroups(3X) is not used to set all the access
+	groups that the original user had access to, the command
+	can fail if you must belong to multiple groups to execute
+	the "cd" or other commands.
+
+Repeat-By:
+	If you belong to multiple access groups and the directory
+	you are in when executing at(1) is rwxrwx--- and the group
+	is one which is in your access group, but not your "primary"
+	group as determined by /etc/passwd, the at(1) command will
+	run successfully.  However, when atrun is used to execute
+	the command the will fail to be executed but no errors messages
+	will be apparent.  The file created by at(1) will then be removed.
+	This happens because the "cd" to the directory in which at(1)
+	was orginally run will fail because atrun does not initial
+	all the access groups from /etc/group.
+
+Fix:
+	Add the following 2 lines to atrun.c
+*** /usr/src/usr.lib/atrun.c.BERKELEY	Sat Jul  2 18:36:00 1983
+--- /usr/src/usr.lib/atrun.c.HP	Tue Feb 14 09:17:33 1984
+***************
+*** 9,14
+  #include <sys/dir.h>
+  #include <sys/time.h>
+  #include <sys/stat.h>
+  
+  # define ATDIR "/usr/spool/at"
+  # define PDIR	"past"
+
+--- 9,15 -----
+  #include <sys/dir.h>
+  #include <sys/time.h>
+  #include <sys/stat.h>
++ #include <pwd.h>
+  
+  # define ATDIR "/usr/spool/at"
+  # define PDIR	"past"
+***************
+*** 101,106
+  		exit(0);
+  	}
+  	setgid(stbuf.st_gid);
+  	setuid(stbuf.st_uid);
+  	execl("/bin/sh", "sh", file, 0);
+  	execl("/usr/bin/sh", "sh", file, 0);
+
+--- 102,108 -----
+  		exit(0);
+  	}
+  	setgid(stbuf.st_gid);
++ 	initgroups((getpwuid(stbuf.st_uid))->pw_name, stbuf.st_gid);
+  	setuid(stbuf.st_uid);
+  	execl("/bin/sh", "sh", file, 0);
+  	execl("/usr/bin/sh", "sh", file, 0);

@@ -1,0 +1,204 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Sun, 27 Nov 83 22:07:57 pst
+To: sdcsvax!ucbvax!4bsd-bugs
+Subject: f77 won't put REAL variables in register
+Index: usr.bin/f77/src/f77pass1/regalloc.c 4.2BSD
+
+Description:
+	This problem occurs in the f77 compiler supplied on a tape
+	made on 8/23/83.
+
+	The new f77 compiler will put INTEGERs in register but not
+	REALs even though the VAX allows REAL (4-byte floating point)
+	values to appear in general registers.  This adds unnecessary
+	overhead to programs which do lots of computations with REAL
+	values (that is to say, virtually all typical f77 programs).
+
+Repeat-By:
+	Clip out the following f77 program and put it in a file named
+	bug4.f:
+
+	--------------------------------------------------------------------
+		program bug4
+
+		integer i
+		real a, b, c
+
+		a = 2.0
+		b = 1.0
+		c = 0.999
+
+		do 100 i = 1, 1000000
+
+			a = (a + b) * c
+
+	100	continue
+
+		stop
+		end
+	--------------------------------------------------------------------
+
+	Compile this program with the command 'f77 -S -O -c bug4.f'.
+	The assembler output shows that REAL variables are not put in
+	register while integer values are.  The following is a
+	pretty-printed version of the assembler file, where variables
+	of the form 'v.4-v.1(r11)' are written '{variable}' and
+	addresses of constants of the form 'L25' are written
+	'{constant}' (you can get the pretty-printer by sending mail to
+	me asking for it):
+
+	--------------------------------------------------------------------
+		.globl	_MAIN_
+		.set	LF1,0
+	_MAIN_:
+		.word	LWM1
+		subl2	$LF1,sp
+		jmp	L12
+	L13:
+		movl	{0x4100},{a}
+		movl	{0x4080},{b}
+		movl	{0xbe77407f},{c}
+		movl	{i},r10
+		movl	$1,r10
+	L17:
+		addf3	{b},{a},r0
+		mulf3	{c},r0,{a}
+		aobleq	$1000000,r10,L17
+		movl	r10,{i}
+		pushl	$0
+		pushal	{00,00}
+		calls	$2,_s_stop
+		ret
+		.align	1
+	_bug4_:
+		.word	LWM1
+	L12:
+		moval	v.1,r11
+		jmp	L13
+	--------------------------------------------------------------------
+
+	Notice that the INTEGER variable 'i' is put in register 10 but
+	the only time that a register is used for a REAL is when it is
+	necessary to hold the intermediate result of an expression
+	computation; ordinary REAL variables are not assigned registers
+	when DO loops are optimized.
+
+Fix:
+	A simple change can be made to the compiler to cause it to
+	assign REAL variables to registers -- in fact the change is so
+	simple it is suspicious; why didn't anyone do this before?  But
+	I have been unable to find any evidence that this change is
+	harmful, and all of the programs I have tested the new version
+	of the compiler on have worked correctly.  The change is in
+	f77/src/f77pass1/regalloc.c:
+
+	--------------------------------------------------------------------
+	***************
+	*** 31,36
+	  #define VARTABSIZE 1009
+	  #define TABLELIMIT 12
+	  
+	  #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG)
+	  
+	  #define ISREGTYPE(x) ONEOF(x, MSKREGTYPES)
+
+	--- 34,42 -----
+	  #define VARTABSIZE 1009
+	  #define TABLELIMIT 12
+	  
+	+ #if HERE==VAX
+	+ #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG) | M(TYREAL)
+	+ #else
+	  #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG)
+	  #endif
+	  
+	***************
+	*** 32,37
+	  #define TABLELIMIT 12
+	  
+	  #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG)
+	  
+	  #define ISREGTYPE(x) ONEOF(x, MSKREGTYPES)
+	  
+
+	--- 38,44 -----
+	  #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG) | M(TYREAL)
+	  #else
+	  #define MSKREGTYPES M(TYLOGICAL) | M(TYADDR) | M(TYSHORT) | M(TYLONG)
+	+ #endif
+	  
+	  #define ISREGTYPE(x) ONEOF(x, MSKREGTYPES)
+	  
+	--------------------------------------------------------------------
+
+	Notice that the change does not affect DOUBLE PRECISION
+	variables (it would probably take a lot more work to get them
+	in register).
+
+	After changing the compiler in this way, the code that is
+	generated for 'bug4.f' changes to this:
+
+	--------------------------------------------------------------------
+		.globl	_MAIN_
+		.set	LF1,0
+	_MAIN_:
+		.word	LWM1
+		subl2	$LF1,sp
+		jmp	L12
+	L13:
+		movl	{0x4100},{a}
+		movl	{0x4080},{b}
+		movl	{0xbe77407f},{c}
+		movl	{a},r10
+		movl	{b},r9
+		movl	{c},r8
+		movl	{i},r7
+		movl	$1,r7
+	L17:
+		addf3	r9,r10,r0
+		mulf3	r8,r0,r10
+		aobleq	$1000000,r7,L17
+		movl	r7,{i}
+		movl	r10,{a}
+		pushl	$0
+		pushal	{00,00}
+		calls	$2,_s_stop
+		ret
+		.align	1
+	_bug4_:
+		.word	LWM1
+	L12:
+		moval	v.1,r11
+		jmp	L13
+	--------------------------------------------------------------------
+
+	I timed the old and new versions of 'bug4' and observed
+	the following values ('time' is the 'user' time returned
+	by the C-shell 'time' command):
+
+	--------------------------------------------------------------------
+	Version		Time (sec)	 Type of System
+
+	  Old		   32.2		VAX11/750, no FPA
+	  New		   29.0		VAX11/750, no FPA
+
+	  Old		   11.7		VAX11/750 with FPA
+	  New		    8.7		VAX11/750 with FPA
+	--------------------------------------------------------------------
+
+	On systems with no FPA, the operand fetch time is much smaller
+	than the actual computation time for floating point operations
+	-- notice that the improvement is independent of using an FPA,
+	being approx. 3 seconds in both cases.  Still the improvement
+	is 10% even without an FPA (closer to 25% if you have one).
+
+	One oddity -- I notice that the compiler invariably translates
+	floating point assignment operations to 'movl' instructions
+	instead of 'movf' instructions.  I think this is because 'movl'
+	is faster than 'movf' and the compiler guarantees that nothing
+	depends on side effects of assignments, but I haven't pinned
+	this down for sure yet.
+
+Donn Seeley    UCSD Chemistry Dept. RRCF    ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016    sdcsvax!sdchema!donn@noscvax

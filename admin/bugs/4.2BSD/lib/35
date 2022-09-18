@@ -1,0 +1,81 @@
+Return-Path: <solomon@wisc-crys>
+Date: Wed, 4 Jan 84 15:23:34 cst
+From: solomon@wisc-crys (Marvin Solomon)
+Subject: localtime() and ctime() return garbage for small arguments
+Index: 	lib/libc/gen/ctime.c 4.2BSD
+
+Description:
+	localtime() (and hence ctime()) returns a ridiculous result when handed
+	an input representing a moment between midnight, Jan 1, 1970 local
+	time and midnight, Jan 1, 1970 GMT.  In particular, they return nonsense
+	on an input of 0.
+Repeat-By:
+	compile and run the program:
+	main() {
+		int t = 0;
+		printf(ctime(&t));
+	}
+Fix:
+	localtime works by subtracting the necessary number of seconds to
+	convert GMT to local time and then calls gmtime().  For instants in
+	the indicated interval, that results in calling gmtime() with a
+	negative argument, which it is unable to cope with.  The suggested
+	fix checks for the special case, and if it occurs, adds one day,
+	calls gmtime() and subtracts one day from the result.
+
+*** /usr/src/lib/libc/gen/ctime.c	Tue Nov 29 04:24:43 1983
+--- ctime.c	Sun Jan  1 13:51:12 1984
+***************
+*** 33,38
+   *	0	  1	    2
+   *
+   * ctime(t) just calls localtime, then asctime.
+   */
+  
+  #include <sys/time.h>
+
+--- 33,44 -----
+   *	0	  1	    2
+   *
+   * ctime(t) just calls localtime, then asctime.
++  *
++  * solomon@uwisc, 1/1/84:  Make localtime (and ctime) return reasonable results
++  * on inputs less than zone.tz_minuteswest*60 (i.e., on inputs representing
++  * times that are before midnight 1/1/70 locally, but after midnight 1/1/70
++  * GMT).  In particular, make localtime and ctime return reasonable values
++  * on input 0.
+   */
+  
+  #include <sys/time.h>
+***************
+*** 146,151
+  	struct timezone zone;
+  
+  	gettimeofday(&curtime, &zone);
+  	copyt = *tim - (unsigned long)zone.tz_minuteswest*60;
+  	ct = gmtime(&copyt);
+  	dayno = ct->tm_yday;
+
+--- 152,173 -----
+  	struct timezone zone;
+  
+  	gettimeofday(&curtime, &zone);
++ 	if (*tim < zone.tz_minuteswest*60) {
++ 		/* special case for very early times */
++ 		copyt = *tim;
++ 		ct = gmtime(&copyt);
++ 		ct->tm_sec = copyt % 60;
++ 		copyt = copyt/60 + 24*60 - zone.tz_minuteswest;
++ 		ct->tm_min = copyt % 60;
++ 		ct->tm_hour = copyt / 60;
++ 		ct->tm_mday = 31;
++ 		ct->tm_mon = 11;
++ 		ct->tm_year = 69;
++ 		ct->tm_wday = 3;
++ 		ct->tm_yday = 364;
++ 		ct->tm_isdst = 0;  /* assume no dst on Dec 31, 1969! */
++ 		return(ct);
++ 	}
+  	copyt = *tim - (unsigned long)zone.tz_minuteswest*60;
+  	ct = gmtime(&copyt);
+  	dayno = ct->tm_yday;

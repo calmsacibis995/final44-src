@@ -1,0 +1,64 @@
+From ulysses!ggs@ucbvax.Berkeley.EDU  Tue Aug 11 13:54:40 1987
+From: ulysses!ggs@ucbvax.berkeley.edu
+Subject: Race in "open" code for TU78 device driver
+Index: sys/vaxmba/mt.c 4.3BSD
+
+Description:
+	It is possible for two processes to open the same TU78 tape
+	if the second "open" request runs while the first is waiting
+	for a "sense" to complete.
+Repeat-By:
+	Very unlikely.
+Fix:
+	Set the sc_openf flag before waiting for the "sense"; clear
+	the flag later if the "open" fails for some reason.  Context
+	diff follows.
+
+*** /source/sys/vaxmba/mt.c	Thu Jun  5 04:32:57 1986
+--- /sys/vaxmba/mt.c	Tue Aug 11 14:50:13 1987
+***************
+*** 174,191 ****
+--- 175,196 ----
+  		return (ENXIO);
+  	if ((sc = &mu_softc[muunit])->sc_openf)
+  		return (EBUSY);
++ 	sc->sc_openf = 1;
+  	sc->sc_dens = (minor(dev) & H_6250BPI) ? MT_GCR : 0;
+  	mtcommand(dev, MT_SENSE, 1);
+  	if ((sc->sc_dsreg & MTDS_ONL) == 0) {
+  		uprintf("mu%d: not online\n", muunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	if ((sc->sc_dsreg & MTDS_AVAIL) == 0) {
+  		uprintf("mu%d: not online (port selector)\n", muunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	if ((flag & FWRITE) && (sc->sc_dsreg & MTDS_FPT)) {
+  		uprintf("mu%d: no write ring\n", muunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	if (   ((sc->sc_dsreg & MTDS_BOT) == 0)
+***************
+*** 195,203 ****
+  		|| (   (sc->sc_dens != MT_GCR)
+  		    && ((sc->sc_dsreg & MTDS_PE) == 0)))) {
+  		uprintf("mu%d: can't change density in mid-tape\n", muunit);
+  		return (EIO);
+  	}
+- 	sc->sc_openf = 1;
+  	sc->sc_blkno = (daddr_t)0;
+  
+  	/* Since cooked I/O may do a read-ahead before a write, trash	*/
+--- 200,208 ----
+  		|| (   (sc->sc_dens != MT_GCR)
+  		    && ((sc->sc_dsreg & MTDS_PE) == 0)))) {
+  		uprintf("mu%d: can't change density in mid-tape\n", muunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	sc->sc_blkno = (daddr_t)0;
+  
+  	/* Since cooked I/O may do a read-ahead before a write, trash	*/

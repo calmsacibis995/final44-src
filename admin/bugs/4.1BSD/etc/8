@@ -1,0 +1,77 @@
+Return-Path: <allegra!astrovax!wls>
+Date: Mon, 25 Jul 83 14:17:01 PDT
+From: allegra!astrovax!wls
+To: allegra!ucbvax!4bsd-bugs
+
+Date:	Mon Jun 25 1983
+From:	allegra!astrovax!wls
+Subject: race condition in init
+Index:	etc/init.c 4.1BSD Fix
+
+Description:
+	There is a race condition in /etc/init for 4.1 BSD.  If a HUP signal is
+	sent to init, causing it to reread /etc/ttys, and at the same time
+	someone logs out, it is possible for init to lose track of the fact
+	that the logout occurred.  If this happens no new process is created
+	for that port and the port is effectively dead.  In this state
+	/etc/utmp is not updated so that the person still appears on the
+	list of users logged in, but without a process.  The condition can be
+	cleared by disabling the port, then reenabling it.
+	  The bug is in the fact that merge() is called and the branch out of
+	the loop is taken without checking that the pid returned by the wait
+	might be valid.  On a loaded system it is quite possible for one of
+	init's children to die in the window between the HUP signal and init's
+	response to it.
+	  We have a version of uucp that uses the same ports for dialing in and
+	dialing out.  It regularly turns the dialin ports on and off, exposing
+	the existence of this bug.
+
+Repeat-By:
+	Send a HUP to init and at the same time kill one of init's children
+	that is a process group header (not an orphan process).  If the timing
+	is just right init will not know of the child's death.  This is more
+	likely to occur on a heavily loaded system.
+
+Fix:
+  the fix involves re-arranging the order of the operations in the main loop
+  of init.  Here is a diff of that main loop:
+
+diff init.c.old init.c
+219,232c219
+<	for(EVER) {
+<		pid = wait((int *)0);
+<		if(mergflag) {
+<			merge();
+<			goto loop;
+<		}
+<		if(pid == -1)
+<			return;
+<		for(ALL)
+<			if(p->pid == pid || p->pid == -1) {
+<				rmut(p);
+<				dfork(p);
+<			}
+<	}
+---
+>	for(EVER) {
+>		pid = wait((int *)0);
+>
+>		if (pid=>0) for(ALL) {  /* Bug Fix (WLS) July 7,1983 */
+>			if(p->pid == pid || p->pid == -1) {
+>				rmut(p);
+>				dfork(p);
+>			}
+>		}
+>
+>		if(mergflag) {
+>			merge();
+>			goto loop;
+>		}
+>
+>		if(pid == -1)
+>			return;
+>
+>	}
+
+
+

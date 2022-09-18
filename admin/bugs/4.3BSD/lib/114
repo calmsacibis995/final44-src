@@ -1,0 +1,56 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:02:17 1988
+Date: Mon, 18 Apr 88 13:18:04 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (4/13/87) rup & rusers dump core if you're in many groups
+#Index: lib/libc/rpc/pmap_rmt.c MORE/bsd 4.3 (4/13/87)
+Index: lib/libc/rpc/pmap_rmt.c 4.3BSD
+
+Description:
+	The rup and rusers commands dump core if you're in more than 8 groups.
+
+Repeat-By:
+	Creating a user who's in more than eight groups, logging in as that
+	user, and typing either
+		rup
+	or
+		rusers
+
+Hand-Waving:
+	The problem comes about because the function clnt_broadcast
+	in "lib/libc/rpc/pmap_rmt.c" does a
+
+		AUTH *unix_auth = authunix_create_default();
+
+	call and, later, a
+
+		AUTH_DESTROY(unix_auth);
+
+	call--but fails to check authunix_create_default's return value to
+	see if it's NULL.  When the NULL unix_auth is passed to AUTH_DESTROY,
+	the core dump occurs.
+
+	Why is unix_auth NULL?  Looking at authunix_create_default in
+	"lib/libc/rpc/auth_unix.c" we see:
+
+		AUTH *
+		authunix_create_default()
+		{
+			register int len;
+		...
+			gid_t gids[NGRPS];
+
+		...
+			if ((len = getgroups(NGRPS, gids)) < 0)
+				return (NULL);
+		...
+		}
+
+	and if we "grep NGRPS auth_unix.h" we find:
+		#define NGRPS 8
+	as opposed to the
+		#define	NGROUPS	16		/* max number groups */
+	we find in "/usr/include/sys/params.h"
+
+	The easy way out is to drop NGROUPS to 8.
+	The hard way out is to recode "clnt_broadcast" and its callers.
+

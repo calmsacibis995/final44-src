@@ -1,0 +1,346 @@
+Return-Path: <keith@seismo.css.gov>
+Date: Wed, 9 Jul 86 18:23:36 EDT
+From: Keith Bostic <keith@seismo.css.gov>
+Subject: wc has a bug, is too slow
+Index: ucb/wc.c 4.3BSD
+
+Description:
+	1: wc doesn't handle its arguments as well as it might.
+	2: wc doesn't handle the "standard" stdin flag.
+	3: wc ignores control characters in a word count, which doesn't
+		seem correct in terms of the manual page.
+	4: wc is much slower than it needs to be.
+
+	#1 and #2 are really not important, I know, but since the
+	performance could be improved so much I updated them anyway.
+Repeat-By:
+	1: The command "wc -l -w" doesn't work like it should.
+	2: "wc -" doesn't work like it should.
+	3: If you create a file consisting of "foo ^D^D bar", i.e. a space
+		delimited set of control characters and do a wc of it, wc
+		says it has two words, not three.  The manual page simply
+		says that a word is a "maximal string of characters delimited
+		by spaces, tabs, or newlines", which seems to indicate that
+		it should be three words.
+	4: Here are some performance stats of the original wc and a "fixed"
+		wc.  All measurements were on a VAX 11/780 running something
+		between 4.2 and 4.3.
+
+text	data	bss	dec	hex
+7168	1024	0	8192	2000	/usr/ucb/wc
+8192	1024	12	9228	240c	newwc
+
+-rwxr-xr-x  1 root       317440 Jul  3 15:20 /vmunix
+
+/bin/time wc  /vmunix /vmunix
+     962    3643  317440 /vmunix
+     962    3643  317440 /vmunix
+    1924    7286  634880 total
+       78.8 real        10.4 user         1.6 sys  
+/bin/time newwc  /vmunix /vmunix
+     962    3880  317440 /vmunix
+     962    3880  317440 /vmunix
+    1924    7760  634880 total
+       51.6 real         6.2 user         1.2 sys  
+===============================
+
+/bin/time wc -l  /vmunix /vmunix
+     962 /vmunix
+     962 /vmunix
+    1924 total
+       82.5 real        10.8 user         2.1 sys  
+/bin/time newwc -l  /vmunix /vmunix
+     962 /vmunix
+     962 /vmunix
+    1924 total
+       20.7 real         3.3 user         1.2 sys  
+===============================
+
+/bin/time wc -w  /vmunix /vmunix
+    3643 /vmunix
+    3643 /vmunix
+    7286 total
+       97.6 real        10.2 user         1.8 sys  
+/bin/time newwc -w  /vmunix /vmunix
+    3880 /vmunix
+    3880 /vmunix
+    7760 total
+       86.9 real         6.1 user         1.8 sys  
+===============================
+
+/bin/time wc -c  /vmunix /vmunix
+  317440 /vmunix
+  317440 /vmunix
+  634880 total
+       98.4 real        10.5 user         2.0 sys  
+/bin/time newwc -c  /vmunix /vmunix
+  317440 /vmunix
+  317440 /vmunix
+  634880 total
+        0.6 real         0.0 user         0.1 sys  
+
+Fix:
+	Attached is a shar of a new wc.c.  As far as #3 goes, I'm not sure
+	whether the manual page should be changed to say "string of *printable*
+	characters" or if the code should be changed.  I changed the code,
+	but it's commented heavily and ifdef'd on "ORIGINAL_V7_WC" to toggle
+	between the original behavior and what I consider to be the correct
+	behavior.
+
+echo x - wc.c
+sed 's/^X//' >wc.c << 'END-of-wc.c'
+X/*
+X * Copyright (c) 1980 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1980 Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif !lint
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)wc.c	5.1 (Berkeley) 5/31/85";
+X#endif !lint
+X
+X/* wc line and word count */
+X
+X#include <sys/param.h>
+X#include <sys/stat.h>
+X#include <sys/file.h>
+X#include <stdio.h>
+X
+X#define YES		1		/* yes/true */
+X#define NO		0		/* no/false */
+X
+X#define OKEXIT		0		/* okay exit */
+X#define ERREXIT		1		/* error exit */
+X
+X#define DEL		0177		/* del char */
+X#define NL		012		/* newline char */
+X#define SPACE		040		/* space char */
+X#define TAB		011		/* tab char */
+X
+Xstatic long	tlinect,		/* total line count */
+X		twordct,		/* total word count */
+X		tcharct;		/* total character count */
+Xstatic short	doline,			/* if want line count */
+X		doword,			/* if want word count */
+X		dochar;			/* if want character count */
+X
+Xmain(argc,argv)
+Xint	argc;
+Xchar	**argv;
+X{
+X	extern char	*optarg;	/* getopt arguments */
+X	extern int	optind;
+X	int	ch;			/* getopt character */
+X
+X	/*
+X	 * wc is unusual in that its flags are on by default, so,
+X	 * if you don't get any arguments, you have to turn them
+X	 * all on.
+X	 */
+X	if (argc > 1 && argv[1][0] == '-' && argv[1][1]) {
+X		while ((ch = getopt(argc,argv,"lwc")) != EOF)
+X			switch((char)ch) {
+X				case 'l':
+X					doline = YES;
+X					break;
+X				case 'w':
+X					doword = YES;
+X					break;
+X				case 'c':
+X					dochar = YES;
+X					break;
+X				case '?':
+X				default:
+X					fputs("Usage: wc [-lwc] [files]\n",stderr);
+X					exit(ERREXIT);
+X			}
+X		argv += optind;
+X		argc -= optind;
+X	}
+X	else {
+X		++argv;
+X		--argc;
+X		doline = doword = dochar = YES;
+X	}
+X
+X	/*
+X	 * should print "stdin" as the file name, here
+X	 */
+X	if (argc <= 1) {
+X		if (!*argv || !strcmp(*argv,"-")) {
+X			cnt((char *)NULL);
+X			putchar('\n');
+X		}
+X		else {
+X			cnt(*argv);
+X			printf(" %s\n",*argv);
+X		}
+X		exit(OKEXIT);
+X	}
+X
+X	/*
+X	 * cat allows "-" as stdin anywhere in the arg list,
+X	 * might as well here, too.  Again, should use "stdin"
+X	 * as the file name.
+X	 */
+X	do {
+X		if (!strcmp(*argv,"-")) {
+X			cnt((char *)NULL);
+X			putchar('\n');
+X		}
+X		else {
+X			cnt(*argv);
+X			printf(" %s\n",*argv);
+X		}
+X	} while(*++argv);
+X
+X	if (doline)
+X		printf(" %7ld",tlinect);
+X	if (doword)
+X		printf(" %7ld",twordct);
+X	if (dochar)
+X		printf(" %7ld",tcharct);
+X	puts(" total");
+X	exit(OKEXIT);
+X}
+X
+Xstatic
+Xcnt(file)
+Xchar	*file;
+X{
+X	register u_char	*C;		/* traveling pointer */
+X	register short	gotsp;		/* space toggle */
+X	register int	len;		/* length of read */
+X	register long	linect,		/* line count */
+X			wordct,		/* word count */
+X			charct;		/* character count */
+X	struct stat	sbuf;		/* stat buffer */
+X	int	fd;			/* file descriptor */
+X	u_char	buf[MAXBSIZE];		/* read buffer */
+X
+X	linect = wordct = charct = 0;
+X	if (file) {
+X		if ((fd = open(file,O_RDONLY)) < 0) {
+X			perror(file);
+X			exit(ERREXIT);
+X		}
+X		if (!doword) {
+X			/*
+X			 * line counting is split out because it's a lot
+X			 * faster to get lines than to get words, since
+X			 * the word count requires some logic.
+X			 */
+X			if (doline) {
+X				while(len = read(fd,buf,MAXBSIZE)) {
+X					if (len == -1) {
+X						perror(file);
+X						exit(ERREXIT);
+X					}
+X					charct += len;
+X					for (C = buf;len--;++C)
+X						if (*C == '\n')
+X							++linect;
+X				}
+X				tlinect += linect;
+X				printf(" %7ld",linect);
+X				if (dochar) {
+X					tcharct += charct;
+X					printf(" %7ld",sbuf.st_size);
+X				}
+X				close(fd);
+X				return;
+X			}
+X			/*
+X			 * if all we need is the number of characters and
+X			 * it's a directory or a regular or linked file, just
+X			 * stat the puppy.  We avoid testing for it not being
+X			 * a special device in case someone adds a new type
+X			 * of inode.
+X			 */
+X			if (dochar) {
+X				if (fstat(fd,&sbuf)) {
+X					perror(file);
+X					exit(ERREXIT);
+X				}
+X				if (sbuf.st_mode & (S_IFREG | S_IFLNK | S_IFDIR)) {
+X					printf(" %7ld",sbuf.st_size);
+X					tcharct += sbuf.st_size;
+X					close(fd);
+X					return;
+X				}
+X			}
+X		}
+X	}
+X	else
+X		fd = 0;
+X	/*
+X	 * do it the hard way...
+X	 */
+X	for (gotsp = YES;len = read(fd,buf,MAXBSIZE);) {
+X		if (len == -1) {
+X			perror(file);
+X			exit(ERREXIT);
+X		}
+X		charct += len;
+X		for (C = buf;len--;++C)
+X			switch(*C) {
+X				case NL:
+X					++linect;
+X				case TAB:
+X				case SPACE:
+X					gotsp = YES;
+X					continue;
+X				default:
+X#ifdef ORIGINAL_V7_WC
+X					/*
+X					 * This line of code implements the
+X					 * original V7 wc algorithm, i.e.
+X					 * a non-printing character doesn't
+X					 * toggle the "word" count, so that
+X					 * "  ^D^F  " counts as 6 spaces,
+X					 * while "foo^D^Fbar" counts as 8
+X					 * characters.
+X					 *
+X					 * test order is important -- gotsp
+X					 * will normally be NO, so test it
+X					 * first
+X					 */
+X					if (gotsp && *C > SPACE && *C < DEL) {
+X#else !ORIGINAL_V7_WC
+X					/*
+X					 * This line implements the manual
+X					 * page, i.e. a word is a "maximal
+X					 * string of characters delimited by
+X					 * spaces, tabs or newlines."  Notice
+X					 * nothing was said about a character
+X					 * being printing or non-printing.
+X					 */
+X					if (gotsp) {
+X#endif ORIGINAL_V7_WC
+X						gotsp = NO;
+X						++wordct;
+X					}
+X			}
+X	}
+X	if (doline) {
+X		tlinect += linect;
+X		printf(" %7ld",linect);
+X	}
+X	if (doword) {
+X		twordct += wordct;
+X		printf(" %7ld",wordct);
+X	}
+X	if (dochar) {
+X		tcharct += charct;
+X		printf(" %7ld",charct);
+X	}
+X	close(fd);
+X}
+END-of-wc.c
+exit

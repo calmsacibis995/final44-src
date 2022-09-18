@@ -1,0 +1,40 @@
+Subject: VAX serial line driver attach routines
+Index: sys 4.3BSD-tahoe
+
+Description:
+	A coding error in the attach routines for the dh, dhu, dmf and
+	dmz drivers in sys/vaxuba can cause systems to die with kernel
+	segmentation violations if a system has several serial boards of
+	a particular type.
+
+Repeat-By:
+	Configure a VAX system with one UBA, at least 4 dmfs and no other
+	Unibus serial cards.  Enable ports on the first dmf in /etc/ttys.
+	Build and install the kernel, boot and go multi-user.  When init
+	sets up a dmf port on the first dmf, the system dies.
+
+Fix:
+	Each of the drivers (dmf, dmz, dh, dhu) defines an array to keep
+	track of uba resources.  The names of these arrays are similar:
+	they all end in '_uballoc'.  In the dmf driver, the array is called
+	'dmf_uballoc'.  Naturally dmf_uballoc is defined to have NUBA
+	elements, and it is normally indexed by a uba number such as the
+	value contained in the member 'ui_ubanum' in a uba_device structure.
+	The actual contents of dmf_uballoc is a list of controller numbers,
+	one for each uba indicating the controller on whose behalf the
+	driver mapped the clists; at attach time, no clists are mapped
+	for any dmf on a particular uba, so the corresponding element is
+	supposed to be set to -1.  But the actual code in dmfattach() does
+	this:
+
+		dmf_uballoc[ui->ui_unit] = -1;
+
+	'ui_unit' is the number of the controller, not the number of the
+	uba.  If there are more controllers than there are ubas, this code
+	will stomp on random data in memory following dmf_uballoc.  Of 
+	course the correct code in dmfattach() should be:
+
+		dmf_uballoc[ui->ui_ubanum] = -1;
+
+	The fix for the other drivers (dmz, dh, dhu) is analogous.
+

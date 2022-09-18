@@ -1,0 +1,316 @@
+From decwrl!pyramid!ubvax!root@ucbvax.Berkeley.EDU  Mon Apr 27 17:59:43 1987
+Date: Mon, 27 Apr 87 14:20:30 PDT
+From: decwrl!root@ubvax (Ungermann-Bass root)
+Subject: enhanced version of from(1)
+Index: ucb/from.c 4.3BSD
+
+Description:
+	As of 4.3 BSD, from(1) began printing an error message if the
+	mailbox it was attempting to open did not exist.  In BSD 4.2,
+	it would silently exit.  Since a mailbox file will disappear
+	when empty under certain conditions, this error message was
+	irritating and falacious.
+
+	Several other changes were made while fixing this bug:
+	-- use getopt(3)
+	-- use SPOOLDIR instead of hardcoding /usr/spool/mail
+	-- don't print an error if no mailbox exists
+	-- do print an error if selected user does not exist
+	-- use '-S' for 'print subject lines also'
+	-- use window width to figure out how much of subject to print
+
+Repeat-By:
+	Get all your mail out of your system mailbox, remove your system
+	mailbox, and run /usr/ucb/from.  It will print an error message
+	complaining that your mailbox does not exist.
+Fix:
+	The changes were sufficient that the diffs were larger than the
+	text.  Unshar the following and move from.c to /usr/src/ucb,
+	move from.1 to /usr/man/man1, cd to /usr/src/ucb, 'make from',
+	'install -s from /usr/ucb'.
+
+#! /bin/sh
+##  This is a shell archive.  Remove anything before this line, then unpack
+##  it by saving it into a file and typing "sh file".  To overwrite existing
+##  files, type "sh file -c".  You can also feed this as standard input via
+##  unshar, or by typing "sh <file".  If this archive is complete, you will
+##  see the following message at the end:
+#		"End of shell archive."
+# Contents:  from.c from.1
+# Wrapped by vix@ubvax on Mon Apr 27 14:12:55 1987
+PATH=/bin:/usr/bin:/usr/ucb ; export PATH
+if test -f from.c -a "${1}" != "-c" ; then 
+  echo shar: Will not over-write existing file \"from.c\"
+else
+echo shar: Extracting \"from.c\" \(4589 characters\)
+sed "s/^X//" >from.c <<'END_OF_from.c'
+X/*
+X * Copyright (c) 1980 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1980 Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif not lint
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)from.c	5.2 (Berkeley) 11/4/85";
+X#endif not lint
+X
+X/* vix@ubvax (Paul A. Vixie) 26-April-1987 [sorry, no SCCS here...]
+X *	-- use getopt(3)
+X *	-- use SPOOLDIR instead of hardcoding /usr/spool/mail
+X *	-- don't print an error if no mailbox exists
+X *	-- do print an error if selected user does not exist
+X *	-- use '-S' for 'print subject lines also'
+X *	-- use window width to figure out how much of subject to print
+X */
+X
+X#include <stdio.h>
+X#include <ctype.h>
+X#include <pwd.h>
+X#include <sgtty.h>
+X#include <errno.h>
+X#include <sys/param.h>
+X
+Xextern int errno;
+Xextern int optind;
+Xextern char *optarg;
+X
+Xstruct	passwd *getpwuid(), *getpwnam();
+X
+X			/* these are actually static, down below */
+Xextern void emit();
+Xextern int match();
+Xextern void tolowers();
+X
+Xstatic int cols = 0, do_subj = 0;
+X
+X#define	SPOOLDIR	"/usr/spool/mail"
+X
+Xmain(argc, argv)
+X	int argc;
+X	register char **argv;
+X{
+X	char lbuf[BUFSIZ];
+X	char lbuf2[BUFSIZ];
+X	char subj[BUFSIZ];
+X	register struct passwd *pp;
+X	int stashed = 0, subj_stashed = 0, errflg = 0;
+X	register char *name;
+X	char *sender = NULL;
+X	char *getlogin();
+X	char ch;
+X
+X	while (EOF != (ch = getopt(argc, argv, "s:S"))) {
+X		switch (ch) {
+X		case 's':
+X			if (sender != NULL) {
+X				errflg++;
+X				break;
+X			}
+X
+X			sender = optarg;
+X			tolowers(sender);
+X			break;
+X		case 'S':
+X			do_subj++;
+X			break;
+X		case '?':
+X		default:
+X			errflg++;
+X			break;
+X		}
+X	}
+X
+X	if (optind == argc) {
+X		name = getlogin ();
+X		if (name == NULL || strlen(name) == 0) {
+X			pp = getpwuid(getuid());
+X			if (pp == NULL) {
+X				fprintf(stderr, "Who are you?\n");
+X				exit(1);
+X			}
+X			name = pp->pw_name;
+X		}
+X	}
+X	else if (optind+1 == argc) {
+X		name = argv[optind++];
+X		tolowers(name);
+X		if (!getpwnam(name)) {
+X			fprintf(stderr, "%s: no such user -- '%s'\n",
+X				argv[0], name);
+X			exit(1);
+X		}
+X	}
+X	else
+X		errflg++;
+X
+X	if (errflg) {
+X		fprintf(stderr, "usage:\t%s [-s sender] [-S] [user]\n",
+X			argv[0]);
+X		fprintf(stderr, "\t-s     only print messages from sender\n");
+X		fprintf(stderr, "\t-S     print subject lines also\n");
+X		fprintf(stderr, "\tuser   examine this user's mailbox\n");
+X		exit(1);
+X	}
+X
+X	/* get window/terminal width */
+X	{
+X		struct winsize winbuf;
+X
+X		if (0 == ioctl(1, TIOCGWINSZ, &winbuf))
+X			cols = winbuf.ws_col;
+X	}
+X
+X	if (chdir(SPOOLDIR) < 0) {
+X		perror(SPOOLDIR);
+X		exit(1);
+X	}
+X
+X	if (freopen(name, "r", stdin) == NULL) {
+X		if (errno != ENOENT) {
+X			char fname[MAXPATHLEN];
+X			sprintf(fname, "%s/%s", SPOOLDIR, name);
+X			perror(fname);
+X		}
+X		exit(0);
+X	}
+X
+X	while (gets(lbuf) != NULL) {
+X		if (lbuf[0] == '\0') {
+X			emit(stashed, lbuf2, subj_stashed, subj);
+X			stashed = subj_stashed = 0;
+X		} else if (do_subj && !strncmp(lbuf, "Subject: ", 9)) {
+X			strcpy(subj, lbuf);
+X			subj_stashed = 1;
+X		} else if (strncmp(lbuf, "From ", 5) == 0 &&
+X		    (sender == NULL || match(&lbuf[4], sender))) {
+X			strcpy(lbuf2, lbuf);
+X			stashed = 1;
+X		}
+X	}
+X
+X	emit(stashed, lbuf2, subj_stashed, subj);
+X	exit(0);
+X}
+X
+Xstatic void
+Xemit(from_ok, from, subj_ok, subj)
+X	int from_ok, subj_ok;
+X	char *from, *subj;
+X{
+X	/* if cols==0, we are not outputting to a terminal -- write it all
+X	 * out on one line in that case, regardless of width.  otherwise,
+X	 * try to fit it on one line without wrapping -- truncate subject
+X	 * to fit into cols-1.  if the From_ part by itself won't fit on
+X	 * a line by itself (or if it would leave only a few characters for
+X	 * the subject), write it out on two seperate lines.
+X	 */
+X	int	from_len, subj_len, subj_room;
+X
+X	if (!from_ok)
+X		return;
+X
+X	if (!do_subj || !subj_ok) {
+X		puts(from);
+X		return;
+X	}
+X
+X	subj += 9;	/* strlen("Subject: ") */
+X
+X	from_len = strlen(from);
+X	subj_len = strlen(subj);
+X	subj_room = (cols - from_len - 5);
+X	if (subj_room < 0 || (subj_room < subj_len && subj_len > 5))
+X		printf("%s\n\t<<%s>>\n", from, subj);
+X	else
+X		printf("%s <<%s>>\n", from, subj);
+X}
+X
+Xstatic int
+Xmatch (line, str)
+X	register char *line, *str;
+X{
+X	register char ch;
+X
+X	while (*line == ' ' || *line == '\t')
+X		++line;
+X	if (*line == '\n')
+X		return (0);
+X	while (*str && *line != ' ' && *line != '\t' && *line) {
+X		ch = isupper(*line) ? tolower(*line) : *line;
+X		if (ch != *str++)
+X			return (0);
+X		line++;
+X	}
+X	return (*str == '\0');
+X}
+X
+Xstatic void
+Xtolowers(s)
+X	register char *s;
+X{
+X	for (;  *s;  s++)
+X		if (isupper(*s))
+X			*s = tolower(*s);
+X}
+END_OF_from.c
+if test 4589 -ne `wc -c <from.c`; then
+    echo shar: \"from.c\" unpacked with wrong size!
+fi
+# end of overwriting check
+fi
+if test -f from.1 -a "${1}" != "-c" ; then 
+  echo shar: Will not over-write existing file \"from.1\"
+else
+echo shar: Extracting \"from.1\" \(826 characters\)
+sed "s/^X//" >from.1 <<'END_OF_from.1'
+X.\" Copyright (c) 1980 Regents of the University of California.
+X.\" All rights reserved.  The Berkeley software License Agreement
+X.\" specifies the terms and conditions for redistribution.
+X.\"
+X.\"	@(#)from.1	6.2 (Berkeley) 4/20/86
+X.\"	(vix@ubvax, 26apr87, I don't have SCCS here)
+X.\"
+X.TH FROM 1 "April 26, 1987"
+X.UC 4
+X.SH NAME
+Xfrom \- who is my mail from?
+X.SH SYNOPSIS
+X.B from
+X[
+X.B \-s
+Xsender
+X]
+X.B \-S
+X[
+Xuser
+X]
+X.SH DESCRIPTION
+X.I From
+Xprints out the mail header lines in your mailbox file
+Xto show you who your mail is from.
+XIf
+X.I user
+Xis specified, then \fIuser\fP's mailbox is examined instead of your own.
+XIf the -s option is given, then only headers for mail sent by
+X.I sender
+Xare printed.  If
+X.B \-S
+Xis given, the subject of each message will be displayed also.
+X.SH FILES
+X/usr/spool/mail/*
+X.SH "SEE ALSO"
+Xbiff(1), mail(1)
+END_OF_from.1
+if test 826 -ne `wc -c <from.1`; then
+    echo shar: \"from.1\" unpacked with wrong size!
+fi
+# end of overwriting check
+fi
+echo shar: End of shell archive.
+exit 0

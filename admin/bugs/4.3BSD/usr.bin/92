@@ -1,0 +1,102 @@
+From uwvax!lll-winken!uunet!dalcs!david@ucbvax.Berkeley.EDU  Wed Sep 30 19:21:00 1987
+Date: Wed, 30 Sep 87 21:05:13 ADT
+From: David Trueman <uwvax!uunet!dalcs!david@ucbvax.Berkeley.EDU>
+Subject: uuxqt bombs on command with too many args
+Index: usr.bin/uucp 4.3BSD +FIX
+
+Description:
+	If uuxqt gets a very long command line (such as mail to many addresses),
+	it will bomb with a segmentation fault.  In shio() it calls getargs()
+	allowing for only 20 args.  If there are more, the last arg is not NULL.
+	shio() doesn't check for the failure return and passes the arglist on to
+	exec().
+Repeat-By:
+	Send mail via uucp to many recipients.
+Fix:
+	Fix getargs() to make the last arg. NULL, evne if there are too many,
+	but still return FAIL in this case.  Fix shio() to use more args.
+	(and #define the constant) and check for a failure return from getargs()
+	See the diffs attached.
+
+
+------------------
+*** /tmp/,RCSt1006512	Wed Sep 30 20:52:05 1987
+--- uucp.h	Wed Sep 30 17:00:57 1987
+***************
+*** 272,277 ****
+--- 272,278 ----
+  #define MAXMSGTIME	45
+  #define NAMESIZE	255
+  #define MAXBASENAME	14
++ #define MAXARGS		100	/* used in at least one call to getargs() */
+  #define SYSNSIZE	(MAXBASENAME-1-1-1-4)
+  #define EOTMSG		"\04\n\04\n"
+  #define CALLBACK	1
+
+
+
+*** /tmp/,RCSt1006520	Wed Sep 30 20:52:18 1987
+--- uuxqt.c	Wed Sep 30 20:48:55 1987
+***************
+*** 675,681 ****
+  	int status, f;
+  	int uid, pid, ret;
+  	char path[MAXFULLNAME];
+! 	char *args[20];
+  	extern int errno;
+  
+  	if (fi == NULL)
+--- 675,681 ----
+  	int status, f;
+  	int uid, pid, ret;
+  	char path[MAXFULLNAME];
+! 	char *args[MAXARGS];
+  	extern int errno;
+  
+  	if (fi == NULL)
+***************
+*** 683,689 ****
+  	if (fo == NULL)
+  		fo = DEVNULL;
+  
+! 	getargs(cmd, args, 20);
+  	DEBUG(3, "shio - %s\n", cmd);
+  #ifdef SIGCHLD
+  	signal(SIGCHLD, SIG_IGN);
+--- 683,692 ----
+  	if (fo == NULL)
+  		fo = DEVNULL;
+  
+! 	if (getargs(cmd, args, MAXARGS) == FAIL) {
+! 		logent(cmd, "TOO MANY ARGS");
+! 		cleanup(FAIL);
+! 	}
+  	DEBUG(3, "shio - %s\n", cmd);
+  #ifdef SIGCHLD
+  	signal(SIGCHLD, SIG_IGN);
+
+
+
+*** /tmp/,RCSt1006528	Wed Sep 30 20:52:30 1987
+--- getargs.c	Wed Sep 30 16:50:26 1987
+***************
+*** 91,98 ****
+  		*sp++ = 0;
+  	}
+  #endif
+! 	if (i >= maxargs)
+  		return FAIL;
+  	arps[i] = NULL;
+  	return i;
+  }
+--- 91,100 ----
+  		*sp++ = 0;
+  	}
+  #endif
+! 	if (i >= maxargs) {
+! 		arps[maxargs-1] = NULL;
+  		return FAIL;
++ 	}
+  	arps[i] = NULL;
+  	return i;
+  }

@@ -1,0 +1,40 @@
+Return-Path: <mogul@coyote>
+Date: Fri, 10 Feb 84 15:10:15 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: telnetd gets confused by \r
+Index: ucb/telnetd.c 4.2BSD
+
+Description:
+	Telnetd has a finite state machine that "remembers" if it should
+	treat the next character specially.  If it sees a \r it goes
+	into state TS_CR; however, the code for TS_CR treats IAC as
+	data, instead of switching to state TS_IAC as it should.
+	
+	Also, if telnetd sees two \r's in a row, it ends up in TS_DATA
+	instead of TS_CR (perhaps not a real problem.)
+Repeat-By:
+	telnet to your system using a telnet program that can send
+	AYTs or IPs or some other command.
+	
+	login, and type "date" or some other command, followed by
+	a return.
+	
+	try to send AYT; the telnetd will place a "v" in the pty input
+	stream instead of responding to the AYT.
+	
+	Typing two returns after a command will mask this problem.
+Fix:
+	Replace the existing code in telrcv() at "case TS_CR:" with
+
+		case TS_CR:
+			if (c == IAC) {
+				state = TS_IAC;
+				break;
+			}
+			if (c && c != '\n')
+				*pfrontp++ = c;
+			if (!myopts[TELOPT_BINARY] && c == '\r')
+				state = TS_CR;
+			else
+				state = TS_DATA;
+			break;

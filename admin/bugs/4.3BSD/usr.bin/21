@@ -1,0 +1,301 @@
+Return-Path: <sun!gorodish!guy@ucbvax.Berkeley.EDU>
+Date: Tue, 29 Jul 86 15:36:04 PDT
+From: sun!gorodish!guy@ucbvax.Berkeley.EDU (Guy Harris)
+Subject: Some "lex" cleanups and bug fixes
+Index: usr.bin/lex/{lmain.c,sub1.c,parser.y} 4.3BSD
+
+Description:
+	1) A couple of bits of code here are really sloppy when it comes
+	   to pointers vs. integers.
+
+	2) Some other bits of code are sloppy when it comes to - surprise! -
+	   dereferencing NULL pointers.
+Repeat-By:
+	Try "lex -Q anything.l", or "lex </dev/null" (if "lex" isn't
+	given a source file, it reads from standard input) if your
+	machine dumps core when dereferencing null pointers.
+Fix:
+	See following context diffs.
+
+*** /archwizard/4.3beta/usr/src/usr.bin/lex/lmain.c	Thu Feb 21 13:35:28 1985
+--- ./lmain.c	Thu Jan  2 14:02:45 1986
+***************
+*** 128,134
+  dp =	dchar = myalloc(DEFCHAR,sizeof(*dchar));
+  	sname = (char **) myalloc(STARTSIZE,sizeof(*sname));
+  sp = 	schar = myalloc(STARTCHAR,sizeof(*schar));
+! 	if(ccl == 0 || def == 0 || subs == 0 || dchar == 0 || sname == 0 || schar == 0)
+  		error("Too little core to begin");
+  	}
+  free1core(){
+
+--- 128,134 -----
+  dp =	dchar = myalloc(DEFCHAR,sizeof(*dchar));
+  	sname = (char **) myalloc(STARTSIZE,sizeof(*sname));
+  sp = 	schar = myalloc(STARTCHAR,sizeof(*schar));
+! 	if(ccl == 0 || pchar == 0 || def == 0 || subs == 0 || dchar == 0 || sname == 0 || schar == 0)
+  		error("Too little core to begin");
+  	}
+  free1core(){
+***************
+*** 194,199
+    int a,b; {
+  	register char *i;
+  	i = calloc(a, b);
+  	if(i==0)
+  		warning("OOPS - calloc returns a 0");
+  	else if(i == (char *)-1){
+
+--- 194,200 -----
+    int a,b; {
+  	register char *i;
+  	i = calloc(a, b);
++ # ifdef DEBUG
+  	if(i==0)
+  		warning("OOPS - calloc returns a 0");
+  # endif
+***************
+*** 196,204
+  	i = calloc(a, b);
+  	if(i==0)
+  		warning("OOPS - calloc returns a 0");
+- 	else if(i == (char *)-1){
+- # ifdef DEBUG
+- 		warning("calloc returns a -1");
+  # endif
+  		return(0);
+  		}
+
+--- 197,202 -----
+  # ifdef DEBUG
+  	if(i==0)
+  		warning("OOPS - calloc returns a 0");
+  # endif
+  	return(i);
+  	}
+***************
+*** 200,207
+  # ifdef DEBUG
+  		warning("calloc returns a -1");
+  # endif
+- 		return(0);
+- 		}
+  	return(i);
+  	}
+  # ifdef DEBUG
+
+--- 198,203 -----
+  	if(i==0)
+  		warning("OOPS - calloc returns a 0");
+  # endif
+  	return(i);
+  	}
+  # ifdef DEBUG
+***************
+*** 207,213
+  # ifdef DEBUG
+  buserr(){
+  	fflush(errorf);
+! 	fflush(fout);
+  	fflush(stdout);
+  	fprintf(errorf,"Bus error\n");
+  	if(report == 1)statistics();
+
+--- 203,210 -----
+  # ifdef DEBUG
+  buserr(){
+  	fflush(errorf);
+! 	if(fout != NULL)
+! 		fflush(fout);
+  	fflush(stdout);
+  	fprintf(errorf,"Bus error\n");
+  	if(report == 1)statistics();
+***************
+*** 215,221
+  	}
+  segviol(){
+  	fflush(errorf);
+! 	fflush(fout);
+  	fflush(stdout);
+  	fprintf(errorf,"Segmentation violation\n");
+  	if(report == 1)statistics();
+
+--- 212,219 -----
+  	}
+  segviol(){
+  	fflush(errorf);
+! 	if(fout != NULL)
+! 		fflush(fout);
+  	fflush(stdout);
+  	fprintf(errorf,"Segmentation violation\n");
+  	if(report == 1)statistics();
+
+*** /archwizard/4.3beta/usr/src/usr.bin/lex/sub1.c	Thu Feb 21 13:34:53 1985
+--- ./sub1.c	Thu Jan  2 14:05:09 1986
+***************
+*** 62,68
+  	fprintf(errorf,s,p,d);
+  	putc('\n',errorf);
+  	fflush(errorf);
+! 	fflush(fout);
+  	fflush(stdout);
+  	}
+  index(a,s)
+
+--- 62,69 -----
+  	fprintf(errorf,s,p,d);
+  	putc('\n',errorf);
+  	fflush(errorf);
+! 	if(fout != NULL)
+! 		fflush(fout);
+  	fflush(stdout);
+  	}
+  index(a,s)
+
+*** /archwizard/4.3beta/usr/src/usr.bin/lex/parser.y	Mon Jan 13 15:33:13 1986
+--- ./parser.y	Mon Jan 13 15:19:36 1986
+***************
+*** 216,222
+  yylex(){
+  	register char *p;
+  	register int c, i;
+! 	char  *t, *xp;
+  	int n, j, k, x;
+  	static int sectbegin;
+  	static char token[TOKENSIZE];
+
+--- 216,223 -----
+  yylex(){
+  	register char *p;
+  	register int c, i;
+! 	char  *t;
+! 	register char *xp;
+  	int n, j, k, x;
+  	static int sectbegin;
+  	static char token[TOKENSIZE];
+***************
+*** 241,248
+  						sectbegin = TRUE;
+  						i = treesize*(sizeof(*name)+sizeof(*left)+
+  							sizeof(*right)+sizeof(*nullstr)+sizeof(*parent))+ALITTLEEXTRA;
+! 						c = myalloc(i,1);
+! 						if(c == 0)
+  							error("Too little core for parse tree");
+  						p = c;
+  						cfree(p,i,1);
+
+--- 242,249 -----
+  						sectbegin = TRUE;
+  						i = treesize*(sizeof(*name)+sizeof(*left)+
+  							sizeof(*right)+sizeof(*nullstr)+sizeof(*parent))+ALITTLEEXTRA;
+! 						xp = myalloc(i,1);
+! 						if(xp == 0)
+  							error("Too little core for parse tree");
+  						cfree((char *)xp,i,1);
+  						name = (int *)myalloc(treesize,sizeof(*name));
+***************
+*** 244,254
+  						c = myalloc(i,1);
+  						if(c == 0)
+  							error("Too little core for parse tree");
+! 						p = c;
+! 						cfree(p,i,1);
+! 						name = myalloc(treesize,sizeof(*name));
+! 						left = myalloc(treesize,sizeof(*left));
+! 						right = myalloc(treesize,sizeof(*right));
+  						nullstr = myalloc(treesize,sizeof(*nullstr));
+  						parent = myalloc(treesize,sizeof(*parent));
+  						if(name == 0 || left == 0 || right == 0 || parent == 0 || nullstr == 0)
+
+--- 245,254 -----
+  						xp = myalloc(i,1);
+  						if(xp == 0)
+  							error("Too little core for parse tree");
+! 						cfree((char *)xp,i,1);
+! 						name = (int *)myalloc(treesize,sizeof(*name));
+! 						left = (int *)myalloc(treesize,sizeof(*left));
+! 						right = (int *)myalloc(treesize,sizeof(*right));
+  						nullstr = myalloc(treesize,sizeof(*nullstr));
+  						parent = (int *)myalloc(treesize,sizeof(*parent));
+  						if(name == 0 || left == 0 || right == 0 || parent == 0 || nullstr == 0)
+***************
+*** 250,256
+  						left = myalloc(treesize,sizeof(*left));
+  						right = myalloc(treesize,sizeof(*right));
+  						nullstr = myalloc(treesize,sizeof(*nullstr));
+! 						parent = myalloc(treesize,sizeof(*parent));
+  						if(name == 0 || left == 0 || right == 0 || parent == 0 || nullstr == 0)
+  							error("Too little core for parse tree");
+  						return(freturn(DELIM));
+
+--- 250,256 -----
+  						left = (int *)myalloc(treesize,sizeof(*left));
+  						right = (int *)myalloc(treesize,sizeof(*right));
+  						nullstr = myalloc(treesize,sizeof(*nullstr));
+! 						parent = (int *)myalloc(treesize,sizeof(*parent));
+  						if(name == 0 || left == 0 || right == 0 || parent == 0 || nullstr == 0)
+  							error("Too little core for parse tree");
+  						return(freturn(DELIM));
+***************
+*** 294,300
+  					case 'k': case 'K': /* overriden packed char classes */
+  						while (*p && !digit(*p))p++;
+  						if (report==2) report=1;
+! 						cfree(pchar, pchlen, sizeof(*pchar));
+  						pchlen = siconv(p);
+  # ifdef DEBUG
+  						if (debug) printf( "Size classes (%%k) now %d\n",pchlen);
+
+--- 294,300 -----
+  					case 'k': case 'K': /* overriden packed char classes */
+  						while (*p && !digit(*p))p++;
+  						if (report==2) report=1;
+! 						cfree((char *)pchar, pchlen, sizeof(*pchar));
+  						pchlen = siconv(p);
+  # ifdef DEBUG
+  						if (debug) printf( "Size classes (%%k) now %d\n",pchlen);
+***************
+*** 419,424
+  		/* end of section one processing */
+  		}
+  	else if(sect == RULESECTION){		/* rules and actions */
+  		while(!eof){
+  			switch(c=gch()){
+  			case '\0':
+
+--- 419,430 -----
+  		/* end of section one processing */
+  		}
+  	else if(sect == RULESECTION){		/* rules and actions */
++ 		/*
++ 		 * If it is required that one of the items given above
++ 		 * which causes a call to "lgate" must have been called
++ 		 * by now, this should be an error instead.
++ 		 */
++ 		lgate();
+  		while(!eof){
+  			switch(c=gch()){
+  			case '\0':
+***************
+*** 678,683
+  			}
+  		}
+  	/* section three */
+  	ptail();
+  # ifdef DEBUG
+  	if(debug)
+
+--- 684,696 -----
+  			}
+  		}
+  	/* section three */
++ 	/*
++ 	 * If it is required that one of the items given above
++ 	 * which causes a call to "lgate" must have been called
++ 	 * by now, this should be an error instead.  (If it hasn't
++ 	 * been done by now, do we have a null "lex" program?)
++ 	 */
++ 	lgate();
+  	ptail();
+  # ifdef DEBUG
+  	if(debug)

@@ -1,0 +1,94 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:21:29 1988
+Date: Mon, 18 Apr 88 13:13:16 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd getty & login dump core in / (with fix--obsoletes earlier one)
+Index: etc/init.c 4.3BSD
+
+Description:
+	/bin/login and /bin/getty occasionally dump core in the root directory.
+
+Repeat-By:
+	strings -a /core | grep login
+	strings -a /core | grep getty
+
+Fix:
+	As reported earlier, in a note with the subject
+	"MORE/bsd 4.3 login dumps core due to getty negligence (with fix)",
+	the problem comes about if a QUIT-generating
+	character comes in from a terminal at an inopportune time.  The
+	earlier note suggested changing "etc/getty/main.c" this way:
+
+> 		...
+> 				allflags = setflags(2);
+> 				tmode.sg_flags = allflags & 0xffff;
+> 				allflags >>= 16;
+> 				if (crmod || NL)
+> 					tmode.sg_flags |= CRMOD;
+> 				if (upper || UC)
+> 					tmode.sg_flags |= LCASE;
+> 				if (lower || LC)
+> 					tmode.sg_flags &= ~LCASE;
+> 	#ifndef ASWAS
+> 				/*
+> 				** Avoid having login drop core dumps in /
+> 				*/
+> 				signal(SIGQUIT, SIG_IGN);
+> 	#endif /* !ASWAS */
+> 				ioctl(0, TIOCSETP, &tmode);
+> 				ioctl(0, TIOCSLTC, &ltc);
+> 				ioctl(0, TIOCLSET, &allflags);
+> 				signal(SIGINT, SIG_DFL);
+> 				for (i = 0; environ[i] != (char *)0; i++)
+> 					env[i] = environ[i];
+> 				makeenv(&env[i]);
+> 				execle(LO, "login", "-p", name, (char *) 0, env);
+> 		...
+
+	The above fix eliminates "login" core dumps, but "getty" itself may
+	still dump core--in particular on lines where the "rw" capability
+	has been specified in "/etc/gettytab".
+
+	The adition below, to "etc/init.c", guards against core dumps in both
+	"getty" and "login", and obviates the need for the above fix.
+	The adition is to the function "dfork" and is conditioned on "ASWAS".
+
+dfork(p)
+	struct tab *p;
+{
+	register pid;
+	time_t t;
+	int dowait = 0;
+
+	time(&t);
+	p->gettycnt++;
+	if ((t - p->gettytime) >= 60) {
+		p->gettytime = t;
+		p->gettycnt = 1;
+	} else if (p->gettycnt >= 5) {
+		dowait = 1;
+		p->gettytime = t;
+		p->gettycnt = 1;
+	}
+	pid = fork();
+	if (pid == 0) {
+		signal(SIGTERM, SIG_DFL);
+		signal(SIGHUP, SIG_IGN);
+#ifndef ASWAS
+		/*
+		** Keep getty (and its descendant login) from dumping core
+		** in the root directory.
+		*/
+		signal(SIGQUIT, SIG_IGN);
+#endif /* !ASWAS */
+		sigsetmask(0);	/* since can be called from masked code */
+		if (dowait) {
+			syslog(LOG_ERR, "'%s %s' failing, sleeping", p->comn, p->line);
+			closelog();
+			sleep(30);
+		}
+		execit(p->comn, p->line);
+		exit(0);
+	}
+	p->pid = pid;
+}
+

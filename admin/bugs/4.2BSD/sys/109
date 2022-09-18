@@ -1,0 +1,53 @@
+Return-Path: <guest@ucbarpa>
+Date: Tue, 19 Jun 84 06:06:30 pdt
+From: guest@ucbarpa (Guest Account)
+Subject: UBA malfunction on 780 can crash UNIX 
+Index: sys/vax/locore.s 4.2BSD
+
+Description:
+	The code at "ubanorm" in locore.s assumes that the 780's UBA
+	reports valid vectors in its BRRVR register.  This is not
+	always the case, and if the UBA reports a bogus vector,
+	UNIX branches wildly and usually crashes.  A bogus vector
+	is defined as any vector that is either greater than 0774
+	or not congruent to 0 mod 4.  The following fix adds
+	code to detect, report, and ignore such bad vectors.  If you see
+	the problem happen on your Vax, call Field Service.  The
+	problems encountered at our site were elusive, and we never
+	determined if it was the UNIBUS or the UBA that was responsible
+	for the bad vectors we were receiving.  
+Repeat-By:
+	You must have a Vax-11/780 with a UBA or UNIBUS that malfunctions
+	in the proper way.
+Fix:
+	In locore.s:
+	1.  After these lines of code:
+		ubanorm:
+			bleq	ubaerror
+	add this code:
+			bitl	rUVEC,$0xFFFFFE03	#bad vector?
+			bneq	ubabadvec		#yes, branch
+	2.  Add this code after the "rei" instruction following "ubaerror:"
+		ubabadvec:
+			PUSHR; calls $6,_ubabadvec	#report bad vector
+			POPR				#pushed by Xua?int
+			rei
+	In sys/vaxuba/uba.c, add this C subroutine to report the error:
+	    #ifdef VAX780
+		/*
+		 * Report UBA vectors >= 0x200 or with bit 0 or bit 1 set
+		 * Called from locore.s indicating some hardware malfunction
+		 */
+		/*ARGSUSED*/
+		ubabadvec(uban,uh,xx,uvec,uba)
+		int uban;		/* UBA number (0-3) */
+		struct uba_hd *uh;	/* UBA software status */
+		int uvec;		/* BRRVR - the bad value is here */
+		struct uba_regs *uba;	/* UBA nexus */
+		{
+			printf("uba%d: bad vector 0%o\n",uban,uvec);
+		}
+	    #endif
+Submitted-By:
+	Rick Ace, New York Institute of Technology, (516) 686-7644
+

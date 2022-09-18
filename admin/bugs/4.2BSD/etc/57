@@ -1,0 +1,206 @@
+Return-Path: <jsq@ut-sally.ARPA>
+Date: Tue, 17 Jan 84 13:09:16 cst
+From: jsq@ut-sally.ARPA (John Quarterman)
+Posted-Date: Tue, 17 Jan 84 13:09:16 cst
+Subject: ftpd does not log anonymous logins in /usr/adm/wtmp.
+Index: 	etc/ftpd/ftpd.c 4.2BSD
+
+Description:
+	Most ftp logins are logged in /usr/adm/wtmp by ftpd.
+	The sole exception is anonymous (guest) logins, which
+	are not logged due to the use of chroot to limit privileges.
+Repeat-By:
+	ftp to your host, log in as user ftp, password guest,
+	quit, do a last, and observe no entry for the just-made login.
+Fix:
+	This fix supersedes the previous ones by cak@purdue.
+	Open /usr/adm/wtmp before the chroot for guests and keep
+	it open until the guest logs out.  Diffs follow:
+
+*** ftpd.c.dist	Tue Jan 17 12:33:52 1984
+--- ftpd.c	Tue Jan 17 12:41:11 1984
+***************
+*** 234,242
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
+! 	if (guest && chroot(pw->pw_dir) < 0) {
+! 		reply(550, "Can't set guest privileges.");
+! 		goto bad;
+  	}
+  	if (!guest)
+  		reply(230, "User %s logged in.", pw->pw_name);
+
+--- 234,246 -----
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
+! 	if (guest) {
+! 		dologset(1);
+!  		if (chroot(pw->pw_dir) < 0) {
+! 			dologset(0);
+! 			reply(550, "Can't set guest privileges.");
+! 			goto bad;
+! 		}
+  	}
+  	if (!guest)
+  		reply(230, "User %s logged in.", pw->pw_name);
+***************
+*** 716,721
+  
+  #define	SCPYN(a, b)	strncpy(a, b, sizeof (a))
+  struct	utmp utmp;
+  
+  /*
+   * Record login in wtmp file.
+
+--- 720,726 -----
+  
+  #define	SCPYN(a, b)	strncpy(a, b, sizeof (a))
+  struct	utmp utmp;
++ int wtmp = -1;
+  
+  /*
+   * Open or close wtmp.
+***************
+*** 718,723
+  struct	utmp utmp;
+  
+  /*
+   * Record login in wtmp file.
+   */
+  dologin(pw)
+
+--- 723,745 -----
+  int wtmp = -1;
+  
+  /*
++  * Open or close wtmp.
++  */
++ dologset(flag)
++ 	int flag;
++ {
++ 	if (flag) {
++ 		if (wtmp < 0)
++ 			wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
++ 		return;
++ 	}
++ 	if (wtmp < 0)
++ 		return;
++ 	(void) close (wtmp);
++ 	wtmp = -1;
++ }
++ 
++ /*
+   * Record login in wtmp file.
+   */
+  dologin(pw)
+***************
+*** 723,729
+  dologin(pw)
+  	struct passwd *pw;
+  {
+- 	int wtmp;
+  	char line[32];
+  
+  	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+
+--- 745,750 -----
+  dologin(pw)
+  	struct passwd *pw;
+  {
+  	char line[32];
+  
+  	dologset(1);
+***************
+*** 726,732
+  	int wtmp;
+  	char line[32];
+  
+! 	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		/* hack, but must be unique and no tty line */
+  		sprintf(line, "ftp%d", getpid());
+
+--- 747,753 -----
+  {
+  	char line[32];
+  
+! 	dologset(1);
+  	if (wtmp >= 0) {
+  		/* hack, but must be unique and no tty line */
+  		sprintf(line, "ftp%d", getpid());
+***************
+*** 735,741
+  		SCPYN(utmp.ut_host, remotehost);
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		(void) close(wtmp);
+  	}
+  }
+  
+
+--- 756,763 -----
+  		SCPYN(utmp.ut_host, remotehost);
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		if (!guest)
+! 			dologset(0);
+  	}
+  }
+  
+***************
+*** 746,753
+  dologout(status)
+  	int status;
+  {
+- 	int wtmp;
+- 
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+
+--- 768,773 -----
+  dologout(status)
+  	int status;
+  {
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+***************
+*** 751,757
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+! 	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		SCPYN(utmp.ut_name, "");
+  		SCPYN(utmp.ut_host, "");
+
+--- 771,778 -----
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+! 	if (!guest)
+! 		dologset(1);
+  	if (wtmp >= 0) {
+  		SCPYN(utmp.ut_name, "");
+  		SCPYN(utmp.ut_host, "");
+***************
+*** 757,763
+  		SCPYN(utmp.ut_host, "");
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		(void) close(wtmp);
+  	}
+  	/* beware of flushing buffers after a SIGPIPE */
+  	_exit(status);
+
+--- 778,784 -----
+  		SCPYN(utmp.ut_host, "");
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		dologset(0);
+  	}
+  	/* beware of flushing buffers after a SIGPIPE */
+  	_exit(status);

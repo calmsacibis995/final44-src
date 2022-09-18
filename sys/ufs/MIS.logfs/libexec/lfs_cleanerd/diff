@@ -1,0 +1,120 @@
+71c71
+< 	char sl_empty;	/* is segment empty */
+---
+> 	char sl_bytes;	/* bytes in segment */
+78a79,80
+> #define	CLEAN_BYTES	0x1
+> 
+89,90c91,92
+< void	 clean_fs __P((FS_INFO	*, int (*)(FS_INFO *, SEGUSE *)));
+< int	 clean_loop __P((FS_INFO *));
+---
+> void	 clean_fs __P((FS_INFO	*, int (*)(FS_INFO *, SEGUSE *), int, long));
+> int	 clean_loop __P((FS_INFO *, int, long));
+155c157,158
+< 	int i, nodaemon;
+---
+> 	long clean_opts;		/* cleaning options */
+> 	int i, nodaemon, segs_per_clean;
+161c164,166
+< 	while ((opt = getopt(argc, argv, "smd")) != EOF) {
+---
+> 	clean_opts = 0;
+> 	segs_per_clean = 1;
+> 	while ((opt = getopt(argc, argv, "bdmn:s")) != EOF) {
+163,164c168,172
+< 			case 's':	/* small writes */
+< 				do_small = 1;
+---
+> 			case 'b':	/*
+> 					 * Use live bytes to determine
+> 					 * how many segs to clean.
+> 					 */
+> 				clean_opts |= CLEAN_BYTES;
+166c174,177
+< 			case 'm':
+---
+> 			case 'd':	/* Debug mode. */
+> 				nodaemon = 1;
+> 				break;
+> 			case 'm':	/* Use mmap instead of read/write */
+169,170c180,181
+< 			case 'd':
+< 				nodaemon = 1;
+---
+> 			case 'n':	/* How many segs to clean at once */
+> 				segs_per_clean = atoi(optarg);
+171a183,185
+> 			case 's':	/* small writes */
+> 				do_small = 1;
+> 				break;
+208c222
+< 		if (clean_loop(fsp))
+---
+> 		if (clean_loop(fsp, segs_per_clean, clean_opts))
+224c238
+< clean_loop(fsp)
+---
+> clean_loop(fsp, nsegs, options)
+225a240,241
+> 	int nsegs;
+> 	long options;
+247c263
+< 		clean_fs(fsp, cost_benefit);
+---
+> 		clean_fs(fsp, cost_benefit, nsegs, options);
+261c277
+< 		        clean_fs(fsp, cost_benefit);
+---
+> 		        clean_fs(fsp, cost_benefit, nsegs, options);
+273c289
+< clean_fs(fsp, cost_func)
+---
+> clean_fs(fsp, cost_func, nsegs, options)
+275a292,293
+> 	int nsegs;
+> 	long options;
+277a296
+> 	int to_clean, cleaned_bytes;
+291,299c310,336
+< 	if (i)
+< 		for (i = MIN(i, NUM_TO_CLEAN(fsp)), sp = segs; i-- ; ++sp) {
+< 			if (clean_segment(fsp, sp->sl_id) < 0)
+< 				perror("clean_segment failed");
+< 			else if (lfs_segclean(&fsp->fi_statfsp->f_fsid,
+< 			    sp->sl_id) < 0)
+< 				perror("lfs_segclean failed");
+< 			printf("Completed cleaning segment %d\n", sp->sl_id);
+< 		}
+---
+> 	if (i) {
+> 		/* Check which cleaning algorithm to use. */
+> 		if (options & CLEAN_BYTES) {
+> 			cleaned_bytes = 0;
+> 			to_clean = nsegs <<
+> 			    (fsp->fi_lfs.lfs_segshift + fsp->fi_lfs.lfs_bshift);
+> 			for (sp = segs; i && cleaned_bytes < to_clean;
+> 			    i--, ++sp) {
+> 				if (clean_segment(fsp, sp->sl_id) < 0)
+> 					perror("clean_segment failed");
+> 				else if (lfs_segclean(&fsp->fi_statfsp->f_fsid,
+> 				    sp->sl_id) < 0)
+> 					perror("lfs_segclean failed");
+> 				printf("Cleaned segment %d (%d bytes)\n",
+> 				    sp->sl_id, sp->sl_bytes);
+> 				cleaned_bytes += sp->sl_bytes;
+> 			}
+> 		} else
+> 			for (i = MIN(i, nsegs), sp = segs; i-- ; ++sp) {
+> 				if (clean_segment(fsp, sp->sl_id) < 0)
+> 					perror("clean_segment failed");
+> 				else if (lfs_segclean(&fsp->fi_statfsp->f_fsid,
+> 				    sp->sl_id) < 0)
+> 					perror("lfs_segclean failed");
+> 				printf("Completed cleaning segment %d\n", sp->sl_id);
+> 			}
+> 	}
+352c389
+< 		sp->sl_empty = sup->su_nbytes ? 0 : 1;
+---
+> 		sp->sl_bytes = sup->su_nbytes;

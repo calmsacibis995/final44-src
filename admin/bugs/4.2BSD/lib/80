@@ -1,0 +1,57 @@
+Return-Path: <schuster@su-pescadero.arpa>
+Date: Mon, 3 Feb 86 17:47:48 pst
+From: Jay Schuster <schuster@su-pescadero.arpa>
+Subject: C Optimizer Bug
+Index: 	lib/c2/c21.c 4.2BSD
+
+Description:
+	The C optimizer does not correctly optimize assembler statements
+	using G floating point.  We use a version of the C compiler that
+	uses G floating point when we ask it to (because we had some VAXen
+	that didn't have D floating).  
+
+Repeat-By:
+	Run /lib/c2 on the following (which is an excerpt of what the math
+	library sine function (sin.s) compiles into):
+
+		.text
+		cvtgl	-32(fp),r0
+		movl	r0,-44(fp)
+		cvtlg	-44(fp),r0
+		subg3	r0,-32(fp),r2
+		movg	r2,-40(fp)
+		addl3	-44(fp),12(ap),r0
+		bicl2	$-4,r0
+		movl	r0,12(ap)
+
+	You will get the following:
+		.text
+		cvtgl	-32(fp),-44(fp)
+		cvtlg	-44(fp),r0
+		subg3	r0,-32(fp),-40(fp)
+		addl3	r0,12(ap),r0
+		extzv	$0,$2,r0,12(ap)
+	
+	The bug is that the last addl3 instruction has used r0 as its
+	first operand, which is of data type G-floating, instead of longword,
+	which is what the instruction requires.
+
+Fix:
+	The bug is in the function ``compat'' which determines if two
+	data types are compatible or not.  Due to the late addition of
+	the esoteric VAX data types to the optimizer, it thinks that
+	all of the esoteric types are compatible with longwords, which
+	is incorrect.
+
+	What is needed is to change the function ``compat''.  By changing
+	line 1072:
+
+	hsrc=have&0xF; if (0==(hdst=((have>>4)&0xF)) || hdst>=OP2) hdst=hsrc;
+
+	to be:
+
+	hsrc=have&0xF;
+	if (0==(hdst=((have>>4)&0xF)) || (hdst>=OP2 && hdst<=OPX)) hdst=hsrc;
+
+	It will then no longer treat longword and G-floating data types
+	as being the same.

@@ -1,0 +1,215 @@
+#ifdef CLFS
+/*
+ * CLFS
+ * $Log: wafs_wnode.c,v $
+ * Revision 1.2  1994/10/04  17:02:42  margo
+ * Make 4.4Lite version compile under BSD4.4-Lite.
+ *
+ * Revision 1.2  1994/09/27  18:53:35  jat
+ * Fixed includes for alternate AIX/SPARC building.
+ *
+ * Revision 1.1  1994/09/26  18:47:46  jat
+ * Initial WAFS checkin.
+ *
+ */
+#endif
+
+/*
+ * Copyright (c) 1982, 1986, 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * Copyright (c) 1994
+ *	The President and Fellows of Harvard University.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	$Id: wafs_wnode.c,v 1.2 1994/10/04 17:02:42 margo Exp $
+ */
+static char *rcsid = "$Id: wafs_wnode.c,v 1.2 1994/10/04 17:02:42 margo Exp $";
+
+#ifdef CLFS
+#include <sys/compat.h>
+#include <sys/bsd_types.h>
+#include <sys/bsd_param.h>
+#include <clfs_param.h>
+#include <sys/cdefs.h>
+#include <sys/ucred.h>
+#include <sys/intr.h>
+#include <sys/sleep.h>
+
+#include <sys/param.h>
+#include <sys/vnode.h>
+#include <sys/socket.h>
+#include <sys/mbuf.h>
+#include <sys/file.h>
+#include <sys/disklabel.h>
+#include <sys/filio.h>
+#include <sys/errno.h>
+#include <sys/malloc.h>
+
+#include <miscfs/specfs/specdev.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+
+#else /* CLFS */
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/resourcevar.h>
+#include <sys/kernel.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/buf.h>
+#include <sys/filedesc.h>
+#include <sys/proc.h>
+#include <sys/conf.h>
+#include <sys/mount.h>
+#include <sys/vnode.h>
+#include <sys/malloc.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+
+#include <vm/vm.h>
+
+#include <miscfs/specfs/specdev.h>
+#include <miscfs/fifofs/fifo.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+#endif /* CLFS */
+
+#include <ufs/wafs/wafs.h>
+#include <ufs/wafs/wnode.h>
+#include <ufs/wafs/wafs_extern.h>
+#include <ufs/wafs/lffs.h>
+
+#ifdef AIX
+extern struct  timestruc_t tod;
+#endif
+
+int
+wafs_init()
+{
+	return (0);
+}
+
+/*
+ * Reclaim an inode so that it can be used for other purposes.
+ */
+int
+wafs_reclaim(ap)
+	struct vop_reclaim_args /* {
+		struct vnode *a_vp;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp;
+
+	if (vp->v_usecount != 0)
+		vprint("wafs_reclaim: pushing active", vp);
+	wp = VTOW(vp);
+
+	/*
+	 * Purge old data structures associated with the inode.
+	 */
+	cache_purge(vp);
+	if (wp->w_devvp) {
+		vrele(wp->w_devvp);
+		wp->w_devvp = 0;
+	}
+#ifdef AIX
+	free(vp->v_data);
+#else
+	FREE(vp->v_data, M_WAFSNODE);
+#endif
+	vp->v_data = NULL;
+	return (0);
+}
+
+/*
+ * Update the access, modified, and inode change times. The access
+ * and modified times are taken from the second and third parameters;
+ * the inode change time is always taken from the current time. If
+ * waitfor is set, then wait for the disk write of the inode to
+ * complete.
+ */
+int
+wafs_update(ap)
+	struct vop_update_args /* {
+		struct vnode *a_vp;
+		struct timeval *a_access;
+		struct timeval *a_modify;
+		int a_waitfor;
+	} */ *ap;
+{
+	struct vnode *vp = ap->a_vp;
+	struct wnode *wp;
+	struct wafs *wafs;
+
+	if (vp->v_mount->mnt_flag & MNT_RDONLY)
+		return (0);
+
+	wp = VTOW(vp);
+	if (ap->a_access != NULL)
+		wp->w_atime.ts_sec = ap->a_access->tv_sec;
+	if (ap->a_modify != NULL) {
+		wp->w_mtime.ts_sec = ap->a_modify->tv_sec;
+#ifdef AIX
+		wp->w_ctime.ts_sec = tod.tv_sec;
+#else
+		wp->w_ctime.ts_sec = time.tv_sec;
+#endif
+	}
+
+	/*
+	 * If sync, push back the vnode and any dirty blocks it may have.
+	 * For now since there is only one vnode, we write the superblock.
+	 * If we add multiple vnodes then the contents of the wnode would
+	 * need to be written to disk.
+	 */
+	wafs = VFSTOUFS(vp->v_mount)->um_wafs;
+	if (wafs->wafs_lsn < wp->w_head) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_lsn = wafs->wafs_head = wp->w_head;
+	}
+	if (wafs->wafs_time < wp->w_ctime.ts_sec) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_time = wp->w_ctime.ts_sec;
+	}
+	if (wafs->wafs_rtime < wp->w_atime.ts_sec) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_rtime = wp->w_atime.ts_sec;
+	}
+	if (ap->a_waitfor)
+		return(wafs_sbupdate(VFSTOUFS(vp->v_mount), ap->a_waitfor));
+	else
+		return (0);
+}

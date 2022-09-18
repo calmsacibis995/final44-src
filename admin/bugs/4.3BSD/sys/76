@@ -1,0 +1,116 @@
+From donn@utah-cs.ARPA  Mon Dec  1 14:49:05 1986
+Date: Mon, 1 Dec 86 15:38:49 MST
+From: donn@utah-cs.arpa (Donn Seeley)
+Subject: ^C during 'file system full' messages can hang your system
+Index: sys/sys_inode.c 4.3BSD
+
+Description:
+	Last month we experienced a series of hangs in which most of
+	the processes in the system went to sleep at negative priority
+	waiting for an inode to become unlocked.  These hangs always
+	seemed to occur when a filesystem filled up, but merely filling
+	up a filesystem didn't seem to elicit the problem.  This
+	weekend I finally figured out what was happening...
+
+Repeat-By:
+	Enter and compile this program:
+
+	----------------------------------------------------------------
+	#include <sys/signal.h>
+	#include <sys/file.h>
+	#include <sys/time.h>
+	#include <sys/errno.h>
+
+	extern int errno;
+
+	char buf[4096] = "junk";
+	char filename[] = "/tmp/pig";
+	struct sigvec sv;
+	struct itimerval it;
+
+	onalrm()
+	{
+		/* do nothing */
+	}
+
+	main()
+	{
+		int fd;
+
+		if ((fd = open(filename, O_WRONLY|O_CREAT|O_APPEND, 0666)) == -1) {
+			perror(filename);
+			exit(1);
+		}
+
+		while (write(fd, buf, sizeof buf) != -1)
+			;
+		if (errno != ENOSPC) {
+			perror(filename);
+			exit(1);
+		}
+
+		sv.sv_handler = onalrm;
+		if (sigvec(SIGALRM, &sv, (struct sigvec *)0) == -1) {
+			perror("sigvec");
+			exit(1);
+		}
+		it.it_interval.tv_sec = 1;
+		it.it_value.tv_sec = 1;
+		if (setitimer(ITIMER_REAL, &it, (struct itimerval *)0) == -1) {
+			perror("setitimer");
+			exit(1);
+		}
+
+		for (;;)
+			(void) write(fd, buf, sizeof buf);
+	}
+	----------------------------------------------------------------
+
+	Go to your (hardcopy) console and run the program.  It will
+	fill up /tmp with a huge junk file, print about a second's
+	worth of '/tmp: file system full' messages, and hang.  If you
+	then go to another terminal and attempt to examine the file it
+	created, /tmp/pig, you will hang that terminal session, locking
+	/tmp.  After that, / will soon be locked and the end comes
+	quickly.
+
+	The program above creates the disaster using a SIGALRM; our
+	users were producing it by running 'uncompress hack.tar.Z'
+	where 'hack.tar.Z' wasn't ftped in binary mode, then hitting ^C
+	in panic after a confused 'compress' filled up the filesystem
+	with a garbage file.  ('Compress' never tests for array
+	overflows or write errors in its central decompression loop,
+	which is another problem...)
+
+	As near as I can determine, the scenario is the following:  The
+	user fills up a filesystem.  The kernel discovers this in
+	alloc() and kindly complains to the user with a uprintf().  If
+	the user is on a reasonably slow terminal and their program is
+	sufficiently obtuse about write errors, it doesn't take long
+	before the outq fills up and eventually a uprintf() will block
+	in ttycheckoutq() waiting for the outq to drain.  At this point
+	an interrupt comes in.  This causes a longjmp() to rwuio(),
+	which returns so that the user's program may process the
+	interrupt.  Unfortunately the inode was locked in ino_rw() and
+	the unlock code is never executed...  This wouldn't be so awful
+	except the user usually goes to another terminal to try to
+	delete the huge file, and namei() will lock the file's parent
+	directory and then block on the file.  Soon someone tries to
+	examine the file's parent directory and locks the parent's
+	parent, and so on.
+
+	I can see several ways to attack this problem...  You could
+	change any of rwuio(), ino_rw(), alloc(), uprintf() or
+	ttycheckoutq().  The safest way would probably be to move the
+	signal escape (setjmp()) into ino_rw() so that the inode can be
+	unlocked if a signal arrives.  Thus if someone goofs later on
+	and creates another way to sleep at positive priority during
+	buffered I/O, no harm will be done.  On the other hand, it's
+	probably not desirable to permit signal processing down in the
+	buffer code anyway, so perhaps the uprintf() should be modified
+	or removed and some other way found to complain to the user
+	(syslogd?).  Any suggestions?
+
+	BTW, we're still running 4.3 beta (argh) but examination of the
+	current system code at Berkeley makes me think the bug is still
+	there.

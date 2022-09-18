@@ -1,0 +1,94 @@
+Return-Path: <root%oregon-grad.csnet@csnet-relay.arpa>
+Date: Thu, 27 Dec 84 18:29:40 pst
+From: Bruce Jerrick <root%oregon-grad.csnet@csnet-relay.arpa>
+Subject: cc and lint report incorrect line numbers
+Index: 	lib/mip/scan.c 4.2BSD Fix
+
+Description:
+	In some circumstances, "cc" and "lint" report incorrect line
+	numbers in error reports.  The most common situation was when a
+	source file started with a false #ifdef which pre-processed
+	into nothing.  This commonly occurred to files which had an
+	"#ifdef lint ..." at the top.
+
+Repeat-By:
+
+	% cc ln.c
+
+	where "ln.c" is the following:
+
+	-------- cut here --------
+	#ifdef x
+	/* Comments like */
+	/* this make cc and lint report */
+	/* line numbers incorrectly if x is undefined. */
+	#endif
+	}	/* this is a syntax error on line 6 */
+	-------- cut here --------
+
+	This will give the following error:
+	"ln.c", line 2: syntax error
+	whereas the error is actually on line 6 of ln.c .
+	"lint" will behave the same way.
+
+Fix:
+	The problem is in /usr/src/lib/mip/scan.c, which is shared by
+	cc (/lib/ccom) and lint (/usr/lib/lint/lint1).  The
+	initialization of "lineno" occurs after it might be set by
+	lxinit() (via lxtitle(), by input lines of the form "# nnn
+	filename", where nnn is the original line number of the source
+	file "filename").  The fix is to move the lineno intialization
+	to preceed the call to lxinit(), in the routine mainp1() in
+	scan.c:
+
+	-------- Old: --------
+
+  	for( i=0; i<SYMTSZ; ++i ) stab[i].stype = TNULL;
+  
+  	lxinit();
+  	tinit();
+  	mkdope();
+- 
+- 	lineno = 1;
+  
+  	/* dimension table initialization */
+  
+	-------- New: --------
+
+  	for( i=0; i<SYMTSZ; ++i ) stab[i].stype = TNULL;
+  
++ 	lineno = 1;	/* init this before lxtitle() is called */
++ 
+  	lxinit();
+  	tinit();
+  	mkdope();
+  
+  	/* dimension table initialization */
+
+	----------------------
+
+	Actually, the initialization of lineno in the old version
+	always clobbered its setting by lxinit(), but it was usually
+	clobbered innocuously from 1 to 1.  However, files like the
+	example "ln.c" above were pre-processed into something like
+	this:
+
+	# 1 "ln.c"
+	# 5 "ln.c"
+
+	}	
+
+	and the clobbering of lineno=5 after lxtitle() processed
+	the "# 5 "ln.c"" caused the erroneous line number
+	reports.  This commonly occurred to files which had an
+	"#ifdef lint ..." at the top.  To produce the bug, there
+	must be no lines at all between the two "# nnn filename"
+	lines (so that both are processed from the lxinit() call,
+	not later).
+
+	---------------------------------
+        Bruce Jerrick
+        Oregon Graduate Center
+	(503) 645-1121 ex. 355
+        CSNet:  bruce@Oregon-Grad
+        UUCP:   ...tektronix!ogcvax!bruce

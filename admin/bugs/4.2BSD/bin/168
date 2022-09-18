@@ -1,0 +1,157 @@
+Return-Path: <elsie!ado@seismo.css.gov>
+Return-Path: <elsie!ado>
+Date: Wed, 10 Sep 86 09:07:26 EDT
+From: elsie!ado@seismo.css.gov
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: 4.[123] find command muffs multiple "-newer" arguments (with fix)
+Index: bin/find 4.2BSD Fix
+
+Description:
+	The find command messes up if there are multiple "-newer" arguments.
+
+Repeat-By:
+		Script started on Wed Sep 10 08:51:03 1986
+		Warning: no access to tty; thus no job control in this shell...
+		% mkdir try
+		% cd try
+		% echo > a
+		% echo > b
+		% echo > c
+		% find a b c -newer a -newer b -print
+		c
+		% find a b c -newer b -newer a -print
+		b
+		c
+		% 
+		script done on Wed Sep 10 08:51:38 1986
+	...where, of course, both find commands should give the same results.
+
+Fix:
+	Here are context diffs for the 4.1BSD version of find.c
+	Since you're not running 4.1BSD, your line numbers will vary.
+
+*** old/find.c	Wed Sep 10 08:48:57 1986
+--- new/find.c	Wed Sep 10 08:49:01 1986
+***************
+*** 27,32
+  int	Bufsize = 5120;
+  int	Wct = 2560;
+  
+  long	Newer;
+  
+  struct stat Statb;
+
+--- 27,33 -----
+  int	Bufsize = 5120;
+  int	Wct = 2560;
+  
++ #ifdef OLDVERSION
+  long	Newer;
+  #endif /* OLDVERSION */
+  
+***************
+*** 28,33
+  int	Wct = 2560;
+  
+  long	Newer;
+  
+  struct stat Statb;
+  
+
+--- 29,35 -----
+  
+  #ifdef OLDVERSION
+  long	Newer;
++ #endif /* OLDVERSION */
+  
+  struct stat Statb;
+  
+***************
+*** 231,236
+			fprintf(stderr, "find: cannot access < %s >\n", b);
+			exit(1);
+		}
+		Newer = Statb.st_mtime;
+		return mk(newer, (struct anode *)0, (struct anode *)0);
+	}
+
+--- 233,239 -----
+			fprintf(stderr, "find: cannot access < %s >\n", b);
+			exit(1);
+		}
++ #ifdef OLDVERSION
+		Newer = Statb.st_mtime;
+		return mk(newer, (struct anode *)0, (struct anode *)0);
+  #else /* !OLDVERSION */
+***************
+*** 233,238
+		}
+		Newer = Statb.st_mtime;
+		return mk(newer, (struct anode *)0, (struct anode *)0);
+	}
+  err:	fprintf(stderr, "find: bad option < %s >\n", a);
+	exit(1);
+
+--- 236,250 -----
+  #ifdef OLDVERSION
+		Newer = Statb.st_mtime;
+		return mk(newer, (struct anode *)0, (struct anode *)0);
++ #else /* !OLDVERSION */
++ 		{
++ 			static long	l[sizeof Node / sizeof Node[0]];
++ 
++ 			l[Nn] = Statb.st_mtime;
++ 			return mk(newer, (struct anode *) &l[Nn],
++ 				(struct anode *) 0);
++ 		}
++ #endif /* !OLDVERSION */
+	}
+  err:	fprintf(stderr, "find: bad option < %s >\n", a);
+	exit(1);
+***************
+*** 424,429
+	close(ifile);
+	return;
+  }
+  newer()
+  {
+	return Statb.st_mtime > Newer;
+
+--- 436,442 -----
+	close(ifile);
+	return;
+  }
++ #ifdef OLDVERSION
+  newer()
+  {
+	return Statb.st_mtime > Newer;
+***************
+*** 428,433
+  {
+	return Statb.st_mtime > Newer;
+  }
+  
+  /* support functions */
+  scomp(a, b, s) /* funny signed compare */
+
+--- 441,453 -----
+  {
+	return Statb.st_mtime > Newer;
+  }
++ #else /* !OLDVERSION */
++ newer(p)
++ struct anode *	p;
++ {
++ 	return Statb.st_mtime > *((long *) (p->L));
++ }
++ #endif /* !OLDVERSION */
+  
+  /* support functions */
+  scomp(a, b, s) /* funny signed compare */
+--
+UNIX is a registered trademark of AT&T.
+System V is an AT&T trademark.
+Bug/s is a Volkswagen/Warner Brothers trademark.
+--
+	UUCP: ..decvax!seismo!elsie!ado   ARPA: elsie!ado@seismo.ARPA
+	DEC, VAX, Elsie & Ado are Digital, Borden & Ampex trademarks.

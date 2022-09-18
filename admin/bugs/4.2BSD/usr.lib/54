@@ -1,0 +1,104 @@
+Return-Path: <stanonik@nprdc>
+Date: Tue, 2 Oct 84 08:51:42 pdt
+From: stanonik@nprdc (Ron Stanonik)
+Subject: yet another sendmail loop
+Index: usr.lib/sendmail/src/collect.c 4.2BSD
+
+Description:
+	If the smtp peer tcp resets while you're collect'ing
+	the body of the message, then sendmail will loop, 
+	rereading the last line received and adding it to the
+	df file.
+Repeat-By:
+	I don't know how to reproduce this problem, but in our
+	case the peer did this to us every half hour for 3 days,
+	every time they had mail for us.
+Fix:
+	The problem seems to be that sendmail tests for feof as 
+	an exit condition, but a tcp reset (ECONNRESET) only 
+	generates ferror.  So, I've added ferror to the tests
+	for exit condtions.
+
+RCS file: RCS/collect.c,v
+retrieving revision 1.1
+diff -c -r1.1 collect.c
+*** /tmp/,RCSt1022775	Tue Oct  2 08:36:54 1984
+--- collect.c	Mon Sep 17 13:49:39 1984
+***************
+*** 73,79
+  	**	like UNIX "From" lines are deleted in the header.
+  	*/
+  
+! 	for (; !feof(InChannel); !feof(InChannel) && !ferror(InChannel) &&
+  				 sfgets(buf, MAXFIELD, InChannel) != NULL)
+  	{
+  		register char c;
+
+--- 73,79 -----
+  	**	like UNIX "From" lines are deleted in the header.
+  	*/
+  
+! 	for (; !feof(InChannel) && !ferror(InChannel); !feof(InChannel) && !ferror(InChannel) &&
+  				 sfgets(buf, MAXFIELD, InChannel) != NULL)
+  	{
+  		register int c;
+***************
+*** 103,109
+  				break;
+  			fixcrlf(p, TRUE);
+  		}
+! 		if (!feof(InChannel))
+  			(void) ungetc(c, InChannel);
+  
+  		CurEnv->e_msgsize += strlen(buf);
+
+--- 103,109 -----
+  				break;
+  			fixcrlf(p, TRUE);
+  		}
+! 		if (!feof(InChannel) && !ferror(InChannel))
+  			(void) ungetc(c, InChannel);
+  
+  		CurEnv->e_msgsize += strlen(buf);
+***************
+*** 132,138
+  	**  Collect the body of the message.
+  	*/
+  
+! 	for (; !feof(InChannel); !feof(InChannel) && !ferror(InChannel) &&
+  				 sfgets(buf, sizeof buf, InChannel) != NULL)
+  	{
+  		register char *bp = buf;
+
+--- 132,138 -----
+  	**  Collect the body of the message.
+  	*/
+  
+! 	for (; !feof(InChannel) && !ferror(InChannel); !feof(InChannel) && !ferror(InChannel) &&
+  				 sfgets(buf, sizeof buf, InChannel) != NULL)
+  	{
+  		register char *bp = buf;
+***************
+*** 163,170
+  	(void) fclose(tf);
+  
+  	/* An EOF when running SMTP is an error */
+! 	if (feof(InChannel) && OpMode == MD_SMTP)
+! 		syserr("collect: unexpected close");
+  
+  	/*
+  	**  Find out some information from the headers.
+
+--- 163,174 -----
+  	(void) fclose(tf);
+  
+  	/* An EOF when running SMTP is an error */
+! 	if ((feof(InChannel) || ferror(InChannel)) && OpMode == MD_SMTP)
+! 	{
+! 		syserr("unexpected close, from=%s", CurEnv->e_from.q_paddr);
+! 		CurEnv->e_flags &= ~EF_FATALERRS;
+! 		finis();
+! 	}
+  
+  	/*
+  	**  Find out some information from the headers.

@@ -1,0 +1,168 @@
+From bostic@okeeffe.berkeley.edu  Mon Feb  2 11:15:19 1987
+Date: Mon, 2 Feb 87 10:46:00 PST
+From: bostic@okeeffe.berkeley.edu (Keith Bostic)
+Subject: CPP problem with #ifdef's.
+Index: lib/cpp 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The following code fragment fails to compile on my
+	system (4.2BSD);
+
+	#define GROUP(group,subgroup)	(((group) << 8) | (subgroup))
+	#if GROUP(0,0)
+	#endif
+
+	The #if chokes for some reason.
+
+	Brett Galloway
+	{pesnta,twg,ios,qubix,turtlevax,tymix,vecpyr,certes,isi}!wjvax!brett
+===============
+	I have replicated your reported behavior on our 4.3BSD system.
+	Sure looks like a bug to me.  The surprising thing is that it
+	goes away if you just replace GROUP by hand.  That is,
+		#if (((0) << 8) | (0))
+		#endif
+	works fine.
+
+	|| Tom Stockfisch, UCSD Chemistry	tps%chem@sdcsvax.UCSD
+===============
+	>I have a question about the C preprocessor.  I have the following
+	> code fragment, which fails to compile on my system (4.2BSD):
+
+	It ain't gonna work on S5, either.
+
+	>The #if chokes for some reason.  Can anyone in comp.lang.c see my
+	> error?  If there is no error, is this a known bug of the 4.2BSD cpp?
+
+	Well, it's certainly "known" in some sense now, but I never knew
+	about it until now.  I don't know if the fact that it has persisted
+	in the Reiser preprocessor (as used in most UNIX C compilers) to this
+	day indicates that it wasn't known or that it was known but nobody
+	wanted to fix it.
+
+	K&R isn't very clear on what happens to macros inside the
+	"conditional-expression" in an "#if".  The Reiser preprocessor will
+	expand macros that have no formal arguments, but doesn't seem to
+	bother with macros that have formals.  The ANSI C draft of October 1,
+	1986 says that
+
+		In a controlling constant expression, each identifier
+		currently defined as a macro name is replaced by its token
+		sequence (except for those identifiers modified by "defined",
+		just as in normal text.
+
+	This doesn't distinguish between "object-like" and "function-like"
+	macros, although the language seems to be written specifically around
+	object-like macros (since when a "function-like" macro call is
+	expanded, the identifier and the actual argument list, not just the
+	identifier, is replaced).  This requires some clarification.
+	
+	Unless there's some compelling reason not to do so, I think that both
+	kinds of macros should be expanded (the Principle of Least Surprise
+	rules here, and you certainly were surprised by the behavior of the
+	Reiser preprocessor).  I don't know whether the Reiser preprocessor's
+	reluctance to expand "function-like" macro calls here is caused by
+	conceptual problems with doing that or implementation problems.
+
+Repeat-By:
+	See above.
+===============
+Path: seismo!rutgers!ames!ptsfa!ihnp4!alberta!sask!zaphod!billj
+From: billj@zaphod.UUCP (Bill Jones)
+Newsgroups: comp.lang.c,comp.bugs.4bsd
+Subject: Re: C preprocessor question
+Summary: cpp patch
+In article <818@wjvax.wjvax.UUCP> brett@wjvax.UUCP (Brett Galloway) writes:
+>...fails to compile on my system (4.2BSD):
+>#define	GROUP(group,subgroup)	(((group) << 8) | (subgroup))
+>#if	GROUP(0,0)
+>#endif
+>The #if chokes for some reason.
+
+A couple of other writers (jtr485@umich and pedz@bobkat) argue
+respectively that this shouldn't work, since the <expression> of a #if
+is very restricted; or that it should, as should everything including
+sizeof.  Well, it depends on your cpp.  Since V7, the #if should work
+with all non-assignment operators, including comma, but *not* sizeof
+since that's only determinable by the compiler proper, as are casts and
+enums.  K&R section 12.3 did a hand wave on this one.
+
+In article <12300@sun.uucp> guy@sun.UUCP (Guy Harris) writes:
+>I don't know whether the Reiser preprocessor's
+>reluctance to expand "function-like" macro calls here is caused by
+>conceptual problems with doing that or implementation problems.
+
+I think I do.  The Reiser cpp is getting its fancy scanner pointers
+mixed up after performing the substitution.  As Tom Stockfish pointed
+out, the problem vanishes if you run cpp past the presubstituted form
+instead.  The sloscan() set by ppcontrol() when it starts interpreting
+the contents of the #if line is being reset to fasscan() during the
+macro substitution, and cotoken() then blazes past all the substitued
+'(' characters.  The following patch to the parameter substitution code
+in subst() stops that.  Beware that the copy of cpp we have here is a
+decidedly non-vanilla version, and your line numbers will vary.
+--
+Bill Jones, Develcon Electronics, 856 51 St E, Saskatoon S7K 5C7 Canada
+uucp:  ...ihnp4!sask!zaphod!billj                phone:  (306) 931-1504
+
+RCS file: RCS/cpp.c,v
+retrieving revision 1.2
+diff -c -r1.2 cpp.c
+*** /tmp/,RCSt1001409	Fri Feb 13 13:07:00 1987
+--- cpp.c	Fri Feb 13 12:06:35 1987
+***************
+*** 2566,2571
+  {
+  	register char	*ca, *vp;
+  	int		params;
+  	char		*actual[MAXFRM]; /* actual[n-1] is text of nth actual */
+  	char		acttxt[MAXBUF];	/* space for actuals */
+--- 2575,2581 -----
+  {
+  	register char	*ca, *vp;
+  	int		params;
++ 	int		wasfast = 0;
+  	char		*actual[MAXFRM]; /* actual[n-1] is text of nth actual */
+  	char		acttxt[MAXBUF];	/* space for actuals */
+***************
+*** 2595,2601
+  		ca = acttxt;
+  		pa = actual;
+  		if (params > 1) params--;
+! 		sloscan();
+  		/*
+  		 * no expansion during search for actuals
+
+--- 2605,2614 -----
+  		ca = acttxt;
+  		pa = actual;
+  		if (params > 1) params--;
+! 		if (!isslo) {
+! 			sloscan();
+! 			wasfast++;
+! 		}
+  		/*
+  		 * no expansion during search for actuals
+***************
+*** 2728,2734
+  			vp--;
+  		}
+  		skip--;
+! 		fasscan();
+  	}
+  	else if (inif)
+  	{
+
+--- 2741,2747 -----
+  			vp--;
+  		}
+  		skip--;
+! 		if (wasfast) fasscan();
+  	}
+  	else if (inif)
+  	{
+-- 
+Bill Jones, Develcon Electronics, 856 51 St E, Saskatoon S7K 5C7 Canada
+uucp:  ...ihnp4!sask!zaphod!billj                phone:  (306) 931-1504
+

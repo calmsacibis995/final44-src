@@ -1,0 +1,125 @@
+From jenkins@purdue.edu  Mon May  4 07:12:13 1987
+Date: Mon, 4 May 87 09:11:25 EST
+From: "Colin Jenkins" <jenkins@purdue.edu>
+Subject: login does not honor .rhosts
+Index: bin/login 4.3BSD
+
+Description:
+	When using rlogin to access a remote host, the login program only
+	honors .rhosts permissions on the first attempt to gain access, and
+	then only if the user id is provided by rlogin.  Now users who are
+	prompted for a login id when executing rlogin do not have to type a 
+	password if their host account has access.
+
+Repeat-By:
+	Invoke rlogin with no user id or an invalid one.  Provide the correct
+	user id when prompted.
+
+Fix:
+
+*** /tmp/,RCSt1006282	Mon May  4 08:53:44 1987
+--- login.c	Mon May  4 08:38:25 1987
+***************
+*** 58,63 ****
+--- 58,66 ----
+  
+  #endif
+  #endif
++ #ifdef PURDUE_CS
++ char	sbHost [256];	/* Host name.  utmp.ut_name seems to get corrupted */
++ #endif PURDUE_CS
+  char	nolog[] =	"/etc/nologin";
+  char	qlog[]  =	".hushlogin";
+  char	maildir[30] =	"/usr/spool/mail/";
+***************
+*** 133,139 ****
+--- 136,151 ----
+  				exit(1);
+  			}
+  			rflag = 1;
++ #ifdef PURDUE_CS
++ 			/*
++ 			 * Get pass the local and remote user names and
++ 			 * check access permissions.
++ 			 */
++ 			usererr = doremotelogin(argv[2], TRUE);
++ 			SCPYN(sbHost, argv[2]);
++ #else
+  			usererr = doremotelogin(argv[2]);
++ #endif PURDUE_CS
+  			SCPYN(utmp.ut_host, argv[2]);
+  			argc -= 2;
+  			argv += 2;
+***************
+*** 205,212 ****
+--- 217,238 ----
+  		 */
+  		if (rflag && !invalid)
+  			SCPYN(utmp.ut_name, lusername);
++ #ifdef PURDUE_CS
++ 		/*
++ 		 * Allow for remote logins to recheck for access permission
++ 		 * more than once.
++ 		 */
++ 		else {
++ 			getloginname(&utmp);
++ 
++ 			if (rflag) {
++ 			    usererr = doremotelogin(sbHost, !invalid);
++ 			    }  /* if */
++ 			}  /* else */
++ #else
+  		else
+  			getloginname(&utmp);
++ #endif PURDUE_CS
+  		invalid = FALSE;
+  		if (!strcmp(pwd->pw_shell, "/bin/csh")) {
+  			ldisc = NTTYDISC;
+***************
+*** 490,506 ****
+--- 516,560 ----
+  	return (t->ty_type);
+  }
+  
++ #ifdef PURDUE_CS
++ doremotelogin (host, fPass1)
++ 	char *host;		/* Host name				*/
++ 	int  fPass1;		/* True if first call, false otherwise	*/
++ #else
+  doremotelogin(host)
+  	char *host;
++ #endif PURDUE_CS
+  {
++ #ifdef PURDUE_CS
++ 	/*
++ 	 * We only want to do this once.
++ 	 */
++ 	if (fPass1) {
++ 	    getstr(rusername, sizeof (rusername), "remuser");
++ 	    getstr(lusername, sizeof (lusername), "locuser");
++     	    getstr(term, sizeof(term), "Terminal type");
++ 	    }  /* if */
++ #else
+  	getstr(rusername, sizeof (rusername), "remuser");
+  	getstr(lusername, sizeof (lusername), "locuser");
+  	getstr(term, sizeof(term), "Terminal type");
++ #endif PURDUE_CS	
++ 
+  	if (getuid()) {
+  		pwd = &nouser;
+  		return(-1);
+  	}
++ 
++ #ifdef PURDUE_CS
++ 	/*
++ 	 * Only need to do this once also because on second time through
++ 	 * this will have been done by getloginname()
++ 	 */
++ 	if (fPass1)
++ 	    pwd = getpwnam(lusername);
++ #else
+  	pwd = getpwnam(lusername);
++ #endif PURDUE_CS
+  	if (pwd == NULL) {
+  		pwd = &nouser;
+  		return(-1);

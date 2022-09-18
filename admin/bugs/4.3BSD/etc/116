@@ -1,0 +1,146 @@
+Path: seismo!uunet!husc6!think!ames!oliveb!jerry
+From: jerry@oliveb.olivetti.com (Jerry Aguirre)
+Newsgroups: comp.bugs.4bsd
+Subject: No easy way to list the current set of dumps
+Summary: Added a list option to dump
+Index: etc/dump/dumpmain.c 4.3BSD
+
+Description:
+	When planning a restore or just checking on the current dump
+	status of a file system there is no way to display the current
+	set of dumps.  The information is imbedded in the /etc/dumpdates
+	file but is interspersed with outdated entries and is in no
+	useful order.  This is a particular problem when dumps and
+	restores are handled by someone not familiar with the dump
+	algorithm.
+
+Repeat-By:
+	Quickly, decide what levels dumped on what dates would be
+	needed to restore your /usr file system.
+
+Fix:
+	I have added a new list('l') option to dump.  This is similar to
+	the 'w' option but instead of listing what should be dumped it
+	lists what has been dumped.  Diffs for the man page and program
+	follow.
+
+=== This is probably in /usr/man/man8/dump.8 ===
+*** dump.8.orig	Wed May 28 15:47:48 1986
+--- dump.8	Wed Dec 16 21:36:34 1987
+***************
+*** 115,120 ****
+--- 115,136 ----
+  notify by means similar to a
+  .IR wall (1)
+  all of the operators in the group \*(lqoperator\*(rq.
++ .TP 5
++ .B l
++ .I Dump
++ lists the current dumps for the specified file system.
++ This information is gleaned from the files
++ .I /etc/dumpdates
++ and
++ .I /etc/fstab.
++ This is the set of dumps that would be mounted for a complete
++ .IR restore (8)
++ of that file system.
++ If the 
++ .B l
++ option is set, all other options are ignored, and
++ .I dump
++ exits without further processing.
+  .PP
+  If no arguments are given,
+  the
+=== This is probably in /usr/src/etc/dump/dumpmain.c ===
+*** dumpmain.c.orig	Wed May 28 11:11:53 1986
+--- dumpmain.c	Wed Dec  9 20:29:07 1987
+***************
+*** 28,33 ****
+--- 28,34 ----
+  {
+  	char		*arg;
+  	int		bflag = 0, i;
++ 	int		lflag = 0;
+  	float		fetapes;
+  	register	struct	fstab	*dt;
+***************
+*** 120,125 ****
+--- 121,130 ----
+  		uflag++;
+  		break;
++ 	case 'l':			/* update /etc/dumpdates */
++ 		lflag++;
++ 		break;
++ 
+  	case 'n':			/* notify operators */
+  		notify++;
+  		break;
+***************
+*** 195,200 ****
+--- 200,210 ----
+  		disk = rawname(dt->fs_spec);
+  	getitime();		/* /etc/dumpdates snarfed */
++ 	if (lflag) {
++ 		printdt(disk);
++ 		exit(0);
++ 	}
++ 
+  	msg("Date of this level %c dump: %s\n", incno, prdate(spcl.c_date));
+   	msg("Date of last level %c dump: %s\n",
+  		lastincno, prdate(spcl.c_ddate));
+***************
+*** 347,350 ****
+--- 357,407 ----
+  	strcat(rawbuf, "/r");
+  	strcat(rawbuf, dp+1);
+  	return (rawbuf);
++ }
++ 
++ printdt(fname)
++ 	char *fname;
++ {
++ 	register	struct	idates	*ip;
++ 	register	int	i;
++ 	int	x;
++ 	struct	idates	*ipa[10];
++ 	char buf[sizeof (ip->id_name) + 2];
++ 
++ 	for (x = 0; x <= 9; x++) ipa[x] = 0;
++ 
++ 	/* place in ipa the most recent dumps for each of the 10 levels */
++ 	ITITERATE(i, ip) {
++ 		if (strncmp(fname, ip->id_name, sizeof (ip->id_name)) != 0)
++ 			continue; /* wrong file system */
++ 		if ((ip->id_incno < '0') || (ip->id_incno > '9')) {
++ 			msg("Bad dumpdates level '%c'\n", ip->id_incno);
++ 			continue;
++ 		}
++ 		x = ip->id_incno - '0';
++ 		if (!ipa[x]) {
++ 			ipa[x] = ip;	/* first entry found */
++ 			continue;
++ 		}
++ 		if (ip->id_ddate <= ipa[x]->id_ddate)
++ 			continue;	/* older entry */
++ 		ipa[x] = ip;	/* more recent entry, replaces previous */
++ 	}
++ 	/* a lower level dump invalidates earlier higher level dumps */
++ 	/* by example a level 0 dump replaces all previous dumps */
++ 	for (x = 0; x <= 9; x++) {
++ 		if (!ipa[x]) continue;
++ 		for (i = x + 1; i <= 9; i++) {
++ 			if (!ipa[i]) continue;
++ 			if (ipa[x]->id_ddate > ipa[i]->id_ddate)
++ 				ipa[i] = 0; /* obsolete it */
++ 		}
++ 	}
++ 	buf[sizeof (ip->id_name) + 1] = '\0';
++ 	for (x = 0; x <= 9; x++) {
++ 		if (!ipa[x]) continue;
++ 		strncpy(buf, ipa[x]->id_name, sizeof (ip->id_name));
++ 		printf("%-15s %c   %s\n",
++ 			buf, ipa[x]->id_incno, prdate(ipa[x]->id_ddate));
++ 	}
+  }
+=== End of patches ===

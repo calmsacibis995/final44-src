@@ -1,0 +1,116 @@
+Return-Path: <decvax!utcsrgv!uthub!thomson>
+Date: Tue, 19 Jun 84 10:40:37 edt
+From: decvax!uthub!thomson (Brian Thomson)
+To: utcsrgv!decvax!ucbvax!4bsd-bugs
+Subject: ptcread() throughput sextupling
+
+Index: sys/sys/tty_pty.c 4.2BSD Fix
+
+Description:
+	Oink oink!
+	That is the sound that data makes as it travels through
+	4.2BSD's pseudo-tty driver.  Even in the high-volume
+	direction (slave to controller) there is a great deal
+	of code executed per-character.  On our otherwise idle 750 I
+	measured the maximum pty throughput at 5K chars/sec.;
+	after applying the following mods it reached 30K chars/sec.
+	If your machine is often accessed through rlogin(1c) this
+	can mean considerable savings in system-state CPU time.
+
+Repeat-By:
+	Run this program and use iostat(1) to see what your character
+	rate is.
+
+	#include <sys/types.h>
+	char buf[1024];
+	int wsize = 1024;
+
+	main()
+	{
+		int csock, dsock, i;
+
+		for(i=0 ; i<wsize; i++)
+			buf[i] = '0';
+		csock = getpty(&dsock);
+		if(csock == -1) {
+			perror("ptty");
+			exit(1);
+		}
+		if(fork() == 0) {
+			/* Child, writes on slave. */
+			close(csock);
+			while(write(dsock, buf, wsize) != -1)
+				;
+		} else {
+			/* parent reads from controller */
+			close(dsock);
+			while(read(csock, buf, wsize)  != -1)
+				;
+		}
+		exit(0);
+	}
+	getpty(ip)
+		int *ip;
+	{
+		static char name[] = "/dev/ptyp0";
+		int i;
+		int res;
+
+		for(i=0; i<16; i++) {
+			name[9] = i+'0';
+			res = open(name, 2);
+			if(res != -1) {
+				name[5] = 't';
+				*ip = open(name, 2);
+				if(*ip != -1)
+					return(res);
+				name[5] = 'p';
+				close(res);
+			}
+		}
+		return(-1);
+	}
+
+
+Fix:
+	*WARNING*
+	This modification introduces the following bug:
+	
+      *	A read from the controller side into an invalid or write-protected *
+      *	user buffer (failing with an EFAULT error) may consume data that   *
+      *	should have been read but was not delivered to the user.	   *
+
+	I consider this a minor nit, and am willing to put up with it
+	considering the payoff.
+
+	First, remove the #ifdef notdef around the q_to_b() function
+	in file sys/tty_subr.c.  
+	Then, edit routine ptcread() in file sys/tty_pty.c as follows:
+
+	1) add the local definition
+		char ptc_rdbuf[BUFSIZ];
+	   after the other local defs in ptcread()
+
+	2) change the loop
+
+	    while (tp->t_outq.c_cc && uio->uio_resid > 0)
+		    if (ureadc(getc(&tp->t_outq), uio) < 0) {
+			    error = EFAULT;
+			    break;
+		    }
+
+	   to be
+
+	    while(uio->uio_resid > 0 && error == 0) {
+		    int cc = q_to_b(&tp->t_outq, ptc_rdbuf, MIN(uio->uio_resid, BUFSIZ));
+		    if(cc == 0)
+			    break;
+		    error = uiomove(ptc_rdbuf, cc, UIO_READ, uio);
+	    }
+
+	We have been using this code for 5 months.
+	You may not experience quite as great an improvement as we did,
+	because we also improved the performance of q_to_b().
+
+		    Brian Thomson,	    CSRG Univ. of Toronto
+		    {linus,ihnp4,uw-beaver,floyd,utzoo}!utcsrgv!uthub!thomson

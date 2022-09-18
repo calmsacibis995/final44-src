@@ -1,0 +1,85 @@
+Return-Path: <ihnp4!uiucdcs!uicsrd.CSRD.UIUC.EDU!mcdaniel@ucb-vax.BERKELEY.EDU>
+Date: Sat, 2 Nov 85 22:45:25 cst
+From: ihnp4!uiucdcs!uicsrd.CSRD.UIUC.EDU!mcdaniel@ucb-vax.BERKELEY.EDU (Tim McDaniel)
+Subject: malloc dumps core when given huge size
+Index: 	lib/malloc.c 4.2BSD Fix
+
+Description:
+	(The Index: line should say /usr/src/lib/libc/gen/malloc.c,
+	but that doesn't seem to be a valid catagory.)
+
+	When malloc is given a really HUGE argument, it core dumps with
+	a Segmentation fault or Bus error (depending on the system).
+	A HUGE argument is about 2^30 or so on a VAX.
+	Since malloc takes an unsigned int argument, a negative int
+	argument will also provoke the bug.
+	Such arguments make morecore() call sbrk() with a negative
+	argument (for the 2^30 zone) or zero argument (for the 2^31
+	region).
+
+Repeat-By:
+	c1 = malloc(1 << 31);
+	c2 = malloc(-23);
+
+Fix:
+
+*** /usr/src/lib/libc/gen/malloc.c	Tue Feb  5 22:54:12 1985
+--- malloc.c	Sat Nov  2 22:30:52 1985
+***************
+*** 136,142
+   */
+  static
+  morecore(bucket)
+! 	register bucket;
+  {
+    	register union overhead *op;
+    	register int rnu;       /* 2^rnu bytes will be requested */
+
+--- 136,142 -----
+   */
+  static
+  morecore(bucket)
+! 	register int bucket;
+  {
+    	register union overhead *op;
+    	register int rnu;       /* 2^rnu bytes will be requested */
+***************
+*** 142,147
+    	register int rnu;       /* 2^rnu bytes will be requested */
+    	register int nblks;     /* become nblks blocks of the desired size */
+  	register int siz;
+  
+    	if (nextf[bucket])
+    		return;
+
+--- 142,148 -----
+    	register int rnu;       /* 2^rnu bytes will be requested */
+    	register int nblks;     /* become nblks blocks of the desired size */
+  	register int siz;
++ 	register int sbrk_size;
+  
+    	if (nextf[bucket])
+    		return;
+***************
+*** 158,164
+    	nblks = 1 << (rnu - (bucket + 3));  /* how many blocks to get */
+    	if (rnu < bucket)
+  		rnu = bucket;
+! 	op = (union overhead *)sbrk(1 << rnu);
+  	/* no more room! */
+    	if ((int)op == -1)
+    		return;
+
+--- 159,170 -----
+    	nblks = 1 << (rnu - (bucket + 3));  /* how many blocks to get */
+    	if (rnu < bucket)
+  		rnu = bucket;
+! 	/* sbrk_size <= 0 only for big, FLUFFY, requests (about
+! 	 * 2^30 bytes on a VAX, I think) or for a negative arg. */
+! 	sbrk_size = 1 << rnu;
+! 	if (sbrk_size <= 0)
+! 	    return;
+! 	op = (union overhead *)sbrk(sbrk_size);
+  	/* no more room! */
+    	if ((int)op == -1)
+    		return;

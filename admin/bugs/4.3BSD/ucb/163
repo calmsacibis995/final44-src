@@ -1,0 +1,68 @@
+From @relay.cs.net:rad@tekgen.bv.tek.com  Sat Mar 19 02:56:35 1988
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: dbx 'cont n' does not work on waiting process
+Date: 18 Mar 88 17:40:38 PST (Fri)
+From: rad@tekgen.bv.tek.com
+Index:	ucb/dbx/process.c 4.3BSD
+
+Description:
+	If the user interrupts dbx, and then types 'cont n' where n is
+	the number (or name) of the signal to be sent to the controlled
+	process, the signal is not sent if the process is waiting for
+	input and the handler for the signal is either SIG_IGN or
+	SIF_DFL.  This is because:
+
+	cont(signo)
+	   calls stepover()
+	      calls dostep()
+		 calls stepto()
+	            calls xto()
+		       calls resume(DEFSIG)	<-- DEFSIG is hardcoded
+			  calls pcont(c, signo=DEFSIG)
+			     calls setinfo(  , signo=DEFSIG)
+			     calls ptrace(... p->signo)
+	
+	When setinfo() is called with signal DEFSIG, it sets p->signo
+	to 0 if the process has a signal handler of 0 or 1,
+	and no signal gets sent to the process.
+
+	Ideally, the specified signal number would be propagated down the
+	chain to xto(), but that results in a lot of changed argument
+	lists and invocations.
+
+	A shorter fix is to set p->signo in cont() and at the same time
+	change the signal handler to something other than 0 or 1 so
+	setinfo() won't change p->signo.
+
+Repeat-By:
+	Run dbx on the following trivial program, then type ^C to
+	interrupt dbx and try to send a SIGINT to the process by
+	typing 'cont 2'.The process will continue without being
+	interrupted.
+
+		main()
+		{
+			int i;
+			char buf[20];
+			i = read(0,buf,19);
+			write(1,buf,i);
+		}
+Fix:
+	I am a little suspicious of this fix, but can't find anything
+	really wrong with it.
+
+*** .dist/process.c	Fri May 31 10:15:12 1985
+--- process.c	Fri Mar 18 15:37:03 1988
+***************
+*** 321,326 ****
+--- 321,330 ----
+  {
+      integer s;
+  
++     if (signo != DEFSIG) {
++ 	process->signo = signo;
++ 	process->sigstatus = 2; /* fake out setinfo() */
++     }
+      dbintr = signal(SIGINT, intr);
+      if (just_started) {
+  	just_started = false;

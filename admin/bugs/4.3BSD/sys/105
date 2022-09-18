@@ -1,0 +1,49 @@
+Path: seismo!rochester!pt.cs.cmu.edu!wb1.cs.cmu.edu!rds
+From: rds@wb1.cs.cmu.edu (Robert Sansom)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Index: sys/vaxif/if_uba.c 4.3BSD
+Subject: "panic" in "rcv_xmtbuf" in "vaxif/if_uba.c".
+
+Problem:
+	"panic" in "rcv_xmtbuf" in "vaxif/if_uba.c".
+
+	We have determined that this panic can be easily triggerred if
+	we send a large packet, which uses cluster mapping, followed by
+	a small broadcast packet.  Note that, unless you are using trailer
+	encapsulation, a large packet sent via the socket AF_INET interface
+	will never map clusters.  In the MACH project, we have provided a
+	MACH IPC interface to the IP level.  Large packets sent via this
+	interface will always have clusters mapped directly onto the Unibus.
+
+	The problem is that the code in "if_ubaput" which cleans up the
+	mappings constructed by the previous "if_ubaput" is optimised to
+	only clean up what is needed for the current "if_ubaput".  However,
+	this optimisation conflicts with the assumption made by "rcv_xmtbuf"
+	that everything that the transmit buffer says is mapped, is still
+	lying around.
+
+Fix:
+	Don't optimise the cleanup in "if_ubaput".
+
+	Could also fix by making "rcv_xmtbuf" do the same size calculation
+	as in the cleanup code of "if_ubaput".
+
+---------
+
+#if 	CS_BUGFIX
+#else 	CS_BUGFIX
+	x = ((cc - ifu->iff_hlen) + CLYTES - 1) >> CLSHIFT;
+#endif	CS_BUGFIX
+
+#if	CS_BUGFIX
+		/* Cleanup everything. */
+#else 	CS_BUGFIX
+		if (i >= x)
+			break;
+#endif 	CS_BUGFIX
+
+-------
+
+Robert Sansom, Computer Science Department,
+Carnegie Mellon University, Pittsburgh, PA 15217
+ARPA: rds@spice.cs.cmu.edu

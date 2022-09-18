@@ -1,0 +1,117 @@
+Return-Path: <scc%STEVE.COMPUTER-LAB.CAMBRIDGE.AC.UK%steve%COMPUTER-LAB.CAMBRIDGE.AC.UK@ucl-cs.ARPA>
+Date:    Fri, 20 Sep 85 3:12:26 BST
+From: Stephen Crawley <scc%steve.computer-lab.cambridge.ac.uk@ucl-cs.arpa>
+Subject: tip "tandem" does not work
+Index: usr.bin/tip/tip.c 4.2BSD
+
+Description:
+	Tip does not do flow control properly on the remote terminal when
+	the "tandem" variable is set.  Someone forgot that setting a tty
+	into RAW mode on 4.2 overrides TANDEM.
+Repeat-By:
+	Start up tip to somewhere, set "tandem", and look at the state
+	of the "remote" terminal (as root) with the command
+	
+		stty everything >/dev/ttynn 	
+				 ^^^^^^^^^^     
+			substitute appropriate device file
+
+	Notice that both raw and tandem are indicated
+	If you have a slow device which uses Xon-Xoff protocol to exert
+	backpressure (a CAMTEC X25 pad will do), start up tip through
+	this device, try to write a file and watch it drop characters.
+Fix:
+	The fix is to use CBREAK mode rather than RAW mode on the remote
+	tty.  Below are the diffs for tip.c.  I apologise if they don't
+	quite line up with your sources.
+
+--------------------------------------------------------------------------
+RCS file: RCS/tip.c,v
+retrieving revision 1.2
+diff -c -r1.2 tip.c
+*** /tmp/,RCSt1019726   Wed Sep 11 21:43:08 1985
+--- tip.c       Mon Sep  9 22:15:40 1985
+***************
+*** 414,419
+        int speed;
+  {
+        unsigned bits = LDECCTQ;
+  
+        arg.sg_ispeed = arg.sg_ospeed = speed;
+        arg.sg_flags = RAW;
+
+--- 414,421 -----
+        int speed;
+  {
+        unsigned bits = LDECCTQ;
++         struct ltchars rmltchars;
++         struct tchars rmtchars;
+  
+        rmtchars.t_intrc = rmtchars.t_quitc = -1;
+          rmtchars.t_eofc = rmtchars.t_brkc = -1;
+***************
+*** 415,420
+  {
+        unsigned bits = LDECCTQ;
+  
+        arg.sg_ispeed = arg.sg_ospeed = speed;
+        arg.sg_flags = RAW;
+        if (boolean(value(TAND)))
+
+--- 417,429 -----
+          struct ltchars rmltchars;
+          struct tchars rmtchars;
+  
++       rmtchars.t_intrc = rmtchars.t_quitc = -1;
++         rmtchars.t_eofc = rmtchars.t_brkc = -1;
++         rmtchars.t_startc = '\021';
++         rmtchars.t_stopc = '\023';
++       rmltchars.t_suspc = rmltchars.t_dsuspc = rmltchars.t_rprntc = -1;
++       rmltchars.t_flushc = rmltchars.t_werasc = rmltchars.t_lnextc = -1;
++ 
+        arg.sg_ispeed = arg.sg_ospeed = speed;
+        arg.sg_flags = ANYP | CBREAK;
+        if (boolean(value(TAND)))
+***************
+*** 416,422
+        unsigned bits = LDECCTQ;
+  
+        arg.sg_ispeed = arg.sg_ospeed = speed;
+!       arg.sg_flags = RAW;
+        if (boolean(value(TAND)))
+                arg.sg_flags |= TANDEM;
+        ioctl(FD, TIOCSETP, (char *)&arg);
+
+--- 425,431 -----
+        rmltchars.t_flushc = rmltchars.t_werasc = rmltchars.t_lnextc = -1;
+  
+        arg.sg_ispeed = arg.sg_ospeed = speed;
+!       arg.sg_flags = ANYP | CBREAK;
+        if (boolean(value(TAND)))
+                arg.sg_flags |= TANDEM;
+        ioctl(FD, TIOCSETP, (char *)&arg);
+***************
+*** 421,426
+                arg.sg_flags |= TANDEM;
+        ioctl(FD, TIOCSETP, (char *)&arg);
+        ioctl(FD, TIOCLBIS, (char *)&bits);
+  }
+  
+  /*
+
+--- 430,437 -----
+                arg.sg_flags |= TANDEM;
+        ioctl(FD, TIOCSETP, (char *)&arg);
+        ioctl(FD, TIOCLBIS, (char *)&bits);
++       ioctl(FD, TIOCSETC, (char *)&rmtchars);
++       ioctl(FD, TIOCSLTC, (char *)&rmltchars);
+  }
+  
+  /*
+--------------------------------------------------------------------------
+			Stephen C. Crawley
+
+ARPA:	scc%cl.cam.ac.uk@ucl-cs.ARPA  SMail: Cambridge Univ. Computer Lab.,
+JANET:	scc@uk.ac.cam.cl                     Corn Exchange Street,
+UUCP:	{ukc,kcl-cs}!cl-jenny!scc	     Cambridge CB2 3QG, 
+PHONE:	+44 223 352 435                      England.

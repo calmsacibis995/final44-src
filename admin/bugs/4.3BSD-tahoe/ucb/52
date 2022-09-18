@@ -1,0 +1,352 @@
+From long-morrow@YALE.EDU  Wed Sep  6 07:52:47 1989
+Date: Wed, 6 Sep 89 10:46:01 EDT
+From: "H. Morrow Long" <long-morrow@YALE.EDU>
+To: security-emergency@cpd.com, zardoz!sec-rqst%uunet.UUCP@YALE.EDU
+Subject: rlogind/rshd broken by nameserver spoofing in in-addr.arpa domains &fix
+Cc: 4bsd-bugs@ucbvax.Berkeley.EDU, NETMGR-L@yalevm.ycc.yale.edu,
+        cert@SEI.CMU.EDU, hotline@sun.com, krvw@SEI.CMU.EDU
+Index: ucb/named 4.3BSD-tahoe
+
+
+>Date: Thu, 24 Aug 89 17:02:25 EDT
+>From: uunet!unclejack.crd.ge.com!barnett
+>Subject: Two security problems with Ultrix 3.0
+>
+>I have noticed two security problems with Ultrix 3.0
+>
+>1)	...
+>2) name service and remote login
+>
+>    I Think this is a security hole, but I am not sure. I do not have sources
+>    and am unable to verify if the hole exists.
+>
+>    When rlogin/telnet checks to see if someone have permission to log in without
+>    a password, it uses the x.x.x.x.in-addr.arpa name server.
+>
+>    What that means, if I am the Name Server administrator for the
+>    my-network.in-addr.arpa domain,  I can add an entry saying my name is
+>    decwrl.dec.com or any other name.
+>
+>    If I were to rlogin onto decwrl.dec.com, it asks me what my name is
+>    and I can lie about it It would then believe me.
+>
+>    I think the fix is to get the berkeley version of rlogin/rlogind/telnetd
+>    and telnet. The ultrix versions have  the following string in the executable:
+>
+>    	%d.%d.%d.%d.in-addr.arpa
+
+This is indeed an enormous security hole in the entire Internet nameservice
+scheme .  We just tested it here and the fix is not to install the vanilla
+4.3bsd and 4.3BSD-tahoe release versions of rlogind and rshd (they have the
+same behaviour).  It is especially bad news if you have /.rhosts files and
+root`s home directory is /.
+
+But by modifying rshd and rlogind to do a host lookup (gethostbyname) on the
+hostname obtained by the reverse domain lookup to have it compare the open
+socket connection internet address against the list of internet addresses
+claimed by the host entry returned by gethostbyname() you can obtain at least
+some minimal authentication.
+
+Other programs should also probably be fixed.  rshd and rlogind are the major
+culprits.  rexecd, ftpd and telnetd don't appear to have the same hole because
+rely on usernames and passwords for authentication.
+
+lpd and the Sun NFS suite (rpc.mountd in particular) should also be examined
+and possibly fixed (if you care about people printing to and using up your
+expensive laser writer paper).
+
+The following diffs have been tested on the 4.3BSD Tahoe release source:
+
+*** rlogind.c.orig	Wed Sep  6 09:04:55 1989
+--- rlogind.c	Wed Sep  6 09:47:26 1989
+***************
+*** 1,3 ****
+--- 1,7 ----
++ #ifndef	YALE_RESOLV
++ #define YALE_RESOLV
++ #endif
++ 
+  /*
+   * Copyright (c) 1983 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 87,92 ****
+--- 91,99 ----
+  	register struct hostent *hp;
+  	struct hostent hostent;
+  	char c;
++ #ifdef	YALE_RESOLV
++ 	u_long *ulongptr;
++ #endif
+  
+  	alarm(60);
+  	read(f, &c, 1);
+***************
+*** 96,101 ****
+--- 103,122 ----
+  	fromp->sin_port = ntohs((u_short)fromp->sin_port);
+  	hp = gethostbyaddr(&fromp->sin_addr, sizeof (struct in_addr),
+  		fromp->sin_family);
++ #ifdef	YALE_RESOLV
++ 	if (hp != (struct hostent *) NULL )
++ 		{
++ 		ulongptr = (unsigned long *) NULL;
++ 		hp = gethostbyname( hp->h_name );
++ 		for (i=0; hp->h_addr_list[i] ; i++)
++ 			{
++ 			ulongptr = (unsigned long *) hp->h_addr_list[i];
++ 			if ( *ulongptr == fromp->sin_addr.s_addr) break;
++ 			}
++ 		if ( *ulongptr != fromp->sin_addr.s_addr) 
++ 			hp = (struct hostent *) NULL;
++ 		}
++ #endif
+  	if (hp == 0) {
+  		/*
+  		 * Only the name is used below.
+*** rshd.c.orig	Wed Sep  6 09:59:05 1989
+--- rshd.c	Wed Sep  6 10:18:25 1989
+***************
+*** 1,3 ****
+--- 1,7 ----
++ #ifndef	YALE_RESOLV
++ #define	YALE_RESOLV
++ #endif
++ 
+  /*
+   * Copyright (c) 1983 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 91,96 ****
+--- 95,104 ----
+  	int pv[2], pid, ready, readfrom, cc;
+  	char buf[BUFSIZ], sig;
+  	int one = 1;
++ #ifdef	YALE_RESOLV
++ 	u_long *ulongptr;
++ 	int	i;
++ #endif
+  
+  	(void) signal(SIGINT, SIG_DFL);
+  	(void) signal(SIGQUIT, SIG_DFL);
+***************
+*** 150,155 ****
+--- 158,177 ----
+  	dup2(f, 2);
+  	hp = gethostbyaddr((char *)&fromp->sin_addr, sizeof (struct in_addr),
+  		fromp->sin_family);
++ #ifdef	YALE_RESOLV
++ 	if (hp != (struct hostent *) NULL )
++ 		{
++ 		ulongptr = (unsigned long *) NULL;
++ 		hp = gethostbyname( hp->h_name );
++ 		for (i=0; hp->h_addr_list[i] ; i++)
++ 			{
++ 			ulongptr = (unsigned long *) hp->h_addr_list[i];
++ 			if ( *ulongptr == fromp->sin_addr.s_addr) break;
++ 			}
++ 		if ( *ulongptr != fromp->sin_addr.s_addr) 
++ 			hp = (struct hostent *) NULL;
++ 		}
++ #endif
+  	if (hp)
+  		hostname = hp->h_name;
+  	else
+
+
+				- H. Morrow Long
+				  and Ed Anselmo
+
+				Yale University Computer Science Dept.
+				Computing Facility
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From long-morrow@YALE.EDU  Wed Sep  6 09:39:19 1989
+Date: Wed, 6 Sep 89 12:32:53 EDT
+From: "H. Morrow Long" <long-morrow@YALE.EDU>
+To: security-emergency@cpd.com, zardoz!sec-rqst@uunet.uu.net
+Subject: more portable fix for  rlogind/rshd broken by nameserver spoofing
+Cc: 4bsd-bugs@ucbvax.Berkeley.EDU, NETMGR-L@yalevm.ycc.yale.edu,
+        cert@SEI.CMU.EDU, hotline@sun.com, krvw@SEI.CMU.EDU, pbg@cs.brown.edu
+
+The previous fixes for rshd and rlogind we posted earlier today had some
+portability problems on some machines due to structure alignment and packing
+problems.  The following diffs fix those as well as bulletproof against
+null pointer dereferencing in the event gethostbyname() fails (due to an
+unknown hostname or nameserver timeout).
+
+The following diffs have been tested on the 4.3BSD Tahoe release source:
+
+*** rlogind.c.orig	Wed Sep  6 09:04:55 1989
+--- rlogind.c	Wed Sep  6 12:06:32 1989
+***************
+*** 1,3 ****
+--- 1,7 ----
++ #ifndef	YALE_RESOLV
++ #define YALE_RESOLV
++ #endif
++ 
+  /*
+   * Copyright (c) 1983 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 87,92 ****
+--- 91,100 ----
+  	register struct hostent *hp;
+  	struct hostent hostent;
+  	char c;
++ #ifdef	YALE_RESOLV
++ 	struct in_addr host_addr;
++ 	struct in_addr **host_addrptrptr;
++ #endif
+  
+  	alarm(60);
+  	read(f, &c, 1);
+***************
+*** 96,101 ****
+--- 104,131 ----
+  	fromp->sin_port = ntohs((u_short)fromp->sin_port);
+  	hp = gethostbyaddr(&fromp->sin_addr, sizeof (struct in_addr),
+  		fromp->sin_family);
++ #ifdef	YALE_RESOLV
++ 	if (hp != (struct hostent *) NULL )
++ 		{
++ 		host_addr.s_addr = NULL;
++ 		hp = gethostbyname( hp->h_name );
++ 		if (hp && hp->h_addr_list)
++ 		    for (i=0; hp->h_addr_list[i] ; i++)
++ 			{
++ 			bcopy(hp->h_addr_list[i],
++ 				(caddr_t) &host_addr, hp->h_length );
++ 			/* DEBUG syslog(LOG_ALERT, "checking host %s",
++ 				inet_ntoa(host_addr)); */
++ 			if ( host_addr.s_addr == fromp->sin_addr.s_addr) break;
++ 			}
++ 		if ( host_addr.s_addr != fromp->sin_addr.s_addr)
++ 			{
++ 			hp = (struct hostent *) NULL;
++ 			syslog(LOG_ALERT, "rlogin from unknown host %s",
++ 				inet_ntoa(fromp->sin_addr));
++ 			}
++ 		}
++ #endif
+  	if (hp == 0) {
+  		/*
+  		 * Only the name is used below.
+*** rshd.c.orig	Wed Sep  6 09:59:05 1989
+--- rshd.c	Wed Sep  6 12:19:08 1989
+***************
+*** 1,3 ****
+--- 1,7 ----
++ #ifndef	YALE_RESOLV
++ #define	YALE_RESOLV
++ #endif
++ 
+  /*
+   * Copyright (c) 1983 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 91,96 ****
+--- 95,104 ----
+  	int pv[2], pid, ready, readfrom, cc;
+  	char buf[BUFSIZ], sig;
+  	int one = 1;
++ #ifdef	YALE_RESOLV
++ 	struct in_addr host_addr;
++ 	int	i;
++ #endif
+  
+  	(void) signal(SIGINT, SIG_DFL);
+  	(void) signal(SIGQUIT, SIG_DFL);
+***************
+*** 150,155 ****
+--- 158,185 ----
+  	dup2(f, 2);
+  	hp = gethostbyaddr((char *)&fromp->sin_addr, sizeof (struct in_addr),
+  		fromp->sin_family);
++ #ifdef	YALE_RESOLV
++ 	if (hp != (struct hostent *) NULL )
++ 		{
++ 		host_addr.s_addr = NULL;
++ 		hp = gethostbyname( hp->h_name );
++ 		if (hp && hp->h_addr_list)
++ 		    for (i=0; hp->h_addr_list[i] ; i++)
++ 			{
++ 			bcopy(hp->h_addr_list[i],
++ 				(caddr_t) &host_addr, hp->h_length );
++ 			/* DEBUG syslog(LOG_ALERT, "checking host %s",
++ 				inet_ntoa(host_addr)); */
++ 			if ( host_addr.s_addr == fromp->sin_addr.s_addr) break;
++ 			}
++ 		if ( host_addr.s_addr != fromp->sin_addr.s_addr)
++ 			{
++ 			hp = (struct hostent *) NULL;
++ 			syslog(LOG_ALERT, "rsh from unknown host %s",
++ 				inet_ntoa(fromp->sin_addr));
++ 			}
++ 		}
++ #endif
+  	if (hp)
+  		hostname = hp->h_name;
+  	else
+
+------------------------------------------------------------------------
+This was the first part of the original message:
+
+>Date: Thu, 24 Aug 89 17:02:25 EDT
+>From: uunet!unclejack.crd.ge.com!barnett
+>Subject: Two security problems with Ultrix 3.0
+>
+>I have noticed two security problems with Ultrix 3.0
+>
+>1)	...
+>2) name service and remote login
+>
+>    I Think this is a security hole, but I am not sure. I do not have sources
+>    and am unable to verify if the hole exists.
+>
+>    When rlogin/telnet checks to see if someone have permission to log in without
+>    a password, it uses the x.x.x.x.in-addr.arpa name server.
+>
+>    What that means, if I am the Name Server administrator for the
+>    my-network.in-addr.arpa domain,  I can add an entry saying my name is
+>    decwrl.dec.com or any other name.
+>
+>    If I were to rlogin onto decwrl.dec.com, it asks me what my name is
+>    and I can lie about it It would then believe me.
+>
+>    I think the fix is to get the berkeley version of rlogin/rlogind/telnetd
+>    and telnet. The ultrix versions have  the following string in the executable:
+>
+>    	%d.%d.%d.%d.in-addr.arpa
+
+This is indeed an enormous security hole in the entire Internet nameservice
+scheme .  We just tested it here and the fix is not to install the vanilla
+4.3bsd and 4.3BSD-tahoe release versions of rlogind and rshd (they have the
+same behaviour).  It is especially bad news if you have /.rhosts files and
+root`s home directory is /.
+
+But by modifying rshd and rlogind to do a host lookup (gethostbyname) on the
+hostname obtained by the reverse domain lookup to have it compare the open
+socket connection internet address against the list of internet addresses
+claimed by the host entry returned by gethostbyname() you can obtain at least
+some minimal authentication.
+
+Other programs should also probably be fixed.  rshd and rlogind are the major
+culprits.  rexecd, ftpd and telnetd don't appear to have the same hole because
+rely on usernames and passwords for authentication.
+
+lpd and the Sun NFS suite (rpc.mountd in particular) should also be examined
+and possibly fixed (if you care about people printing to and using up your
+expensive laser writer paper).
+
+	[diffs superceded by those at the beginning of this msg]
+
+
+				- H. Morrow Long
+				  and Ed Anselmo
+
+				Yale University Computer Science Dept.
+				Computing Facility
+
+

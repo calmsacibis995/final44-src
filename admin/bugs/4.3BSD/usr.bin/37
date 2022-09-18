@@ -1,0 +1,170 @@
+From vern@lbl-csam.arpa  Mon Dec 15 21:39:50 1986
+Subject: f77 performance improvement
+Index: usr.bin/f77/src/f77pass1/{data,vax}.c 4.3BSD Fix
+Date: Mon, 15 Dec 86 21:39:16 PST
+From: Vern Paxson <vern@lbl-csam.arpa>
+
+Description:
+	The f77 compiler takes abysmally long to compile block data
+	subprograms which contain initializations of large arrays.
+
+Repeat-By:
+
+	Script started on Mon Dec 15 20:32:27 1986
+	csam 1 % cat test.f
+		block data fred
+		parameter (isize=10000)
+		integer joey(isize)
+		data joey/isize*1/
+		end
+	csam 2 % /bin/time /usr/bin/f77 -S test.f
+	test.f:
+	   BLOCK DATA fred:
+	       49.4 real         4.0 user        21.8 sys  
+	csam 3 % mv test.s test.old.s
+	csam 4 % /bin/time ./f77 -S test.f	<-- fixed version
+	test.f:
+	   BLOCK DATA fred:
+		9.2 real         3.5 user         1.6 sys  
+	csam 5 % diff test.s test.old.s
+	csam 6 % ^D
+	script done on Mon Dec 15 20:50:53 1986
+
+Fix:
+
+	Modify f77pass1 to buffer reads and writes to the intermediate
+file for repeated initialiations.  The files affected are data.c and vax.c:
+
+-------------------------------data.c-----------------------------------
+*** data.c	Mon Dec 15 17:34:16 1986
+--- /usr/src/usr.bin/f77/src/f77pass1/data.c	Fri Jun  7 21:28:29 1985
+***************
+*** 2178,2220 ****
+        done(1);
+      }
+  
+!   /*
+!    * Reduce the number of write()s.
+!    */
+!   {
+!   register char *cp, *cp2;
+!   register int nelem, trepl, buffsize;
+! 
+!   /* Calculate number of elements that will fit in buff[] */
+!   trepl = repl;
+!   nelem = (trepl < sizeof(buff) / len) ? trepl : sizeof(buff) / len;
+!   buffsize = nelem * len;
+!   cp2 = buff;
+!   for (i = 0; i < nelem; i++)
+      {
+!     cp = const;
+!     while (cp < const + len)
+!       *cp2++ = *cp++;
+      }
+- 
+-   /* First, write out as many full buffs[]s as possible */
+-   while (trepl >= nelem)
+-     {
+-     if (write(datafile, buff, buffsize) != buffsize)
+-       {
+-       err(writeerror);
+-       done(1);
+-       }
+-     trepl -= nelem;
+-     }
+- 
+-   /* Write out remainder */
+-   if (trepl > 0 && write(datafile, buff, trepl * len) != trepl * len)
+-     {
+-     err(writeerror);
+-     done(1);
+-     }
+-   }
+  
+    if (overlap) overlapflag = YES;
+  
+--- 2178,2193 ----
+        done(1);
+      }
+  
+!   k = repl;
+!   while (k-- > 0)
+      {
+!       nbytes = write(datafile, const, len);
+!       if (nbytes != len)
+! 	{
+! 	  err(writeerror);
+! 	  done(1);
+! 	}
+      }
+  
+    if (overlap) overlapflag = YES;
+  
+-------------------------------data.c-----------------------------------
+
+--------------------------------vax.c-----------------------------------
+*** vax.c	Mon Dec 15 19:55:33 1986
+--- /usr/src/usr.bin/f77/src/f77pass1/vax.c	Thu Aug 29 01:40:17 1985
+***************
+*** 691,698 ****
+    register long n;
+    char oldvalue[8];
+    char newvalue[8];
+-   char buff[800]; /* needs to be a multiple of 8 */
+-   register char *bp = buff + sizeof(buff); /* initially points past end of buff */
+  
+    *inlcomm = NO;
+  
+--- 691,696 ----
+***************
+*** 754,788 ****
+        *((int *) newvalue) = 0;
+        *((int *) (newvalue + 4)) = 0;
+  
+!       if (bp >= buff + sizeof(buff))
+! 	{ /* need to read in more data */
+! 	int bytesneeded;
+! 	
+! 	if ( k - sizeof(buff) >= 8 )
+! 	  bytesneeded = sizeof(buff);
+! 	else
+! 	  /* we want the largest multiple of 8 which is <= k */
+! 	  bytesneeded = k - (k % 8);
+! 
+! 	n = read(vdatafile, buff, bytesneeded);
+! 	if (n < 0)
+! 	  {
+! 	    err(readerror);
+! 	    done(1);
+! 	  }
+! 	bp = buff;
+! 	/* if we've read only a partial buffer, we're guarenteed by the
+! 	 * condition in the outer while loop that we'll never run bp past the
+! 	 * end of the valid data in buff.  Because of this, we can get
+! 	 * by with the very simple test of "bp >= buff + sizeof(buff)"
+! 	 * to see if we need to read more data.
+! 	 */
+  	}
+  
+-       *((int *) newvalue) = *((int *) bp);
+-       *((int *) (newvalue + 4)) = *((int *) (bp + 4));
+- 
+-       bp += 8;
+        k -= 8;
+  
+        if (*((int *) oldvalue) == *((int *) newvalue)
+--- 752,764 ----
+        *((int *) newvalue) = 0;
+        *((int *) (newvalue + 4)) = 0;
+  
+!       n = read(vdatafile, newvalue, 8);
+!       if (n < 0)
+! 	{
+! 	  err(readerror);
+! 	  done(1);
+  	}
+  
+        k -= 8;
+  
+        if (*((int *) oldvalue) == *((int *) newvalue)
+--------------------------------vax.c-----------------------------------

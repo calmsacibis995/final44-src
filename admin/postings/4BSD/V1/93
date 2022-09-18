@@ -1,0 +1,71 @@
+Subject: 4.3BSD-Reno NFS fixes
+Index: /usr/src/sys/nfs/nfs_vnops.c 4.3BSD-reno
+
+Description:
+	There are two problems in the NFS implementation supplied with
+	4.3BSD-Reno.  The first is a memory leak when a rename is done
+	where the target existed before the rename.  The second is a
+	race condition in readlink that could cause processes to hang.
+	
+Fix:
+	Apply the following patch.
+
+*** nfs_vnops.c.old	Wed Jan 30 12:55:48 1991
+--- nfs_vnops.c	Wed Jan 30 13:02:23 1991
+***************
+*** 561,580 ****
+--- 561,581 ----
+  		if (error =
+  		    nfs_loadattrcache(&newvp, &md, &dpos, (struct vattr *)0)) {
+  			nfs_lock(vp);
+  			nfs_nput(newvp);
+  			m_freem(mrep);
+  			return (error);
+  		}
+  		ndp->ni_vp = newvp;
+  		if (lockparent)
+  			nfs_lock(vp);
++ 		m_freem(mrep);
+  		return (0);
+  	}
+  
+  	if (!bcmp(VTONFS(vp)->n_fh.fh_bytes, (caddr_t)fhp, NFSX_FH)) {
+  		VREF(vp);
+  		newvp = vp;
+  		np = VTONFS(vp);
+  	} else if (ndp->ni_isdotdot) {
+  		if (error = nfs_nget(vp->v_mount, fhp, &np)) {
+  			nfs_lock(vp);
+***************
+*** 652,679 ****
+  	register u_long *p;
+  	register caddr_t cp;
+  	register long t1;
+  	caddr_t bpos, dpos, cp2;
+  	u_long xid;
+  	int error = 0;
+  	struct mbuf *mreq, *mrep, *md, *mb, *mb2;
+  	long len;
+  
+  	nfsstats.rpccnt[NFSPROC_READLINK]++;
+- 	nfs_unlock(vp);
+  	nfsm_reqhead(nfs_procids[NFSPROC_READLINK], cred, NFSX_FH);
+  	nfsm_fhtom(vp);
+  	nfsm_request(vp, NFSPROC_READLINK, procp, 0);
+  	nfsm_strsiz(len, NFS_MAXPATHLEN);
+  	nfsm_mtouio(uiop, len);
+  	nfsm_reqdone;
+- 	nfs_lock(vp);
+  	return (error);
+  }
+  
+  /*
+   * nfs read rpc call
+   * Ditto above
+   */
+  nfs_readrpc(vp, uiop, cred, procp)
+  	register struct vnode *vp;
+  	struct uio *uiop;
+--- 653,678 ----
+
+

@@ -1,0 +1,139 @@
+Return-Path: <allegra!jpl@ucbvax.berkeley.edu>
+Date: Fri, 21 Feb 86 23:08:14 PST
+From: allegra!jpl@ucbvax.berkeley.edu
+Subject: Another flock bug report with fix
+Index:	sys/sys/sys_inode.c 4.2BSD
+
+Description:
+    (This is cross-posted to netnews, where Robin Cutshaw's original
+    bug report appeared.  I presume he has filed a report, so I won't
+    repeat his article here.) In the process of looking over Robin's
+    flock fix, I discovered another peculiarity in the locking code.
+    If you try to upgrade a shared lock to an exclusive lock without
+    blocking, you will never succeed.  I view this as much less serious
+    than Robin's problem (multiple processes securing exclusive locks
+    simultaneously), but it shouldn't be the way it is.
+
+Repeat-By:
+    Run the following.  The nonlocking exclusive upgrade will fail,
+    suggesting the process would block, but the blockable upgrade will
+    succeed, probably without blocking.
+
+    #include <sys/file.h>
+    #include <stdio.h>
+
+    main()
+    {
+	int fd;
+	int rc;
+
+	fd = open("/dev/null", O_RDONLY);
+	printf("Got %d opening file\n", fd);
+	if (fd == -1) exit(1);
+	rc = flock(fd, LOCK_SH | LOCK_NB);
+	printf("Shared nonblocking lock returned %d\n", rc);
+	if (rc == -1) {
+	    perror("shared");
+	    exit(1);
+	}
+	rc = flock(fd, LOCK_EX | LOCK_NB);
+	printf("Exclusive nonblocking lock returned %d\n", rc);
+	if (rc == -1) {
+	    perror("exclusive nonblocking");
+	    rc = flock(fd, LOCK_EX);
+	    if (rc == -1) perror("exclusive");
+	    exit(1);
+	}
+	exit(0);
+    }
+
+Fix:
+    The problem is that ino_lock() gives up for non-blocking exclusive
+    locks as soon as it sees a shared lock, even if it is our own
+    shared lock.  If the shared lock is released (as it must be before
+    an exclusive lock can be granted), we may not have to wait.  The
+    fix below (which incorporates Robin's changes as well as my own),
+    simply moves the check for blocking past the release of any shared
+    lock.  This is not an unvarnished win.  With this change, a process
+    may lose its shared lock, then fail because it would have blocked
+    trying to acquire the exclusive lock.  This seems to me to be
+    preferable to the current alternative of retaining the shared lock,
+    but always failing, but it would also be possible to do a little
+    more snooping (check the shared lock count for example) to at
+    least reduce the probability of losing the shared lock without
+    getting the exclusive one.  I leave this to the professionals.
+
+*** old sys_inode.c	Fri Feb 21 14:21:32 1986
+--- sys_inode.c	Fri Feb 21 13:28:17 1986
+***************
+*** 401,406
+  		/*
+  		 * Must wait for any shared locks to finish
+  		 * before we try to apply a exclusive lock.
+  		 */
+  		while (ip->i_flag & ISHLOCK) {
+  			if (cmd & LOCK_NB)
+
+--- 401,408 -----
+  		/*
+  		 * Must wait for any shared locks to finish
+  		 * before we try to apply a exclusive lock.
++ 		 * Must also wait if an exclusive lock
++ 		 * was applied during our last wait. (gatech!robin)
+  		 */
+  		while (ip->i_flag & ISHLOCK) {
+  			/*
+***************
+*** 403,410
+  		 * before we try to apply a exclusive lock.
+  		 */
+  		while (ip->i_flag & ISHLOCK) {
+- 			if (cmd & LOCK_NB)
+- 				return (EWOULDBLOCK);
+  			/*
+  			 * If we're holding a shared
+  			 * lock, then release it.
+
+--- 405,410 -----
+  		 * was applied during our last wait. (gatech!robin)
+  		 */
+  		while (ip->i_flag & ISHLOCK) {
+  			/*
+  			 * If we're holding a shared
+  			 * lock, then release it.
+***************
+*** 413,418
+  				ino_unlock(fp, FSHLOCK);
+  				goto again;
+  			}
+  			ip->i_flag |= ILWAIT;
+  			sleep((caddr_t)&ip->i_shlockc, PLOCK);
+  		}
+
+--- 413,420 -----
+  				ino_unlock(fp, FSHLOCK);
+  				goto again;
+  			}
++ 			if (cmd & LOCK_NB)
++ 				return (EWOULDBLOCK);
+  			ip->i_flag |= ILWAIT;
+  			sleep((caddr_t)&ip->i_shlockc, PLOCK);
+  			if (ip->i_flag & IEXLOCK)
+***************
+*** 415,420
+  			}
+  			ip->i_flag |= ILWAIT;
+  			sleep((caddr_t)&ip->i_shlockc, PLOCK);
+  		}
+  	}
+  	if (fp->f_flag & (FSHLOCK|FEXLOCK))
+
+--- 417,424 -----
+  				return (EWOULDBLOCK);
+  			ip->i_flag |= ILWAIT;
+  			sleep((caddr_t)&ip->i_shlockc, PLOCK);
++ 			if (ip->i_flag & IEXLOCK)
++ 				goto again;
+  		}
+  	}
+  	if (fp->f_flag & (FSHLOCK|FEXLOCK))

@@ -1,0 +1,271 @@
+From alex@XAIT.Xerox.COM  Mon Nov  7 14:46:37 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA12494; Mon, 7 Nov 88 14:46:37 PST
+Received: from XAIT.XEROX.COM by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA29037; Mon, 7 Nov 88 14:42:30 PST
+Received: by XAIT.Xerox.COM; Mon, 7 Nov 88 17:38:13 EST
+Date: Mon, 7 Nov 88 17:38:13 EST
+From: alex@XAIT.Xerox.COM (Alexis Layton)
+Message-Id: <8811072238.AA16861@XAIT.Xerox.COM>
+Subject: Standalone 730 format fails && enhancement for Xylogics controller
+Index: 	sys/vaxstand/{Makefile,upmaptype.c} 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The 730 standalone format (and drtest) utilities always fail to
+	determine the drive characteristics because the confup.c file
+	does not include an ioctl entry in the devsw.  This is because
+	confup.c is a confxx.c derivative, intended to provide configuration
+	for the 750 disk-resident standalone boot program.  The normal
+	(780 etc.) format and drtest utilities are linked with confhpup.c,
+	a file expressly provided for the purpose of having only available
+	disk devices in the device table.  This fix creates a similar
+	file called confup730.c.  Also, the Makefile does not have dependency
+	information for confhpup.c.
+
+	This fix also contains an optional enhancement to the up driver
+	(specifically, upmaptype.c) which enables the up driver to be used
+	for the Xylogics 650 Unibus disk controller.  This controller always
+	returns 0 for uphr, so the drive type register must be queried
+	instead.  The change is upward-compatible and enabled by
+	-DUP_XYLOGICS.  A similar change for main up driver (when debugged)
+	is forthcomming.
+
+Repeat-By:
+	Attempt to format a up disk on a 730.  The format program will
+	always respond:
+	    Device data: #cylinders=0, #tracks=0, #sectors=0
+
+Fix:
+	The following shar file contains diffs and the complete text to
+	confup730.c.  Either unpack the shar file and apply the diffs
+	individually, or use patch with the shar file and then unpack
+	confup730.c individually.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	Makefile.diff
+#	upmaptype.c.diff
+#	upreg.h.diff
+#	confup730.c
+#
+echo x - Makefile.diff
+sed 's/^X//' >Makefile.diff << 'END-of-Makefile.diff'
+X*** vaxstand/Makefile.dist	Mon Oct 31 16:22:51 1988
+X--- vaxstand/Makefile	Mon Nov  7 17:07:37 1988
+X***************
+X*** 21,27 ****
+X  STAND=	/stand
+X  INCPATH=-I. -I../stand -I../h
+X  VPATH=	../stand:../vax
+X! DEFS=	${INCPATH} -DSTANDALONE -DCOMPAT_42
+X  MACH=	-DVAX8600 -DVAX8200 -DVAX780 -DVAX750 -DVAX730 -DVAX630
+X  
+X  # Collections of C options:
+X--- 21,27 ----
+X  STAND=	/stand
+X  INCPATH=-I. -I../stand -I../h
+X  VPATH=	../stand:../vax
+X! DEFS=	${INCPATH} -DSTANDALONE -DCOMPAT_42 -DUP_XYLOGICS
+X  MACH=	-DVAX8600 -DVAX8200 -DVAX780 -DVAX750 -DVAX730 -DVAX630
+X  
+X  # Collections of C options:
+X***************
+X*** 42,48 ****
+X  	format.c getfile.c gets.c hp.c hpmaptype.c ht.c idc.c kdb.c \
+X  	machdep.c mba.c mt.c prf.c printn.c qdcons.c qvcons.c qfont.c \
+X  	rk.c rl.c sys.c tm.c tmscp.c ts.c uba.c uda.c up.c upmaptype.c \
+X! 	ut.c conf.c ../vax/dkbad.c
+X  DUMMIES=confxx.c
+X  DRIVERS=autoconf.o hp.o hpmaptype.o ht.o idc.o kdb.o mba.o mt.o qdcons.o \
+X  	qvcons.o rk.o rl.o tm.o tmscp.o ts.o up.o upmaptype.o uba.o uda.o \
+X--- 42,48 ----
+X  	format.c getfile.c gets.c hp.c hpmaptype.c ht.c idc.c kdb.c \
+X  	machdep.c mba.c mt.c prf.c printn.c qdcons.c qvcons.c qfont.c \
+X  	rk.c rl.c sys.c tm.c tmscp.c ts.c uba.c uda.c up.c upmaptype.c \
+X! 	ut.c conf.c confhpup.c confup730.c ../vax/dkbad.c
+X  DUMMIES=confxx.c
+X  DRIVERS=autoconf.o hp.o hpmaptype.o ht.o idc.o kdb.o mba.o mt.o qdcons.o \
+X  	qvcons.o rk.o rl.o tm.o tmscp.o ts.o up.o upmaptype.o uba.o uda.o \
+X***************
+X*** 154,164 ****
+X  730copy: copy.o srt0.o 730conf.o ${LIBSA}
+X  	ld -N -o $@ srt0.o copy.o 730conf.o ${LIBSA} -lc
+X  
+X! 730drtest: drtest.o srt0.o confup.o ${LIBSA}
+X! 	ld -N -o $@ srt0.o drtest.o confup.o ${LIBSA} -lc
+X  
+X! 730format: format.o srt0.o confup.o ${LIBSA}
+X! 	ld -N -o $@ srt0.o format.o confup.o ${LIBSA} -lc
+X  
+X  730conf.o: conf.o
+X  	rm -f $*.c
+X--- 154,164 ----
+X  730copy: copy.o srt0.o 730conf.o ${LIBSA}
+X  	ld -N -o $@ srt0.o copy.o 730conf.o ${LIBSA} -lc
+X  
+X! 730drtest: drtest.o srt0.o confup730.o ${LIBSA}
+X! 	ld -N -o $@ srt0.o drtest.o confup730.o ${LIBSA} -lc
+X  
+X! 730format: format.o srt0.o confup730.o ${LIBSA}
+X! 	ld -N -o $@ srt0.o format.o confup730.o ${LIBSA} -lc
+X  
+X  730conf.o: conf.o
+X  	rm -f $*.c
+END-of-Makefile.diff
+echo x - upmaptype.c.diff
+sed 's/^X//' >upmaptype.c.diff << 'END-of-upmaptype.c.diff'
+X*** vaxstand/upmaptype.c.dist	Tue Nov  1 19:35:17 1988
+X--- vaxstand/upmaptype.c	Mon Nov  7 16:59:36 1988
+X***************
+X*** 7,12 ****
+X--- 7,17 ----
+X   */
+X  
+X  /*
+X+  *  XAIT Mod 1 -- option UP_XYLOGICS -- Alexis Layton, T01Nov1988
+X+  *     Support for Xylogics 650 (blech) controller.
+X+  */
+X+ 
+X+ /*
+X   * UNIBUS peripheral standalone
+X   * driver: drive type mapping routine.
+X   */
+X***************
+X*** 25,33 ****
+X  #include "saio.h"
+X  #include "savax.h"
+X  
+X! static short	up9300_off[] = { 0,  27,  0,  -1,  -1,  -1, 562, 82 };
+X! static short	fj_off[]     = { 0,  50,  0,  -1,  -1,  -1, 155, -1 };
+X! static short	upam_off[]   = { 0,  32,  0, 668, 723, 778, 668, 98 };
+X  static short	up980_off[]  = { 0, 100,  0,  -1,  -1,  -1, 309, -1 };
+X  static short	eagle_off[]  = { 0,  17,  0, 391, 408, 728, 391, 87 };
+X  
+X--- 30,38 ----
+X  #include "saio.h"
+X  #include "savax.h"
+X  
+X! static short	up9300_off[] = { 0,  27,  0,  -1,  -1,  -1, 562,  82 };
+X! static short	fj_off[]     = { 0,  50,  0,  -1,  -1,  -1, 155,  -1 };
+X! static short	upam_off[]   = { 0,  32,  0, 668, 723, 778, 668,  98 };
+X  static short	up980_off[]  = { 0, 100,  0,  -1,  -1,  -1, 309, -1 };
+X  static short	eagle_off[]  = { 0,  17,  0, 391, 408, 728, 391, 87 };
+X  
+X***************
+X*** 41,46 ****
+X--- 46,63 ----
+X  	0,	0,	0,	0,	0,
+X  };
+X  
+X+ #ifdef UP_XYLOGICS		/* Xylogics 650 controller */
+X+ struct	uptype {
+X+ 	short dtcode;		/* drive type code from updt register */
+X+ 	short upst_index;	/* index into upst */
+X+ } uptype[] = {
+X+ 	{ UPDT_DT_9766, 1 },	/* for CDC 9766 and equiv. drives */
+X+ 	{ UPDT_DT_160,  2 },	/* for Fujissu 160 drive and equivs. */
+X+ 	{ UPDT_DT_980,  4 },	/* for DM980 and also CDC RM03 drive */
+X+ 	{ 0,            0 }
+X+ };
+X+ #endif
+X+ 
+X  upmaptype(unit, upaddr, lp)
+X  	int unit;
+X  	register struct updevice *upaddr;
+X***************
+X*** 49,58 ****
+X--- 66,92 ----
+X  	register struct st *st;
+X  	register int i;
+X  	int type = -1;
+X+ #ifdef UP_XYLOGICS
+X+ 	register struct uptype *dtype;
+X+ #endif
+X  
+X  	upaddr->upcs1 = 0;
+X  	upaddr->upcs2 = unit % 8;
+X  	upaddr->uphr = UPHR_MAXTRAK;
+X+ #ifdef UP_XYLOGICS
+X+ 	if (upaddr->uphr == 0) {	/* Xylogics 650 always returns 0 */
+X+ 		for (dtype = uptype; ; dtype++) {
+X+ 		        if (dtype->dtcode == 0) {
+X+ 			        return 0;
+X+ 		        }
+X+ 			if ((upaddr->updt & UPDT_DRVTYPE) == dtype->dtcode) {
+X+ 				type = dtype->upst_index;
+X+ 				st = upst + type;
+X+ 				break;
+X+ 			}
+X+ 		}
+X+ 	} else
+X+ #endif
+X  	for (st = upst;; ++st) {
+X  		if (!st->ntrak)
+X  			return(0);
+END-of-upmaptype.c.diff
+echo x - upreg.h.diff
+sed 's/^X//' >upreg.h.diff << 'END-of-upreg.h.diff'
+X*** vaxuba/upreg.h.dist	Mon Nov  7 17:22:10 1988
+X--- vaxuba/upreg.h	Wed Nov  2 20:58:12 1988
+X***************
+X*** 127,132 ****
+X--- 127,140 ----
+X  #define	UPER1_BITS \
+X  "\10\20DCK\17UNS\16OPI\15DTE\14WLE\13IAE\12AOE\11HCRC\10HCE\
+X  \7ECH\6WCF\5FER\4PAR\3RMR\2ILR\1ILF"
+X+ #define UPER1_HARD  \
+X+         (UPER1_WLE|UPER1_IAE|UPER1_AOE|UPER1_FER|UPER1_RMR|UPER1_ILR|UPER1_ILF)
+X+ 
+X+ /* updt */
+X+ #define UPDT_DRVTYPE	0000777		/* drive type field */
+X+ #define UPDT_DT_9766	0000027		/* is a CDC 9766 */
+X+ #define UPDT_DT_160	0000776		/* is a Fujitsu 160 */
+X+ #define UPDT_DT_980	0000025		/* is a DM980 (RM03 also) */
+X  
+X  /* uphr */
+X  /* write these int uphr and then read back values */
+END-of-upreg.h.diff
+echo x - confup730.c
+sed 's/^X//' >confup730.c << 'END-of-confup730.c'
+X/*
+X * Copyright (c) 1982, 1986, 1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X *	@(#)confup730.c	1.1 (XAIT) 11/7/88
+X */
+X
+X#include "param.h"
+X#include "fs.h"
+X#include "inode.h"
+X#include "saio.h"
+X
+Xint	nullsys();
+Xint	upstrategy(), upopen(), upioctl();
+X
+Xstruct devsw devsw[] = {
+X	{ "up",	upstrategy,	upopen,		nullsys,	upioctl },
+X	{ 0, 0, 0, 0, 0 }
+X};
+X
+Xint	ndevs = (sizeof(devsw) / sizeof(devsw[0]) - 1);
+END-of-confup730.c
+exit
+

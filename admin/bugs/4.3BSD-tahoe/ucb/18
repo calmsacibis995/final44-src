@@ -1,0 +1,342 @@
+From jerry@csd4.milw.wisc.edu  Wed Jan 20 12:47:52 1988
+Date: Wed, 20 Jan 88 14:46:52 CST
+From: Jerry Lieberthal <jerry@csd4.milw.wisc.edu>
+To: tahoe-bugs@okeeffe.berkeley.edu
+Index: ucb/pascal tahoe
+
+Description:
+	The following program contains many syntax errors.  In recovery,
+	the parser dies in a case statement with an illegal instruction
+	fault.
+Repeat-By:
+	Try to compile the following program
+
+program ATM (accounts, output, transactions, audit) ;
+
+{ This program's syntax causes the compiler to blow up in the 'case'
+  statement.  }
+
+  author:		Jerry Lieberthal
+  date:			January 11, 1988
+  rev:			January 13, 1988
+  site:			UWM/CEAS
+
+}
+
+const
+	LineLen			= 80 ;
+	Zero			= 0 ;
+	One			= 1 ;
+	Space			= ' ' ;
+
+	NameMax			= 25 ; { size of name fields }
+	SearchFor		= true ;
+	NoSearch		= false ;
+
+	{ things the ATM can do }
+	Deposit			= 'D' ;
+	Withdraw		= 'W' ;
+	Transfer		= 'T' ;
+
+	{ types of accounts }
+	SavingsAccount		= 'S' ;
+	CheckingAccount		= 'C' ;
+
+	{ error message indices }
+	EmptyAccounts		= 0 ;
+	EmptyTrans		= 1 ;
+	AmountBad		= 2 ;
+	BadAccount		= 3 ;
+	BadTrans		= 4 ;
+	LastErr			= 4 ; { this must always be the last value }
+
+type
+	InLine			= packed array [One .. LineLen] of char ;
+	Name			= packed array [One .. NameMax] of char ;
+	AccountPtr		= ^AccountRec ;
+	AllowedSet		= set of char ;
+
+	TransMaster		= record
+		Action		: char ;
+		AccountField	: InLine ;
+		AmountField	: InLine
+	end ;
+
+	AccountRec		= record
+		last		: Name ;
+		first		: Name ;
+		Checking	: real ;
+		Savings		: real ;
+		Account		: integer
+	end ;
+
+var
+	Blanks				: InLine ;
+	accounts			: file of AccountRec ;
+	transactions			: text ;
+	BlankName			: Name ;
+	audit				: text ;
+
+	Count				: integer ; { number of transactions }
+	Head				: AccountPtr ;
+	ByName				: AccountPtr ; { same as above, by name}
+	AllowedTypes			: AllowedSet ;
+
+procedure initialize ;
+
+{ All the global initialization is handled here, including files }
+begin
+	Blanks := Space ;
+	BlankName := Space ;
+	Count := Zero ;
+
+	reset (accounts) ;
+	reset (transactions) ;
+	rewrite (audit) ;
+
+	Head := nil ;
+	ByName := nil ;
+	AllowedTypes := [Deposit, Withdraw, Transfer] ;
+
+	writeln ('beginning ATM program.') 
+end ; { initialize }
+
+procedure SignalErr (errno:		integer) ;
+
+{ Generalized error handler.  The errno is passed by value as a parameter
+  to a large CASE statement.  The errno is checked, and must be within
+  range, or a "halt" will result.
+}
+begin
+	if (errno < Zero) or (errno > LastErr) then
+	begin
+		{ bad value }
+		writeln ;
+		writeln ('bad value passed to SignalErr - ', errno:3) ;
+		halt
+	end ;
+
+	case errno of
+		EmptyAccounts:	;
+		EmptyTrans:	;
+		AmountBad:	;
+		BadAccount:	;
+		BadTrans:	;
+	end  {case}
+end ; { SignalErr }
+
+
+procedure Getoken (buffer:		InLine ;
+		   var Fields:		TransMaster ;
+		   var Where:		integer) ;
+
+{ get a non-blank token field from the raw input buffer.}
+
+begin
+	Fields := Blanks ;
+	{ must skip leading spaces, if any }
+	while (Buffer [Where] = Space) and (Where <= MaxLength) do
+		Where := Where + One ;
+
+	{ now get the non-blank field }
+
+	if Where < MaxLength then
+		while (Buffer [Where] <> Space) and (Where <= MaxLength)
+		do begin
+			Fields [Where ] := Buffer [Where] ;
+			Where := Where + One
+		end 
+end ; { Getoken }
+
+function ReadTrans (var TempMaster:	TransMaster) : boolean ;
+
+{ This function reads a raw line from the transaction file, and then breaks
+  it apart to validate the pieces.  It returns TRUE if there was any input,
+  FALSE otherwise. }
+
+const
+	DEBUG				= true ;
+
+var
+	LineCount			: integer ;
+	TempLine			: InLine ;
+	I				: integer ;
+
+begin
+	ReadTrans := false ;  { make an assumption }
+	if not eof (transactions) then
+	begin
+		ReadTrans := true ;
+		LineCount := One ;
+		TempLine := Blanks ;
+
+		while not eoln (transactions) do
+		begin
+			read (transactions, TempLine [LineCount]) ;
+			LineCount := LineCount + One
+		end ; {eoln}
+		readln (transactions) ;
+
+		{ echo to the audit trail }
+		Count := Count + One ;
+		write (audit, Count:2, ': ') ;
+		for I := One to LineCount do
+			write (audit, TempLine [I]) ;
+		writeln (audit) ;
+
+		with TempMaster do
+		begin
+			{ assign initial values }
+			account := Zero ;
+			Checking := Zero ;
+			Savings := Zero ;
+			TransCount := Zero
+		end ; { with }
+
+		LineCount := One ;
+		for I := One to MaxFields do
+			Getoken (TempLine, TempMaster [I], LineCount)
+end ; { ReadTrans }
+
+function Insert (var TempRec:		AccountRec ;
+		 var HeadPtr:		AccountPtr ;
+		 Search:		boolean) : boolean ;
+
+{ function to either insert a node or search for one.  Replys TRUE if found
+  in search mode, or inserted (non-duplicate), false otherwise. }
+
+begin
+	if HeadPtr = nil then
+	begin
+		{ empty node. Insert or mark as not found }
+		if not Search then
+		begin
+			new (HeadPtr) ;
+			Insert := true ;
+			HeadPtr^ := TempRec ;
+			HeadPtr^.left := nil ;
+			HeadPtr^.right := nil 
+		end ; { if Search }
+		else
+			Insert := false
+	end { nil }
+
+	else if HeadPtr^.account = TempRec.account then 
+	begin
+		if Search then begin
+			Insert := true ;
+			TempRec := HeadPtr^ 
+		end
+		else	Insert := false ;
+	else if TempRec.account < HeadPtr^.Account then 
+		Insert (TempRec, HeadPtr^.left, Search)
+	else Insert (TempRec, HeadPtr^.right, Search)
+end ; { INsert}
+
+procedure Apply (TransRecord:		TransMaster) ;
+
+{ The Apply procedure gets the various fields and does simplistic data
+  verification.
+
+  input:		Transaction record
+
+  output:		none here.  Put into linked list if ok
+
+  errors:		Bad numeric values, missing fields, invalid types
+}
+
+var
+	Ok				: boolean ;
+
+begin
+	Ok := true ;
+	if Action in AllowedTypes then
+	begin
+		Convert (AccountField, AccountMatch, Ok) ;
+
+		{ check the account field before converting anything else }
+		if Ok and Insert (TempFind, SearchFor) then begin
+			Convert (AmountField, AmountVal, Ok) ;
+
+			if Ok then case Action of
+				Transfer:  ;
+				Deposit:   ;
+				Withdraw:  ;
+			end  { case }
+			else
+				SignalErr (AmountBad) ;
+		end
+		else	SignalErr (BadAccount) 
+	end { if in valid set }
+	else	SignalErr (BadTrans)
+end ; { Apply}
+
+procedure ReadAccounts (var Accounts:		AccountHdr) ;
+
+{ This procedure reads the binary records from the "accounts" file into
+  a temporary record.  The temporary record is then inserted into a binary
+  tree.  Since we are reading binary records it is "assumed" that the input
+  data is pure (for the most part).
+}
+
+const
+	DEBUG				= true ;
+
+var
+	TempMaster			: AccountRec ;
+	found				: boolean ;
+
+begin
+	found := eof (accounts) ;
+	if DEBUG then writeln ('start reading accounts.') ;
+
+	while not eof (accounts) do
+	begin
+		read (accounts, TempMaster) ;
+		Insert (TempMaster, Accounts, NoSearch)
+	end ; { while }
+
+	{ anything really read? }
+	if found then write ('all')
+	else	      write ('no') ;
+	writeln (' accounts read.')
+end ; { ReadAccounts }
+
+procedure Report (HeadPtr:		AccountPtr) ;
+begin
+
+{ produce the report on the accounts ... Done in recursive inorder fashion}
+
+	if HeadPtr^.left <> nil then Report (HeadPtr^.left) ;
+
+	{ print here.  End of a branch }
+	with HeadPtr^ do
+	begin
+		write (first, last) ;
+		write (Checking:8:2, Space:tab1) ;
+		write (Savings:8:2, Space:tab1) ;
+		writeln (account:6, Space:tab1, trans:3)
+	end ; { with }
+
+	if HeadPtr^.right <> nil then
+		Report (HeadPtr^.right)
+end ; { Report}
+
+begin {mainline}
+
+	initialize ;
+	ReadAccounts (AccountHdr) ;
+
+	if AccountHdr <> nil then
+	begin
+		while ReadingTrans (AccountMaster) do
+			Apply (AccountMaster) ;
+
+		Report (AccountHdr)
+	end 
+	else
+		SignalErr (EmptyAccount);
+
+	Finish
+end.
+

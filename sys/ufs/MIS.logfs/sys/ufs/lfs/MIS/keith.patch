@@ -1,0 +1,275 @@
+From ouster@sprite.Berkeley.EDU Wed May 11 21:02:12 1994
+Return-Receipt-To: ouster@sprite.Berkeley.EDU
+Received: by sprite.Berkeley.EDU (5.59/1.29)
+	id AA84813; Wed, 11 May 94 18:05:11 PDT
+Date: Wed, 11 May 94 18:05:11 PDT
+From: ouster@sprite.Berkeley.EDU (John Ousterhout)
+Message-Id: <9405120105.AA84813@sprite.Berkeley.EDU>
+To: efs@sprite.Berkeley.EDU
+Subject: Kernel patches
+Status: RO
+
+Here's a message that Keith sent (apparently only to me) a while
+ago with kernel patches.  Given that he sent it only to me, I guess
+it's no surprise that no-one installed the patches (sorry for
+not noticing that I was the only recipient).
+
+>From bostic@vangogh.CS.Berkeley.EDU Wed Mar 16 07:29:53 1994
+Date: Wed, 16 Mar 1994 10:23:43 -0500
+From: bostic@vangogh.CS.Berkeley.EDU (Keith Bostic)
+To: ouster@sprite.Berkeley.EDU
+Subject: Re:  Planning BSD kernel changes
+Cc: margo@das.harvard.edu
+
+John, there were two changes that I promised you for LFS.
+I apologize for taking so long to get them to you.
+
+The first change was to keep LFS from flushing all the dirty
+blocks from the cache when fsync was called on a file.  Well,
+it appears that there was a miscommunication somewhere along
+the line -- that's what it currently does.  I believe the code
+path is as follows:
+
+    vfs_syscalls.c:fsync()
+	    get/lock the vnode
+	    -> VOP_FSYNC()
+	    unlock the vnode
+    
+    lfs_vnops.c:lfs_fsync()
+	    -> VOP_UPDATE()
+
+    lfs_inode.c:lfs_update()
+	    set the times
+	    -> lfs_vflush()
+
+    lfs_segment.c:lfs_vflush()
+	    if not enough free space
+		    lfs_segwrite (write everything)
+	    if no dirty blocks on this vnode
+		    lfs_writevnodes (write vnodes w/o blocks)
+	    
+	    do
+		    lfs_writefile (write this vnode's dirty blocks)
+		    lfs_writeinode (write this vnode)
+		    lfs_writeseg (write the segment)
+	    until no more segments to write
+
+Somebody should probably check me, but until there's evidence to the
+contrary, I believe that (unless LFS is over the free space threshold)
+fsync is only flushing blocks on a single vnode chain.
+
+The second change was to keep LFS from flushing meta-data blocks at
+all, unless it was checkpointing.  The attached patch to lfs_segment.c
+makes this happen.  If you have problems installing or running it, let
+me know.
+
+--keith
+
+*** lfs/lfs_segment.c.orig	Wed Jan  5 01:17:48 1994
+--- lfs/lfs_segment.c	Wed Mar 16 10:10:40 1994
+***************
+*** 85,96 ****
+  void	 lfs_updatemeta __P((struct segment *));
+  int	 lfs_vref __P((struct vnode *));
+  void	 lfs_vunref __P((struct vnode *));
+! void	 lfs_writefile __P((struct lfs *, struct segment *, struct vnode *));
+  int	 lfs_writeinode __P((struct lfs *, struct segment *, struct inode *));
+  int	 lfs_writeseg __P((struct lfs *, struct segment *));
+  void	 lfs_writesuper __P((struct lfs *));
+! void	 lfs_writevnodes __P((struct lfs *fs, struct mount *mp,
+! 	    struct segment *sp, int dirops));
+  
+  int	lfs_allclean_wakeup;		/* Cleaner wakeup address. */
+  
+--- 85,97 ----
+  void	 lfs_updatemeta __P((struct segment *));
+  int	 lfs_vref __P((struct vnode *));
+  void	 lfs_vunref __P((struct vnode *));
+! void	 lfs_writefile __P((struct lfs *, struct segment *,
+! 	     struct vnode *, int));
+  int	 lfs_writeinode __P((struct lfs *, struct segment *, struct inode *));
+  int	 lfs_writeseg __P((struct lfs *, struct segment *));
+  void	 lfs_writesuper __P((struct lfs *));
+! void	 lfs_writevnodes __P((struct lfs *, struct mount *,
+! 	     struct segment *, int, int));
+  
+  int	lfs_allclean_wakeup;		/* Cleaner wakeup address. */
+  
+***************
+*** 127,138 ****
+  
+  	ip = VTOI(vp);
+  	if (vp->v_dirtyblkhd.lh_first == NULL)
+! 		lfs_writevnodes(fs, vp->v_mount, sp, VN_EMPTY);
+  
+  	do {
+  		do {
+  			if (vp->v_dirtyblkhd.lh_first != NULL)
+! 				lfs_writefile(fs, sp, vp);
+  		} while (lfs_writeinode(fs, sp, ip));
+  
+  	} while (lfs_writeseg(fs, sp) && ip->i_number == LFS_IFILE_INUM);
+--- 128,139 ----
+  
+  	ip = VTOI(vp);
+  	if (vp->v_dirtyblkhd.lh_first == NULL)
+! 		lfs_writevnodes(fs, vp->v_mount, sp, VN_EMPTY, 0);
+  
+  	do {
+  		do {
+  			if (vp->v_dirtyblkhd.lh_first != NULL)
+! 				lfs_writefile(fs, sp, vp, 0);
+  		} while (lfs_writeinode(fs, sp, ip));
+  
+  	} while (lfs_writeseg(fs, sp) && ip->i_number == LFS_IFILE_INUM);
+***************
+*** 149,159 ****
+  }
+  
+  void
+! lfs_writevnodes(fs, mp, sp, op)
+  	struct lfs *fs;
+  	struct mount *mp;
+  	struct segment *sp;
+! 	int op;
+  {
+  	struct inode *ip;
+  	struct vnode *vp;
+--- 150,160 ----
+  }
+  
+  void
+! lfs_writevnodes(fs, mp, sp, op, is_ckp)
+  	struct lfs *fs;
+  	struct mount *mp;
+  	struct segment *sp;
+! 	int op, is_ckp;
+  {
+  	struct inode *ip;
+  	struct vnode *vp;
+***************
+*** 194,200 ****
+  		    vp->v_dirtyblkhd.lh_first != NULL) &&
+  		    ip->i_number != LFS_IFILE_INUM) {
+  			if (vp->v_dirtyblkhd.lh_first != NULL)
+! 				lfs_writefile(fs, sp, vp);
+  			(void) lfs_writeinode(fs, sp, ip);
+  		}
+  		vp->v_flag &= ~VDIROP;
+--- 195,201 ----
+  		    vp->v_dirtyblkhd.lh_first != NULL) &&
+  		    ip->i_number != LFS_IFILE_INUM) {
+  			if (vp->v_dirtyblkhd.lh_first != NULL)
+! 				lfs_writefile(fs, sp, vp, is_ckp);
+  			(void) lfs_writeinode(fs, sp, ip);
+  		}
+  		vp->v_flag &= ~VDIROP;
+***************
+*** 245,251 ****
+  	lfs_seglock(fs, flags | (do_ckp ? SEGM_CKP : 0));
+  	sp = fs->lfs_sp;
+  
+! 	lfs_writevnodes(fs, mp, sp, VN_REG);
+  
+  	/* XXX ignore ordering of dirops for now */
+  	/* XXX
+--- 246,252 ----
+  	lfs_seglock(fs, flags | (do_ckp ? SEGM_CKP : 0));
+  	sp = fs->lfs_sp;
+  
+! 	lfs_writevnodes(fs, mp, sp, VN_REG, do_ckp);
+  
+  	/* XXX ignore ordering of dirops for now */
+  	/* XXX
+***************
+*** 258,264 ****
+  		return (error);
+  	}
+  
+! 	lfs_writevnodes(fs, mp, sp, VN_DIROP);
+  	*/
+  
+  	/*
+--- 259,265 ----
+  		return (error);
+  	}
+  
+! 	lfs_writevnodes(fs, mp, sp, VN_DIROP, do_ckp);
+  	*/
+  
+  	/*
+***************
+*** 285,291 ****
+  		while (vget(vp, 1));
+  		ip = VTOI(vp);
+  		if (vp->v_dirtyblkhd.lh_first != NULL)
+! 			lfs_writefile(fs, sp, vp);
+  		(void)lfs_writeinode(fs, sp, ip);
+  		vput(vp);
+  		if (lfs_writeseg(fs, sp) && do_ckp)
+--- 286,292 ----
+  		while (vget(vp, 1));
+  		ip = VTOI(vp);
+  		if (vp->v_dirtyblkhd.lh_first != NULL)
+! 			lfs_writefile(fs, sp, vp, do_ckp);
+  		(void)lfs_writeinode(fs, sp, ip);
+  		vput(vp);
+  		if (lfs_writeseg(fs, sp) && do_ckp)
+***************
+*** 318,327 ****
+   * Write the dirty blocks associated with a vnode.
+   */
+  void
+! lfs_writefile(fs, sp, vp)
+  	struct lfs *fs;
+  	struct segment *sp;
+  	struct vnode *vp;
+  {
+  	struct buf *bp;
+  	struct finfo *fip;
+--- 319,329 ----
+   * Write the dirty blocks associated with a vnode.
+   */
+  void
+! lfs_writefile(fs, sp, vp, is_ckp)
+  	struct lfs *fs;
+  	struct segment *sp;
+  	struct vnode *vp;
++ 	int is_ckp;
+  {
+  	struct buf *bp;
+  	struct finfo *fip;
+***************
+*** 341,357 ****
+  	fip->fi_version = ifp->if_version;
+  	brelse(bp);
+  
+- 	/*
+- 	 * It may not be necessary to write the meta-data blocks at this point,
+- 	 * as the roll-forward recovery code should be able to reconstruct the
+- 	 * list.
+- 	 */
+  	lfs_gather(fs, sp, vp, lfs_match_data);
+! 	lfs_gather(fs, sp, vp, lfs_match_indir);
+! 	lfs_gather(fs, sp, vp, lfs_match_dindir);
+! #ifdef TRIPLE
+! 	lfs_gather(fs, sp, vp, lfs_match_tindir);
+! #endif
+  
+  	fip = sp->fip;
+  	if (fip->fi_nblocks != 0) {
+--- 343,354 ----
+  	fip->fi_version = ifp->if_version;
+  	brelse(bp);
+  
+  	lfs_gather(fs, sp, vp, lfs_match_data);
+! 	if (is_ckp) {
+! 		lfs_gather(fs, sp, vp, lfs_match_indir);
+! 		lfs_gather(fs, sp, vp, lfs_match_dindir);
+! 		lfs_gather(fs, sp, vp, lfs_match_tindir);
+! 	}
+  
+  	fip = sp->fip;
+  	if (fip->fi_nblocks != 0) {
+
+

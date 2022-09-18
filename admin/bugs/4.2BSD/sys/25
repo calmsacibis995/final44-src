@@ -1,0 +1,114 @@
+Return-Path: <decvax!utcsrgv!uthub!thomson>
+Date: Mon, 13 Feb 84 12:42:59 est
+From: decvax!uthub!thomson (Brian Thomson)
+To: utcsrgv!decvax!ucbvax!4bsd-bugs
+Subject: 4.2BSD file/inode counts less than zero.
+
+Index: sys/kern_descrip.c 4.2BSD Fix
+
+Description:
+	It is possible to close a file descriptor more than once,
+	or otherwise use it after it has been closed, and
+	possibly after another process has reallocated it or
+	reallocated the in-core inode it points to.
+
+Repeat-By:
+	If you have installed Jeff Mogul's firewall panic in
+	closef() [ref. unix-wizards <14552@sri-arpa.UUCP> Dec 12 83]
+	you may have already seen this.  If not, then PUT IT IN
+	FIRST!!! like so:
+	kern_descrip.c, closef(), before
+
+		(*fp->f_ops->fo_close)(fp);
+
+	insert
+		if(fp->f_count < 1)
+			panic("closef: f_count < 1");
+	
+	Then run the following program with the shell 'exec' command,
+	such that it is the only process that has your terminal open:
+
+	    #include <sys/types.h>
+	    #include <setjmp.h>
+	    #include <signal.h>
+	    #include <sys/ioctl.h>
+
+	    jmp_buf jb;
+	    int zero;
+
+	    gorp() {
+		    longjmp(jb, 0);
+	    }
+
+	    main() {
+		    int i;
+		    for(i = 0; i < 20; i++)
+			    if(i != 1) close(i);
+		    setjmp(jb);
+		    ioctl(1, TIOCSTART, 0);
+		    ioctl(1, TIOCFLUSH, &zero);
+		    ioctl(1, TIOCSTOP, 0);
+		    write(1, "a", 1);
+		    signal(SIGALRM, gorp);
+		    alarm(1);
+		    close(1);
+	    }
+
+	If all went well (so to speak) a single 'a' will print on your
+	terminal, and your 4.2 system will have paniced.
+
+Fix:
+	What is happening here is that the process is sleeping at
+	interruptible priority in sys/tty.c routine ttywait()
+	for the output queue to drain.  Routine close() in sys/kern_descrip.c
+	doesn't clear u.u_ofile[1] until the close is complete,
+	even though the reference counts in the file table entry
+	and in the inode are decremented BEFORE the close completes,
+	so after the signal wakes us up we have a pointer to a
+	freed file table entry which may also point to a freed
+	in-core inode.  
+	Note that the same scenario holds if the process takes
+	a fatal signal during the close, since normal exit() handling 
+	involves closing all open file descriptors, and f.d. #1
+	still looks open.
+	4.1 used to clear the u.u_ofile[] entry in close() before
+	calling closef(), and doing so would indeed correct the above
+	instance of the problem.  But closef() is called from several
+	other places in the code, none of which expect to be interrupted:
+		copen() in sys/ufs_syscalls.c
+		setregs() in sys/kern_exec.c
+		unp_discard() in sys/uipc_usrreq.c
+
+	The fix I have adopted is suggested by the comment 'XXX Should catch'
+	in sys/sys_inode.c's ino_close().  In that routine, add the
+	declaration
+
+		label_t oqsave;
+
+	and replace the last line
+
+		(*cfunc)(dev, flag, fp);
+
+	by the lines
+
+		oqsave = u.u_qsave;
+		if(setjmp(&u.u_qsave) == 0)
+			(*cfunc)(dev, flag, fp); /* last arg is invalid!! */
+		u.u_qsave = oqsave;
+
+	There is still the minor problem that the tty doesn't
+	quite get properly closed if a signal is taken, but
+	that is preferable to the mashed file systems people have
+	been reporting.  A better, but harder, fix would be
+	to rework ttyclose() so that, instead of waiting, the
+	tty structure gets marked TS_CLOSING and the close
+	completes asynchronously at interrupt time when the
+	outq has drained.
+
+	I think the lesson to be learned here is that UNIX has become
+	too big to let this setjmp/longjmp-on-signal nonsense remain
+	much longer.
+
+			Brian Thomson,	    CSRG Univ. of Toronto
+			{linus,ihnp4,uw-beaver,floyd,utzoo}!utcsrgv!thomson
+

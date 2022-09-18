@@ -1,0 +1,198 @@
+From AMIR%TECHUNIX.BITNET@jade.berkeley.edu  Tue Jan 23 13:55:09 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA00883; Tue, 23 Jan 90 13:55:09 -0800
+Received: from jade.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA22237; Tue, 23 Jan 90 13:55:16 -0800
+Received: from techunix.bitnet
+	by jade.berkeley.edu (5.61.1/1.16.23)
+	id AA20662; Tue, 23 Jan 90 13:54:57 PST
+Return-Path: <amir@techunix.bitnet>
+Date: Tue, 23 Jan 90 19:44:22 +0200
+From: Amir Plivatsky <amir%techunix.bitnet@jade.berkeley.edu>
+Comments:  Domain style address is "amir@techunix.technion.ac.il"
+Message-Id: <9001231744.AA21275@techunix.bitnet>
+Subject: Security hole in "atrun"
+Index: usr.bin 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+
+          I was told about the following hole in "atrun" that
+        enables to get superuser (atrun.c 5.5 (Berkeley) 11/26/86).
+        "atrun" changes the owner of the job file to the sender
+        user.  It then forks in order to run the "at" job (second
+        call to fork() in run()).  If the fork() fails, the file
+        is returned to the queue, but without changing its owner
+        back.  Thus the sender can now edit it, and change its
+        header so it will run as "root" on the next "atrun"
+        invocation.  (Even if the owner of the file would be changed
+        back this is not safe as long as the "past" directory has
+        x permission to others ("atrun" depends on its accessibility
+        by the user) because the file contents cannot be trusted
+        any more after it was owned by the user.)
+
+Repeat-By:
+          I didn't test this myself.  However, according to the
+        source of "atrun.c" it should work.
+
+          Send many "at" jobs to be executed at the same time.
+        Each job just do "sleep 60".  The number of the jobs that
+        are sent should be large enough so the system process table
+        will overflow when "atrun" executes the files in the queue.
+
+          For example:
+
+        repeat 100 at 0100 slp
+
+          On some point while "atrun" processes the "at" queue,
+        the second fork() in "run()" will fail because the process
+        table will be full then.  The job file will then be returned
+        to the "at" queue ("rename(runfile, spoolfile)").
+
+
+Fix:
+          The following fix seems to close the hole.  [However, it
+        seems better if programs that work in superuser mode (or
+        are s-uid/s-gid) will be more "defensive programmed" than
+        "atrun.c" (this is also true for other similar programs).
+        In the case of "atrun", I think it shouldn't change the
+        owner of the file in the first place, and also check it to
+        be owned by "root" if it depends on information that it
+        reads from it.
+
+          (I also removed the redundant routine getname()).
+
+*** /tmp/,RCSt1022813   Tue Jan 23 15:48:27 1990
+--- atrun.c     Sun Jan 21 21:42:04 1990
+***************
+*** 145,151 ****
+        int notifybymail;               /* should we notify the owner of the
+                                           job after the job is run? */
+        char shell[4];                  /* shell to run the job under */
+-       char *getname();                /* get a uname from using a uid */
+        char mailvar[4];                /* send mail variable ("yes" or "no") */
+        char runfile[100];              /* file sent to forked shell for exec-
+                                           ution */
+--- 145,150 ----
+***************
+*** 191,200 ****
+        notifybymail = (strcmp(mailvar, "yes") == 0);
+        fclose(infile);
+
+-       /*
+-        * Change the ownership of the spoolfile from "daemon" to the owner
+-        * of the job.
+-        */
+        pwdbuf = getpwnam(owner);
+        if (pwdbuf == NULL) {
+                fprintf(stderr, "%s: could not find owner in passwd file\n",
+--- 190,195 ----
+***************
+*** 201,210 ****
+                    spoolfile);
+                exit(1);
+        }
+-       if (chown(spoolfile,pwdbuf->pw_uid,pwdbuf->pw_gid) == -1) {
+-               perror(spoolfile);
+-               exit(1);
+-       }
+
+        /*
+         * Move the spoolfile to the directory where jobs are run from and
+--- 196,201 ----
+***************
+*** 232,245 ****
+        }
+
+        /*
+-        * Get the stats of the job being run.
+-        */
+-       if (stat(runfile, &jobbuf) == -1) {
+-               perror(runfile);
+-               exit(1);
+-       }
+-
+-       /*
+         * Fork another child that will run the job.
+         */
+        if (pid = fork()) {
+--- 223,228 ----
+***************
+*** 288,294 ****
+                 *
+                 */
+                if (exitstatus == ABNORMAL || notifybymail)
+!                       sendmailto(getname(jobbuf.st_uid),jobname,exitstatus);
+
+                /*
+                 * Remove the errorfile and the jobfile.
+--- 271,277 ----
+                 *
+                 */
+                if (exitstatus == ABNORMAL || notifybymail)
+!                       sendmailto(owner,jobname,exitstatus);
+
+                /*
+                 * Remove the errorfile and the jobfile.
+***************
+*** 308,320 ****
+        /*
+         * Run the job as the owner of the jobfile
+         */
+  #ifdef notdef
+        /* This is no longer needed with the new, stripped-down quota system */
+!       quota(Q_SETUID,jobbuf.st_uid,0,0);
+  #endif
+!       setgid(jobbuf.st_gid);
+!       initgroups(getname(jobbuf.st_uid),jobbuf.st_gid);
+!       setuid(jobbuf.st_uid);
+
+        /*
+         * Close all open files so that we can reopen a temporary file
+--- 291,312 ----
+        /*
+         * Run the job as the owner of the jobfile
+         */
++
++       /*
++        * Change the ownership of the spoolfile from "root" to the owner
++        * of the job.
++        */
++       if (chown(spoolfile,pwdbuf->pw_uid,pwdbuf->pw_gid) == -1) {
++               perror(spoolfile);
++               exit(1);
++       }
+  #ifdef notdef
+        /* This is no longer needed with the new, stripped-down quota system */
+!       quota(Q_SETUID,pwdbuf->pw_uid,0,0);
+  #endif
+!       setgid(pwdbuf->pw_gid);
+!       initgroups(owner,pwdbuf->pw_gid);
+!       setuid(pwdbuf->pw_uid);
+
+        /*
+         * Close all open files so that we can reopen a temporary file
+***************
+*** 523,543 ****
+         * Close the record file.
+         */
+        fclose(lastimefile);
+- }
+-
+- /*
+-  * Get the full login name of a person using his/her user id.
+-  */
+- char *
+- getname(uid)
+- int uid;
+- {
+-       struct passwd *pwdinfo;                 /* password info structure */
+-
+-
+-       if ((pwdinfo = getpwuid(uid)) == 0) {
+-               perror(uid);
+-               exit(1);
+-       }
+-       return(pwdinfo->pw_name);
+  }
+--- 515,518 ----

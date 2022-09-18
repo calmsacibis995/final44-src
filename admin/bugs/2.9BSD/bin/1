@@ -1,0 +1,295 @@
+Return-Path: <satz@sri-tsc>
+Date: 26 Apr 1984 2252-PST (Thursday)
+From: Greg Satz <Satz@SRI-TSC>
+Subject: 2.9bsd adb bugs
+Index: bin/adb 2.9BSD
+
+Subject: adb doesn't work when UCB_NET is defined
+
+cmd/adb/defs.h cmd/adb/{pcs,print,setup}.c 2.9bsd
+
+Description:
+	If you attempt to adb a file with or without a core image, adb
+	refuses to work. I can only claim this to be true when UCB_NET
+	is defined in param.h.
+Repeat-By:
+	repeat this command sequence and watch it not work:
+	adb /bin/ps
+	printf+4:b
+	:r ax
+	$r
+	$c 
+Fix:
+	These diffs describe what I have done to get adb working
+	with UCB_NET defined. Note that the USIZE has doubled
+	and this has caused most of the problems.
+
+*** /tmp/,RCSt1005096	Thu Apr 26 22:36:25 1984
+--- defs.h	Thu Apr 26 21:55:31 1984
+***************
+*** 109,114
+   * If it doesn't correspond to reality, use pstat -u on a core file to get uar0,
+   * subtract 0140000, and divide by 2 (sizeof int).
+   */
+  #ifdef	MENLO_KOV
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+  #else
+
+--- 109,115 -----
+   * If it doesn't correspond to reality, use pstat -u on a core file to get uar0,
+   * subtract 0140000, and divide by 2 (sizeof int).
+   */
++ #ifndef	UCB_NET
+  #ifdef	MENLO_KOV
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+  #else	MENLO_KOV
+***************
+*** 111,117
+   */
+  #ifdef	MENLO_KOV
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+! #else
+  #define UAR0	(&corhdr[510])	/* default address of r0 (u.u_ar0) */
+  #endif
+  
+
+--- 112,118 -----
+  #ifndef	UCB_NET
+  #ifdef	MENLO_KOV
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+! #else	MENLO_KOV
+  #define UAR0	(&corhdr[510])	/* default address of r0 (u.u_ar0) */
+  #endif	MENLO_KOV
+  #else	UCB_NET
+***************
+*** 113,119
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+  #else
+  #define UAR0	(&corhdr[510])	/* default address of r0 (u.u_ar0) */
+! #endif
+  
+  #define KR0	2	/* location of r0 in kernel dump */
+  #define KR1	3
+
+--- 114,127 -----
+  #define UAR0 	(&corhdr[509])  /* default address of r0 (u.u_ar0) */
+  #else	MENLO_KOV
+  #define UAR0	(&corhdr[510])	/* default address of r0 (u.u_ar0) */
+! #endif	MENLO_KOV
+! #else	UCB_NET
+! #ifdef	MENLO_KOV
+! #define UAR0 	(&corhdr[1021])  /* default address of r0 (u.u_ar0) */
+! #else	MENLO_KOV
+! #define UAR0	(&corhdr[1022])	/* default address of r0 (u.u_ar0) */
+! #endif	MENLO_KOV
+! #endif	UCB_NET
+  
+  #define KR0	2	/* location of r0 in kernel dump */
+  #define KR1	3
+
+*** /tmp/,RCSt1005116	Thu Apr 26 22:37:28 1984
+--- pcs.c	Thu Apr 26 15:42:37 1984
+***************
+*** 19,25
+  
+  CHAR		*lp;
+  CHAR		lastc;
+! POS		corhdr[512];
+  POS		*endhdr;
+  MAP		txtmap;
+  
+
+--- 19,25 -----
+  
+  CHAR		*lp;
+  CHAR		lastc;
+! POS		corhdr[USIZE*32];
+  POS		*endhdr;
+  MAP		txtmap;
+  
+*** /tmp/,RCSt1005124	Thu Apr 26 22:38:11 1984
+--- print.c	Thu Apr 26 22:27:13 1984
+***************
+*** 218,223
+  		callpc=(adrflg?get(frame+2,DSP):(kernel?(-2):uar0[PC]));
+  		WHILE cntval--
+  		DO	chkerr();
+  			narg = findroutine(frame);
+  			printf("%.8s(", symbol.symc);
+  			argp = frame+4;
+
+--- 218,224 -----
+  		callpc=(adrflg?get(frame+2,DSP):(kernel?(-2):uar0[PC]));
+  		WHILE cntval--
+  		DO	chkerr();
++ 			printf("%07O: ", frame); /* Add frame address info */
+  			narg = findroutine(frame);
+  			printf("%.8s(", symbol.symc);
+  			argp = frame+4;
+***************
+*** 228,234
+  			DO	argp += 2;
+  				printf(",%o", get(argp, DSP));
+  			OD
+! 			prints(")\n");
+  
+  			IF modif=='C'
+  			THEN WHILE localsym(frame)
+
+--- 229,247 -----
+  			DO	argp += 2;
+  				printf(",%o", get(argp, DSP));
+  			OD
+! 			/* Add return-PC info.  Force printout of
+! 			 * symbol+offset (never just a number!) by using
+! 			 * max possible offset.  Overlay has already been set
+! 			 * properly by findfn.
+! 			 */
+! 			prints(") return-pc ");
+! 			{	INT savmaxoff;
+! 				savmaxoff = maxoff;
+! 				maxoff = ((unsigned)-1)>>1;
+! 				psymoff((L_INT)callpc,ISYM,"");
+! 				maxoff = savmaxoff;
+! 			}
+! 			prints("\n");
+  
+  			IF modif=='C'
+  			THEN WHILE localsym(frame)
+***************
+*** 240,246
+  
+  			lastframe=frame;
+  			frame=get(frame, DSP)&EVEN;
+! 			IF kernel? ((unsigned)frame>(unsigned)0142000):
+  			    (frame==0)
+  				THEN break; FI
+  		OD
+
+--- 253,259 -----
+  
+  			lastframe=frame;
+  			frame=get(frame, DSP)&EVEN;
+! 			IF kernel? ((unsigned)frame>(unsigned)0140000+USIZE*64):
+  			    (frame==0)
+  				THEN break; FI
+  		OD
+
+*** /tmp/,RCSt1005131	Thu Apr 26 22:38:28 1984
+--- setup.c	Thu Apr 26 15:42:43 1984
+***************
+*** 36,42
+  long tell();
+  INT		argcount;
+  INT		signo;
+! POS		corhdr[512];
+  POS		*uar0 = UAR0;
+  
+  STRING		symfil	"a.out";
+
+--- 36,42 -----
+  long tell();
+  INT		argcount;
+  INT		signo;
+! POS		corhdr[USIZE*32];
+  POS		*uar0 = UAR0;
+  
+  STRING		symfil	"a.out";
+***************
+*** 140,147
+  		symbas += TXTHDRSIZ;
+  
+  		/* set up symvec */
+! 		symvec=sbrk(shorten((1+symnum))*sizeof (SYMSLAVE));
+! 		IF (symptr=symvec)==-1
+  		THEN	printf("%s\n",BADNAM);
+  			symptr=symvec=sbrk(sizeof (SYMSLAVE));
+  		ELSE if (symnum != 0) {
+
+--- 140,147 -----
+  		symbas += TXTHDRSIZ;
+  
+  		/* set up symvec */
+! 		symvec=sbrk(shorten((1+symnum))*sizeof (SYMSLAVE));	
+! 	IF (symptr=symvec)==-1
+  		THEN	printf("%s\n",BADNAM);
+  			symptr=symvec=sbrk(sizeof (SYMSLAVE));
+  		ELSE if (symnum != 0) {
+***************
+*** 162,167
+  
+  setcor()
+  {
+  	fcor=getfile(corfil,2);
+  	datmap.ufd=fcor;
+  	IF read(fcor, corhdr, ctob(USIZE))==ctob(USIZE)
+
+--- 162,169 -----
+  
+  setcor()
+  {
++ 	register int i;
++ 
+  	fcor=getfile(corfil,2);
+  	datmap.ufd=fcor;
+  	IF read(fcor, corhdr, ctob(USIZE))==ctob(USIZE)
+***************
+*** 176,182
+  			stksiz = 02000L;
+  			datmap.f1 = 0;
+  			datmap.b2 = 0140000L;
+! 			datmap.e2 = 0142000L;
+  		FI
+  		switch (magic)
+  		{
+
+--- 178,184 -----
+  			stksiz = 02000L;
+  			datmap.f1 = 0;
+  			datmap.b2 = 0140000L;
+! 			datmap.e2 = 0140000L+USIZE*64L;
+  		FI
+  		switch (magic)
+  		{
+***************
+*** 234,240
+  		}
+  		datbas = datmap.b1;
+  		if (!kernel) {
+! 		    if (magic ANDF magic!=corhdr[0].u_exdata.ux_mag)
+  		    	printf("%s\n",DIFMAG);
+  		    else if (magic) {
+  			  register POS *ar0;
+
+--- 236,242 -----
+  		}
+  		datbas = datmap.b1;
+  		if (!kernel) {
+! 		    if (magic ANDF magic!=(U *)corhdr->u_exdata.ux_mag)
+  		    	printf("%s\n",DIFMAG);
+  		    else if (magic) {
+  			  register POS *ar0;
+***************
+*** 239,247
+  		    else if (magic) {
+  			  register POS *ar0;
+  			  ar0 = (POS *)(((U *)corhdr)->u_ar0);
+! 			  if ((ar0>(POS *)0140000) & (ar0<(POS *)0142000)
+! 			      && !(ar0&01))
+! 				uar0 = ar0 - 0140000 + (unsigned)corhdr;
+  			  if (overlay) {
+  				startov = ((U *)corhdr)->u_ovdata.uo_curov;
+  			  	var[VARC] = (long)startov;
+
+--- 241,251 -----
+  		    else if (magic) {
+  			  register POS *ar0;
+  			  ar0 = (POS *)(((U *)corhdr)->u_ar0);
+! 			  if ((ar0>(POS *)0140000) && (ar0<(POS *)(0140000+USIZE*64))
+! 			/*   && !(ar0&01)	*/
+! 				)
+! 				uar0 = (POS *)(((unsigned)ar0-
+! 				    (unsigned)0140000)+(unsigned)&corhdr);
+  			  if (overlay) {
+  				startov = ((U *)corhdr)->u_ovdata.uo_curov;
+  			  	var[VARC] = (long)startov;

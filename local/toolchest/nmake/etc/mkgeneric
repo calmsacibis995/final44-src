@@ -1,0 +1,94 @@
+: # gets csh on BSD!!
+# construct generic.h file
+#
+
+cat <<!
+/*
+ * generic.h -- allows portable use of the following functions:
+ *
+ *	dup2(cur,new)		dups fd cur into fd new
+ *	killpg(pg,sig)		sends sig to process group pg
+ *	signal(s,f)		set function f to catch signal s -- return old f
+ *	freesignal(s)		unblock signal s
+ *	memcpy(b1,b2,n)		copy n bytes from b2 to b1 -- return b1
+ *	memzero(b,n)		zero n bytes starting at b -- return b
+ *	strchr(s,c)		return ptr to c in s
+ *	strrchr(s,c)		return ptr to last c in s
+ *	vfork()			data share version of fork()
+ */
+
+union				/* handles side effects in macros */
+{
+	char	*ustring;
+} __GeN__;
+
+!
+
+# should go away with next apollo release
+if	test -f /sys/apollo_logo
+then	echo "#define memzero(b,n) memset(b,'\\\\0',n)"
+	echo "#define freesignal(s)"
+	echo "#define defined 1&"
+	exit 0
+fi
+
+#
+# dup2(x,y)
+#
+if	test `nm /lib/libc.a | egrep -c '[^a-z]*_*dup2[^a-z]*' || true` -lt 1
+then	if	test -f /usr/include/fcntl.h
+	then	F_DUPFD=`echo "\`grep '#[ 	]*define[ 	]*F_DUPFD' /usr/include/fcntl.h\`" "\n" "F_DUPFD" | /lib/cpp -P`
+		echo "#define dup2(x,y) fcntl(x,`echo $F_DUPFD`,y)"
+	else	echo "#define dup2(x,y) dup((x)|0100,y)"
+	fi
+fi
+
+#
+# killpg
+#
+if	test -f /usr/lib/libjobs.a
+then	:
+elif	test `nm /lib/libc.a | egrep -c '[^a-z]*_*killpg[^a-z]*' || true` -lt 1
+then	echo "#define killpg(x,y) kill(-(x),y)"
+fi
+
+#
+# memory
+#
+if	test `nm /lib/libc.a | egrep -c '[^a-z]*_*memcpy[^a-z]*' || true` -ge 1
+then	echo "#define memzero(b,n) memset(b,'\\\\0',n)"
+	echo "extern char *memcpy(), *memset();"
+elif	test `nm /lib/libc.a | egrep -c '[^a-z]*_*bcopy[^a-z]*' || true` -ge 1
+then	echo "#define memcpy(b1,b2,n) (bcopy(__GeN__.ustring=b2,b1,n),__GeN__.ustring)"
+	echo "#define memzero(b,n) (bzero(__GeN__.ustring=b,n),__GeN__.ustring)"
+else	echo "#define memzero(b,n) memset(b,'\\\\0',n)"
+	echo "extern char *memcpy(), *memset();"
+fi
+
+#
+# signal
+#
+if	test -f /usr/lib/libjobs.a
+then	echo "#define signal sigset"
+fi
+if	test `nm /lib/libc.a | egrep -c '[^a-z]*_*sigblock[^a-z]*' || true` -ge 1
+then	echo "#define freesignal(s) sigsetmask(sigblock(0)&~(1<<(s-1)))"
+else	echo "#define freesignal(s)"
+fi
+
+#
+# strchr(x,y)
+# strrchr(x,y)
+#
+if	test `nm /lib/libc.a | egrep -c '[^a-z]*_*r*index[^a-z]*' || true` -ge 2
+then	echo "#define strchr index"
+	echo "#define strrchr rindex"
+fi
+echo "extern char *strchr(), *strrchr();"
+
+#
+# vfork
+#
+if	test `nm /lib/libc.a | egrep -c '[^a-z]*_*vfork[^a-z]*' || true` -lt 1
+then	echo "#define vfork fork"
+fi

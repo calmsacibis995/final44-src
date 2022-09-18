@@ -1,0 +1,73 @@
+Date: Thu, 26 Sep 85 20:42:18 PDT
+From: tef@ucsf-cgl.ARPA (Thomas Ferrin)
+Subject: inetd does not support connection-based multi-threaded servers
+Index: 	etc/inetd.c 4.3BSD alpha distribution
+
+Description:
+
+	inetd.8 states:
+
+	Datagram oriented services are invoked when a datagram
+	arrives; a process is created and passed a pending message
+	on file descriptor 0.  Datagram servers may either connect
+	to their peer, freeing up the original socket for inetd
+	to receive further messages on, or ``take over the socket'',
+	processing all arriving datagrams and, eventually, timing
+	out.  The first type of server is said to be ``multi-threaded'';
+	the second type of server ``single-threaded''. 
+
+	However, the concept of single-threaded versus multi-threaded
+	servers is really independent of the communications medium,
+	be it datagrams or connections.  Currently, if we specify a
+	connection-based multi-threaded server in /etc/inetd.conf,
+	inetd will accept the connection anyway and pass the connected
+	socket as file descriptor 0 and 1 to the server; it also stops
+	listening on the server port so further requests are ignored.
+
+Repeat-By:
+	Inspect source code.
+
+Fix:
+	The changes are simple.  Diffs here fix the problem described
+	above and also use new sigmask() macro (as well as fix a few
+	other lint complaints).
+
+90d89
+< 	int ctrl;
+154c153
+< 		if (sep->se_socktype == SOCK_STREAM) {
+---
+> 		if (!sep->se_wait && sep->se_socktype == SOCK_STREAM) {
+166,167c165
+< #define mask(sig)	(1 << (sig - 1))
+< 		sigblock(mask(SIGCHLD)|mask(SIGHUP));
+---
+> 		sigblock(sigmask(SIGCHLD)|sigmask(SIGHUP));
+170c168
+< 			if (sep->se_socktype == SOCK_STREAM)
+---
+> 			if (!sep->se_wait && sep->se_socktype == SOCK_STREAM)
+188c186
+< 			dup2(ctrl, 0), close(ctrl), dup2(0, 1);
+---
+> 			dup2(ctrl, 0); close(ctrl); dup2(0, 1); dup2(0, 2);
+208c206
+< 		if (sep->se_socktype == SOCK_STREAM)
+---
+> 		if (!sep->se_wait && sep->se_socktype == SOCK_STREAM)
+260c258
+< 			omask = sigblock(mask(SIGCHLD));
+---
+> 			omask = sigblock(sigmask(SIGCHLD));
+308c306
+< 	omask = sigblock(mask(SIGCHLD));
+---
+> 	omask = sigblock(sigmask(SIGCHLD));
+331c329
+< 	int omask, i;
+---
+> 	int omask;
+341c339
+< 	omask = sigblock(mask(SIGCHLD));
+---
+> 	omask = sigblock(sigmask(SIGCHLD));

@@ -1,0 +1,86 @@
+From parmelee@cu-arpa.cs.cornell.edu  Fri Jan 27 06:53:52 1989
+Date: Fri, 27 Jan 89 09:52:36 -0500
+From: parmelee@cu-arpa.cs.cornell.edu (Larry Parmelee)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Sendmail 5.61 bug
+Cc: bostic@okeeffe.Berkeley.EDU
+
+Subject: Sendmail 5.61 bug/annoyance
+Index:	usr.lib/sendmail/src 4.3BSD
+
+Description:
+	Our newly received/compiled/installed version of Sendmail 5.61
+	seems to be having problem delivering to Xerox.COM.  I'm not
+	certain yet what's causing that, but that's not the main point of
+	this bug report.  For the record, "ps ax" shows:
+	10119 ?  I <   0:00 -AA08336 Xerox.COM: HELO wait (sendmail)
+
+	At that point, the connection hangs, and eventually times out.
+	The message is both left on the mailqueue for later re-trys
+	AND an error return message is mailed back to the original
+	sender.  This is annoying!!!  The next time sendmail runs the
+	queue, it will again try to send the message, hang, timeout, and
+	generate ANOTHER error return message...  No error return
+	should be generated in this case, until the 3-day retry limit
+	has been reached.
+
+	The headers from one of the returned messages appear below:
+
+	> From MAILER-DAEMON@cu-arpa Fri Jan 27 06:38:06 1989
+	> Received: from CU-ARPA.CS.CORNELL.EDU by wayback.cs.cornell.edu (5.59/1.91d)
+	>         id AA12233; Fri, 27 Jan 89 06:38:00 EST
+	> Subject: Returned mail: Deferred: Bad file number
+	> Date: Fri, 27 Jan 89 04:37:52 -0500
+	> From: MAILER-DAEMON@cu-arpa (Mail Delivery Subsystem)
+	> Message-Id: <8901270937.AA09011@cu-arpa.cs.cornell.edu>
+	> Received: by cu-arpa.cs.cornell.edu (5.61/1.91d)
+	>         id AA09011; Fri, 27 Jan 89 04:37:52 -0500
+	> To: <parmelee@wayback.cs.cornell.edu>
+	> Status: R
+	> 
+	>    ----- Transcript of session follows -----
+	> 554 <gilbert.pa@xerox.com>... timeout waiting for input
+	> 451 <gilbert.pa@xerox.com>... reply: read error
+	> <gilbert.pa@xerox.com>... reply: read error
+	> 
+	>    ----- Unsent message follows -----
+	> Received: from GVAX.CS.CORNELL.EDU by cu-arpa.cs.cornell.edu (5.61/1.91d)
+	>         id AA05805; Thu, 26 Jan 89 10:25:15 -0500
+	> Received: from WAYBACK.CS.CORNELL.EDU by gvax.cs.cornell.edu (5.59/1.91d)
+	>         id AA25976; Thu, 26 Jan 89 10:23:11 EST
+	> Date: Thu, 26 Jan 89 10:20:37 EST
+	> From: parmelee@wayback.cs.cornell.edu (Larry Parmelee)
+	> Message-Id: <8901261520.AA09900@wayback.cs.cornell.edu>
+	> Received: by wayback.cs.cornell.edu (5.59/1.91d)
+	>         id AA09900; Thu, 26 Jan 89 10:20:37 EST
+	> To: list@wayback.cs.cornell.edu
+	> Subject: 
+
+		< Message body deleted. >
+ 
+	There may be an additional bug here- When this happens, according
+	to the code a syslog message "timeout waiting for input from %s\n"
+	is supposed to be produced, with "%s" filled in with the 
+	"RealHostName", but this seems to always print out blank:
+
+	Jan 27 08:08:31 cu-arpa sendmail[8874]: timeout waiting for input from
+
+Repeat-By:
+	Difficult.  Set up the above situation somehow, and wait.
+Fix:
+	A quick comparison of the 5.59 sendmail code with the 5.61 code
+	leads me to belive that this can be fixed in the util.c source
+	module, in the sfgets routine.  In the 5.59 version, a timeout
+	would result in a call to "syserr", with errno set non-zero,
+	which results in an error message with a 4xx code.  In the 5.61
+	code, a call is instead made to usrerr, which produces an
+	error message with a 5xx code, and results in the EF_FATALERRS
+	flag being set, and this I suspect is what later causes an
+	error message to be mailed.
+
+	In the 5.61 version, errno is set to 0 before calling usrerr.
+	"syserr" produces a 5xx code if errno is 0, otherwise a 4xx code.
+	"usrerr" ignores errno.
+
+	-Larry Parmelee
+	parmelee@cs.cornell.edu

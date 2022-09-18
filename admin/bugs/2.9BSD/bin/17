@@ -1,0 +1,292 @@
+From jbj@iuvax.cs.indiana.edu Thu Apr 23 17:37:27 1987
+Date: Thu, 23 Apr 87 18:55:27 est
+From: Jeffrey Johnson <jbj@iuvax.cs.indiana.edu>
+Subject: ld/nm/ps/sys_prf patches 
+Index: bin 2.9BSD
+
+Hi --
+	Here are some dinky patches to fix problems with a unix
+symbol table larger than 64k. The patch for sys_prf.c allows 
+	printf("%X\n", ntohl(sin->sin_addr.s_addr));
+to work. I haven't tested the long octal case, but it should be nearly
+the same as the hex case.
+	There is another set of patches for ld needed to READ files
+with larger than 64k symbol tables rather than just WRITE these files,
+but I figgered that those patches won't be needed for a couple of
+years yet ...
+
+see ya,
+j.	jbj@iuvax
+===========================================================================
+: This is a shar archive.
+: Remove everything above this line.
+: Run the file through sh, not csh.
+: (type `sh this_file')
+: If you do not see the message
+:	`this_file completed!'
+: then the file was incomplete.
+echo extracting - ld.patch
+sed 's/^X//' > ld.patch << 'FRIDAY_NIGHT'
+X*** O/ld.c	Wed Apr 15 14:00:54 1987
+X--- ld.c	Wed Apr 15 14:21:15 1987
+X***************
+X*** 97,103 ****
+X  	LIBLIST	*libsav;
+X  	char	*vname;
+X  	u_int	ctsav, cdsav, cbsav;
+X! 	u_int	offt, offd, offb, offs;
+X  } vnodes[NOVL + 1];
+X  
+X  typedef struct {		/* input management */
+X--- 97,104 ----
+X  	LIBLIST	*libsav;
+X  	char	*vname;
+X  	u_int	ctsav, cdsav, cbsav;
+X! 	u_int	offt, offd, offb;
+X! 	long offs;
+X  } vnodes[NOVL + 1];
+X  
+X  typedef struct {		/* input management */
+X***************
+X*** 184,190 ****
+X   * These are the cumulative sizes, set in pass1, which
+X   * appear in the a.out header when the loader is finished.
+X   */
+X! u_int	tsize, dsize, bsize, ssize;
+X  
+X  /*
+X   * Symbol relocation:
+X--- 185,192 ----
+X   * These are the cumulative sizes, set in pass1, which
+X   * appear in the a.out header when the loader is finished.
+X   */
+X! u_int	tsize, dsize, bsize;
+X! long	ssize;
+X  
+X  /*
+X   * Symbol relocation:
+X***************
+X*** 251,256 ****
+X--- 253,259 ----
+X  SYMBOL	*lookloc();
+X  
+X  u_int	add();
+X+ long	ladd();
+X  int	delexit();
+X  long	lseek();
+X  char	*savestr();
+X***************
+X*** 629,635 ****
+X  {
+X  	register SYMBOL *sp;
+X  	int savindex;
+X! 	int ndef, nlocal, type, mtype;
+X  
+X  	readhdr(loc);
+X  	if (filhdr.a_syms == 0) {
+X--- 632,639 ----
+X  {
+X  	register SYMBOL *sp;
+X  	int savindex;
+X! 	int ndef, type, mtype;
+X! 	long nlocal;
+X  
+X  	readhdr(loc);
+X  	if (filhdr.a_syms == 0) {
+X***************
+X*** 685,691 ****
+X  		tsize = add(tsize,filhdr.a_text,"text overflow");
+X  		dsize = add(dsize,filhdr.a_data,"data overflow");
+X  		bsize = add(bsize,filhdr.a_bss,"bss overflow");
+X! 		ssize = add(ssize,nlocal,"symbol table overflow");
+X  		return (1);
+X  	}
+X  	/*
+X--- 689,695 ----
+X  		tsize = add(tsize,filhdr.a_text,"text overflow");
+X  		dsize = add(dsize,filhdr.a_data,"data overflow");
+X  		bsize = add(bsize,filhdr.a_bss,"bss overflow");
+X! 		ssize = ladd(ssize,nlocal,"symbol table overflow");
+X  		return (1);
+X  	}
+X  	/*
+X***************
+X*** 872,878 ****
+X  	filhdr.a_text = tsize;
+X  	filhdr.a_data = dsize;
+X  	filhdr.a_bss = bsize;
+X! 	filhdr.a_syms = sflag? 0 : (ssize + (sizeof cursym) * symindex);
+X  	if (entrypt) {
+X  		if (entrypt->n_type!=N_EXT+N_TEXT)
+X  			error(0, "entry point not in text");
+X--- 876,883 ----
+X  	filhdr.a_text = tsize;
+X  	filhdr.a_data = dsize;
+X  	filhdr.a_bss = bsize;
+X! 	ssize = sflag? 0 : (ssize + (sizeof cursym) * symindex);
+X! 	filhdr.a_syms = ssize&0177777;
+X  	if (entrypt) {
+X  		if (entrypt->n_type!=N_EXT+N_TEXT)
+X  			error(0, "entry point not in text");
+X***************
+X*** 882,888 ****
+X  			filhdr.a_entry = entrypt->n_value | 01;
+X  	} else
+X  		filhdr.a_entry = 0;
+X! 	filhdr.a_unused = 0;
+X  	filhdr.a_flag = (rflag==0);
+X  	mput(&toutb, (int *)&filhdr, sizeof filhdr);
+X  	if (numov) {
+X--- 887,893 ----
+X  			filhdr.a_entry = entrypt->n_value | 01;
+X  	} else
+X  		filhdr.a_entry = 0;
+X! 	filhdr.a_unused = ((ssize>>16)&017);
+X  	filhdr.a_flag = (rflag==0);
+X  	mput(&toutb, (int *)&filhdr, sizeof filhdr);
+X  	if (numov) {
+X***************
+X*** 1613,1618 ****
+X--- 1618,1636 ----
+X  	saved = v->symsav;
+X  	while (symindex>saved)
+X  		*symhash[--symindex]=0;
+X+ }
+X+ 
+X+ long
+X+ ladd(a,b,s)
+X+ long a, b;
+X+ char *s;
+X+ {
+X+ 	long r;
+X+ 
+X+ 	r = a + b;
+X+ 	if (r >= 04000000L)
+X+ 		error(1,s);
+X+ 	return(r);
+X  }
+X  
+X  u_int
+FRIDAY_NIGHT
+echo extracting - nm.patch
+sed 's/^X//' > nm.patch << 'FRIDAY_NIGHT'
+X*** O/nm.c	Wed Apr 15 15:29:38 1987
+X--- nm.c	Wed Apr 15 15:30:34 1987
+X***************
+X*** 118,124 ****
+X  			if ((exp.a_flag & 01) == 0)
+X  				o *= 2;
+X  			fseek(fi, o, 1);
+X! 			n = exp.a_syms / sizeof(struct nlist);
+X  			if (n == 0) {
+X  				fprintf(stderr, "nm: %s-- no name list\n", SELECT);
+X  				continue;
+X--- 118,125 ----
+X  			if ((exp.a_flag & 01) == 0)
+X  				o *= 2;
+X  			fseek(fi, o, 1);
+X! 			o = exp.a_unused; o = o<<16 | exp.a_syms;
+X! 			n = o / sizeof(struct nlist);
+X  			if (n == 0) {
+X  				fprintf(stderr, "nm: %s-- no name list\n", SELECT);
+X  				continue;
+FRIDAY_NIGHT
+echo extracting - prf.patch
+sed 's/^X//' > prf.patch << 'FRIDAY_NIGHT'
+X*** O/subr_prf.c	Tue Apr 14 18:41:15 1987
+X--- subr_prf.c	Wed Apr 15 22:59:07 1987
+X***************
+X*** 179,196 ****
+X  	long n;
+X  	u_int b;
+X  {
+X- 	register char *cp;
+X  	char prbuf[12];
+X  
+X! 	if (b == 10 && n < 0) {
+X! 		putchar('-', flags);
+X! 		n = -n;
+X! 	}
+X! 	cp = prbuf;
+X  	do {
+X! 		*cp++ = "0123456789abcdef"[(n%b)];
+X! 		n = n/b;	/* Avoid  n /= b, since that requires alrem */
+X! 	} while (n);
+X  	do
+X  		putchar(*--cp, flags);
+X  	while (cp > prbuf);
+X--- 179,203 ----
+X  	long n;
+X  	u_int b;
+X  {
+X  	char prbuf[12];
+X+ 	register char *cp = prbuf;
+X+ 	register int offset = 0;
+X  
+X! 	if (n<0)
+X! 		switch(b) {
+X! 		case 8:		/* unchecked, but should be like hex case */
+X! 		case 16:
+X! 			offset = b-1;
+X! 			n++;
+X! 			break;
+X! 		case 10:
+X! 			putchar('-', flags);
+X! 			n = -n;
+X! 			break;
+X! 		}
+X  	do {
+X! 		*cp++ = "0123456789ABCDEF"[offset + n%b];
+X! 	} while (n = n/b);	/* Avoid  n /= b, since that requires alrem */
+X  	do
+X  		putchar(*--cp, flags);
+X  	while (cp > prbuf);
+FRIDAY_NIGHT
+echo extracting - ps.patch
+sed 's/^X//' > ps.patch << 'FRIDAY_NIGHT'
+X*** O/ps.c	Wed Apr 15 14:40:20 1987
+X--- ps.c	Wed Apr 15 15:01:33 1987
+X***************
+X*** 717,723 ****
+X  	if (!(hbuf.a_flag & 01))
+X  		sa *= (off_t)2;
+X  	fseek(nlistf_fp,sa,1);
+X! 	if (!(nsyms = hbuf.a_syms / sizeof(nbuf))) {
+X  		fprintf(stderr,"%s: no symbol table\n",nlistf);
+X  		exit(1);
+X  	}
+X--- 717,724 ----
+X  	if (!(hbuf.a_flag & 01))
+X  		sa *= (off_t)2;
+X  	fseek(nlistf_fp,sa,1);
+X! 	sa = hbuf.a_unused;	sa = sa<<16 | hbuf.a_syms;
+X! 	if (!(nsyms = sa / sizeof(nbuf))) {
+X  		fprintf(stderr,"%s: no symbol table\n",nlistf);
+X  		exit(1);
+X  	}
+X***************
+X*** 889,899 ****
+X  }
+X  
+X  
+X! char *uhdr = "USER       PID NICE  SZ TTY       TIME";
+X  upr(a)
+X  register struct psout	*a;
+X  {
+X! 	printf("%-8.8s%6u%4d%4d%-8.8s",a->o_uname,a->o_pid,a->o_nice,a->o_size,a->o_tty);
+X  	ptime(a);
+X  }
+X  
+X--- 890,900 ----
+X  }
+X  
+X  
+X! char *uhdr = "USER       PID NICE SZ TTY       TIME";
+X  upr(a)
+X  register struct psout	*a;
+X  {
+X! 	printf("%-8.8s%6u%4d%4d %-8.8s",a->o_uname,a->o_pid,a->o_nice,a->o_size,a->o_tty);
+X  	ptime(a);
+X  }
+X  
+FRIDAY_NIGHT

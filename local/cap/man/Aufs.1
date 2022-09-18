@@ -1,0 +1,386 @@
+.TH Aufs 1
+.UC 4
+.SH NAME
+.I Aufs
+\- AppleTalk file protocol Unix File Server
+.SH DESCRIPTION
+.I Aufs
+allows a unix host to act as a file server for systems with AFP client
+implementations.  (Note: Aufs does not currently support short file
+names as required by MS-DOS).  Aufs allows clients the ability to
+store and retrieve both unix and Macintosh files.
+.SH USER
+.I Aufs
+requires that the users do a little setup to gain the maximum level of
+functionality.  In particular, the user must have a "afpvols" or
+".afpvols" (looked for in that order) file in their home directory.  The
+format of this file is:
+.PP
+.nf
+	<unix path name>:<volume name>:<optional password>
+.fi
+.PP
+or for example:
+.PP
+.nf
+	~/macfiles:myvolume
+.fi
+.PP
+On the Macintosh, the user would see "myvolume" in the list of volumes
+presented when mounting AppleShare volumes and
+the file would be stored in his home directory in the directory
+macfiles.
+.PP
+Macintosh files have two major parts called the data and resource
+forks.  In addition, there is "finder" information kept about the
+file.  Unix really only has the concept of a data fork, so to store
+these in a directory under unix,
+.I Aufs
+breaks a Macintosh file into the
+above specified three parts.
+The data fork is stored in the directory as would be any standard unix
+file because it is closest match.  The resource fork is stored in a
+subdirectory of that directory called 
+.I .resource
+under the same name.  The finder information is stored in a
+subdirectory .finderinfo under the same name.
+.PP
+Aufs will NOT automatically create these directories when storing
+files.  Attempts to store a file with a resource fork into a directory
+without a .resource subdirectory will fail, usually with an access
+priviledge error.  Part of the initial setup
+is determining whether you will be storing Macintosh files in a volume
+and
+creating the .finderinfo and .resource directories in the relevant
+unix directories.
+.PP
+So, if you store a file, AMacFile, on the volume "myvolume", it
+is actually stored as the following files on the unix system:
+.br
+	~/macfiles/AMacFile (data fork)
+.br
+	~/macfiles/.resource/AMacFile (resource fork)
+.br
+	~/macfiles/.finderinfo/AMacFile (finder info)
+.br
+So noting that all three parts are necessary to Macintosh files, you
+can see that if the .resource or the .finderinfo subdirectories
+are missing, a Macintosh file cannot properly be stored.
+.PP
+When specifying the volumes in the afpvols file, you should be careful
+about creating overlapping directories since this can cause problems.
+For example,
+the specifications:
+.nf
+	~/macfiles:myvolume:
+	~:top level:
+.fi
+are dangerous because the "top level" volume will overlap the
+"myvolume" volume.  If you must do something like this, you should
+take care not have both of these mounted at the
+same time on your Macintosh or strange things may happen.
+.PP
+The top level unix directory specified in the (.)afpvols file is the
+root folder on the Macintosh volume.  Subdirectories of that
+directory look just like folders.  (Note: .finderinfo and .resource
+subdirectories will not show up as folders).
+.I Aufs
+will respect the current directory (aka Folder) structure when
+creating a new folder in that it will create a .resource
+and .finderinfo subdirectory if and only if the current directory has
+one.  This
+was done to allow one to manipulate unix directories.
+.PP
+The equivalent of the DeskTop file on the unix are two files 
+called .IDeskTop and .ADeskTop.  .IDeskTop contains information about
+ICONs 
+and .ADeskTop contains information for "applications mappings".
+Applications mappings allow you to double click on a document and have
+the correct application mapped.  In general, you should keep these
+files around to maintain the highest level of performance; however,
+they do grow without bounds, so it might be worthwhile to periodically
+delete them and rebuild your desktop.
+.PP
+AFP does not handle file protections.  Instead it implements
+a limited set of directory protections.  Unfortunately, these
+protections that do not map directly into unix protections.  The
+mapping is that both of the AppleShare protections "See Folder" and
+"See Files" are mapped to the unix directory protections "read" and
+"search"  while the AppleShare protection "Make changes" maps to
+unix write access.  File protections are still honored though, so you
+don't have access to files you didn't before.  Changes to
+directory
+protections result in the files in the directory getting their
+protections modified to match if possible.
+.PP
+The "." prefixes for many of the files were purposely chosen because
+"ls" on bsd systems usually ignore them unless you specify the "-a"
+switch.  Thus, you probably won't see them if you do an "ls" on your
+Macintosh directories.
+.SH UNIX FILES
+.PP
+.I Aufs
+volumes may seem quite slow under the Finder when they are
+directories with large numbers of unix 
+files.  (This is if you haven't created a .finderinfo subdirectory).
+It is recommended that you create a .finderinfo subdirectory in
+directories that you plan to use quite often.  However, please note
+that for every file in the directory another (small) file will be created in
+the .finderinfo subdirectory.
+.PP
+.I Aufs
+has a number of features directed at unix files.  The main one is that
+it will translate the standard unix end of line character "line feed"
+to the Macintosh standard end of line character "carriage return".
+This happens under two conditions.  First, it will happen to any file
+read in line at a time.  Second, it will happen for any file with
+creator "unix" and type "TEXT" (default for files with unknown
+creators and types).
+.PP
+To defeat the first type of translation, your
+system adminstrator would have to turn it off on the server.
+You can defeat the second type of translation by setting the file
+type/creator to
+other than "TEXT","unix".  Warning: this information is stored in 
+the .finderinfo file.  If you don't have a .finderinfo subdirectory in the
+directory the file is stored, this
+information may be reset at any time.
+.PP
+This second type of translation is only one of several of that type
+that may be
+installed by your site administrator.  Check the section "LOCAL
+CONFIGURATION" to see if your site administor has changed the the file
+types and creators that this translation gets done for or has added
+other file types and creators (possibly with particular file
+extensions) that get translated for other reasons (for instance, all
+files of type TEXT ending in .swe get mappped from Swedish D47 ASCII
+to Macintosh character set). 
+.PP
+.I Aufs
+may have been configured at your site to look at unix files to
+determine the type (e.g. text file, binary, etc).  In this case, it is
+quite likely that files with
+creator unix and type TEXT are readable ascii text and files with
+other types are not.
+.SH OPTIONS
+.TP 10
+\fB\-n <name>
+is used to specify the server name.  By default the server name is
+"<hostname> Aufs".
+.TP 10
+\fB\-V <system afpvols>
+is used to specify a server wide volumes file.  The volumes listed
+in the file will show up in every Aufs session.
+.TP 10
+\fB\-U <number of sessions>
+is used to modify the maximum number of sessions allowed.  The default
+is around 10 or so (depends on the ASP implementation).  The maximum
+value depends solely on the number of DDP sockets available.
+.TP 10
+\fB\-P <lookaside password file>
+specifies the "lookaside" password file.  See aufs/INSTALLATION for
+more information.
+.TP 10
+\fB\-G <guest id>
+is used to allow "guest" aka <Anonymous> AppleShare sessions.  This is
+not enabled by default since it is a security violation unless it is
+done in a very controlled fashion.  In particular, the <guest id>
+specified should have very limited priviledge and volume access.  For
+<anonymous> login, no user afpvols file is read.
+.TP 10
+\fB\-c <directory name>
+specifies a directory for Aufs to put coredumps.  Hopefully, you won't
+see any coredumps.
+.TP 10
+\fB\-l <logfile name>
+can be used to override the default log file name of <server name>.log
+(cf. -n option).   There is no way to turn off logging.
+.TP 10
+\fB\-S <n>
+is used to limit the number of packets sent in an ATP response.  It is
+often required when the host system is faster in sending back to back
+packets than the target system or intervening gateways.
+.TP 10
+\fB\-R <n>
+is used to limit the number of packets sent in an ATP response by the
+remote system.  It is often required when the host system is slower in
+receiving back to back packets (or has insufficent buffer space to
+hold that many) than the remote system or intervening
+gateways send them.
+
+.SH DEBUGGING OPTIONS
+.TP 10
+\fB\-s
+tells Aufs to report usage statistics such as system time use and
+number of times encountered for the various AFP commands.
+\fB\-d <flags>
+specifies debugging flags for the cap libraries.  See cap(3) for a
+list of valid flags.
+.TP 10
+\fB\-a <flags>
+specifies debugging flags for Aufs.  Valid values include (case independent)
+.I DeskTop
+for desktop management, 
+.I Directory
+for directory calls, 
+.I Enumerate
+for enumerate call, 
+.I File
+for file calls, 
+.I Fork
+for fork calls, 
+.I OS
+for os
+dependent debugging,
+.I Server
+for a trace of calls,
+.I Unix
+for unix level
+debugging,
+.I Volume
+for volume debugging,
+.I debug
+to mark as debugging (keeps Aufs from detaching),
+and
+.I All
+for all of the above.
+Use quotes for multiple options.  You can also set the environment
+variable AUFSDEBUG to hold these values.
+.TP 10
+\fB\-t <input|output|both><cmdname>
+specifies that packets traces (partial dumps) of the specified
+AFP commands should be done.  For example to trace all Enumerate packets
+received by 
+.I Aufs 
+you would specify IEnumerate.
+Use quotes for multiple options.  You can also set the environment
+variable AUFSTRACE to hold these values.
+
+.SH SIGNALS
+.I Aufs
+operates by forking off children to deal with every session.  child
+processes will take SIGHUP mean that the process should quit after
+sending a termination notice to the remote client.  WARNING: it is
+possible to catch
+.I Aufs
+in a state where it is in a critical section that should not have been
+interrupted and the actions taken in the signal handlers are not legal.
+
+If your system has process groups implemented, then:
+.TP 10
+\fBSIGHUP\fR
+the parent process will take SIGHUP to send a SIGHUP to all children
+and terminate immedately.
+.TP 10
+\fBSIGHUP\fR
+the child process will take SIGTERM to initiate a shutdown in 5
+minutes with SIGTERM
+messages to the remote at odd minute intervals.
+BSIGTERM
+the parent process will take SIGTERM to send SIGTERM to all children
+and shutdown after a little over 5 minutes.
+.SH LOCAL CONFIGURATION
+
+.SH BUGS
+There are no known bugs, but it is recognized that the Desktop
+management is less than optimial.
+.SH NOT IMPLEMENTED
+AFP shortnames are not implemented.
+.PP
+Deny read/write interlocking is not implemented.  This is generally
+not necessary with file protections.
+.PP
+File protections are not well integrated.  This is a function of the
+protocol specification.
+.PP
+File locking (specifically, byte range locks) may or may not be
+available depending upon your system.
+.PP
+Drop folders do not work well under BSD systems that don't allow one
+to change the owner of a file.
+.PP
+You cannot change the owner of a file.
+.PP
+Login requires a username and password.  The password is verified
+and no more than 8 chars (AFP spec).  This is your unix user name
+and passowrd and is transmitted in clear text.  You will not be
+able to login if your unix password is longer than 8 chars.
+Also, no randnum password encryption is used due to the lack of a
+key on the unix side :-(.  (Note: there is a mechanism to allow a
+"lookaside password file so you can have long user ids, encrypted
+passwords, etc".)
+.PP
+If the user does not have a afpvols file then their home
+directory will be added as a volume.
+.PP
+Although case does not matter on Mac filenames, Aufs uses the unix
+semantics and case does matter when dealing with Aufs files.
+Generally, only with programs like MPW, etc. will you need to be careful.
+.PP
+Since unix file names may not contain 8 bit chars and slash,
+Aufs translates special characters in file names into colon
+followed by two hex digits.
+.PP
+Since mac file names may not be longer than 31 chars, Aufs
+simply skips long file names on the unix side.
+.PP
+Two files are maintained by Aufs for the desktop database,
+these are .IDeskTop and .ADeskTop.  .IDeskTop stores icon
+information, .ADeskTop stores APPL information.  Both of
+these files are created in the volumes root directory.
+Both DeskTop files grow without bounds.  The only way to prune them is
+to delete then and rebuild the desktop from the Mac.
+.PP
+The Applications mapping database can quickly get out of sync with
+reality - not enough information is stored to keep in line (and even
+we did store enough it would be costly to recover).  Problem comes
+when you start moving directories holding Applications around - it may
+or may not work out - remember though, you can alway rebuild the
+desktop (painful as it might be..).
+.PP
+Bytes used, and bytes free on a volume are set to arbitrary
+values (unless you are running a machine with "statfs" or "getmnt").
+.PP
+Depending on your system, there may be no file or desktop locking.
+Share writable volumes at your own risk in these situations.  (cf.
+INSTALLATION for information).
+.PP
+The file creator "unix" and file type "TEXT" are not registered with
+Apple.
+.PP
+read/writes and many other operation are blocking - this may cause
+problems!  However, making them run async is a lot of work.  The
+"solution" is to stay away from things that might block for a long
+long time - e.g. ttys.  For the most part though, it wouldn't cause
+problems.
+.PP
+Aufs uses a complete path name specification to deal with files in
+general.  When it exceeds the maximum path name on a system, this will
+cause serious problems - Aufs should really enforce this restriction
+or remove it, but it doesn't.
+.PP
+Unix systems keep three dates on files: ctime - last status change
+time, mtime - last modification time, and atime - last access time.
+Mac wants modification and creation.  Modification is really later of
+mtime and ctime.  Creation time is unknown and we give the earliest of
+ctime, mtime and atime to give an approximation.
+.PP
+See the Aufs design notes for more information.
+.SH WARNINGS
+In an Aufs volume, path names can get very long.  Be warned that the
+standard tar may have problems with these names.
+.PP
+Aufs Version 3, released post 2/88, has a different finderinfo and
+desktop format than previous releases of Aufs.  Old format desktop
+files are automatically discarded and old format finderinfo files are
+rewritten on sight (if possible).  You should consider rebuilding your
+desktop if you had a volume created with Aufs Version 2 or previous to
+regain the applications mappings and to ensure that all .finderinfo
+files are rewritten.
+.SH INSTALLATION
+See the Aufs INSTALLATION document.
+.SH AUTHOR
+Aufs was written by Bill Schilit, Computer Science Deparment and
+Charlie C. Kim, User Services, Columbia University.
+.SH SEE ALSO
+cap(3), cap(8), atis(8)

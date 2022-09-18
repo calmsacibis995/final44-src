@@ -1,0 +1,59 @@
+Return-Path: <morgan@uci-750a>
+Date: 03 Oct 84 13:47:06 PDT (Wed)
+To: 4bsd-help@BERKELEY
+Subject: bug in dmf32 driver and possibly others
+Index: sys/vaxuba/dmf.c 4.2BSD Fix
+From: Tim Morgan <morgan@uci-750a>
+
+[I was unable to get 4bsd-bugs to accept this.  I don't know why.  Please
+ file it as appropriate.  Also, could you tell me what is wrong with the
+ format?]
+
+Description:
+	The dmf driver does not contain code to wake up processes which
+	are select'ing on output.
+Repeat-By:
+	Log onto a terminal on a dmf32 or clone.  Telnet to any system,
+	including the local one.  Run something on that system which will
+	produce lots of output (such as cat'ing /etc/termcap).  After a
+	few hundred characters, the output will stop.  It will not start
+	again until you type something.  Telnet is waiting until the output
+	buffer empties to write more, but the dmf driver never does a
+	selwakeup() call, so the select() call never returns unless something
+	else occurs, such as a character in the input buffer.
+Fix:
+	Here is a diff listing of the fix.  The code inserted is from the
+	dz driver; it also occurs in the dh driver and possibly others.  You
+	line numbers may differ.
+
+*** old_dmf.c	Sat Sep 22 21:44:11 1984
+--- dmf.c	Sat Sep 22 21:44:45 1984
+***************
+*** 609,617
+  	 * If there are sleepers, and output has drained below low
+  	 * water mark, wake up the sleepers.
+  	 */
+! 	if ((tp->t_state&TS_ASLEEP) && tp->t_outq.c_cc<=TTLOWAT(tp)) {
+! 		tp->t_state &= ~TS_ASLEEP;
+! 		wakeup((caddr_t)&tp->t_outq);
+  	}
+  	/*
+  	 * Now restart transmission unless the output queue is
+
+--- 609,624 -----
+  	 * If there are sleepers, and output has drained below low
+  	 * water mark, wake up the sleepers.
+  	 */
+! 	if (tp->t_outq.c_cc<=TTLOWAT(tp)) {
+! 		if (tp->t_state&TS_ASLEEP) {
+! 			tp->t_state &= ~TS_ASLEEP;
+! 			wakeup((caddr_t)&tp->t_outq);
+! 		}
+! 		if (tp->t_wsel) {
+! 			selwakeup(tp->t_wsel, tp->t_state & TS_WCOLL);
+! 			tp->t_wsel = 0;
+! 			tp->t_state &= ~TS_WCOLL;
+! 		}
+  	}
+  	/*
+  	 * Now restart transmission unless the output queue is

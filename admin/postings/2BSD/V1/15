@@ -1,0 +1,68 @@
+Subject: autoconfig shouldn't do an freopen()
+Index: sys/autoconfig/read_dtab.c 2.10BSD
+
+Description:
+	Autoconfig does an freopen of stdin in the routine
+	read_dtab().  This breaks the debug capability of autoconfig
+	since it reads from stdin.  Read_dtab() should just use
+	another file descriptor.
+Repeat-By:
+	Try to run autoconfig in debug mode.
+Fix:
+	Apply the following patch.
+
+*** read_dtab.c.orig	Wed Nov  4 16:52:01 1987
+--- read_dtab.c	Wed Nov  4 16:52:40 1987
+***************
+*** 30,50 ****
+  			*cdp;
+  	UPROBE	*up;
+  	HAND	*sp;
+  	int	nhandlers,	/* number of handlers per line */
+  		line;		/* line number in dtab file */
+  	short	cnt;		/* general counter */
+  	char	*cp,		/* traveling char pointer */
+  		*save,		/* save string position */
+! 		buf[80],	/* line buffer */
+  		name[20],	/* device name */
+  		unit[5],	/* unit number */
+! 		*malloc(), *strcpy(), *gets();
+  
+! 	if (!(freopen(dtab_name,"r",stdin))) {
+  		perror(dtab_name);
+  		exit(AC_SETUP);
+  	}
+! 	for (line = 1,devs = NULL;gets(buf);++line) {
+  		for (cp = buf;isspace(*cp);++cp);
+  		if (!*cp || cp == ';' || *cp == '#')
+  			continue;
+--- 30,57 ----
+  			*cdp;
+  	UPROBE	*up;
+  	HAND	*sp;
++ 	FILE	*fp;
+  	int	nhandlers,	/* number of handlers per line */
+  		line;		/* line number in dtab file */
+  	short	cnt;		/* general counter */
+  	char	*cp,		/* traveling char pointer */
+  		*save,		/* save string position */
+! 		buf[500],	/* line buffer */
+  		name[20],	/* device name */
+  		unit[5],	/* unit number */
+! 		*index(), *malloc(), *strcpy(), *fgets();
+  
+! 	if (!(fp = fopen(dtab_name,"r"))) {
+  		perror(dtab_name);
+  		exit(AC_SETUP);
+  	}
+! 	for (line = 1,devs = NULL;fgets(buf, sizeof(buf), fp);++line) {
+! 		if (cp = index(buf, '\n'))
+! 			*cp = EOS;
+! 		else {
+! 			fprintf(stderr,"%s: line %d too long.\n",myname,line);
+! 			exit(AC_SINGLE);
+! 		}
+  		for (cp = buf;isspace(*cp);++cp);
+  		if (!*cp || cp == ';' || *cp == '#')
+  			continue;
+

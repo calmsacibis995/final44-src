@@ -1,0 +1,92 @@
+Return-Path: <allegra!watmath!arwhite>
+Date: Mon, 23 Jan 84 12:36:32 est
+From: watmath!arwhite (Alex White)
+Subject: Using out of band data causes panic(mfree)
+Index: sys/sys/uipc_usrreq.c 4.2BSD
+
+Description:
+	Receiving data with MSG_OOB set causes panic in the unix domain.
+	soreceive() calls pr_usrreq with a newly allocated mbuf,
+	but the code for PRU_RCVOOB is non-existent, hence it always
+	frees it, when it returns to soreceive that tries to free it
+	again and panics.
+Repeat-By:
+	Just do an recv with the flag MSG_OOB set in the unix domain.
+Fix:
+	The following just disallows MSG_OOB in the unix domain, rather
+	than making it work. It just causes a return of EOPNOTSUPP
+	It hasn't been tested as I don't have an available machine...
+*** uipc_usrreq.c	Mon Jan 23 12:25:52 1984
+--- /usr/distr/4.2/usr/sys/sys/uipc_usrreq.c	Sun Sep 25 21:06:43 1983
+***************
+*** 180,186
+  			snd->sb_hiwat -= rcv->sb_cc - rcv->sb_hiwat;
+  			rcv->sb_hiwat = rcv->sb_cc;
+  			sbwakeup(rcv);
+- 			m = 0;
+  #undef snd
+  #undef rcv
+  			break;
+
+--- 180,185 -----
+  			snd->sb_hiwat -= rcv->sb_cc - rcv->sb_hiwat;
+  			rcv->sb_hiwat = rcv->sb_cc;
+  			sbwakeup(rcv);
+  #undef snd
+  #undef rcv
+  			break;
+***************
+*** 188,193
+  		default:
+  			panic("uipc 4");
+  		}
+  		break;
+  
+  	case PRU_ABORT:
+
+--- 187,193 -----
+  		default:
+  			panic("uipc 4");
+  		}
++ 		m = 0;
+  		break;
+  
+  	case PRU_ABORT:
+***************
+*** 204,211
+  /* END UNIMPLEMENTED HOOKS */
+  
+  	case PRU_RCVOOB:
+! 		/* Don't release resources below, sorecieve always does */
+! 		return (EOPNOTSUPP);
+  
+  	case PRU_SENDOOB:
+  		/* Release resources below, sosend never does... */
+
+--- 204,210 -----
+  /* END UNIMPLEMENTED HOOKS */
+  
+  	case PRU_RCVOOB:
+! 		break;
+  
+  	case PRU_SENDOOB:
+  		break;
+***************
+*** 208,215
+  		return (EOPNOTSUPP);
+  
+  	case PRU_SENDOOB:
+- 		/* Release resources below, sosend never does... */
+- 		error = EOPNOTSUPP;
+  		break;
+  
+  	case PRU_SOCKADDR:
+
+--- 207,212 -----
+  		break;
+  
+  	case PRU_SENDOOB:
+  		break;
+  
+  	case PRU_SOCKADDR:
+

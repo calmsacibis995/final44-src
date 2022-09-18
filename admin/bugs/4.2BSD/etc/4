@@ -1,0 +1,258 @@
+Return-Path: <cak@Purdue.ARPA>
+From: Christopher A Kent <cak@Purdue.ARPA>
+Date: 11 Jan 1984 2003-EST (Wednesday)
+Subject: anonymous ftps aren't recorded in wtmp
+Index: etc/ftpd.c 4.2BSD Fix
+
+Description:
+	FTP users who log in as "anonymous" or "ftp" are not recorded
+in wtmp.  This is because the logging is done after the chroot call;
+thus the open of "/usr/adm/wtmp" is now relative to ~ftp. Even if it
+succeeds, the record is written into the wrong file. 
+
+Repeat-By:
+	ftp localhost and log in as anonymous. quit and do a last; no
+session is recorded.
+
+Fix:
+	Move the log action to after the user has logged in but before
+the chroot() call. If the chroot fails, there will be extra log
+entries, but this is fairly unlikely. A diff:
+
+*** ftpd.c.old
+--- ftpd.c.new
+***************
+*** 235,240
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
+  	if (guest && chroot(pw->pw_dir) < 0) {
+  		reply(550, "Can't set guest privileges.");
+  		goto bad;
+
+--- 235,241 -----
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
++ 	dologin(pw);			/* before chroot for ftp */
+  	if (guest && chroot(pw->pw_dir) < 0) {
+  		reply(550, "Can't set guest privileges.");
+  		goto bad;
+***************
+*** 244,250
+  	else
+  		reply(230, "Guest login ok, access restrictions apply.");
+  	logged_in = 1;
+- 	dologin(pw);
+  	seteuid(pw->pw_uid);
+  	/*
+  	 * Save everything so globbing doesn't
+
+--- 245,250 -----
+  	else
+  		reply(230, "Guest login ok, access restrictions apply.");
+  	logged_in = 1;
+  	seteuid(pw->pw_uid);
+  	/*
+  	 * Save everything so globbing doesn't
+
+----------
+=======================================================================
+Return-Path: <lepreau@utah-cs>
+Date: Fri, 13 Jan 84 17:56:57 mst
+From: lepreau@utah-cs (Jay Lepreau)
+Message-Id: <8401140056.AA00737@utah-cs.ARPA>
+Subject: Re:  anonymous ftps aren't recorded in wtmp
+
+Index: etc/ftpd.c 4.2BSD
+Description:
+Repeat-By:
+Fix:
+--------
+You sure your fix works?  I don't think it will record any logout times,
+just logins (leaving everything "still-logged-in"), because the second
+record of each session has got to be after the chroot(), unless you
+leave an extra fork hanging around.  So what I did here was just create
+a ~ftp/usr/adm/wtmp file, suitably protected.  This works in concert
+with a minor but useful enhancement I long ago made to "last" to take a
+-f <file> argument.  Code avail on request.
+
+lepreau@utah-cs, {harpo,hplabs}!utah-cs!lepreau
+=======================================================================
+Return-Path: <cak@Purdue.ARPA>
+From: Christopher A Kent <cak@Purdue.ARPA>
+Date: 13 Jan 1984 1223-EST (Friday)
+Subject: ftpd doesn't log anonymous logins
+Index: etc/ftpd.c 4.2BSD Fix
+
+Description:
+	The FTP daemon doesn't properly log anonymous logins in
+/usr/adm/wtmp because the chroot to /usr/ftp is done before wtmp is
+opened; thus the open always fails. My previous fix to this was not
+wonderful, because while it correctly record logins, it never recorded
+logouts. This version does both. I also changed logging to be done via
+syslog(3), and now log the ident supplied by anonymous users as well as
+all connections.
+
+Repeat-By:
+	ftp to localhost, log in as ftp, quit, and do a last. No record.
+Fix:
+	Apply the following diffs to ftpd.c; note that logging must be
+explicitly enabled with -l in /etc/rc.local.
+
+RCS file: RCS/ftpd.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1006490	Fri Jan 13 12:21:37 1984
+--- /tmp/,RCSt2006490	Fri Jan 13 12:21:43 1984
+***************
+*** 1,5
+  #ifndef lint
+! static char rcsid[] = "$Header: /usr/src/etc/ftpd/RCS/ftpd.c,v 1.1 84/01/11 19:46:08 cak Rel $";
+  static char sccsid[] = "@(#)ftpd.c	4.28 (Berkeley) 9/22/83";
+  #endif
+  
+
+--- 1,5 -----
+  #ifndef lint
+! static char rcsid[] = "$Header: /usr/src/etc/ftpd/RCS/ftpd.c,v 1.2 84/01/13 11:55:30 cak Exp $";
+  static char sccsid[] = "@(#)ftpd.c	4.28 (Berkeley) 9/22/83";
+  #endif
+  
+***************
+*** 55,60
+  int	timeout;
+  int	logging;
+  int	guest;
+  int	type;
+  int	form;
+  int	stru;			/* avoid C keyword */
+
+--- 55,61 -----
+  int	timeout;
+  int	logging;
+  int	guest;
++ int	wtmp;
+  int	type;
+  int	form;
+  int	stru;			/* avoid C keyword */
+***************
+*** 235,240
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
+  	if (guest && chroot(pw->pw_dir) < 0) {
+  		reply(550, "Can't set guest privileges.");
+  		goto bad;
+
+--- 236,245 -----
+  			pw->pw_name, pw->pw_dir);
+  		goto bad;
+  	}
++ 
++ 	if (guest)			/* grab wtmp before chroot */
++ 		wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
++ 
+  	if (guest && chroot(pw->pw_dir) < 0) {
+  		reply(550, "Can't set guest privileges.");
+  		goto bad;
+***************
+*** 724,730
+  dologin(pw)
+  	struct passwd *pw;
+  {
+- 	int wtmp;
+  	char line[32];
+  
+  	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+
+--- 729,734 -----
+  dologin(pw)
+  	struct passwd *pw;
+  {
+  	char line[32];
+  
+  	if (guest && (wtmp >= 0))
+***************
+*** 727,733
+  	int wtmp;
+  	char line[32];
+  
+! 	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		/* hack, but must be unique and no tty line */
+  		sprintf(line, "ftp%d", getpid());
+
+--- 731,740 -----
+  {
+  	char line[32];
+  
+! 	if (guest && (wtmp >= 0))
+! 		lseek(wtmp, 0, L_XTND);
+! 	else
+! 		wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		/* hack, but must be unique and no tty line */
+  		sprintf(line, "ftp%d", getpid());
+***************
+*** 736,742
+  		SCPYN(utmp.ut_host, remotehost);
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		(void) close(wtmp);
+  	}
+  }
+  
+
+--- 743,750 -----
+  		SCPYN(utmp.ut_host, remotehost);
+  		utmp.ut_time = time(0);
+  		(void) write(wtmp, (char *)&utmp, sizeof (utmp));
+! 		if (!guest)
+! 			(void) close(wtmp);
+  	}
+  }
+  
+***************
+*** 747,754
+  dologout(status)
+  	int status;
+  {
+- 	int wtmp;
+- 
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+
+--- 755,760 -----
+  dologout(status)
+  	int status;
+  {
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+***************
+*** 752,758
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+! 	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		SCPYN(utmp.ut_name, "");
+  		SCPYN(utmp.ut_host, "");
+
+--- 758,767 -----
+  	if (!logged_in)
+  		_exit(status);
+  	seteuid(0);
+! 	if (guest && (wtmp >= 0))
+! 		lseek(wtmp, 0, L_XTND);
+! 	else
+! 		wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+  	if (wtmp >= 0) {
+  		SCPYN(utmp.ut_name, "");
+  		SCPYN(utmp.ut_host, "");
+
+
+----------

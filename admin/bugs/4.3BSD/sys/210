@@ -1,0 +1,102 @@
+Subject: Bug in malloc(0 or sbrk(), depending:  non-zero-filled memory.
+Index: sys 4.3BSD
+
+Note 244      Bug in malloc(0 or sbrk(), depending
+marick@fang                                 11:09 pm  Aug 19, 1986
+
+SHORT BUT DESCRIPTIVE ONE LINE TITLE:  (Type on next line)
+	Bug in malloc(0 or sbrk(), depending:  non-zero-filled memory.
+
+Operating System:  	UTX/32
+Release:  		2.0	
+Product Name:           UTX/32
+Hardware Environment:   9080 
+Organization:		Gould-CSD/Urbana      (217) 384-8500 
+                        1101 E. University, Urbana, Il 61801
+
+MODULE NAME:
+
+SPR TYPE:  (Software/Doc/ER)
+
+PRIORITY:  (1 = High, 5 = Low)
+
+DESCRIPTION OF PROBLEM:
+	This is a bit complicated.  sbrk() is generally considered to return 
+	zero-filled memory.  (If this a requirement, rather than a custom,
+	then the bug is in sbrk().  Otherwise, the bug is in malloc().)
+	I can contrive an example in which the first word is not.
+	As follows:
+
+	For some reason, the sbrk(0) point is always the last word on a page.
+	If you extend the available memory (with sbrk(X)), that word becomes
+	officially accessible.  So you write into it.  Suppose now that you 
+	set the	sbrk value back down to the previous value (with brk()).  
+	All available memory goes away -- except that final word.  If you 
+	now extend the memory again, you'll find the first word of memory 
+	"made available" by sbrk() is not 0 -- it contains whatever you put 
+	in it.
+	
+	"Big deal", you say.  Unfortunately, malloc() expects exactly that
+	word to be zero and breaks horribly if it isn't.
+
+	Note:  No matter what is done with sbrk(), I think malloc() should 
+	be fixed to explicitly set the last element of its bucket-chain to
+	NULL.  There's absolutely no reason not to.
+
+SAMPLE BROKEN OUTPUT:
+
+HOW TO REPRODUCE THE PROBLEM:  (preferably a shell script)
+
+Compile and run this program:
+
+   
+main()
+{
+  int *chunk, *first_brk, *second_brk;
+  int *sbrk();
+
+  printf("Print something to get stdio buffers allocated.\n");
+  /* Find out where the break is. */
+  first_brk = sbrk(0);
+  printf("First brk at %X\n", first_brk);
+
+  /* Move it up. */
+  chunk = sbrk(31568);
+
+  /* first_brk is now in available memory.  Set it. */
+  *first_brk = 0x1234abcd;
+  printf("Upped brk at %X\n", sbrk(0));
+
+  /* Set the break back down to its original value.
+     First brk should no longer be in available memory. */
+  brk(first_brk);
+  printf("Reset brk at %X\n", sbrk(0));
+
+  /* Now get more memory -- ought to be zeroed. */
+  chunk = sbrk(31568);
+  printf("Reallocated memory starts at %X\n", chunk);
+
+  /* What's in first_brk? */
+  printf("%X contains %X\n", first_brk, *first_brk);
+  
+}
+
+Print something to get stdio buffers allocated.
+First brk at 419FF8
+Upped brk at 421B48
+Reset brk at 419FF8
+Reallocated memory starts at 419FF8
+419FF8 contains 1234ABCD
+
+SUGGESTED FIX:
+
+OTHER COMMENTS:
+	Boy, was this ever a fun bug to find.
+
+CURRENT WORKING DIRECTORY:
+	/mnt/marick
+
+PATH:
+
+	.:/mnt/marick/bin:/usr/tmp/lisp/bin:/usr/local:/usr/ucb:/bin:/usr/bin:/usr/games:/lisp/bin:/usr/new
+

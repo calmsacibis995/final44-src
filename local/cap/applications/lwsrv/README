@@ -1,0 +1,103 @@
+LWSRV - the simple version
+--------------------------
+
+Defines are best set by changing m4.setup and reconfiguring your
+makefiles.  See [simpleflags] and [lwsrvflags] in m4.setup.
+
+The previous version of lwsrv ran in a single fork and only allowed a
+single job at a time.  The new version of lwsrv runs in multiple forks
+allowing multiple jobs to be spooled concurrently.  You can get the
+old behavior by running lwsrv with the "-S" switch.  A problem that
+comes up because lwsrv runs muliforking now is that status messages do
+not get updated properly and the mac sees "Starting job" until the job
+is submitted.
+
+Some spoolers, like transcript will have problems spooling files with
+characters with the 8th bit on.  You can make lwsrv quote these chars
+by using the "-T quote8bit" option.  This differs from the previous
+behavior.  In addition, some Transcript filters like psrev only allow
+line feed as the line terminator instead of both line feed and the
+standard on the Macintosh: carriage return.  You can use the "-T
+crtolf" option to force lwsrv to map carriage return to linefeed.
+(This could potentially cause problems with binary data, strings, etc).
+
+If all the "client" programs that spool to lwsrv conform to the Adobe
+Systems Document Structuring Conventions, Version 2.0, you can define
+"ADOBE_DSC2_CONFORMANT" (SIMPLEFLAGS).  Actually, all this does right
+now is include the procset at a different point in the file.  Turning
+this on can cause problems if the client doesn't follow the
+conventions correctly.  Note: you can also use the "-A on|off" flag to
+turn this on and off.  The define simply sets the default.
+
+The font list files distributed define the font coordination entries
+appropriate for a LaserWriter or LaserWriter Plus.  Under old
+LaserPreps, there was a "lsf" function defined to return these values.
+Under the newer LaserPrep, the code is encapsulated in a query that
+can be retrieved by running lwsrv with tracing on.  The approriate
+code is framed with a "%%?BeginFontListQuery", "%%?EndFontListQuery:
+(*)" pair and the last item is indicated with a "*".
+
+Unlike lsrv, lwsrv will prepend an AppleDict (from the LaserPrep).
+This allows different users with conflicting LaserPreps on their Macs
+to print on the same LaserWriter.  However, we do not supply these
+files because they contain Apple copyrighted material that it would be
+inappropriate to distribute without permission from Apple.
+
+However, it isn't hard to pick out the information.  First some
+terminology.  The LaserPrep contains what Apple calls an AppleDict.
+The AppleDict is really known as a ProcSet under the Postscript
+document struction conventions.
+
+For newer versions of LaserPrep following version 2.0 of the Adobe
+PostScript document structuring conventions, unknown ProcSets are
+automatically captured (with the ExitServer code stripped).
+
+The Procset is recorded into a file called "FoundProcSet.<time>".  The
+first line of the file is "%%BeginProcSet: <tag>" where <tag>
+describes the particular procset.  This line is critical since this is
+how lwsrv determines that this is a valid ProcSet.
+
+Unfortunately, the LaserPrep's "FoundProcSet" files are not usable
+without some restructuring.  The problem lies in the two special
+operators that are downloaded as hex - the way it is done, it assumes
+that an end of file follows the end of ProcSet.  You can also this on
+a case by case basis by editing the appropriate prep files as follows.
+
+Remove these bits of code for "stretch" and "smooth".  They start with:
+   currentfile ok userdict/stretch known not and{eexec}{flushfile}ifelse
+	.. long hex string ..
+	.. some more hex strings ..
+   cleartomark
+If you want these operators to be installed into your LaserWriter,
+then the best thing to do is to put the above bits of code into
+another file with the proper "exit to server" code (systemdict begin
+<password> exittoserver) and have it print at regular intervals.  This
+should work since this stretch and smooth code seems to be independent
+of the LaserPrep version.
+
+For older LaserPreps.  The structuring isn't as nice, so you'll have a
+harder time figuring out where the dictionary ends and the document
+begins.  Also, the exit to server may still be in the FoundProcSet.
+
+(Note: in the computer center here, we have macs on our appletalk
+networks with the laserwriters and depend on the macs to download the
+"common" version of the laserprep.  lwsrv is given a dummy version of
+that laserprep which is empty.  It is told about other versions, so
+those people can print and be happy.  In the computer science
+department, they have the laserwriters connected via serial lines for
+the most part and they use lwsrv to spool from the macs.  Since the
+appledicts aren't permanently installed, the lw (not pluses) have
+enough memory to do tex too!)
+
+An alternative to editing the procset files is to make lwsrv 
+preprend the following PostScript code that executes the two
+"files" (e.g. stream with 2 eofs) as a single job by running lwsrv
+with the "-e" option (e for eexec may be inline):
+	2 {(%stdin) (r) file cvx exec} repeat
+in front of the job and puts end of file ("%%EOF") after the prologue
+code.  This makes two assumptions:
+	(a) you are using papif without the EOF code turned off
+	    (default is off under the NO_STRUCT conditional)
+	    or you are using another spooler that handles it
+	(b) You are running without ADOBE_DSC_CONFORMANT turned on.
+At the present time we don't recommend doing this.

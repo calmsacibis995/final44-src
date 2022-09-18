@@ -1,0 +1,209 @@
+From rb@newton.physics.purdue.edu  Fri Dec 23 07:49:15 1988
+Date: Fri, 23 Dec 88 10:48:07 EST
+From: rb@newton.physics.purdue.edu (Ross Bogue)
+Subject: libc/gen/getusershell.c has 3 bugs
+Index: lib/libc/gen/getusershell.c 4.3BSD +FIX
+
+Description:
+
+	1.  Setusershell() is completely non-functional, because it
+	attempts to reset the global static variable "shells" that
+	getusershell() uses.  Unfortunately, "shells" is also a local
+	variable in getusershell().
+
+	2.  Endusershell() frees space that may not have been acquired
+	by malloc().  This occurs if /etc/shells is missing.
+
+	3.  The comment parsing in initshells() is broken.  It only
+	recognizes a '#' as a comment leader after a preceeding '/'.
+	Hence, a comment like:
+		# List of acceptable shells for chsh/passwd -s
+	will return "/passwd" as an acceptable shell.
+
+Repeat-By:
+
+	Compile + run the following demo.
+	(Cut carefully.  FIX is further below.)
+
+=== cut here ===
+#include <stdio.h>
+
+/*
+ * A quick demo:  List all the valid entries in /etc/shells, rewind
+ * the file, and list them again.
+ *
+ * This fails because (1) the 4.3bsd setusershell() is non-functional, and
+ * (2) the comment parsing in initshells() is broken.
+ */
+
+extern void setusershell(), endusershell();
+extern char *getusershell();
+
+main() {
+	char *sp;
+
+	while ((sp = getusershell()) != NULL) {
+		printf("%s\n", sp);
+	}
+	setusershell();
+	while ((sp = getusershell()) != NULL) {
+		printf("%s\n", sp);
+	}
+	endusershell();
+}
+=== cut here also ===
+
+Fix:
+	1.  Introduce a second global static var for setusershell()
+	    and getusershell().
+
+	2.  Add a test to endusershell().
+
+	3.  Look more carefully for '#'.
+
+	Context diffs follow, relative to SCCS version 5.2 3/9/86.
+
+% diff -c getusershell.c getusershell.c
+
+*** /usr/src/lib/libc/gen/getusershell.c	Sun Mar  9 22:49:20 1986
+--- getusershell.c	Fri Dec 23 10:16:00 1988
+***************
+*** 22,31 ****
+  static char *okshells[] =
+      { "/bin/sh", "/bin/csh", 0 };
+  
+! static int inprogress;
+! static char **shells, *strings;
+! extern char **initshells();
+  
+  /*
+   * Get a list of shells from SHELLS, if it exists.
+   */
+--- 22,35 ----
+  static char *okshells[] =
+      { "/bin/sh", "/bin/csh", 0 };
+  
+! static int inprogress = 0;
+! static char **shells = NULL, *strings = NULL;
+! static char **initshells();
+! static char **cur;
+  
++ extern char *getusershell();
++ extern void setusershell(), endusershell();
++ 
+  /*
+   * Get a list of shells from SHELLS, if it exists.
+   */
+***************
+*** 33,64 ****
+  getusershell()
+  {
+  	char *ret;
+- 	static char **shells;
+  
+! 	if (!inprogress)
+! 		shells = initshells();
+! 	ret = *shells;
+! 	if (*shells != NULL)
+! 		shells++;
+  	return (ret);
+  }
+  
+  endusershell()
+  {
+! 	
+! 	if (shells != NULL)
+  		free((char *)shells);
+  	shells = NULL;
+  	if (strings != NULL)
+  		free(strings);
+  	strings = NULL;
+- 	inprogress = 0;
+  }
+  
+  setusershell()
+  {
+! 
+! 	shells = initshells();
+  }
+  
+  static char **
+--- 37,69 ----
+  getusershell()
+  {
+  	char *ret;
+  
+! 	if (!inprogress) {
+! 		cur = shells = initshells();
+! 		inprogress = 1;
+! 	}
+! 	ret = *cur;
+! 	if (*cur != NULL)
+! 		cur++;
+  	return (ret);
+  }
+  
++ void
+  endusershell()
+  {
+! 	inprogress = 0;
+! 	if (shells != NULL && shells != okshells)
+  		free((char *)shells);
+  	shells = NULL;
+  	if (strings != NULL)
+  		free(strings);
+  	strings = NULL;
+  }
+  
++ void
+  setusershell()
+  {
+! 	cur = shells;
+  }
+  
+  static char **
+***************
+*** 69,81 ****
+  	struct stat statb;
+  	extern char *malloc(), *calloc();
+  
+! 	inprogress = 1;
+! 	if (shells != NULL)
+! 		free((char *)shells);
+! 	shells = NULL;
+! 	if (strings != NULL)
+! 		free(strings);
+! 	strings = NULL;
+  	if ((fp = fopen(SHELLS, "r")) == (FILE *)0)
+  		return(okshells);
+  	if (fstat(fileno(fp), &statb) == -1) {
+--- 74,80 ----
+  	struct stat statb;
+  	extern char *malloc(), *calloc();
+  
+! 	endusershell();
+  	if ((fp = fopen(SHELLS, "r")) == (FILE *)0)
+  		return(okshells);
+  	if (fstat(fileno(fp), &statb) == -1) {
+***************
+*** 96,104 ****
+  	sp = shells;
+  	cp = strings;
+  	while (fgets(cp, MAXPATHLEN + 1, fp) != NULL) {
+! 		while (*cp != '/' && *cp != '\0')
+  			cp++;
+! 		if (*cp == '\0')
+  			continue;
+  		*sp++ = cp;
+  		while (!isspace(*cp) && *cp != '#' && *cp != '\0')
+--- 95,103 ----
+  	sp = shells;
+  	cp = strings;
+  	while (fgets(cp, MAXPATHLEN + 1, fp) != NULL) {
+! 		while (*cp != '/' && *cp != '#' && *cp != '\0')
+  			cp++;
+! 		if (*cp == '#' || *cp == '\0')
+  			continue;
+  		*sp++ = cp;
+  		while (!isspace(*cp) && *cp != '#' && *cp != '\0')
+

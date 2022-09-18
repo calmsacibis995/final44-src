@@ -1,0 +1,386 @@
+Return-Path: <ihnp4!utcsri!larry@utecfa>
+Date: 10 Jun 85 17:37:41 CDT (Mon)
+Return-Path: <larry@utecfa>
+From: ihnp4!utcsri!larry@utecfa (Larry Philps)
+Subject: savecore doesn't work with third, ``system'', argument
+Index: 	etc/savecore.c 4.2BSD
+
+Description:
+	When given the third argument specifying an alternate system,
+	``system'' to dump, savecore does only one nlist, /vmunix,
+	and assumes that the offsets it gets for all the kernel variables
+	will be the same in ``system''.  Obviously, this is not always
+	true.  Savecore must get the values of DUMPDEV, DUMPLO, and DUMPMAG
+	from /vmunix (and /dev/kmem) since they are core variables and until
+	you have them you cannot find the dump!  If one of these values is
+	different in the two kernels then you are sunk.  However, once these
+	are obtained, all the other kernel offsets, (TIME, DUMPSIZE, VERSION,
+	DUMPMAG(again), and PANICSTR) should be obtained from ``system'' via
+	another nlist call.  Now these variables can be used to properly
+	address values down in the depths of the dump device.
+Repeat-By:
+	Add something big to your kernel (like a distributed file system) and
+	make a mistake so that it crashes long before you could finish a
+	savecore.  Boot a working kernel and try running
+
+		savecore /usr/crash /vmunix.TEST
+
+	Savecore will print nothing and no core dump will be performed.
+Fix:
+	The following is a context diff with -c3 that fixes the
+	problem.  Two nlists are done the first getting DUMPDEV,
+	DUMPLO, and DUMPMAG from /vmunix (/dev/kmem).  The second
+	runs on ``system'' or /vmunix depending on whether or not
+	the third argument is given.
+
+*** /tmp/,RCSt1005058	Thu Jun  6 22:13:07 1985
+--- savecore.c	Wed May 22 12:25:05 1985
+***************
+*** 1,4
+  #ifndef lint
+  static	char *sccsid = "@(#)savecore.c	4.13 (Berkeley) 83/07/02";
+  #endif
+  
+
+--- 1,5 -----
+  #ifndef lint
+  static	char *sccsid = "@(#)savecore.c	4.13 (Berkeley) 83/07/02";
++ static char rcsid[] = "$Header: savecore.c,v 1.2 85/05/22 12:24:34 larry Exp $";
+  #endif
+  
+***************
+*** 26,31
+  #define SHUTDOWNLOG "/usr/adm/shutdownlog"
+  
+! struct nlist nl[] = {
+! #define X_DUMPDEV	0
+  	{ "_dumpdev" },
+  #define X_DUMPLO	1
+
+--- 27,32 -----
+  #define SHUTDOWNLOG "/usr/adm/shutdownlog"
+  
+! struct nlist nlRunning[] = {
+! #define R_DUMPDEV	0
+  	{ "_dumpdev" },
+  #define R_DUMPLO	1
+***************
+*** 29,33
+  #define X_DUMPDEV	0
+  	{ "_dumpdev" },
+! #define X_DUMPLO	1
+  	{ "_dumplo" },
+  #define X_TIME		2
+
+--- 30,34 -----
+  #define R_DUMPDEV	0
+  	{ "_dumpdev" },
+! #define R_DUMPLO	1
+  	{ "_dumplo" },
+  #define	R_DUMPMAG	2
+***************
+*** 31,35
+  #define X_DUMPLO	1
+  	{ "_dumplo" },
+! #define X_TIME		2
+  	{ "_time" },
+  #define	X_DUMPSIZE	3
+
+--- 32,42 -----
+  #define R_DUMPLO	1
+  	{ "_dumplo" },
+! #define	R_DUMPMAG	2
+! 	{ "_dumpmag" },
+! 	{ "" },
+! };
+! 
+! struct nlist nl[] = {
+! #define X_TIME		0
+  	{ "_time" },
+  #define	X_DUMPSIZE	1
+***************
+*** 33,37
+  #define X_TIME		2
+  	{ "_time" },
+! #define	X_DUMPSIZE	3
+  	{ "_dumpsize" },
+  #define X_VERSION	4
+
+--- 40,44 -----
+  #define X_TIME		0
+  	{ "_time" },
+! #define	X_DUMPSIZE	1
+  	{ "_dumpsize" },
+  #define X_VERSION	2
+***************
+*** 35,39
+  #define	X_DUMPSIZE	3
+  	{ "_dumpsize" },
+! #define X_VERSION	4
+  	{ "_version" },
+  #define X_PANICSTR	5
+
+--- 42,46 -----
+  #define	X_DUMPSIZE	1
+  	{ "_dumpsize" },
+! #define X_VERSION	2
+  	{ "_version" },
+  #define X_PANICSTR	3
+***************
+*** 37,41
+  #define X_VERSION	4
+  	{ "_version" },
+! #define X_PANICSTR	5
+  	{ "_panicstr" },
+  #define	X_DUMPMAG	6
+
+--- 44,48 -----
+  #define X_VERSION	2
+  	{ "_version" },
+! #define X_PANICSTR	3
+  	{ "_panicstr" },
+  #define	X_DUMPMAG	4
+***************
+*** 39,43
+  #define X_PANICSTR	5
+  	{ "_panicstr" },
+! #define	X_DUMPMAG	6
+  	{ "_dumpmag" },
+  	{ "" },
+
+--- 46,50 -----
+  #define X_PANICSTR	3
+  	{ "_panicstr" },
+! #define	X_DUMPMAG	4
+  	{ "_dumpmag" },
+  	{ "" },
+***************
+*** 158,163
+  	register char *cp;
+  
+! 	nlist("/vmunix", nl);
+! 	if (nl[X_DUMPDEV].n_value == 0) {
+  		fprintf(stderr, "savecore: /vmunix: dumpdev not in namelist\n");
+  		exit(1);
+
+--- 165,170 -----
+  	register char *cp;
+  
+! 	nlist("/vmunix", nlRunning);
+! 	if (nlRunning[R_DUMPDEV].n_value == 0) {
+  		fprintf(stderr, "savecore: /vmunix: dumpdev not in namelist\n");
+  		exit(1);
+***************
+*** 163,167
+  		exit(1);
+  	}
+! 	if (nl[X_DUMPLO].n_value == 0) {
+  		fprintf(stderr, "savecore: /vmunix: dumplo not in namelist\n");
+  		exit(1);
+
+--- 170,174 -----
+  		exit(1);
+  	}
+! 	if (nlRunning[R_DUMPLO].n_value == 0) {
+  		fprintf(stderr, "savecore: /vmunix: dumplo not in namelist\n");
+  		exit(1);
+***************
+*** 167,170
+  		exit(1);
+  	}
+  	if (nl[X_TIME].n_value == 0) {
+  		fprintf(stderr, "savecore: /vmunix: time not in namelist\n");
+
+--- 174,191 -----
+  		exit(1);
+  	}
++ 	if (nlRunning[R_DUMPMAG].n_value == 0) {
++ 		fprintf(stderr, "savecore: /vmunix: dumpmag not in namelist\n");
++ 		exit(1);
++ 	}
++ 	kmem = Open("/dev/kmem", 0);
++ 	Lseek(kmem, (long)nlRunning[R_DUMPDEV].n_value, 0);
++ 	Read(kmem, (char *)&dumpdev, sizeof (dumpdev));
++ 	Lseek(kmem, (long)nlRunning[R_DUMPLO].n_value, 0);
++ 	Read(kmem, (char *)&dumplo, sizeof (dumplo));
++ 	Lseek(kmem, (long)nlRunning[R_DUMPMAG].n_value, 0);
++ 	Read(kmem, (char *)&dumpmag, sizeof (dumpmag));
++ 	dumplo *= 512L;
++ 
++ 	nlist(system?system:"/vmunix", nl);
+  	if (nl[X_TIME].n_value == 0) {
+  		fprintf(stderr, "savecore: %s: time not in namelist\n",
+***************
+*** 168,172
+  	}
+  	if (nl[X_TIME].n_value == 0) {
+! 		fprintf(stderr, "savecore: /vmunix: time not in namelist\n");
+  		exit(1);
+  	}
+
+--- 189,194 -----
+  	nlist(system?system:"/vmunix", nl);
+  	if (nl[X_TIME].n_value == 0) {
+! 		fprintf(stderr, "savecore: %s: time not in namelist\n",
+! 			system?system:"/vmunix");
+  		exit(1);
+  	}
+***************
+*** 172,176
+  	}
+  	if (nl[X_DUMPSIZE].n_value == 0) {
+! 		fprintf(stderr, "savecore: /vmunix: dumpsize not in namelist\n");
+  		exit(1);
+  	}
+
+--- 194,199 -----
+  	}
+  	if (nl[X_DUMPSIZE].n_value == 0) {
+! 		fprintf(stderr, "savecore: %s: dumpsize not in namelist\n",
+! 			system?system:"/vmunix");
+  		exit(1);
+  	}
+***************
+*** 176,180
+  	}
+  	if (nl[X_VERSION].n_value == 0) {
+! 		fprintf(stderr, "savecore: /vmunix: version not in namelist\n");
+  		exit(1);
+  	}
+
+--- 199,204 -----
+  	}
+  	if (nl[X_VERSION].n_value == 0) {
+! 		fprintf(stderr, "savecore: %s: version not in namelist\n",
+! 			system?system:"/vmunix");
+  		exit(1);
+  	}
+***************
+*** 180,184
+  	}
+  	if (nl[X_PANICSTR].n_value == 0) {
+! 		fprintf(stderr, "savecore: /vmunix: panicstr not in namelist\n");
+  		exit(1);
+  	}
+
+--- 204,209 -----
+  	}
+  	if (nl[X_PANICSTR].n_value == 0) {
+! 		fprintf(stderr, "savecore: %s: panicstr not in namelist\n",
+! 			system?system:"/vmunix");
+  		exit(1);
+  	}
+***************
+*** 184,188
+  	}
+  	if (nl[X_DUMPMAG].n_value == 0) {
+! 		fprintf(stderr, "savecore: /vmunix: dumpmag not in namelist\n");
+  		exit(1);
+  	}
+
+--- 209,214 -----
+  	}
+  	if (nl[X_DUMPMAG].n_value == 0) {
+! 		fprintf(stderr, "savecore: %s: dumpmag not in namelist\n",
+! 			system?system:"/vmunix");
+  		exit(1);
+  	}
+***************
+*** 187,198
+  		exit(1);
+  	}
+- 	kmem = Open("/dev/kmem", 0);
+- 	Lseek(kmem, (long)nl[X_DUMPDEV].n_value, 0);
+- 	Read(kmem, (char *)&dumpdev, sizeof (dumpdev));
+- 	Lseek(kmem, (long)nl[X_DUMPLO].n_value, 0);
+- 	Read(kmem, (char *)&dumplo, sizeof (dumplo));
+- 	Lseek(kmem, (long)nl[X_DUMPMAG].n_value, 0);
+- 	Read(kmem, (char *)&dumpmag, sizeof (dumpmag));
+- 	dumplo *= 512L;
+  	ddname = find_dev(dumpdev, S_IFBLK);
+  	if ((fp = fdopen(kmem, "r")) == NULL) {
+
+--- 213,216 -----
+  		exit(1);
+  	}
+  	ddname = find_dev(dumpdev, S_IFBLK);
+  	if (system)
+***************
+*** 196,199
+  	dumplo *= 512L;
+  	ddname = find_dev(dumpdev, S_IFBLK);
+  	if ((fp = fdopen(kmem, "r")) == NULL) {
+  		fprintf(stderr, "savecore: Couldn't fdopen kmem\n");
+
+--- 214,219 -----
+  	}
+  	ddname = find_dev(dumpdev, S_IFBLK);
++ 	if (system)
++ 		return;
+  	if ((fp = fdopen(kmem, "r")) == NULL) {
+  		fprintf(stderr, "savecore: Couldn't fdopen kmem\n");
+***************
+*** 200,205
+  		exit(1);
+  	}
+- 	if (system)
+- 		return;
+  	fseek(fp, (long)nl[X_VERSION].n_value, 0);
+  	fgets(vers, sizeof vers, fp);
+
+--- 220,223 -----
+  		exit(1);
+  	}
+  	fseek(fp, (long)nl[X_VERSION].n_value, 0);
+  	fgets(vers, sizeof vers, fp);
+***************
+*** 216,227
+  		exit(1);
+  	}
+! 	fseek(fp, (off_t)(dumplo+ok(nl[X_VERSION].n_value)), 0);
+! 	fgets(core_vers, sizeof core_vers, fp);
+! 	fclose(fp);
+! 	if (!eq(vers, core_vers))
+! 		fprintf(stderr,
+! 		   "savecore: Warning: vmunix version mismatch:\n\t%sand\n\t%s",
+! 		   vers, core_vers);
+! 	fp = fopen(ddname, "r");
+  	fseek(fp, (off_t)(dumplo + ok(nl[X_PANICSTR].n_value)), 0);
+  	fread((char *)&panicstr, sizeof panicstr, 1, fp);
+
+--- 234,247 -----
+  		exit(1);
+  	}
+! 	if (!system) {
+! 		fseek(fp, (off_t)(dumplo+ok(nl[X_VERSION].n_value)), 0);
+! 		fgets(core_vers, sizeof core_vers, fp);
+! 		fclose(fp);
+! 		if (!eq(vers, core_vers))
+! 			fprintf(stderr,
+! 			   "savecore: Warning: vmunix version mismatch:\n\t%sand\n\t%s",
+! 			   vers, core_vers);
+! 		fp = fopen(ddname, "r");
+! 	}
+  	fseek(fp, (off_t)(dumplo + ok(nl[X_PANICSTR].n_value)), 0);
+  	fread((char *)&panicstr, sizeof panicstr, 1, fp);
+***************
+*** 241,246
+  	time_t clobber = (time_t)0;
+  
+- 	if (system)
+- 		return (1);
+  	dumpfd = Open(ddname, 0);
+  	Lseek(dumpfd, (off_t)(dumplo + ok(nl[X_TIME].n_value)), 0);
+
+--- 261,264 -----
+  	time_t clobber = (time_t)0;
+  
+  	dumpfd = Open(ddname, 0);
+  	Lseek(dumpfd, (off_t)(dumplo + ok(nl[X_TIME].n_value)), 0);
+
+--------------------- End of Diff -------------------------------------
+-- 
+						Larry Philps
+						Engineering Computing Facility
+						University of Toronto
+		{linus,ihnp4,uw-beaver,floyd,decvax,utzoo}!utcsri!utecfa!larry

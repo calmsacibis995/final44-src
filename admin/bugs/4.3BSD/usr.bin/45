@@ -1,0 +1,127 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Thu Mar 26 19:34:25 1987
+Date: Thu, 26 Mar 87 19:30:03 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Subject: uucp turnaround fails
+Index: usr.bin/cntrl.c 4.3BSD +FIX
+
+Description:
+	The turnaround code in the new uucp doesn't work with 'R'
+	requests (i.e., when the master is receiving a file from the
+	slave).  When the transfer completes the master sends a 'CYM'
+	message.  The slave tries to turn the line around, but the
+	master is trying to send the next work request.
+
+Repeat-By:
+	Get another 4.3 site to put a couple of files in their public
+	uucp directory.  Make sure their length is such that it will
+	take more than a minute to transfer the first.  Queue a couple
+	of requests to retrieve these files from the other system, then
+	start a uucico.  Note that only the first file is transferred.
+
+		uucp -r remote!~/publicfile1 ~uucp
+		uucp -r remote!~/publicfile2 ~uucp
+		/usr/lib/uucp/uucico -r1 -sremote -x5 -t1
+
+Fix:
+	The following patch solves the problem.  Basically there are
+	two pieces here.  First, make sure that we only try to turn the
+	line around if we are the master.  This protects us from other
+	4.3 sites running the broken uucp.
+
+	Second, implement the turnaround code for 'R' request so that
+	it actually works (assuming the other site has made the same
+	change).  This is done by having the slave return 'RY 644 M' if
+	it wants the line turned around after this transfer.  (Note
+	that we can't return 'RYM 644'.  The receiving end does a
+	scanf() to find the file mode, starting at the third character
+	of the string.)
+
+RCS file: RCS/cntrl.c,v
+retrieving revision 1.2
+diff -c -r1.2 cntrl.c
+*** /tmp/,RCSt1005969	Thu Mar 26 19:23:41 1987
+--- cntrl.c	Wed Mar 25 18:47:11 1987
+***************
+*** 302,308 ****
+  		if (role == MASTER) {
+  			notify(mailopt, W_USER, W_FILE1, Rmtname, &msg[1]);
+  		}
+! 		if (msg[2] == 'M') {
+  			extern int Nfiles;
+  			WMESG(HUP, "");
+  			RMESG(HUP, msg, 1);
+--- 302,308 ----
+  		if (role == MASTER) {
+  			notify(mailopt, W_USER, W_FILE1, Rmtname, &msg[1]);
+  		}
+! 		if (msg[2] == 'M' && role == MASTER) {
+  			extern int Nfiles;
+  			WMESG(HUP, "");
+  			RMESG(HUP, msg, 1);
+***************
+*** 569,580 ****
+  				strcat(filename, lastpart(W_FILE1));
+  			}
+  			status = xmv(Dfile, filename);
+! 			if (willturn && Now.time > (LastTurned.time+turntime)
+! 				&& iswrk(Wfile, "chk", Spool, wkpre)) {
+! 					WMESG(RQSTCMPT, status ? EM_RMTCP : "YM");
+! 					willturn = -1;
+! 			} else
+! 				WMESG(RQSTCMPT, status ? EM_RMTCP : YES);
+  			notify(mailopt, W_USER, filename, Rmtname,
+  				status ? EM_LOCCP : YES);
+  			if (status == 0) {
+--- 569,575 ----
+  				strcat(filename, lastpart(W_FILE1));
+  			}
+  			status = xmv(Dfile, filename);
+! 			WMESG(RQSTCMPT, status ? EM_RMTCP : YES);
+  			notify(mailopt, W_USER, filename, Rmtname,
+  				status ? EM_LOCCP : YES);
+  			if (status == 0) {
+***************
+*** 588,593 ****
+--- 583,602 ----
+  				putinpub(filename, Dfile, W_USER);
+  				USRF(USR_LOCCP);
+  			}
++ 			if (msg[strlen(msg)-1] == 'M') {
++ 				extern int Nfiles;
++ 				WMESG(HUP, "");
++ 				RMESG(HUP, msg, 1);
++ 				logent(Rmtname, "TURNAROUND");
++ #ifdef USG
++ 				time(&LastTurned.time);
++ 				LastTurned.millitm = 0;
++ #else !USG
++ 				ftime(&LastTurned);
++ #endif !USG
++ 				Nfiles = 0; /* force rescan of queue for work */
++ 				goto process;
++ 			}
+  			goto top;
+  		}
+  
+***************
+*** 635,641 ****
+  		ret = fstat(fileno(fp), &stbuf);
+  		ASSERT(ret != -1, "STAT FAILED", filename, 0);
+  		i = 1 + (int)(stbuf.st_size / XFRRATE);
+! 		sprintf(msg, "%s %o", YES, (int)stbuf.st_mode & 0777);
+  		WMESG(RCVFILE, msg);
+  		if (send_or_receive != SNDFILE) {
+  			send_or_receive = SNDFILE;
+--- 644,655 ----
+  		ret = fstat(fileno(fp), &stbuf);
+  		ASSERT(ret != -1, "STAT FAILED", filename, 0);
+  		i = 1 + (int)(stbuf.st_size / XFRRATE);
+! 		if (willturn && Now.time > (LastTurned.time+turntime)
+! 			&& iswrk(Wfile, "chk", Spool, wkpre)) {
+! 				willturn = -1;
+! 		}
+! 		sprintf(msg, "%s %o %s", YES, (int)stbuf.st_mode & 0777,
+! 			willturn < 0 ? "M" : "");
+  		WMESG(RCVFILE, msg);
+  		if (send_or_receive != SNDFILE) {
+  			send_or_receive = SNDFILE;

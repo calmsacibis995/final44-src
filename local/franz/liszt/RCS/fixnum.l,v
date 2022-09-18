@@ -1,0 +1,1413 @@
+head     1.16;
+branch   ;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.16
+date     88.04.26.11.50.18;  author sklower;  state Exp;
+branches ;
+next     1.15;
+
+1.15
+date     87.12.15.17.01.35;  author sklower;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     83.08.28.17.13.38;  author layer;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     83.08.27.23.53.54;  author layer;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     83.08.26.14.10.59;  author layer;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.08.22.22.57.59;  author layer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.08.15.19.21.20;  author layer;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.08.14.19.31.46;  author layer;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.08.14.01.46.49;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.08.12.02.47.08;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.08.04.01.41.57;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.04.08.18.44.25;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.04.06.16.42.15;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.03.27.18.16.37;  author jkf;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.23.20.50.39;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.14.29;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@fixnum open coding
+@
+
+
+1.16
+log
+@fixed bug in compiling cmod for vaxima, from housel
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file fixnum
+   "$Header: /b/users/housel/lisp/liszt/RCS/fixnum.l,v 1.5 86/12/14 15:38:30 housel Exp $")
+
+;;; ----	f i x n u m		fixnum compilation
+;;;
+;;;				-[Fri Aug 26 14:07:53 1983 by layer]-
+
+;  There are a few functions in lisp which are only permitted to take
+; fixnum operands and produce fixnum results.  The compiler recognizes
+; these functions and open codes them.
+;
+
+;--- d-fixnumexp :: compute a fixnum from an expression
+;	x - a lisp expression which must return a fixnum
+;
+; This is an almost equivalent to d-exp, except that
+; 1] it will do clever things if the expression can be open coded in a 
+;    fixnum way.
+; 2] the result must be a fixnum, and is left in r5 unboxed.
+;
+(defun d-fixnumexp (x)
+  (d-fixnumcode (d-fixexpand x)))
+
+
+;--- c-fixnumop :: compute a fixnum result
+;  This is the extry point into this code from d-exp.  The form to evaluate
+; is in v-form.  The only way we could get here is if the car of v-form
+; is a function which we've stated is a fixnum returning function. 
+;
+(defun c-fixnumop nil
+  (d-fixnumexp v-form)
+  (d-fixnumbox))
+
+;--- d-fixnumbox :: rebox a fixnum in r5
+;
+#+(or for-vax for-tahoe)
+(defun d-fixnumbox ()
+   (let (x)
+	(e-write3 'moval (concat "*$5120[" '#.fixnum-reg "]") 'r0)
+	(e-sub3 '($ 1024) '#.fixnum-reg 'r1)
+	(e-write2 'blssu (setq x (d-genlab)))
+	(e-call-qnewint)
+	(e-writel x)
+	(d-clearreg)))
+
+#+for-68k
+(defun d-fixnumbox ()
+   (let (x)
+	(d-regused '#.fixnum-reg)
+	(e-move '#.fixnum-reg 'd0)
+	(e-write3 'asll '($ 2) 'd0)
+	; add onto the base of the fixnums
+	(e-add (e-cvt '(fixnum 0)) 'd0)
+	(e-move '#.fixnum-reg 'd1) 
+	(e-sub '($ 1024) 'd1)
+	(e-write2 'jcs (setq x (d-genlab)))	;branch carry set
+	(e-call-qnewint)
+	(e-writel x)
+	(d-clearreg)))
+
+;--- d-fixexpand  :: pass over a fixnum expression doing local optimizations
+; 
+; This code gets the first look at the operands of a fixnum expression.
+; It handles the strange cases, like (+) or (/ 3), and it also insures
+; that constants are folded (or collapsed as we call it here).
+; 
+; things to watch out for:
+; (+ x y z) we can fold x,y,z , likewise in the case of *
+; (- x y z) we can only fold y and z since they are negated but x is not,
+;	    likewise for /
+(defun d-fixexpand (x)
+  (prog nil
+	(setq x (d-macroexpand x))
+    loop
+	(if (and (dtpr x) (symbolp (car x)) (get (car x) 'fixop))
+	    then (if (memq (car x) '(+ *))
+		     then  (setq x (cons (car x)
+					 (d-collapse (cdr x) (car x))))
+		     else  (setq x
+				 (cons (car x)
+				       (cons (cadr x)
+					     (d-collapse (cddr x) (car x))))))
+	         (if (null (cdr x))
+		     then  ; (- or +) => 0 (* or /) => 1
+		         (setq x
+			       (cdr (assq (car x)
+					  '((+ . 0) (- . 0)
+					    (* . 1) (/ . 1)))))
+		         (go loop)
+		  elseif (null (cddr x)) then
+		           ; (+ n) => n, (- n) => (- 0 n), (* n) => n,
+			   ; (/ n) => (/ 1 n)
+			  (setq x
+				(if (memq (car x) '(* +))
+				    then (cadr x)
+				 elseif (eq (car x) '-)
+				    then `(- 0 ,(cadr x))
+				 elseif (eq (car x) '/)
+				    then `(/ 1 ,(cadr x))
+				    else (comp-err
+					     "Internal fixexpand error ")))
+			  (go loop)))
+	(return x)))
+
+;--- d-toplevmacroexpand :: expand top level form if macro
+; a singe level of macro expansion is done.  this is a nice general
+; routine and should be used by d-exp.
+;**** out of date **** will be removed soon
+(defun d-toplevmacroexpand (x)
+  (let ((fnbnd (and (dtpr x) (symbolp (car x)) (getd (car x)))))
+       (if (and fnbnd (or (and (bcdp fnbnd) (eq (getdisc fnbnd) 'macro))
+			  (and (dtpr fnbnd) (eq (car fnbnd) 'macro))))
+	   then (d-toplevmacroexpand (apply fnbnd x))
+	   else x)))
+
+
+;--- d-collapse :: collapse (fold) constants
+; 
+; this is used to reduce the number of operations. since we know that
+; fixnum operations are commutative.
+;
+(defun d-collapse (form op)
+  (let (const res conlist)
+       ; generate list of constants (conlist) and non constants (res)
+       (do ((xx form (cdr xx)))
+	   ((null xx))
+	   (if (numberp (car xx))
+	       then (if (fixp (car xx))
+			then (setq conlist (cons (car xx) conlist))
+			else (comp-err "Illegal operand in fixnum op " 
+				       (car xx)))
+	       else (setq res (cons (car xx) res))))
+
+       ; if no constants found thats ok, but if we found some,
+       ; then collapse and return the form with the collapsed constant
+       ; at the end.
+
+       (if (null conlist)
+	   then form 	; no change
+	   else (setq res (nreverse 
+		 (cons (apply (cond ((or (eq op '/) (eq op '*)) 'times)
+				    (t 'plus)) 
+			      (cons (cond ((or (eq op '/) (eq op '*)) 1)
+					  (t 0))
+				    conlist))
+		       res))))))
+
+
+;---- d-fixnumcode :: emit code for prescanned fixnum expression
+;	expr -  a expression which should return an unboxed fixnum value 
+;		in r5.
+;  This function checks if the expression is indeed a guaranteed fixnum 
+; arithmetic expression, and if so , generates code for the operation.
+; If the expression is not a fixnum operation, then a normal evaluation
+; of the cdr of the expression is done, which will grab the fixnum value
+; and put it in r5.
+;
+#+(or for-vax for-tahoe)
+(defun d-fixnumcode (expr)
+  (let ((operator (and (dtpr expr) 
+		       (symbolp (car expr)) 
+		       (get (car expr) 'fixop)))
+	(g-ret nil)
+	tmp)
+       ; the existance of a fixop property on a function says that it is a
+       ; special fixnum only operation.
+       (if (null operator) 
+	   then (let ((g-loc '#.fixnum-reg) g-cc) ; non fixnum op, do normal
+		     (d-exp `(cdr ,expr)))	; eval to get unboxed number
+	   else (do ((xx (cdr expr) (cdr xx))	; fixnum op, scan all args
+		     (lop) (rop) (res) (opnd))
+		    ((null xx))
+		    (setq opnd (car xx))
+		    (if (fixp opnd) 
+			then (setq rop `(immed ,opnd))
+	   	     elseif (and (symbolp opnd) 
+				 (setq rop (d-simple `(cdr ,opnd))))
+			    thenret
+			else (if (and lop (not (eq lop '#.unCstack)))
+				 then (C-push (e-cvt lop))
+				 (setq lop '#.unCstack))
+			     (d-fixnumcode (d-fixexpand opnd))
+			     (setq rop 'r5))
+		    (if (null lop) 
+			then (if (cdr xx) 
+				 then (setq lop rop)
+				 else (e-move (e-cvt rop) 'r5))
+			else (if (cdr xx) 
+				 then (setq res '#.Cstack)
+				 else (setq res 'r5))
+			     (if (setq tmp (d-shiftcheck operator rop))
+				 then (e-write4 #+for-vax 'ashl 
+						#+for-tahoe 'shal
+						(e-cvt (list 'immed tmp))
+						(e-cvt lop)
+						(e-cvt res))
+				 else (e-write4 operator (e-cvt rop) 
+						(e-cvt lop) 
+						(e-cvt res)))
+			     (if (cdr xx) 
+				 then (setq lop '#.unCstack)
+				 else (setq lop "r5")))))))
+
+#+for-68k
+(defun d-fixnumcode (expr)
+   (let ((operator (and (dtpr expr)
+			(symbolp (car expr))
+			(get (car expr) 'fixop)))
+	 (g-ret nil)
+	 tmp)
+       ; the existance of a fixop property on a function says that it is a
+       ; special fixnum only operation.
+       (makecomment `(d-fixnumcode ,expr))
+       (if (null operator) 
+	   then (let ((g-loc '#.fixnum-reg) g-cc) ; non fixnum op, do normal
+		    (d-exp `(cdr ,expr)))	  ; eval to get unboxed number
+		(d-regused '#.fixnum-reg)
+	   else (do ((xx (cdr expr) (cdr xx))	  ; fixnum op, scan all args
+		     (lop) (rop) (res) (opnd))
+		    ((null xx))
+		    (setq opnd (car xx))
+		    (if (fixp opnd) 
+			then (setq rop `(immed ,opnd))
+		     elseif (and (symbolp opnd)
+				 (setq rop (d-simple `(cdr ,opnd))))
+			thenret
+			else (if (and lop (not (eq lop '#.unCstack)))
+				 then (C-push (e-cvt lop))
+				      (setq lop '#.unCstack))
+			     (d-fixnumcode (d-fixexpand opnd))
+			     (setq rop '#.fixnum-reg))
+		    (if (null lop) 
+			then (if (cdr xx) 
+				 then (setq lop rop)
+				 else (e-move
+						(e-cvt rop)
+						'#.fixnum-reg))
+			else (if (cdr xx) 
+				 then (setq res '#.Cstack)
+				 else (setq res '#.fixnum-reg))
+			     (if (setq tmp (d-shiftcheck operator rop))
+				 then (d-asll tmp (e-cvt lop) (e-cvt res))
+				 else (e-move (e-cvt lop) 'd0)
+				      (e-write3 operator (e-cvt rop) 'd0)
+				      (e-move 'd0 (e-cvt res)))
+			     (if (cdr xx) 
+				 then (setq lop '#.unCstack)
+				 else (setq lop '#.fixnum-reg)))))
+       (makecomment '(d-fixnumcode done))))
+
+;--- d-shiftcheck	:: check if we can shift instead of multiply
+; return t if the operator is a multiply and the operand is an
+; immediate whose value is a power of two.
+(defun d-shiftcheck (operator operand)
+   (and (eq operator #+(or for-vax for-tahoe) 'lmul
+	    	     #+for-68k 'mull3)
+	(dtpr operand)
+	(eq (car operand) 'immed)
+	(cdr (assoc (cadr operand) arithequiv))))
+
+; this table is incomplete 
+;
+(setq arithequiv '((1 . 0) (2 . 1) (4 . 2) (8 . 3) (16 . 4) (32 . 5)
+		   (64 . 6) (128 . 7) (256 . 8) (512 . 9) (1024 . 10)
+		   (2048 . 11) (4096 . 12) (8192 . 13) (16384 . 14)
+		   (32768 . 15) (65536 . 16) (131072 . 17)))
+
+
+;--- cc-oneplus  :: compile 1+ form			= cc-oneplus =
+;  1+ increments a fixnum only. We generate code to check if the number
+; to be incremented is a small fixnum less than or equal to 1022.  This
+; check is done by checking the address of the fixnum's box.  If the
+; number is in that range, we just increment the box pointer by 4.
+; otherwise we call we call _qoneplus which does the add and calls
+; _qnewint
+;
+#+(or for-vax for-tahoe)
+(defun cc-oneplus nil
+  (if (null g-loc)
+      then (if (car g-cc) then (e-goto (car g-cc)))
+      else (let ((argloc (d-simple (cadr v-form)))
+		 (lab1 (d-genlab))
+		 (lab2 (d-genlab)))
+		(if (null argloc) 
+		    then (let ((g-loc 'r0) g-cc g-ret)
+			      (d-exp (cadr v-form)))
+			 (setq argloc 'reg))
+		(e-cmp (e-cvt argloc) '($ #.(+ 5120 (* 4 1022))))
+		(e-write2 'jleq lab1)
+		(if (not (eq argloc 'r0)) then (d-move argloc 'reg))
+		(e-quick-call '_qoneplus)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc)
+		    then (e-goto (car g-cc))
+		    else (e-goto lab2))
+		(e-label lab1)
+		(e-add3 '($ 4) (e-cvt argloc) (e-cvt g-loc))
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(e-label lab2))))
+
+#+for-68k
+(defun cc-oneplus nil
+   (if (null g-loc)
+       then (if (car g-cc) then (e-goto (car g-cc)))
+       else (let ((argloc (d-simple (cadr v-form)))
+		  (lab1 (d-genlab))
+		  (lab2 (d-genlab)))
+		(if (null argloc) 
+		    then (let ((g-loc 'areg) g-cc g-ret)
+			     (d-exp (cadr v-form)))
+			 (setq argloc 'areg))
+		; ($ (+ Fixzero (* 4 1022))
+		(d-cmp argloc '(fixnum 1022))
+		(e-write2 'jle lab1)
+		(if (not (eq argloc 'areg)) then (d-move argloc 'areg))
+		(e-quick-call '_qoneplus)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc)
+		    then (e-goto (car g-cc))
+		    else (e-goto lab2))
+		(e-label lab1)
+		(if (not (eq argloc 'reg))
+		    then (d-move argloc 'reg))
+		(e-write3 'addql "#4" 'd0)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(e-label lab2))))
+			
+
+
+;--- cc-oneminus :: compile the 1- form
+; just like 1+ we check to see if we are decrementing an small fixnum.
+; and if we are we just decrement the pointer to the fixnum and save
+; a call to qinewint.  The valid range of fixnums we can decrement are
+; 1023 to -1023.  This requires two range checks (as opposed to one for 1+).
+;
+#+(or for-vax for-tahoe)
+(defun cc-oneminus nil
+  (if (null g-loc)
+      then (if (car g-cc) then (e-goto (car g-cc)))
+      else (let ((argloc (d-simple (cadr v-form)))
+		 (lab1 (d-genlab))
+		 (lab2 (d-genlab))
+		 (lab3 (d-genlab)))
+		(if (null argloc) 
+		    then (let ((g-loc 'r0) g-cc)
+			      (d-exp (cadr v-form)))
+		         (setq argloc 'reg))
+		(e-cmp (e-cvt argloc) '($ #.(- 5120 (* 4 1024))))
+		(e-write2 'jleq lab1)	; not within range
+		(e-cmp (e-cvt argloc) '($ #.(+ 5120 (* 4 1023))))
+		(e-write2 'jleq lab2)	; within range
+		; not within range, must do it the hard way.
+		(e-label lab1)
+		(if (not (eq argloc 'r0)) then (d-move argloc 'reg))
+		(e-quick-call '_qoneminus)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc)
+		    then (e-goto (car g-cc))
+		    else (e-goto lab3))
+		(e-label lab2)
+		; we are within range, just decrement the pointer by the
+		; size of a word (4 bytes).
+		(e-sub3 '($ 4) (e-cvt argloc) (e-cvt g-loc))
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(e-label lab3))))
+
+#+for-68k
+(defun cc-oneminus nil
+  (if (null g-loc)
+      then (if (car g-cc) then (e-goto (car g-cc)))
+      else (let ((argloc (d-simple (cadr v-form)))
+		 (lab1 (d-genlab))
+		 (lab2 (d-genlab))
+		 (lab3 (d-genlab)))
+		(if (null argloc) 
+		    then (let ((g-loc 'areg) g-cc)
+			      (d-exp (cadr v-form)))
+		         (setq argloc 'areg))
+		; ($ (- Fixzero (* 4 1024)))
+		(d-cmp argloc '(fixnum -1024))
+		(e-write2 'jle lab1)	; not within range
+		(d-cmp argloc '(fixnum 1023))
+		(e-write2 'jle lab2)	; within range
+		; not within range, must do it the hard way.
+		(e-label lab1)
+		(if (not (eq argloc 'areg)) then (d-move argloc 'areg))
+		(e-quick-call '_qoneminus)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc)
+		    then (e-goto (car g-cc))
+		    else (e-goto lab3))
+		(e-label lab2)
+		; we are within range, just decrement the pointer by the
+		; size of a word (4 bytes).
+		(if (not (eq argloc 'reg))
+		    then (d-move argloc 'reg))
+		(e-sub '($ 4) 'd0)
+		(if (and g-loc (not (eq g-loc 'reg)))
+		    then (d-move 'reg g-loc))
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(e-label lab3))))
+
+;--- cm-<  :: compile a < expression
+; 
+; the operands to this form can either be fixnum or flonums but they
+; must be of the same type.
+;
+; We can compile the form just like an eq form since all we want is
+; a compare and a jump.  The comparisons are inverted since that is
+; the way eq expects it.
+
+(defun cm-< nil
+   (if (not (= 2 (length (cdr v-form))))
+      then (comp-err "incorrect number of arguments to < " v-form))
+   ; only can do fixnum stuff if we know that one of the args is
+   ; a fixnum.
+   ;
+   (if (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+      then `(<& ,(cadr v-form) ,(caddr v-form))
+      else `(lessp ,(cadr v-form) ,(caddr v-form))))
+
+;--- c-<& :: fixnum <
+;
+; We can compile the form just like an eq form since all we want is
+; a compare and a jump.  The comparisons are inverted since that is
+; the way eq expects it.
+
+(defun cc-<& nil
+   (let ((g-trueop  #+(or for-vax for-tahoe) 'jgeq #+for-68k 'jpl)
+	 (g-falseop #+(or for-vax for-tahoe) 'jlss #+for-68k 'jmi)
+	 (v-form `(eq (cdr ,(cadr v-form)) (cdr ,(caddr v-form)))))
+      (cc-eq)))
+
+;--- cm->  :: compile a > expression
+;
+; the operands to this form can either be fixnum or flonums but they
+; must be of the same type.  
+; We can compile the form just like an eq form since all we want is
+; a compare and a jump.  The comparisons are inverted since that is
+; the way eq expects it.
+(defun cm-> nil
+   (if (not (= 2 (length (cdr v-form))))
+      then (comp-err "incorrect number of arguments to > " v-form))
+   ; only can do fixnum stuff if we know that one of the args is
+   ; a fixnum.
+   ;
+   (if (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+      then `(>& ,(cadr v-form) ,(caddr v-form))
+      else `(greaterp ,(cadr v-form) ,(caddr v-form))))
+
+;--- cc->& :: compile a fixnum > function
+;
+; We can compile the form just like an eq form since all we want is
+; a compare and a jump.  The comparisons are inverted since that is
+; the way eq expects it.
+(defun cc->& nil
+   (let ((g-trueop  #+(or for-vax for-tahoe) 'jleq #+for-68k 'jle)
+	 (g-falseop #+(or for-vax for-tahoe) 'jgtr #+for-68k 'jgt)
+	 (v-form `(eq (cdr ,(cadr v-form)) (cdr ,(caddr v-form)))))
+      (cc-eq)))
+
+;--- cm-=  : compile an = expression
+;  The = function is a strange one.  It can compare two fixnums or two
+; flonums which is fine on a pdp-10 where they are the same size, but
+; is a real pain on a vax where they are different sizes.
+; We thus can see if one of the arguments is a fixnum and assume that
+; the other one is and then  call =&, the fixnum equal code.
+;
+(defun cm-= nil
+   (if (not (= 2 (length (cdr v-form))))
+      then (comp-err "incorrect number of arguments to = : " v-form))
+   (if (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+      then `(=& ,(cadr v-form) ,(caddr v-form))
+      else `(equal ,(cadr v-form) ,(caddr v-form))))
+
+;--- cm-=&
+;
+; if the number is within the small fixnum range, we can just
+; do pointer comparisons.
+;
+(defun cm-=& nil
+   (if (or (and (fixp (cadr v-form))
+		(< (cadr v-form) 1024)
+		(> (cadr v-form) -1025))
+	   (and (fixp (caddr v-form))
+		(< (caddr v-form) 1024)
+		(> (caddr v-form) -1025)))
+      then `(eq ,(cadr v-form) ,(caddr v-form))
+      else `(eq (cdr ,(cadr v-form)) (cdr ,(caddr v-form)))))
+
+; this should be converted
+#+(or for-vax for-tahoe)
+(defun c-\\ nil
+   (d-fixop 'ediv  'remainder))
+
+#+(or for-vax for-tahoe)
+(defun d-fixop (opcode lispopcode)
+   (prog (op1 op2 rop1 rop2 simpleop1)
+       (if (not (eq 3 (length v-form))) ; only handle two ops for now
+	   then (d-callbig lispopcode (cdr v-form) nil)
+	   else (setq op1 (cadr v-form)
+		      op2 (caddr v-form))
+		(if (fixp op1)
+		    then (setq rop1 `($ ,op1)  ; simple int
+			       simpleop1 t)	    
+		    else (if (setq rop1 (d-simple `(cdr ,op1)))
+			     then (setq rop1 (e-cvt rop1))
+			     else (let ((g-loc 'reg) g-cc g-ret)
+				      (d-exp op1))
+				  (setq rop1 '(0 r0))))
+		(if (fixp op2)
+		    then (setq rop2 `($ ,op2))
+		    else (if (setq rop2 (d-simple `(cdr ,op2)))
+			     then (setq rop2 (e-cvt rop2))
+			     else (C-push rop1)
+				  (setq rop1 '#.unCstack)
+				  (let ((g-loc 'reg)
+					g-cc g-ret)
+				      (d-exp op2))
+				  (setq rop2 '(0 r0))))
+		(if (eq opcode 'ediv)
+		    then (if (not simpleop1)
+			     then #+for-vax (progn (e-move rop1 'r2) ;need quad
+						(e-write4 'ashq '$-32 'r1 'r1))
+			          #+for-tahoe (let ((x (d-genlab)))
+						(e-write2 'clrl 'r2)
+						(e-move rop1 'r3)
+						(e-write2 'jgeq x)
+						(e-write3 'mnegl '($ 1) 'r2)
+						(e-writel x))
+				  (setq rop1 #+for-vax 'r1 #+for-tahoe 'r2))
+				  				; word div.
+			 (e-write5 'ediv rop2 rop1 'r0 'r5)
+		    else (e-write4 opcode rop2 rop1 'r5))
+		(d-fixnumbox)
+		(d-clearreg))))
+@
+
+
+1.15
+log
+@cci changes from purdue
+@
+text
+@d530 9
+a538 5
+			     then (e-move rop1 #+for-vax 'r2 #+for-tahoe 'r1)
+			    			 ; need quad
+				  #+for-vax (e-write4 'ashq '$-32 'r1 'r1)
+				  #+for-tahoe (e-write2 'clrl 'r0)
+				  (setq rop1 #+for-vax 'r1 #+for-tahoe 'r0))
+@
+
+
+1.14
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.13 83/08/27 23:53:54 layer Exp $")
+d37 1
+a37 1
+#+for-vax
+d159 1
+a159 1
+#+for-vax
+d193 2
+a194 1
+				 then (e-write4 'ashl 
+d256 1
+a256 1
+   (and (eq operator #+for-vax 'lmul
+d278 1
+a278 1
+#+for-vax
+d341 1
+a341 1
+#+for-vax
+d436 2
+a437 2
+   (let ((g-trueop  #+for-vax 'jgeq #+for-68k 'jpl)
+	 (g-falseop #+for-vax 'jlss #+for-68k 'jmi)
+d464 2
+a465 2
+   (let ((g-trueop  #+for-vax 'jleq #+for-68k 'jle)
+	 (g-falseop #+for-vax 'jgtr #+for-68k 'jgt)
+d499 1
+a499 1
+#+for-vax
+d503 1
+a503 1
+#+for-vax
+d530 6
+a535 3
+			     then (e-move rop1 'r2)  ; need quad
+				  (e-write4 'ashq '$-32 'r1 'r1)
+				  (setq rop1 'r1))      ; word div.
+@
+
+
+1.13
+log
+@branch operators wrong again!
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.12 83/08/26 14:10:59 layer Exp $")
+a21 1
+;.. c-fixnumop, d-supercxr, d-superrplacx
+a36 1
+;.. c-fixnumop, d-fixop
+a71 1
+;.. d-fixnumcode, d-fixnumexp
+a109 1
+;.. d-fixexpand, d-toplevmacroexpand
+a122 1
+;.. d-fixexpand
+a158 1
+;.. d-fixnumcode, d-fixnumexp
+a253 1
+;.. d-fixnumcode
+a501 1
+;.. c-\
+@
+
+
+1.12
+log
+@cm->& set trueop & falseop wrong...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.11 83/08/22 22:57:59 layer Exp $")
+d442 2
+a443 2
+   (let ((g-trueop  #+for-vax 'jgeq #+for-68k 'jge)
+	 (g-falseop #+for-vax 'jlss #+for-68k 'jlt)
+@
+
+
+1.11
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.10 83/08/15 19:21:20 layer Exp $")
+d7 1
+a7 1
+;;;				-[Mon Aug 22 21:52:59 1983 by layer]-
+d410 1
+a410 1
+		(e-write3 'subql '"#4" 'd0)
+a415 1
+
+d442 2
+a443 4
+   (let ((g-trueop #+for-vax 'jgeq
+		   #+for-68k 'jpl)
+	 (g-falseop #+for-vax 'jlss
+		    #+for-68k 'jmi)
+a453 1
+
+d464 10
+a488 1
+
+a502 18
+
+
+
+;--- cc->& :: compile a fixnum > function
+;
+; We can compile the form just like an eq form since all we want is
+; a compare and a jump.  The comparisons are inverted since that is
+; the way eq expects it.
+
+(defun cc->& nil
+   (let ((g-trueop #+for-vax 'jleq
+		   #+for-68k 'jle)
+	 (g-falseop #+for-vax 'jgtr
+		    #+for-68k 'jgt)
+	 (v-form `(eq (cdr ,(cadr v-form)) (cdr ,(caddr v-form)))))
+      (cc-eq)))
+
+
+@
+
+
+1.10
+log
+@use [ed]-cmp instead of outputing the instructions...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.9 83/08/14 19:31:46 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug 14 19:55:38 1983 by layer]-
+d27 1
+a27 1
+;--- c-fixnumop :: compute a fixnum result 			= c-fixnumop =
+d42 3
+a44 3
+	(e-write3 "moval" "*$5120[r5]" "r0")
+	(e-write4 "subl3" "$1024" "r5" "r1")
+	(e-write2 "blssu" (setq x (d-genlab)))
+d56 1
+a56 1
+	(e-write3 'addl (e-cvt '(fixnum 0)) 'd0)
+d58 1
+a58 1
+	(e-write3 'subl '($ 1024) 'd1)
+d187 1
+a187 1
+				 then (d-move lop '#.Cstack)
+d234 1
+a234 1
+				 then (d-move lop '#.Cstack)
+d305 1
+a305 1
+		(e-write4 'addl3 '$4 (e-cvt argloc) (e-cvt g-loc))
+d375 1
+a375 1
+		(e-write4 'subl3 '$4 (e-cvt argloc) (e-cvt g-loc))
+d542 1
+a542 1
+			     else (e-move rop1 '#.Cstack)
+@
+
+
+1.9
+log
+@cmp's were screwed up for the 68000
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.8 83/08/14 01:46:49 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug 14 19:25:19 1983 by layer]-
+d295 1
+a295 1
+		(e-write3 'cmpl (e-cvt argloc) '($ #.(+ 5120 (* 4 1022))))
+d321 1
+a321 1
+		(d-cmp '(fixnum 1022) argloc)
+d359 1
+a359 1
+		(e-write3 'cmpl (e-cvt argloc) '($ #.(- 5120 (* 4 1024))))
+d361 1
+a361 1
+		(e-write3 'cmpl (e-cvt argloc) '($ #.(+ 5120 (* 4 1023))))
+d392 1
+a392 1
+		(d-cmp '(fixnum -1024) argloc)
+d394 1
+a394 1
+		(d-cmp '(fixnum 1023) argloc)
+@
+
+
+1.8
+log
+@minor bug in d-popframe, and other minor
+stuff
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.7 83/08/12 02:47:08 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sat Aug 13 17:35:26 1983 by layer]-
+d321 1
+a321 1
+		(d-cmp argloc '(fixnum 1022))
+d392 1
+a392 1
+		(d-cmp argloc '(fixnum -1024))
+d394 1
+a394 1
+		(d-cmp argloc '(fixnum 1023))
+@
+
+
+1.7
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.6 83/08/04 01:41:57 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug  7 19:10:44 1983 by layer]-
+d53 1
+a53 1
+	(e-write3 'movl '#.fixnum-reg 'd0)
+d57 1
+a57 1
+	(e-write3 'movl '#.fixnum-reg 'd1) 
+d83 4
+a86 3
+		     else  (setq x (cons (car x)
+					 (cons (cadr x) 
+					       (d-collapse (cddr x) (car x))))))
+d89 4
+a92 2
+		         (setq x (cdr (assq (car x) 
+					    '((+ . 0) (- . 0) (* . 1) (/ . 1)))))
+d97 9
+a105 5
+			  (setq x 
+				(if (memq (car x) '(* +)) then (cadr x)
+				    elseif (eq (car x) '-) then `(- 0 ,(cadr x))
+				    elseif (eq (car x) '/) then `(/ 1 ,(cadr x))
+				    else (comp-err "Internal fixexpand error ")))
+d194 1
+a194 1
+				 else (e-write3 'movl (e-cvt rop) 'r5))
+d241 1
+a241 1
+				 else (e-write3 'movl
+d249 1
+a249 1
+				 else (e-write3 'movl (e-cvt lop) 'd0)
+d251 1
+a251 1
+				      (e-write3 'movl 'd0 (e-cvt res)))
+d542 1
+a542 1
+			     else (e-write3 'movl rop1 '#.Cstack)
+d550 1
+a550 1
+			     then (e-write3 'movl rop1 'r2)  ; need quad
+@
+
+
+1.6
+log
+@cleanup time
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.5 83/04/08 18:44:25 layer Exp $")
+d7 1
+a7 1
+;;;				-[Wed Aug  3 16:35:58 1983 by layer]-
+a35 2
+
+
+d45 1
+a45 1
+	(e-write2 "jsb" "_qnewint")
+d54 3
+a56 5
+	(e-write3 'asll '"#2" 'd0)
+	(e-write3 'addl (concat '#.Nilatom "+0x1400") 'd0)
+	;(e-write3 'movl 'd0 'a5)
+	;(e-write3 'lea '"a5@@" 'a5)
+	;(e-write3 'movl 'a5 'd0)
+d58 1
+a58 1
+	(e-write3 'subl "#1024" 'd1)
+d60 1
+a60 1
+	(e-write2 'jbsr "_qnewint")
+d79 2
+a80 2
+	(If (and (dtpr x) (symbolp (car x)) (get (car x) 'fixop))
+	    then (If (memq (car x) '(+ *))
+d86 1
+a86 1
+	         (If (null (cdr x))
+d95 1
+a95 1
+				(If (memq (car x) '(* +)) then (cadr x)
+d109 1
+a109 1
+       (If (and fnbnd (or (and (bcdp fnbnd) (eq (getdisc fnbnd) 'macro))
+d126 2
+a127 2
+	   (If (numberp (car xx))
+	       then (If (fixp (car xx))
+d137 1
+a137 1
+       (If (null conlist)
+d167 1
+a167 1
+       (If (null operator) 
+d174 1
+a174 1
+		    (If (fixp opnd) 
+d179 1
+a179 1
+			else (If (and lop (not (eq lop '#.unCstack)))
+d184 2
+a185 2
+		    (If (null lop) 
+			then (If (cdr xx) 
+d188 1
+a188 1
+			else (If (cdr xx) 
+d191 1
+a191 1
+			     (If (setq tmp (d-shiftcheck operator rop))
+d199 1
+a199 1
+			     (If (cdr xx) 
+d213 1
+a213 1
+       (If (null operator) 
+d221 1
+a221 1
+		    (If (fixp opnd) 
+d226 1
+a226 1
+			else (If (and lop (not (eq lop '#.unCstack)))
+d231 2
+a232 2
+		    (If (null lop) 
+			then (If (cdr xx) 
+d237 1
+a237 1
+			else (If (cdr xx) 
+d240 1
+a240 1
+			     (If (setq tmp (d-shiftcheck operator rop))
+d245 1
+a245 1
+			     (If (cdr xx) 
+d279 2
+a280 2
+  (If (null g-loc)
+      then (If (car g-cc) then (e-goto (car g-cc)))
+d284 1
+a284 1
+		(If (null argloc) 
+d290 3
+a292 3
+		(If (not (eq argloc 'r0)) then (d-move argloc 'reg))
+		(e-write2 'jsb '_qoneplus)
+		(If (and g-loc (not (eq g-loc 'reg)))
+d294 1
+a294 1
+		(If (car g-cc)
+d299 1
+a299 1
+		(If (car g-cc) then (e-goto (car g-cc)))
+d304 2
+a305 2
+   (If (null g-loc)
+       then (If (car g-cc) then (e-goto (car g-cc)))
+d309 1
+a309 1
+		(If (null argloc) 
+d314 1
+a314 1
+		(d-cmp argloc (concat '#.Nilatom "+0x1400" "+0xff8"))
+d316 3
+a318 3
+		(If (not (eq argloc 'areg)) then (d-move argloc 'areg))
+		(e-write2 'jbsr '_qoneplus)
+		(If (and g-loc (not (eq g-loc 'reg)))
+d320 1
+a320 1
+		(If (car g-cc)
+d324 1
+a324 1
+		(If (not (eq argloc 'reg))
+d327 1
+a327 1
+		(If (and g-loc (not (eq g-loc 'reg)))
+d329 1
+a329 1
+		(If (car g-cc) then (e-goto (car g-cc)))
+d342 2
+a343 2
+  (If (null g-loc)
+      then (If (car g-cc) then (e-goto (car g-cc)))
+d348 1
+a348 1
+		(If (null argloc) 
+d358 3
+a360 3
+		(If (not (eq argloc 'r0)) then (d-move argloc 'reg))
+		(e-write2 'jsb '_qoneminus)
+		(If (and g-loc (not (eq g-loc 'reg)))
+d362 1
+a362 1
+		(If (car g-cc)
+d369 1
+a369 1
+		(If (car g-cc) then (e-goto (car g-cc)))
+d374 2
+a375 2
+  (If (null g-loc)
+      then (If (car g-cc) then (e-goto (car g-cc)))
+d380 1
+a380 1
+		(If (null argloc) 
+d385 1
+a385 1
+		(d-cmp argloc (concat '#.Nilatom "+0x1400" "-0x1000"))
+d387 1
+a387 2
+		; ($ (+ Fixzero (* 4 1023)))
+		(d-cmp argloc (concat '#.Nilatom "+0x1400" "+0xffc"))
+d391 3
+a393 3
+		(If (not (eq argloc 'areg)) then (d-move argloc 'areg))
+		(e-write2 'jbsr '_qoneminus)
+		(If (and g-loc (not (eq g-loc 'reg)))
+d395 1
+a395 1
+		(If (car g-cc)
+d401 1
+a401 1
+		(If (not (eq argloc 'reg))
+d404 1
+a404 1
+		(If (and g-loc (not (eq g-loc 'reg)))
+d406 1
+a406 1
+		(If (car g-cc) then (e-goto (car g-cc)))
+d420 1
+a420 1
+   (If (not (= 2 (length (cdr v-form))))
+d425 1
+a425 1
+   (If (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+d452 1
+a452 1
+   (If (not (= 2 (length (cdr v-form))))
+d457 1
+a457 1
+   (If (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+d470 1
+a470 1
+   (If (not (= 2 (length (cdr v-form))))
+d472 1
+a472 1
+   (If (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+d483 1
+a483 1
+   (If (or (and (fixp (cadr v-form))
+a514 1
+
+d519 31
+a549 31
+      (If (not (eq 3 (length v-form))) ; only handle two ops for now
+	 then (d-callbig lispopcode (cdr v-form) nil)
+	 else (setq op1 (cadr v-form)
+		    op2 (caddr v-form))
+	      (If (fixp op1)
+		 then (setq rop1 (concat '$ op1)  ; simple int
+			    simpleop1 t)	    
+		 else (If (setq rop1 (d-simple `(cdr ,op1)))
+			 then (setq rop1 (e-cvt rop1))
+			 else (let ((g-loc 'reg) g-cc g-ret)
+				 (d-exp op1))
+			      (setq rop1 '|(r0)|)))
+	      (If (fixp op2)
+		 then (setq rop2 (concat '$ op2))
+		 else (If (setq rop2 (d-simple `(cdr ,op2)))
+			 then (setq rop2 (e-cvt rop2))
+			 else (e-write3 'movl rop1 "-(sp)")
+			      (setq rop1 "(sp)+")
+			      (let ((g-loc 'reg)
+				    g-cc g-ret)
+				 (d-exp op2))
+			      (setq rop2 '|(r0)|)))
+	      (If (eq opcode 'ediv)
+		 then (If (not simpleop1) then (e-write3 'movl rop1 'r2)  ; need quad
+			  (e-write4 'ashq '$-32 'r1 'r1)
+			  (setq rop1 'r1))      ; word div.
+		      (e-write5 'ediv rop2 rop1 'r0 'r5)
+		 else (e-write4 opcode rop2 rop1 'r5))
+
+	      (d-fixnumbox)
+	      (d-clearreg))))
+@
+
+
+1.5
+log
+@problems with cmp on the 68k (reverse of vax)
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.4 83/04/06 16:42:15 layer Exp $")
+d7 1
+a7 1
+;;;				-[Fri Apr  8 00:29:13 1983 by layer]-
+d54 1
+d220 1
+@
+
+
+1.4
+log
+@change some compiler constants to syms instead of strings
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.3 83/03/27 18:16:37 jkf Exp $")
+d7 1
+a7 1
+;;;				-[Wed Apr  6 16:30:22 1983 by layer]-
+d316 1
+a316 2
+		(e-write3 'cmpl (concat '#.Nilatom "+0x1400"
+					"+0xff8") (e-cvt argloc))
+d387 1
+a387 2
+		(e-write3 'cmpl (concat '#.Nilatom "+0x1400"
+					"-0x1000") (e-cvt argloc))
+d390 1
+a390 2
+		(e-write3 'cmpl (concat '#.Nilatom "+0x1400"
+					"+0xffc") (e-cvt argloc))
+d505 1
+a505 1
+		   #+for-68k 'jpl)
+d507 1
+a507 1
+		    #+for-68k 'jmi)
+@
+
+
+1.3
+log
+@make some things vax only
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.2 83/03/23 20:50:39 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Mar 24 15:59:23 1983 by jkf]-
+d171 1
+a171 1
+	   then (let ((g-loc #.fixnum-reg) g-cc) ; non fixnum op, do normal
+d182 3
+a184 3
+			else (If (and lop (not (eq lop #.unCstack)))
+				 then (d-move lop #.Cstack)
+				 (setq lop #.unCstack))
+d192 1
+a192 1
+				 then (setq res #.Cstack)
+d203 1
+a203 1
+				 then (setq lop #.unCstack)
+d228 3
+a230 3
+			else (If (and lop (not (eq lop #.unCstack)))
+				 then (d-move lop #.Cstack)
+				      (setq lop #.unCstack))
+d236 3
+a238 1
+				 else (e-write3 'movl (e-cvt rop) '#.fixnum-reg))
+d240 1
+a240 1
+				 then (setq res #.Cstack)
+d248 1
+a248 1
+				 then (setq lop #.unCstack)
+@
+
+
+1.2
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/fixnum.l,v 1.1 83/01/26 12:14:29 jkf Exp $")
+d7 1
+a7 1
+;;;				-[Tue Mar 22 15:28:00 1983 by layer]-
+d515 1
+d521 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header$")
+d7 1
+a7 1
+;;;				-[Wed Jan 26 12:07:57 1983 by jkf]-
+d41 1
+d51 16
+a149 1
+(setq Cstack '|-(sp)| unCstack '|(sp)+|)
+d161 1
+d171 1
+a171 1
+	   then (let ((g-loc 'r5) g-cc)		; non fixnum op, do normal
+d182 3
+a184 3
+			else (If (and lop (not (eq lop unCstack)))
+				 then (d-move lop Cstack)
+				 (setq lop unCstack))
+d192 1
+a192 1
+				 then (setq res Cstack)
+d203 2
+a204 3
+				 then (setq lop unCstack)
+				 else (setq lop 'r5)))))))
+				   
+d206 44
+d255 5
+a259 4
+  (and (eq operator 'mull3)
+       (dtpr operand)
+       (eq (car operand) 'immed)
+       (cdr (assoc (cadr operand) arithequiv))))
+d276 2
+a277 1
+; 
+d301 31
+d335 1
+a335 1
+;--- cc-oneminus :: compile the 1- form			= cc-oneminus =
+d341 1
+d373 39
+d413 2
+a414 1
+;--- cm-<  :: compile a < expression				= cm-< =
+d433 1
+a433 1
+;--- c-<&	::	fixnum <
+d440 4
+a443 2
+   (let ((g-trueop 'jgeq)
+	 (g-falseop 'jlss)
+d447 1
+a447 1
+;--- cm->  :: compile a > expression				= cm-> =
+a457 1
+
+a460 1
+
+d465 7
+a471 1
+;--- cc->& :: compile a fixnum > function		= c->& =
+d473 27
+d505 4
+a508 2
+   (let ((g-trueop 'jleq)
+	 (g-falseop 'jgtr)
+a552 30
+
+;--- cm-=  : compile an = expression
+;  The = function is a strange one.  It can compare two fixnums or two
+; flonums which is fine on a pdp-10 where they are the same size, but
+; is a real pain on a vax where they are different sizes.
+; We thus can see if one of the arguments is a fixnum and assume that
+; the other one is and then  call =&, the fixnum equal code.
+;
+(defun cm-= nil
+   (If (not (= 2 (length (cdr v-form))))
+      then (comp-err "incorrect number of arguments to = : " v-form))
+   (If (or (fixp (cadr v-form)) (fixp (caddr v-form)))
+      then `(=& ,(cadr v-form) ,(caddr v-form))
+      else `(equal ,(cadr v-form) ,(caddr v-form))))
+
+
+;--- cm-=&	:: compile a fixnum =
+;
+; if the number is within the small fixnum range, we can just
+; do pointer comparisons.
+;
+(defun cm-=& nil
+   (If (or (and (fixp (cadr v-form))
+		(< (cadr v-form) 1024)
+		(> (cadr v-form) -1025))
+	   (and (fixp (caddr v-form))
+		(< (caddr v-form) 1024)
+		(> (caddr v-form) -1025)))
+      then `(eq ,(cadr v-form) ,(caddr v-form))
+      else `(eq (cdr ,(cadr v-form)) (cdr ,(caddr v-form)))))
+@

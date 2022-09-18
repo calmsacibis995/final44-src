@@ -1,0 +1,79 @@
+Return-Path: <mogul@Gregorio>
+Date: Mon, 6 May 85 18:23:18 pdt
+From: Jeffrey Mogul <mogul@Gregorio>
+Subject: interrupted select() buggy if no timeout is specified
+Index: 	sys/sys/sys_generic.c 4.2BSD
+
+Description:
+	If select() is called with a null pointer for the "timeout"
+	argument, and then interrupted, it fails to modify the
+	bit mask arguments, thus implying that all descriptors
+	are ready (although they may not be).
+	
+	If the timeout argument is specified, select() behaves the
+	way one would expect, setting all the masks to zero before
+	returning.
+
+	This inconsistency is not documented.  To be fair to the
+	implementer, neither the manual page nor the "4.2 System
+	Manual" specifies what select() should do when it is
+	interrupted.
+
+Repeat-By:
+	Run this program:
+
+	#include <sys/time.h>
+	#include <signal.h>
+
+	catcher(){}
+
+	main()
+	{
+		struct timeval tv;
+		int fd;
+
+		signal(SIGALRM, catcher);
+		fd = 1;
+		tv.tv_sec = 10; tv.tv_usec = 0;
+		alarm(2);
+		select(1, &fd, 0, 0, &tv);
+		printf("with tv: %d\n", fd);	
+
+		signal(SIGALRM, catcher);
+		fd = 1;
+		alarm(2);
+		select(1, &fd, 0, 0, 0);
+		printf("no tv: %d\n", fd);	
+	}
+
+	It prints:
+	
+	with tv: 0
+	no tv: 1
+
+Suggested Fix (untested!):
+	In the select() function in sys/sys/sys_generic.c, some
+	attempt is made to clean up after an interrupt IF a
+	timeout is specified.  A similar clean-up should be
+	done even if no timeout is specified.
+	
+	I don't feel like trying to test this fix, since I
+	have a workaround in my program.  However, I believe
+	this version of the code (between the "lqsave = u.u_qsave"
+	and the "splx(s)" of the original code) should work.
+
+	lqsave = u.u_qsave;
+	if (setjmp(&u.u_qsave)) {
+		if (uap->tv)
+			untimeout(unselect, (caddr_t)u.u_procp);
+		u.u_error = EINTR;
+		splx(s);
+		goto done;
+	}
+	if (uap->tv)
+		timeout(unselect, (caddr_t)u.u_procp, hzto(&atv));
+	sleep((caddr_t)&selwait, PZERO+1);
+	u.u_qsave = lqsave;
+	if (uap->tv)
+		untimeout(unselect, (caddr_t)u.u_procp);
+	splx(s);

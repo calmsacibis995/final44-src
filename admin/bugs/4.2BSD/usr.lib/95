@@ -1,0 +1,149 @@
+Return-Path: <dlw@ucbopal.CC>
+Date: Thu, 7 Jun 84 19:29:33 pdt
+From: dlw@ucbopal.CC (David L Wasley)
+Subject: f77 I/O hangs with some illegal formats
+Index: usr.lib/libI77/fmt.c   4.2BSD   [Fix]
+
+Description:
+	The runtime I/O system will hang with some illegal format specs.
+	It should either "work" or abort. The symptom here is that the
+	program appears to never return from the READ statement.
+
+Repeat By:
+	Try the following:
+		program badio
+		character*20	fmt
+		fmt = "(0f0.0)"
+		read (*, fmt) x
+		end
+
+Fix:	The fix is to detect the illegal format spec. ANSI requires that
+	field widths and repeat counts be non-zero. Unfortunately the
+	fix involves a lot of changes to the (rather ugly) source.
+	However, the fix also cleans up some of the bad case handling
+	so I guess it's worth it. (Ralph, If you want the whole source
+	for fmt.c, I'll send it separately.)
+
+	The diff's below also incorporate 'o' (octal) and 'z' (hex)
+	format specifiers. Users have complained about the lack of same
+	for a long time.
+
+--------
+diff /usr/src/usr.lib/libI77/format.h   format.h
+--------
+2c2
+< char id_format[] = "@(#)format.h	1.1";
+---
+> char id_format[] = "@(#)format.h	1.2";
+47a48
+> #define	FMTUNKN	-1
+
+--------
+diff /usr/src/usr.lib/libI77/fmt.c	fmt.c
+--------
+2c2
+< char id_fmt[] = "@(#)fmt.c	1.4";
+---
+> char id_fmt[] = "@(#)fmt.c	1.5";
+63d62
+< 			{
+65,66c64,65
+< 			}
+< 			else	op_gen(GOTO,0,0,0,s);
+---
+> 			else
+> 				op_gen(GOTO,0,0,0,s);
+78,79c77,84
+< 	if(ne_d(s,&t)) return(t);
+< 	if(e_d(s,&t)) return(t);
+---
+> 	if ((n=ne_d(s,&t))==FMTOK)
+> 		return(t);
+> 	else if (n==FMTERR)
+> 		return(FMTERR);
+> 	if ((n=e_d(s,&t))==FMTOK)
+> 		return(t);
+> 	else if (n==FMTERR)
+> 		return(FMTERR);
+80a86
+> 	if (n == 0) { fmtptr = s; return(FMTERR); }
+126c132
+< 			{	fmtptr = s; return(FMTERR); }
+---
+> 			{	fmtptr = --s; return(FMTERR); }
+134c140
+< 		default: fmtptr = s; return(0);
+---
+> 		default: fmtptr = s; return(FMTUNKN);
+150c156,158
+< #ifndef KOSHER
+---
+> #ifdef KOSHER
+> 		else { fmtptr = s; return(FMTERR); }
+> #else
+153,155d160
+< #ifdef KOSHER
+< 		fmtptr = s; return(FMTERR);
+< #endif
+164c169
+< 	default: fmtptr = s; return(0);
+---
+> 	default: fmtptr = s; return(FMTUNKN);
+175a181
+> 	if (n == 0) goto ed_err;
+184c190
+< 		if (w==0) break;
+---
+> 		if (w==0) goto ed_err;
+202a209
+> 		if (e==0) goto ed_err;
+207c214
+< 		if (w==0) break;
+---
+> 		if (w==0) goto ed_err;
+212c219
+< 		if(*s>='0' && *s<='9')
+---
+> 		if(isdigit(*s))
+214c221,226
+< 			if(w==0) break;
+---
+> #ifdef	KOSHER
+> 			if (w==0) goto ed_err;
+> #else
+> 			if (w==0) op_gen(A,0,0,0,s);
+> 			else
+> #endif
+222c234
+< 		if (w==0) break;
+---
+> 		if (w==0) goto ed_err;
+229a242,245
+> #ifndef	KOSHER
+> 	case 'o':	/*** octal format - NOT STANDARD FORTRAN ***/
+> 	case 'z':	/*** hex   format - NOT STANDARD FORTRAN ***/
+> #endif
+232c248
+< 		if (w==0) break;
+---
+> 		if (w==0) goto ed_err;
+242a259,264
+> #ifndef KOSHER
+> 		if (c == 'o')
+> 			op_gen(R,8,1,0,s);
+> 		else if (c == 'z')
+> 			op_gen(R,16,1,0,s);
+> #endif
+243a266,269
+> #ifndef KOSHER
+> 		if (c == 'o' || c == 'z')
+> 			op_gen(R,10,1,0,s);
+> #endif
+249c275
+< 		return(FMTERR);
+---
+> 		return(FMTUNKN);
+252a279,281
+> ed_err:
+> 	fmtptr = --s;
+> 	return(FMTERR);

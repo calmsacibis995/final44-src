@@ -1,0 +1,121 @@
+From serge@okeeffe.Berkeley.EDU  Tue Jun 27 22:19:56 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA00425; Tue, 27 Jun 89 22:19:56 -0700
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA09385; Tue, 27 Jun 89 22:18:27 -0700
+Received: by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA00412; Tue, 27 Jun 89 22:19:49 -0700
+Date: Tue, 27 Jun 89 22:19:49 -0700
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8906280519.AA00412@okeeffe.Berkeley.EDU>
+Subject: file doesn't print symbolic link value
+Index: usr.bin/file 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	File doesn't print what the symbolic link points to.
+	It also misprints `#!/dir/file' constructs.
+Fix:
+diff -c /usr/src/usr.bin/file/file.c ./file.c
+*** /usr/src/usr.bin/file/file.c	Thu May 11 13:32:55 1989
+--- ./file.c	Tue Jun 27 20:48:17 1989
+***************
+*** 129,135 ****
+  	(void)printf("%s:\t", inname);
+  
+  	/* first try judging the file based on its filesystem status */
+! 	if (!fsmagic(&sb))
+  		if (!sb.st_size)
+  			fputs("empty", stdout);
+  		else if ((fd = open(inname, O_RDONLY)) < 0) {
+--- 129,135 ----
+  	(void)printf("%s:\t", inname);
+  
+  	/* first try judging the file based on its filesystem status */
+! 	if (!fsmagic(&sb, inname))
+  		if (!sb.st_size)
+  			fputs("empty", stdout);
+  		else if ((fd = open(inname, O_RDONLY)) < 0) {
+diff -c /usr/src/usr.bin/file/fsmagic.c ./fsmagic.c
+*** /usr/src/usr.bin/file/fsmagic.c	Tue Oct 18 18:27:50 1988
+--- ./fsmagic.c	Tue Jun 27 20:49:37 1989
+***************
+*** 21,27 ****
+  static char sccsid[] = "@(#)fsmagic.c	5.3 (Berkeley) 10/18/88";
+  #endif /* not lint */
+  
+! #include <sys/types.h>
+  #include <sys/stat.h>
+  #include <stdio.h>
+  #include "file.h"
+--- 21,27 ----
+  static char sccsid[] = "@(#)fsmagic.c	5.3 (Berkeley) 10/18/88";
+  #endif /* not lint */
+  
+! #include <sys/param.h>
+  #include <sys/stat.h>
+  #include <stdio.h>
+  #include "file.h"
+***************
+*** 30,38 ****
+   * TODO add code to handle V7 MUX and Blit MUX files
+   */
+  
+! fsmagic(sb)
+  	register struct stat *sb;
+  {
+  
+  	switch (sb->st_mode & S_IFMT) {
+  	case S_IFDIR:
+--- 30,41 ----
+   * TODO add code to handle V7 MUX and Blit MUX files
+   */
+  
+! fsmagic(sb, file)
+  	register struct stat *sb;
++ 	char *file;
+  {
++ 	char	slink[MAXPATHLEN + 1];
++ 	int	size;
+  
+  	switch (sb->st_mode & S_IFMT) {
+  	case S_IFDIR:
+***************
+*** 56,61 ****
+--- 59,70 ----
+  #ifdef S_IFLNK
+  	case S_IFLNK:
+  		fputs("symbolic link", stdout);
++ 		size = readlink(file, slink, sizeof (slink) - 1);
++ 		if (size >= 0) {
++ 			slink[size] = '\0';
++ 			fputs(" to ", stdout);
++ 			fputs(slink, stdout);
++ 		}
+  		return(1);
+  #endif
+  #ifdef S_IFSOCK
+diff -c /usr/src/usr.bin/file/magic ./magic
+*** /usr/src/usr.bin/file/magic	Wed Oct 19 09:15:58 1988
+--- ./magic	Tue Jun 27 22:10:28 1989
+***************
+*** 35,43 ****
+  0	string		#!\ /bin/awk	awk commands text
+  0	string		#!/bin/awk	awk commands text
+  0	string		#!\ 		commands text
+! >3	byte		>\0		for %s
+  0	string		#!		commands text
+! >3	byte		>\0		for %s
+  
+  # An "antique" kernel is either unmodified early V7, without DMR's 1979
+  # mod for #!, or any kernel derived from a pre-v7 kernel (i.e., System V)
+--- 35,43 ----
+  0	string		#!\ /bin/awk	awk commands text
+  0	string		#!/bin/awk	awk commands text
+  0	string		#!\ 		commands text
+! >3	byte		>0		for %s
+  0	string		#!		commands text
+! >2	byte		>0		for %s
+  
+  # An "antique" kernel is either unmodified early V7, without DMR's 1979
+  # mod for #!, or any kernel derived from a pre-v7 kernel (i.e., System V)

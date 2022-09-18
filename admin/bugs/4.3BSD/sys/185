@@ -1,0 +1,908 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Fri Feb 26 16:10:29 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.26)
+	id AA14612; Fri, 26 Feb 88 16:10:29 PST
+Received: by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA05602; Fri, 26 Feb 88 16:08:11 PST
+Received: by voder.nsc.com (5.51/NSC 1.4)
+	id AA04371; Fri, 26 Feb 88 15:36:54 PST
+Date: Fri, 26 Feb 88 15:36:54 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Message-Id: <8802262336.AA04371@voder.nsc.com>
+Subject: ht driver enhancements/fixes +FIX
+Index: 	sys/vaxmba/{htreg.h,ht.c} 4.3BSD
+Apparently-To: ucbvax!4bsd-bugs
+
+Description:
+	Detailed description of the problem, suggestion, or complaint.
+Repeat-By:
+	Procedure to repeat the problem.
+Fix:
+	The following patches fix or change the following:
+
+	1)  SI tri-density drives are completely supported.
+	2)  The MTIOCIEOT and MTIOCEEOT ioctl()s (to ignore and enable EOT
+	    errors) are supported.
+	3)  Tape records longer than the buffer passed to read() return ENOMEM.
+	4)  Attempts to write past EOT return ENOSPC unless MTIOCIEOT done.
+	5)  Serious error conditions are logged to the system error log.
+	6)  Simple read and write errors return errors without obnoxious
+	    error reports to the user's terminal or system log.
+	7)  Code for handling error reports and for handling control
+	    operations is reorganized and fixed.
+	8)  Close no longer hangs onto chtbuf while the slave is rewinding.
+	    This allows other slaves on the same formatter to continue
+	    operation concurrently.
+	9)  A race condition in htopen() is fixed.
+	10) The driver is now extensively commented.
+	11) Errors in existing comments are corrected.
+	12) The unused sc_mi field in tu_softc[] is eliminated.
+	13) No longer any reason to keep rhtbuf around.  N.B.  This depends
+	    on changes to the raw I/O system previously posted.  If you
+	    haven't installed those changes edit the patch so that rhtbuf[]
+	    isn't deleted, and the two physio() calls aren't changed.
+	14) Short tape records no longer return an error.  That's what the
+	    residual count is for.
+	15) File spacing operations use a new manifest constant MAXFC for the
+	    frame count, instead of INF.  Now less likely to fail on huge
+	    files written with small records.
+
+	To apply this patch:
+
+		cd /sys
+		patch -p1 < thisfile
+
+Index: sys/vaxmba/htreg.h
+
+RCS file: RCS/htreg.h,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1003648	Fri Feb 26 14:30:55 1988
+--- /tmp/,RCSt2003648	Fri Feb 26 14:30:56 1988
+***************
+*** 44,50 ****
+  #define	HTDS_MOL	0010000		/* medium on line */
+  #define	HTDS_WRL	0004000		/* write lock */
+  #define	HTDS_EOT	0002000		/* end of tape */
+! /* bit 9 is unused */
+  #define	HTDS_DPR	0000400		/* drive present (always 1) */
+  #define	HTDS_DRY	0000200		/* drive ready */
+  #define	HTDS_SSC	0000100		/* slave status change */
+--- 44,50 ----
+  #define	HTDS_MOL	0010000		/* medium on line */
+  #define	HTDS_WRL	0004000		/* write lock */
+  #define	HTDS_EOT	0002000		/* end of tape */
+! #define	HTDS_GCR	0001000		/* gcr status */
+  #define	HTDS_DPR	0000400		/* drive present (always 1) */
+  #define	HTDS_DRY	0000200		/* drive ready */
+  #define	HTDS_SSC	0000100		/* slave status change */
+***************
+*** 56,62 ****
+  #define	HTDS_SLA	0000001		/* slave attention */
+  
+  #define	HTDS_BITS \
+! "\10\20ATA\17ERR\16PIP\15MOL\14WRL\13EOT\11DPR\10DRY\
+  \7SSC\6PES\5SDWN\4IDB\3TM\2BOT\1SLA"
+  
+  /* hter */
+--- 56,62 ----
+  #define	HTDS_SLA	0000001		/* slave attention */
+  
+  #define	HTDS_BITS \
+! "\10\20ATA\17ERR\16PIP\15MOL\14WRL\13EOT\12GCR\11DPR\10DRY\
+  \7SSC\6PES\5SDWN\4IDB\3TM\2BOT\1SLA"
+  
+  /* hter */
+***************
+*** 101,108 ****
+  #define	HTTC_SAC	0020000		/* slave address change */
+  #define	HTTC_EAODTE	0010000		/* enable abort on data xfer errors */
+  /* bits 8-10 are density select */
+! #define	HTTC_800BPI	0001400		/* in bits 8-10, dens=1600 */
+! #define	HTTC_1600BPI	0002000		/* in bits 8-10, dens=800 */
+  /* bits 4-7 are format select */
+  #define	HTTC_PDP11	0000300		/* in bits 4-7, pdp11 normal format */
+  #define	HTTC_EVEN	0000010		/* select even parity */
+--- 101,109 ----
+  #define	HTTC_SAC	0020000		/* slave address change */
+  #define	HTTC_EAODTE	0010000		/* enable abort on data xfer errors */
+  /* bits 8-10 are density select */
+! #define	HTTC_800BPI	0001400		/* in bits 8-10, dens=800 */
+! #define	HTTC_1600BPI	0002000		/* in bits 8-10, dens=1600 */
+! #define	HTTC_6250BPI	0002400		/* in bits 8-10, dens=6250 */
+  /* bits 4-7 are format select */
+  #define	HTTC_PDP11	0000300		/* in bits 4-7, pdp11 normal format */
+  #define	HTTC_EVEN	0000010		/* select even parity */
+
+Index: sys/vaxmba/ht.c
+
+RCS file: RCS/ht.c,v
+retrieving revision 1.1
+retrieving revision 1.9
+diff -c -r1.1 -r1.9
+*** /tmp/,RCSt1003662	Fri Feb 26 14:31:19 1988
+--- /tmp/,RCSt2003662	Fri Feb 26 14:31:20 1988
+***************
+*** 12,21 ****
+   * TM03/TU?? tape driver
+   *
+   * TODO:
+-  *	cleanup messages on errors
+   *	test ioctl's
+-  *	see how many rewind interrups we get if we kick when not at BOT
+-  *	fixup rle error on block tape code
+   */
+  #include "../machine/pte.h"
+  
+--- 12,18 ----
+***************
+*** 31,37 ****
+--- 28,36 ----
+  #include "mtio.h"
+  #include "cmap.h"
+  #include "uio.h"
++ #include "kernel.h"
+  #include "tty.h"
++ #include "syslog.h"
+  
+  #include "../vax/cpu.h"
+  #include "mbareg.h"
+***************
+*** 38,44 ****
+  #include "mbavar.h"
+  #include "htreg.h"
+  
+- struct	buf	rhtbuf[NHT];
+  struct	buf	chtbuf[NHT];
+  
+  short	httypes[] =
+--- 37,42 ----
+***************
+*** 54,78 ****
+  /* bits in minor device */
+  #define	TUUNIT(dev)	(minor(dev)&03)
+  #define	H_NOREWIND	04
+! #define	H_1600BPI	08
+  
+  #define HTUNIT(dev)	(tutoht[TUUNIT(dev)])
+  
+! #define	INF	(daddr_t)1000000L	/* a block number that wont exist */
+  
+  struct	tu_softc {
+! 	char	sc_openf;
+! 	char	sc_flags;
+! 	daddr_t	sc_blkno;
+! 	daddr_t	sc_nxrec;
+! 	u_short	sc_erreg;
+! 	u_short	sc_dsreg;
+! 	short	sc_resid;
+! 	short	sc_dens;
+! 	struct	mba_device *sc_mi;
+! 	int	sc_slave;
+  	struct	tty *sc_ttyp;		/* record user's tty for errors */
+  } tu_softc[NTU];
+  short	tutoht[NTU];
+  
+  /*
+--- 52,78 ----
+  /* bits in minor device */
+  #define	TUUNIT(dev)	(minor(dev)&03)
+  #define	H_NOREWIND	04
+! #define	H_1600BPI	010
+! #define	H_6250BPI	020
+  
+  #define HTUNIT(dev)	(tutoht[TUUNIT(dev)])
+  
+! #define	INF	(daddr_t)1000000L	/* a block number that won't exist */
+! #define	MAXFC	32768			/* maximum frame count */
+  
+  struct	tu_softc {
+! 	char	sc_openf;		/* exclusive open */
+! 	char	sc_flags;		/* state flags */
+! 	daddr_t	sc_blkno;		/* next block to transfer */
+! 	daddr_t	sc_nxrec;		/* next record on tape */
+! 	u_short	sc_erreg;		/* image of hter */
+! 	u_short	sc_dsreg;		/* image of htds */
+! 	short	sc_resid;		/* residual from transfer */
+! 	short	sc_dens;		/* sticky selected density */
+! 	int	sc_slave;		/* slave number on formatter */
+  	struct	tty *sc_ttyp;		/* record user's tty for errors */
+  } tu_softc[NTU];
++ /* slave to controller mapping table */
+  short	tutoht[NTU];
+  
+  /*
+***************
+*** 81,86 ****
+--- 81,87 ----
+  #define	H_WRITTEN 1	/* last operation was a write */
+  #define H_ERASED  2	/* last write retry was an erase gap */
+  #define H_REWIND  4	/* last unit start was a rewind */
++ #define	H_IEOT    8	/* ignore EOT condition */
+  
+  char	hter_bits[] = HTER_BITS;
+  char	htds_bits[] = HTDS_BITS;
+***************
+*** 102,108 ****
+  
+  	htaddr->httc = sn;
+  	if (htaddr->htdt & HTDT_SPR) {
+- 		sc->sc_mi = mi;
+  		sc->sc_slave = sn;
+  		tutoht[ms->ms_unit] = mi->mi_unit;
+  		return (1);
+--- 103,108 ----
+***************
+*** 110,115 ****
+--- 110,122 ----
+  		return (0);
+  }
+  
++ /*
++  * Open the device.  Tapes are unique open
++  * devices, so we refuse if it is already open.
++  * We also check that a tape is available, and
++  * don't block waiting here; if you want to wait
++  * for a tape you should timeout in user code.
++  */
+  htopen(dev, flag)
+  	dev_t dev;
+  	int flag;
+***************
+*** 126,150 ****
+  	if ((sc = &tu_softc[tuunit])->sc_openf)
+  		return (EBUSY);
+  	olddens = sc->sc_dens;
+! 	dens = sc->sc_dens =
+! 	    ((minor(dev)&H_1600BPI)?HTTC_1600BPI:HTTC_800BPI)|
+! 		HTTC_PDP11|sc->sc_slave;
+  	htcommand(dev, HT_SENSE, 1);
+  	sc->sc_dens = olddens;
+  	if ((sc->sc_dsreg & HTDS_MOL) == 0) {
+  		uprintf("tu%d: not online\n", tuunit);
+  		return (EIO);
+  	}
+  	if ((flag&FWRITE) && (sc->sc_dsreg&HTDS_WRL)) {
+  		uprintf("tu%d: no write ring\n", tuunit);
+  		return (EIO);
+  	}
+  	if ((sc->sc_dsreg & HTDS_BOT) == 0 && (flag&FWRITE) &&
+  	    dens != sc->sc_dens) {
+  		uprintf("tu%d: can't change density in mid-tape\n", tuunit);
+  		return (EIO);
+  	}
+- 	sc->sc_openf = 1;
+  	sc->sc_blkno = (daddr_t)0;
+  	sc->sc_nxrec = INF;
+  	sc->sc_flags = 0;
+--- 133,168 ----
+  	if ((sc = &tu_softc[tuunit])->sc_openf)
+  		return (EBUSY);
+  	olddens = sc->sc_dens;
+! 	if (minor(dev) & H_6250BPI)
+! 		dens = sc->sc_dens = HTTC_6250BPI|HTTC_PDP11|sc->sc_slave;
+! 	else if (minor(dev) & H_1600BPI)
+! 		dens = sc->sc_dens = HTTC_1600BPI|HTTC_PDP11|sc->sc_slave;
+! 	else
+! 		dens = sc->sc_dens = HTTC_800BPI|HTTC_PDP11|sc->sc_slave;
+! 	sc->sc_openf = 1;
+! get:
+  	htcommand(dev, HT_SENSE, 1);
++ 	if (sc->sc_dsreg & HTDS_PIP) {
++ 		sleep((caddr_t)&lbolt, PZERO+1);
++ 		goto get;
++ 	}
+  	sc->sc_dens = olddens;
+  	if ((sc->sc_dsreg & HTDS_MOL) == 0) {
+  		uprintf("tu%d: not online\n", tuunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	if ((flag&FWRITE) && (sc->sc_dsreg&HTDS_WRL)) {
+  		uprintf("tu%d: no write ring\n", tuunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	if ((sc->sc_dsreg & HTDS_BOT) == 0 && (flag&FWRITE) &&
+  	    dens != sc->sc_dens) {
+  		uprintf("tu%d: can't change density in mid-tape\n", tuunit);
++ 		sc->sc_openf = 0;
+  		return (EIO);
+  	}
+  	sc->sc_blkno = (daddr_t)0;
+  	sc->sc_nxrec = INF;
+  	sc->sc_flags = 0;
+***************
+*** 153,158 ****
+--- 171,184 ----
+  	return (0);
+  }
+  
++ /*
++  * Close tape device.
++  *
++  * If tape was open for writing or last operation was
++  * a write, then write two EOF's and backspace over the last one.
++  * Unless this is a non-rewinding special file rewind the tape.
++  * Make the tape available to others.
++  */
+  htclose(dev, flag)
+  	register dev_t dev;
+  	register flag;
+***************
+*** 165,174 ****
+--- 191,209 ----
+  		htcommand(dev, HT_SREV, 1);
+  	}
+  	if ((minor(dev)&H_NOREWIND) == 0)
++ 		/*
++ 		 * 0 count means don't hang waiting for rewind complete.
++ 		 * Further opens are stalled until the rewind completes
++ 		 * by testing HTDS_PIP (positioning in progress).
++ 		 */
+  		htcommand(dev, HT_REW, 0);
+  	sc->sc_openf = 0;
+  }
+  
++ /*
++  * Execute a command on the tape drive
++  * a specified number of times.
++  */
+  htcommand(dev, com, count)
+  	dev_t dev;
+  	int com, count;
+***************
+*** 179,184 ****
+--- 214,223 ----
+  	bp = &chtbuf[HTUNIT(dev)];
+  	s = spl5();
+  	while (bp->b_flags&B_BUSY) {
++ 		/*
++ 		 * This special check is because B_BUSY never
++ 		 * gets cleared in the non-waiting rewind case.
++ 		 */
+  		if(bp->b_repcnt == 0 && (bp->b_flags&B_DONE))
+  			break;
+  		bp->b_flags |= B_WANTED;
+***************
+*** 191,196 ****
+--- 230,239 ----
+  	bp->b_repcnt = count;
+  	bp->b_blkno = 0;
+  	htstrategy(bp);
++ 	/*
++ 	 * In case of rewind from close, don't wait.
++ 	 * This is the only case where count can be 0.
++ 	 */
+  	if (count == 0)
+  		return;
+  	iowait(bp);
+***************
+*** 199,204 ****
+--- 242,250 ----
+  	bp->b_flags &= B_ERROR;
+  }
+  
++ /*
++  * Queue a tape operation.
++  */
+  htstrategy(bp)
+  	register struct buf *bp;
+  {
+***************
+*** 206,211 ****
+--- 252,260 ----
+  	register struct buf *dp;
+  	register int s;
+  
++ 	/*
++ 	 * Put transfer at end of unit queue.
++ 	 */
+  	bp->av_forw = NULL;
+  	dp = &mi->mi_tab;
+  	s = spl5();
+***************
+*** 214,224 ****
+--- 263,280 ----
+  	else
+  		dp->b_actl->av_forw = bp;
+  	dp->b_actl = bp;
++ 	/*
++ 	 * If the controller is not busy, get
++ 	 * it going.
++ 	 */
+  	if (dp->b_active == 0)
+  		mbustart(mi);
+  	splx(s);
+  }
+  
++ /*
++  * Start activity on an ht controller.
++  */
+  htustart(mi)
+  	register struct mba_device *mi;
+  {
+***************
+*** 229,267 ****
+  	daddr_t blkno;
+  
+  	htaddr->httc = sc->sc_dens;
+! #ifdef	notdef
+! 	/* unneeded, may hang controller */
+! 	if (bp == &chtbuf[HTUNIT(bp->b_dev)] && bp->b_command == HT_SENSE) {
+! 		htaddr->htcs1 = HT_SENSE|HT_GO;
+! 		mbclrattn(mi);
+! 	}
+! #endif
+  	sc->sc_dsreg = htaddr->htds;
+  	sc->sc_erreg = htaddr->hter;
+  	sc->sc_resid = htaddr->htfc;
+  	sc->sc_flags &= ~(H_WRITTEN|H_REWIND);
+  	if ((htaddr->htdt & HTDT_SPR) == 0 || (htaddr->htds & HTDS_MOL) == 0)
+  		if (sc->sc_openf > 0)
+  			sc->sc_openf = -1;
+  	if (sc->sc_openf < 0) {
+  		bp->b_flags |= B_ERROR;
+  		return (MBU_NEXT);
+  	}
+! 	if (bp != &chtbuf[HTUNIT(bp->b_dev)]) {
+! 		if (bdbtofsb(bp->b_blkno) > sc->sc_nxrec) {
+! 			bp->b_flags |= B_ERROR;
+! 			bp->b_error = ENXIO;
+! 			return (MBU_NEXT);
+! 		}
+! 		if (bdbtofsb(bp->b_blkno) == sc->sc_nxrec &&
+! 		    bp->b_flags&B_READ) {
+! 			bp->b_resid = bp->b_bcount;
+! 			clrbuf(bp);
+! 			return (MBU_NEXT);
+! 		}
+! 		if ((bp->b_flags&B_READ)==0)
+! 			sc->sc_nxrec = bdbtofsb(bp->b_blkno) + 1;
+! 	} else {
+  		if (bp->b_command == HT_SENSE)
+  			return (MBU_NEXT);
+  		if (bp->b_command == HT_REW)
+--- 285,317 ----
+  	daddr_t blkno;
+  
+  	htaddr->httc = sc->sc_dens;
+! 	/*
+! 	 * Record pre-transfer status (e.g. for HT_SENSE)
+! 	 */
+  	sc->sc_dsreg = htaddr->htds;
+  	sc->sc_erreg = htaddr->hter;
+  	sc->sc_resid = htaddr->htfc;
++ 	/*
++ 	 * Default is that last command was NOT a write command;
++ 	 * if we do a write command we will notice this in htdtint().
++ 	 */
+  	sc->sc_flags &= ~(H_WRITTEN|H_REWIND);
+  	if ((htaddr->htdt & HTDT_SPR) == 0 || (htaddr->htds & HTDS_MOL) == 0)
+  		if (sc->sc_openf > 0)
+  			sc->sc_openf = -1;
+  	if (sc->sc_openf < 0) {
++ 		/*
++ 		 * Have had a hard error on a non-raw tape
++ 		 * or the tape unit is now unavailable
++ 		 * (e.g. taken off line).
++ 		 */
+  		bp->b_flags |= B_ERROR;
+  		return (MBU_NEXT);
+  	}
+! 	if (bp == &chtbuf[HTUNIT(bp->b_dev)]) {
+! 		/*
+! 		 * Execute control operation with the specified count.
+! 		 */
+  		if (bp->b_command == HT_SENSE)
+  			return (MBU_NEXT);
+  		if (bp->b_command == HT_REW)
+***************
+*** 271,279 ****
+--- 321,366 ----
+  		htaddr->htcs1 = bp->b_command|HT_GO;
+  		return (MBU_STARTED);
+  	}
++ 	/*
++ 	 * The following checks handle boundary cases for operation
++ 	 * on non-raw tapes.  On raw tape the initialization of
++ 	 * sc->sc_nxrec by htphys causes them to be skipped normally
++ 	 * (except in the case of retries).
++ 	 */
++ 	if (bdbtofsb(bp->b_blkno) > sc->sc_nxrec) {
++ 		/*
++ 		 * Can't read past known end-of-file.
++ 		 */
++ 		bp->b_flags |= B_ERROR;
++ 		bp->b_error = ENXIO;
++ 		return (MBU_NEXT);
++ 	}
++ 	if (bdbtofsb(bp->b_blkno) == sc->sc_nxrec && bp->b_flags&B_READ) {
++ 		/*
++ 		 * Reading at end of file returns 0 bytes.
++ 		 */
++ 		bp->b_resid = bp->b_bcount;
++ 		clrbuf(bp);
++ 		return (MBU_NEXT);
++ 	}
++ 	if ((bp->b_flags&B_READ)==0)
++ 		/*
++ 		 * Writing sets EOF
++ 		 */
++ 		sc->sc_nxrec = bdbtofsb(bp->b_blkno) + 1;
++ 	/*
++ 	 * If the data transfer command is in the correct place,
++ 	 * set up all the registers except the csr, and give
++ 	 * control over to the MASSBUS adapter routines, to
++ 	 * wait for resources to start the i/o.
++ 	 */
+  	if ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) {
+  		htaddr->htfc = -bp->b_bcount;
+  		if ((bp->b_flags&B_READ) == 0) {
++ 			/*
++ 			 * On write error retries erase the
++ 			 * inter-record gap before rewriting.
++ 			 */
+  			if (mi->mi_tab.b_errcnt) {
+  				if ((sc->sc_flags & H_ERASED) == 0) {
+  					sc->sc_flags |= H_ERASED;
+***************
+*** 280,295 ****
+  					htaddr->htcs1 = HT_ERASE | HT_GO;
+  					return (MBU_STARTED);
+  				}
+  				sc->sc_flags &= ~H_ERASED;
+  			}
+! 			if (htaddr->htds & HTDS_EOT) {
+  				bp->b_resid = bp->b_bcount;
+  				bp->b_flags |= B_ERROR;
+  				return (MBU_NEXT);
+  			}
+  		}
+  		return (MBU_DODATA);
+  	}
+  	if (blkno < bdbtofsb(bp->b_blkno)) {
+  		htaddr->htfc = blkno - bdbtofsb(bp->b_blkno);
+  		htaddr->htcs1 = HT_SFORW|HT_GO;
+--- 367,394 ----
+  					htaddr->htcs1 = HT_ERASE | HT_GO;
+  					return (MBU_STARTED);
+  				}
++ 				/*
++ 				 * Completed erase of the inter-record gap
++ 				 * due to a write error; now retry the write
++ 				 * operation.
++ 				 */
+  				sc->sc_flags &= ~H_ERASED;
+  			}
+! 			if (htaddr->htds & HTDS_EOT &&
+! 			   (sc->sc_flags & H_IEOT) == 0) {
+  				bp->b_resid = bp->b_bcount;
+  				bp->b_flags |= B_ERROR;
++ 				bp->b_error = ENOSPC;
+  				return (MBU_NEXT);
+  			}
+  		}
+  		return (MBU_DODATA);
+  	}
++ 	/*
++ 	 * Tape positioned incorrectly;
++ 	 * set to seek forward or backward to the correct spot.
++ 	 * This happens for raw tapes only on error retries.
++ 	 */
+  	if (blkno < bdbtofsb(bp->b_blkno)) {
+  		htaddr->htfc = blkno - bdbtofsb(bp->b_blkno);
+  		htaddr->htcs1 = HT_SFORW|HT_GO;
+***************
+*** 300,305 ****
+--- 399,407 ----
+  	return (MBU_STARTED);
+  }
+  
++ /*
++  * ht data transfer interrupt routine.
++  */
+  htdtint(mi, mbsr)
+  	register struct mba_device *mi;
+  	int mbsr;
+***************
+*** 310,315 ****
+--- 412,420 ----
+  	int ds, er, mbs;
+  
+  	sc = &tu_softc[TUUNIT(bp->b_dev)];
++ 	/*
++ 	 * An operation completed... record status
++ 	 */
+  	ds = sc->sc_dsreg = MASKREG(htaddr->htds);
+  	er = sc->sc_erreg = MASKREG(htaddr->hter);
+  	sc->sc_resid = MASKREG(htaddr->htfc);
+***************
+*** 317,345 ****
+  	sc->sc_blkno++;
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
+  	if ((ds&(HTDS_ERR|HTDS_MOL)) != HTDS_MOL || mbs & MBSR_EBITS) {
+  		htaddr->htcs1 = HT_DCLR|HT_GO;
+  		mbclrattn(mi);
+! 		if (bp == &rhtbuf[HTUNIT(bp->b_dev)]) {
+! 			er &= ~HTER_FCE;
+! 			mbs &= ~(MBSR_DTABT|MBSR_MBEXC);
+! 		}
+! 		if (bp->b_flags & B_READ && ds & HTDS_PES)
+  			er &= ~(HTER_CSITM|HTER_CORCRC);
+! 		if (er&HTER_HARD || mbs&MBSR_EBITS || (ds&HTDS_MOL) == 0 ||
+  		    er && ++mi->mi_tab.b_errcnt >= 7) {
+  			if ((ds & HTDS_MOL) == 0 && sc->sc_openf > 0)
+  				sc->sc_openf = -1;
+! 			if ((er&HTER_HARD) == HTER_FCE &&
+! 			    (mbs&MBSR_EBITS) == (MBSR_DTABT|MBSR_MBEXC) &&
+! 			    (ds&HTDS_MOL))
+! 				goto noprint;
+! 			tprintf(sc->sc_ttyp, "tu%d: hard error bn%d mbsr=%b er=%b ds=%b\n",
+! 			    TUUNIT(bp->b_dev), bp->b_blkno,
+! 			    mbsr, mbsr_bits,
+! 			    sc->sc_erreg, hter_bits,
+! 			    sc->sc_dsreg, htds_bits);
+! noprint:
+  			bp->b_flags |= B_ERROR;
+  			return (MBD_DONE);
+  		}
+--- 422,461 ----
+  	sc->sc_blkno++;
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
++ 	/*
++ 	 * Check for errors.
++ 	 */
+  	if ((ds&(HTDS_ERR|HTDS_MOL)) != HTDS_MOL || mbs & MBSR_EBITS) {
+  		htaddr->htcs1 = HT_DCLR|HT_GO;
+  		mbclrattn(mi);
+! 		/*
+! 		 * Short records will be noticed and handled below.
+! 		 */
+! 		er &= ~HTER_FCE;
+! 		mbs &= ~(MBSR_DTABT|MBSR_MBEXC);
+! 		/*
+! 		 * If we were reading at 1600/6250 bpi and the error
+! 		 * was corrected, then don't consider this an error.
+! 		 */
+! 		if (bp->b_flags & B_READ && ds & (HTDS_PES|HTDS_GCR))
+  			er &= ~(HTER_CSITM|HTER_CORCRC);
+! 		if (er&HTER_HARD || mbs&MBSR_HARD || (ds&HTDS_MOL) == 0 ||
+  		    er && ++mi->mi_tab.b_errcnt >= 7) {
++ 			/*
++ 			 * Hard or non-i/o errors on non-raw tape
++ 			 * cause it to close.
++ 			 */
+  			if ((ds & HTDS_MOL) == 0 && sc->sc_openf > 0)
+  				sc->sc_openf = -1;
+! 			if (er&HTER_HARD || mbs&MBSR_EBITS || (ds&HTDS_MOL) == 0)
+! 				/*
+! 				 * Couldn't recover error
+! 				 */
+! 				log(LOG_WARNING, "tu%d: hard error bn%d mbsr=%b er=%b ds=%b\n",
+! 				    TUUNIT(bp->b_dev), bp->b_blkno,
+! 				    mbsr, mbsr_bits,
+! 				    sc->sc_erreg, hter_bits,
+! 				    sc->sc_dsreg, htds_bits);
+  			bp->b_flags |= B_ERROR;
+  			return (MBD_DONE);
+  		}
+***************
+*** 348,361 ****
+  	}
+  	bp->b_resid = 0;
+  	if (bp->b_flags & B_READ)
+! 		if (ds&HTDS_TM) {		/* must be a read, right? */
+  			bp->b_resid = bp->b_bcount;
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno);
+! 		} else if(bp->b_bcount > MASKREG(htaddr->htfc))
+! 			bp->b_resid = bp->b_bcount - MASKREG(htaddr->htfc);
+  	return (MBD_DONE);
+  }
+  
+  htndtint(mi)
+  	register struct mba_device *mi;
+  {
+--- 464,491 ----
+  	}
+  	bp->b_resid = 0;
+  	if (bp->b_flags & B_READ)
+! 		if (ds&HTDS_TM) {
+! 			/*
+! 			 * If we hit a tape mark update our position.
+! 			 */
+  			bp->b_resid = bp->b_bcount;
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno);
+! 		} else if (bp->b_bcount < sc->sc_resid) {
+! 			/*
+! 			 * The tape record was longer than the buffer passed
+! 			 * to read; return ENOMEM.
+! 			 */
+! 			bp->b_error = ENOMEM;
+! 			bp->b_flags |= B_ERROR;
+! 		} else {	/* bp->b_bcount >= sc->sc_resid */
+! 			bp->b_resid = bp->b_bcount - sc->sc_resid;
+! 		}
+  	return (MBD_DONE);
+  }
+  
++ /*
++  * ht non-data transfer interrupt routine.
++  */
+  htndtint(mi)
+  	register struct mba_device *mi;
+  {
+***************
+*** 374,379 ****
+--- 504,512 ----
+  	if (bp == 0)
+  		return (MBN_SKIP);
+  	sc = &tu_softc[TUUNIT(bp->b_dev)];
++ 	/*
++ 	 * An operation completed... record status
++ 	 */
+  	sc->sc_dsreg = ds;
+  	sc->sc_erreg = er;
+  	sc->sc_resid = fc;
+***************
+*** 384,392 ****
+  			ds |= HTDS_MOL;	
+  			break;
+  		case HT_SREV:
+! 			/* if backspace file hit bot, its not an error */
+  		        if (er == (HTER_NEF|HTER_FCE) && ds&HTDS_BOT &&
+! 			    bp->b_repcnt == INF)
+  				er &= ~HTER_NEF;
+  			break;
+  		}
+--- 517,525 ----
+  			ds |= HTDS_MOL;	
+  			break;
+  		case HT_SREV:
+! 			/* if backspace file hit bot, it's not an error */
+  		        if (er == (HTER_NEF|HTER_FCE) && ds&HTDS_BOT &&
+! 			    bp->b_repcnt == MAXFC)
+  				er &= ~HTER_NEF;
+  			break;
+  		}
+***************
+*** 397,403 ****
+  	if ((ds & (HTDS_ERR|HTDS_MOL)) != HTDS_MOL) {
+  		if ((ds & HTDS_MOL) == 0 && sc->sc_openf > 0)
+  			sc->sc_openf = -1;
+! 		tprintf(sc->sc_ttyp, "tu%d: hard error bn%d er=%b ds=%b\n",
+  		    TUUNIT(bp->b_dev), bp->b_blkno,
+  		    sc->sc_erreg, hter_bits, sc->sc_dsreg, htds_bits);
+  		bp->b_flags |= B_ERROR;
+--- 530,536 ----
+  	if ((ds & (HTDS_ERR|HTDS_MOL)) != HTDS_MOL) {
+  		if ((ds & HTDS_MOL) == 0 && sc->sc_openf > 0)
+  			sc->sc_openf = -1;
+! 		log(LOG_WARNING, "tu%d: hard error bn%d er=%b ds=%b\n",
+  		    TUUNIT(bp->b_dev), bp->b_blkno,
+  		    sc->sc_erreg, hter_bits, sc->sc_dsreg, htds_bits);
+  		bp->b_flags |= B_ERROR;
+***************
+*** 405,414 ****
+  	}
+  	if (bp == &chtbuf[HTUNIT(bp->b_dev)]) {
+  		if (sc->sc_flags & H_REWIND)
+! 			return (ds & HTDS_BOT ? MBN_DONE : MBN_RETRY);
+  		bp->b_resid = -sc->sc_resid;
+  		return (MBN_DONE);
+  	}
+  	if (ds & HTDS_TM)
+  		if (sc->sc_blkno > bdbtofsb(bp->b_blkno)) {
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) - fc;
+--- 538,550 ----
+  	}
+  	if (bp == &chtbuf[HTUNIT(bp->b_dev)]) {
+  		if (sc->sc_flags & H_REWIND)
+! 			return (MBN_DONE);
+  		bp->b_resid = -sc->sc_resid;
+  		return (MBN_DONE);
+  	}
++ 	/*
++ 	 * If we hit a tape mark update our position.
++ 	 */
+  	if (ds & HTDS_TM)
+  		if (sc->sc_blkno > bdbtofsb(bp->b_blkno)) {
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) - fc;
+***************
+*** 422,427 ****
+--- 558,566 ----
+  	return (MBN_RETRY);
+  }
+  
++ /*
++  * Raw interface for a read
++  */
+  htread(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+***************
+*** 431,439 ****
+  	errno = htphys(dev, uio);
+  	if (errno)
+  		return (errno);
+! 	return (physio(htstrategy, &rhtbuf[HTUNIT(dev)], dev, B_READ, minphys, uio));
+  }
+  
+  htwrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+--- 570,581 ----
+  	errno = htphys(dev, uio);
+  	if (errno)
+  		return (errno);
+! 	return (physio(htstrategy, (struct buf *)NULL, dev, B_READ, minphys, uio));
+  }
+  
++ /*
++  * Raw interface for a write
++  */
+  htwrite(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+***************
+*** 443,451 ****
+  	errno = htphys(dev, uio);
+  	if (errno)
+  		return (errno);
+! 	return (physio(htstrategy, &rhtbuf[HTUNIT(dev)], dev, B_WRITE, minphys, uio));
+  }
+  
+  htphys(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+--- 585,598 ----
+  	errno = htphys(dev, uio);
+  	if (errno)
+  		return (errno);
+! 	return (physio(htstrategy, (struct buf *)NULL, dev, B_WRITE, minphys, uio));
+  }
+  
++ /*
++  * Check that a raw device exists.
++  * If it does, set up sc_blkno and sc_nxrec
++  * so that the tape will appear positioned correctly.
++  */
+  htphys(dev, uio)
+  	dev_t dev;
+  	struct uio *uio;
+***************
+*** 495,501 ****
+  
+  		case MTFSF: case MTBSF:
+  			callcount = mtop->mt_count;
+! 			fcount = INF;
+  			break;
+  
+  		case MTFSR: case MTBSR:
+--- 642,648 ----
+  
+  		case MTFSF: case MTBSF:
+  			callcount = mtop->mt_count;
+! 			fcount = MAXFC;
+  			break;
+  
+  		case MTFSR: case MTBSR:
+***************
+*** 529,534 ****
+--- 676,689 ----
+  		mtget->mt_erreg = sc->sc_erreg;
+  		mtget->mt_resid = sc->sc_resid;
+  		mtget->mt_type = MT_ISHT;
++ 		break;
++ 
++ 	case MTIOCIEOT:
++ 		sc->sc_flags |= H_IEOT;
++ 		break;
++ 
++ 	case MTIOCEEOT:
++ 		sc->sc_flags &= ~H_IEOT;
+  		break;
+  
+  	default:

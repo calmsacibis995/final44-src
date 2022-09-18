@@ -1,0 +1,135 @@
+.TH GARCON l "26 January 1985"
+.\" @(#)GARCON
+.SH NAME
+\fIgarcon\fP \- remote server for load distribution
+.SH SYNOPSIS
+.B garcon
+[
+.B \-m[num clients] -l[load] -u[num users] -p -d -T -t
+]
+.br
+.SH DESCRIPTION
+.I Garcon 
+is the central point of a load distribution system.  It
+accepts requests to process jobs, handles routing of
+stdin, stdout and stderr, and returns an exit status to
+its client processes.  In addition, \fIgarcon\fP maintains
+an  open circuit with (many) local maitrd processes running
+on client machines, periodically 'broadcasting'
+its willingness to accept jobs for processing.
+.LP
+\fIGarcon\fP was designed to handle a small subset of unix commands.
+Because of the costs involved in job migration, it is only
+efficient for large, expensive jobs.  Presently, garcon
+recognizes requests for \fInroff, ccom, pi\fP and \fIdate\fP 
+(for testing).  Further definitions can be placed in the general
+configuration (/usr/local/maitrd.conf) file.  
+.LP
+The expected protocol for a client who
+wishes to interface to garcon is for them first to
+establish communication with their local \fImaitrd\fP
+process, indicating their intentions.  As the local
+\fImaitrd\fP maintains a list of all known garcon servers,
+it is able to give to the client the internet address of the first
+available garcon.  With this, the client connects to
+remote garcon and passes through a command line.
+Assuming the client has issued a valid request, \fIgarcon\fP
+will fork whatever program it has associated with
+the request type.  In this way, whatever front ends which
+are required on the remote end can remain transparent
+to the client.
+.br
+.LP
+\fIGarcon\fP promises to maintain stdin, stderr and stdout
+via the single socket connection it has achieved with its
+client.  It differentiates between the two output channels
+by prepending a header to every 1K packet sent back to the
+client.  Thus, it is up to the client to decode each packet
+as they arrive.  Because these three channels are the only 
+provided for, many applications will require a remote front
+end to interface with the program.  This front end will have
+to take care of \fIduping\fP garcon into believing that what
+it is seeing is really stdout and/or stderr.  An example
+is the garcon implementation of pi.  As pi uses stdout
+for logging error messages, obj as its output, and requires
+a file ending in .p (precluding stdin) as its input, front
+ends were required to give pi what it needed, while still
+using the three channels as the only route of communication between
+client and server.
+.LP
+The configuration file 
+/usr/local/maitrd.conf is used by both the garcon and maitrd 
+daemons.  All lines beginning with any of the special
+characters are interpreted by the daemons.  Lines beginning
+with unknown charaters are considered comments (best
+to use '#' though).  Each line that is not a comment
+begins with one of the special characters [S,C,I,B],
+followed \fIimmediately\fP by the argument(s).  A line starting
+with 'S', followed by a hostname indicates a server (for 
+use with maitrd); 'C' (plus hostname) indicates a 
+valid client; 'B' indicates that the argument is both a 
+client and a server; 'I' indicates a valid command for garcon.  
+An 'I' entry has three fields:
+.br
+	I<command>	<path>		<user name>
+.br
+.LP
+where <command> and <path> are the name and location
+of the valid command, and <user name> is a login name.
+For security reasons, when <command> is executed, permissons will
+be set to the uid/gid of the user name.  
+If no clients are explicitly listed, garcon will allow connections
+from anybody.  The configuration file is reread upon receipt 
+of a SIGHUP.
+.br
+.SH OPTIONS
+.TP
+.B \-m[num clients]
+Normally garcon will only provide services for
+a single client machine (first come only served). 
+This switch can be used to allow for as many
+clients as needed.
+.TP
+.B \-l[load]
+The server machine will be willing to accept jobs only when 
+the load is less than this value.  Default is to accept all jobs.
+.TP
+.B \-u[num users]
+If the number of users logged onto the machine is greater
+than num users, garcon will tell its clients that it is
+no longer willing to accept jobs.  Default is to
+ignore the number of users.
+.TP
+.B \-p
+The \fIgarcon\fP socket is marked as reusable.
+.TP
+.B \-d
+The debug flag prevents \fIgarcon\fP from detaching itself
+from the terminal.
+.TP
+.B \-t
+This causes \fIgarcon\fP to send tracing information to stderr.
+.TP
+.B \-T
+This causes tracing information to be time stamped.
+.br
+.SH FILES
+.br
+/usr/local/maitrd.conf		Configuration file 
+.br
+.SH SEE ALSO
+maitrd(l), Rpi(l), Rcc(l), mdc(l),  socket(2)
+.br
+.SH BUGS
+.LP
+A server's willingness to process should not be
+a binary value.  \fIMaitrd\fP should choose the best machine
+for the job, based on remote load, processing power and 
+estimated job size (simple to figure in some cases, 
+others are more difficult).
+.LP
+If a \fIgarcon\fP daemon is killed and then immediately
+restarted, it will not be able to bind to its socket
+due to the fact that closed sockets hang around in the kernel
+for a little while.  The \-p option will cause the new daemon
+to force the reuse of the socket.

@@ -1,0 +1,145 @@
+From genie.UUCP!scooter@cgl.ucsf.edu Wed Jun 17 23:21:53 1987
+Date: Wed, 17 Jun 87 23:15:18 PDT
+From: genie.UUCP!scooter@cgl.ucsf.edu (Scooter Morris)
+Subject: Fixes for bad144
+Index: etc/bad144.c 4.3BSD
+
+bad144 as distributed exibited two interesting symptoms:
+
+	1) "toggling" the bad block bits.  If you used the -f option
+	   on the same block twice, it essentially reformats the block,
+	   on the second time.  This is because if a hard error is detected
+	   during the format operation, it rewrites the header.  The fix
+	   was just to reverse the order of when the bad sector information
+	   is written.
+
+	2) bad144 allows the same block to be entered into the table more
+	   than once.  Some code was added to check for the preexistance
+	   of a block.
+
+*** /tmp/,RCSt1018335	Wed Jun 17 23:11:10 1987
+--- bad144.c	Fri Apr 17 19:21:23 1987
+***************
+*** 198,203
+  		i++;
+  	}
+  	if (add) {
+  		/*
+  		 * Sort the new bad sectors into the list.
+  		 * Then shuffle the replacement sectors so that
+
+--- 198,204 -----
+  		i++;
+  	}
+  	if (add) {
++ 		int j = 0;
+  		/*
+  		 * Sort the new bad sectors into the list.
+  		 * Then shuffle the replacement sectors so that
+***************
+*** 205,210
+  		 */
+  		qsort((char *)dkbad.bt_bad, nbad, sizeof (struct bt_bad),
+  		    compare);
+  		shift(f, nbad, nbad-new);
+  	}
+  	for (i = 0; i < 10 && i < dp->d_nsectors; i += 2) {
+
+--- 206,229 -----
+  		 */
+  		qsort((char *)dkbad.bt_bad, nbad, sizeof (struct bt_bad),
+  		    compare);
++ 		i = 0;    
++ 		while (i < nbad) {
++ 			if ((dkbad.bt_bad[i].bt_trksec == dkbad.bt_bad[i+1].bt_trksec) &&
++ 			    (dkbad.bt_bad[i].bt_cyl == dkbad.bt_bad[i+1].bt_cyl))
++ 			{
++ 				j = i;
++ 				nbad--;
++ 				while (j < nbad) {
++ 					dkbad.bt_bad[j].bt_trksec = dkbad.bt_bad[j+1].bt_trksec;
++ 					dkbad.bt_bad[j].bt_cyl = dkbad.bt_bad[j+1].bt_cyl; 
++ 					j++;
++ 				} 
++ 				dkbad.bt_bad[nbad].bt_trksec = -1;
++ 				dkbad.bt_bad[nbad].bt_cyl = -1;
++ 
++ 			}
++ 			i++;
++ 		}				
+  		shift(f, nbad, nbad-new);
+  	}
+  	for (i = 0; i < 10 && i < dp->d_nsectors; i += 2) {
+***************
+*** 452,457
+  	{ "rp06",	sizeof (struct rp06hdr), RP06_FMT,	rp06format },
+  	{ "eagle",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "2361",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "capricorn",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "rm03",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "rm05",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+
+--- 471,477 -----
+  	{ "rp06",	sizeof (struct rp06hdr), RP06_FMT,	rp06format },
+  	{ "eagle",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "2361",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
++ 	{ "2361a",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "capricorn",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "rm03",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "rm05",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+***************
+*** 457,462
+  	{ "rm05",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "9300",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "9766",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ 0, 0, 0, 0 }
+  };
+  
+
+--- 477,483 -----
+  	{ "rm05",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "9300",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ "9766",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
++ 	{ "9772",	sizeof (struct hpuphdr), HPUP_OKSECT,	hpupformat },
+  	{ 0, 0, 0, 0 }
+  };
+  
+***************
+*** 541,546
+  		Perror("ioctl");
+  	if ((n = read(fd, buf, fp->f_bufsize)) < 0)
+  		bzero(buf, fp->f_bufsize);
+  	if (fp->f_bic) {
+  		struct hpuphdr *xp = (struct hpuphdr *)buf;
+  
+
+--- 562,570 -----
+  		Perror("ioctl");
+  	if ((n = read(fd, buf, fp->f_bufsize)) < 0)
+  		bzero(buf, fp->f_bufsize);
++ 	if (fp->f_routine)
++ 		if ((*fp->f_routine)(fp, dp, blk, buf, n) != 0)
++ 			return;
+  	if (fp->f_bic) {
+  		struct hpuphdr *xp = (struct hpuphdr *)buf;
+  
+***************
+*** 546,554
+  
+  		xp->hpup_cyl &= ~fp->f_bic;
+  	}
+- 	if (fp->f_routine)
+- 		if ((*fp->f_routine)(fp, dp, blk, buf, n) != 0)
+- 			return;
+  	if (lseek(fd, (long)blk * dp->d_secsize, L_SET) < 0)
+  		Perror("lseek");
+  	if (nflag)
+
+--- 570,575 -----
+  
+  		xp->hpup_cyl &= ~fp->f_bic;
+  	}
+  	if (lseek(fd, (long)blk * dp->d_secsize, L_SET) < 0)
+  		Perror("lseek");
+  	if (nflag)
+

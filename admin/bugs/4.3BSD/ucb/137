@@ -1,0 +1,319 @@
+From ksb@h.cc.purdue.edu  Fri Nov  6 10:42:24 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.26)
+	id AA00526; Fri, 6 Nov 87 10:42:24 PST
+Received: from h.cc.purdue.edu by ucbvax.Berkeley.EDU (5.58/1.27)
+	id AA27315; Fri, 6 Nov 87 10:41:40 PST
+Received: by h.cc.purdue.edu (5.54/1.14)
+	id AA08806; Fri, 6 Nov 87 13:36:52 EST
+Date: Fri, 6 Nov 87 13:36:52 EST
+From: ksb@h.cc.purdue.edu (Kevin Braunsdorf)
+Message-Id: <8711061836.AA08806@h.cc.purdue.edu>
+Subject: Novice users leave stopped editors
+Index: 	ucb/ex 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Many novice users here at Purdue have been known to type ^Z
+	rather than ZZ at various times durring a login.  They re-
+	compile thier program and wonder where the changes went; they
+	then re-edit the file and make their changes.
+
+	When they try to logout csh informs them of stopped jobs and
+	they forground and save (!) the old versions of their files
+	(I know this is brain damage; but I live with it).
+Repeat-By:
+	% ex /etc/motd
+	:stop
+	% ex /etc/motd
+	....
+Fix:
+	We added yet another set option to vi/ex.  This is called
+	"set lock" which uses flock() to put a lock on the file
+	being edited.  If it cannot get the lock it will *not*
+	edit the file.  There are some problems with this implementation
+	(:set lock while one is editing the file doesn't even try to
+	get the lock because the file may have changed since we read it)!
+	But we are working on a fix.  We now put
+		setenv EXINIT "set lock"
+	in novice users .login's.
+
+	Context diffs to repeat our first stab at adding this to vi follow.
+	(We have VTABS installed here too.)	What do y'all think?
+
+	Kevin Braunsdorf, PUCC UNIX Group		"PUCIX" :-)
+
+diff -c -r /usr/src/ucb/ex/ex_data.c vi/ex_data.c
+*** /usr/src/ucb/ex/ex_data.c	Fri Dec 19 18:15:45 1986
+--- vi/ex_data.c	Thu Nov  5 18:50:36 1987
+***************
+*** 62,67 ****
+--- 62,68 ----
+  	"ignorecase",	"ic",	ONOFF,		0,	0,	0,
+  	"lisp",		0,	ONOFF,		0,	0,	0,
+  	"list",		0,	ONOFF,		0,	0,	0,
++ 	"lock",		"lk",	ONOFF,		0,	0,	0,
+  	"magic",	0,	ONOFF,		1,	1,	0,
+  	"mesg",		0,	ONOFF,		1,	1,	0,
+  	"modeline",	0,	ONOFF,		0,	0,	0,
+diff -c -r /usr/src/ucb/ex/ex_io.c vi/ex_io.c
+*** /usr/src/ucb/ex/ex_io.c	Wed Jul  8 20:26:40 1987
+--- vi/ex_io.c	Thu Nov  5 20:41:15 1987
+***************
+*** 8,13 ****
+--- 8,14 ----
+  static char *sccsid = "@(#)ex_io.c	7.11 (Berkeley) 6/7/85";
+  static char *rcsid = "$Id: ex_io.c,v 4.3.1.2 86/12/16 17:32:37 mjs Local $";
+  #endif not lint
++ #include <sys/file.h>
+  
+  #include "ex.h"
+  #include "ex_argv.h"
+***************
+*** 37,42 ****
+--- 38,45 ----
+  long	cntnull;		/* Count of nulls " */
+  long	cntodd;			/* Count of non-ascii characters " */
+  
++ int fd_flock = -1;		/* file descriptor holding flock (ksb) */
++ 
+  /*
+   * Parse file name for command encoded by comm.
+   * If comm is E then command is doomed and we are
+***************
+*** 238,243 ****
+--- 241,248 ----
+  		dup(pvec[1]);
+  		close(pvec[0]);
+  		close(2);	/* so errors don't mess up the screen */
++ 		if (fd_flock != -1)
++ 			close(fd_flock);
+  		open("/dev/null", 1);
+  		execl(svalue(SHELL), "sh", "-c", genbuf, 0);
+  		oerrno = errno; close(1); dup(2); errno = oerrno;
+***************
+*** 322,328 ****
+--- 327,349 ----
+  	int (*oldsusp)();
+  #endif SIGTSTP
+  
++ 	if ('e' == c && fd_flock != -1) {	/* drop lock */
++ 		close(fd_flock);
++ 		fd_flock = -1;
++ 	}
++ 
+  	io = open(file, 0);
++ 	if (io >= 0 && value(LOCK) == 1) {
++ 		if (-1 == flock(io, LOCK_EX|LOCK_NB)) {
++ 			if (EWOULDBLOCK == errno) {
++ 				printf(" [File is busy]");
++ 			}
++ 			close(io);
++ 			fd_flock = io = -1;
++ 		} else {
++ 			fd_flock = dup(io);
++ 		}
++ 	}
+  	if (io < 0) {
+  		if (c == 'e' && errno == ENOENT) {
+  			edited++;
+***************
+*** 441,449 ****
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	if (fstat(io, &statb) < 0)
+  		bsize = LBSIZE;
+! 	else {
+  		bsize = statb.st_blksize;
+  		if (bsize <= 0)
+  			bsize = LBSIZE;
+--- 462,470 ----
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	if (fstat(io, &statb) < 0) {
+  		bsize = LBSIZE;
+! 	} else {
+  		bsize = statb.st_blksize;
+  		if (bsize <= 0)
+  			bsize = LBSIZE;
+diff -c -r /usr/src/ucb/ex/ex_subr.c vi/ex_subr.c
+*** /usr/src/ucb/ex/ex_subr.c	Fri Dec 19 18:15:59 1986
+--- vi/ex_subr.c	Thu Nov  5 20:52:53 1987
+***************
+*** 933,940 ****
+--- 933,943 ----
+  	if (pid < 0)
+  		return (0);
+  	if (pid == 0) {
++ 		extern int fd_flock;
+  		close(0);
+  		dup(tfile);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		execl(EXPRESERVE, "expreserve", (char *) 0);
+  		exit(1);
+  	}
+diff -c -r /usr/src/ucb/ex/ex_temp.c vi/ex_temp.c
+*** /usr/src/ucb/ex/ex_temp.c	Fri Dec 19 18:16:01 1986
+--- vi/ex_temp.c	Thu Nov  5 20:53:19 1987
+***************
+*** 813,822 ****
+--- 813,825 ----
+  	if (pipe(pf)<0)
+  		pf[0] = pf[1] = -1;
+  	if (fork()==0) {
++ 		extern int fd_flock;
+  		close(0);
+  		close(1);
+  		dup(pf[0]);
+  		dup(pf[1]);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		execl("/usr/lib/makekey", "-", 0);
+  		execl("/lib/makekey", "-", 0);
+  		exit(1);
+diff -c -r /usr/src/ucb/ex/ex_unix.c vi/ex_unix.c
+*** /usr/src/ucb/ex/ex_unix.c	Fri Dec 19 18:16:07 1986
+--- vi/ex_unix.c	Thu Nov  5 20:54:48 1987
+***************
+*** 169,174 ****
+--- 169,175 ----
+  		error("No more processes");
+  	}
+  	if (pid == 0) {
++ 		extern int fd_flock;
+  		if (mode & 2) {
+  			close(0);
+  			dup(newstdin);
+***************
+*** 186,191 ****
+--- 187,194 ----
+  		}
+  		if (io)
+  			close(io);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		if (tfile)
+  			close(tfile);
+  #ifndef VMUNIX
+***************
+*** 261,266 ****
+--- 264,270 ----
+  			error("No more processes");
+  		}
+  		if (pid == 0) {
++ 			extern int fd_flock;
+  			setrupt();
+  			io = pvec[1];
+  			close(pvec[0]);
+***************
+*** 268,273 ****
+--- 272,279 ----
+  			/* bug fix to give child a different file descriptor
+  				--mjs, PUCC */
+  			close(tfile);
++ 			if (-1 != fd_flock)
++ 				close(fd_flock);
+  			if((tfile = open(tfname, O_RDONLY, 0)) < 1) {
+  				perror(tfname);  /* should never happen */
+  				exit(1);
+***************
+*** 324,334 ****
+--- 330,343 ----
+  		error(" Can't fork to execute recovery");
+  	}
+  	if (pid == 0) {
++ 		extern int fd_flock;
+  		close(2);
+  		dup(1);
+  		close(1);
+  		dup(pvec[1]);
+  	        close(pvec[1]);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		execl(EXRECOVER, "exrecover", svalue(DIRECTORY), file, (char *) 0);
+  		close(1);
+  		dup(2);
+diff -c -r /usr/src/ucb/ex/ex_vars.h vi/ex_vars.h
+*** /usr/src/ucb/ex/ex_vars.h	Fri Dec 19 18:16:11 1986
+--- vi/ex_vars.h	Thu Nov  5 18:46:57 1987
+***************
+*** 18,54 ****
+  #define IGNORECASE      8
+  #define LISP            9
+  #define LIST            10
+! #define MAGIC           11
+! #define MESG            12
+! #define MODELINE        13
+! #define NUMBER          14
+! #define OPEN            15
+! #define OPTIMIZE        16
+! #define PARAGRAPHS      17
+! #define PROMPT          18
+! #define READONLY        19
+! #define REDRAW          20
+! #define REMAP           21
+! #define REPORT          22
+! #define SCROLL          23
+! #define SECTIONS        24
+! #define SHELL           25
+! #define SHIFTWIDTH      26
+! #define SHOWMATCH       27
+! #define SLOWOPEN        28
+! #define SOURCEANY       29
+! #define TABSTOP         30
+! #define TAGLENGTH       31
+! #define TAGS            32
+! #define TERM            33
+! #define TERSE           34
+! #define TIMEOUT         35
+! #define TTYTYPE         36
+! #define VARIABLETAB	37
+! #define WARN            38
+! #define WINDOW          39
+! #define WRAPSCAN        40
+! #define WRAPMARGIN      41
+! #define WRITEANY        42
+  
+! #define	NOPTS	43
+--- 18,55 ----
+  #define IGNORECASE      8
+  #define LISP            9
+  #define LIST            10
+! #define LOCK		11
+! #define MAGIC           12
+! #define MESG            13
+! #define MODELINE        14
+! #define NUMBER          15
+! #define OPEN            16
+! #define OPTIMIZE        17
+! #define PARAGRAPHS      18
+! #define PROMPT          19
+! #define READONLY        20
+! #define REDRAW          21
+! #define REMAP           22
+! #define REPORT          23
+! #define SCROLL          24
+! #define SECTIONS        25
+! #define SHELL           26
+! #define SHIFTWIDTH      27
+! #define SHOWMATCH       28
+! #define SLOWOPEN        29
+! #define SOURCEANY       30
+! #define TABSTOP         31
+! #define TAGLENGTH       32
+! #define TAGS            33
+! #define TERM            34
+! #define TERSE           35
+! #define TIMEOUT         36
+! #define TTYTYPE         37
+! #define VARIABLETAB	38
+! #define WARN            39
+! #define WINDOW          40
+! #define WRAPSCAN        41
+! #define WRAPMARGIN      42
+! #define WRITEANY        43
+  
+! #define	NOPTS	44
+Only in /usr/src/ucb/ex: tags

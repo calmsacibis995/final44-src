@@ -1,0 +1,190 @@
+From decwrl!pyramid!lewey!lewey.AIT.COM!pkl@ucbvax.Berkeley.EDU  Fri Jan 30 01:27:43 1987
+Date: Tue, 27 Jan 87 11:30:57 PST
+From: decwrl!pkl@lewey.ait.com (Peter K. Lee)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: readv() on socket loses data if one of the io vector has a bad ptr
+Index: sys/sys/uipc_socket.c 4.3BSD
+
+Description:
+	If we use readv() to read from a socket (or pipes) and one
+	of the io vectors has a bad iov_base pointer, readv() will
+	return -1 with errno set to EFAULT.  Uiomove() fails but
+	soreceive assumes that the requested len is fully received
+	and discarded the entire mbuf.  This causes unreceived data
+	to be lost.
+
+Repeat-By:
+	Compile the following program (sockbug.c) by "cc sockbug.c".
+	Run it.  You will see that readv() on a socket loses the rest 
+	of the data after the error in readv().
+
+---- sockbug.c ----
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
+#include <sys/file.h>
+
+char	*alpha = "abcdefghijklmnopqrstuvwxyz";
+int	alphalen = 26;
+char	bufa[10], bufb[10], bufc[6];
+struct	iovec iov[3];
+int	niov = sizeof(iov) / sizeof(iov[0]);
+extern int errno;
+
+main()
+{
+	usefile();
+	usepipe();
+}
+
+
+usepipe()
+{
+	int	fd[2];
+	int	nread;
+	int	on = 1;
+	char	next;
+
+	printf("\nUsing Pipe/sockets\n");
+	if (pipe(fd) < 0) {
+		perror("pipe");
+		exit(1);
+	}
+	if (write(fd[1], alpha, alphalen) != alphalen) {
+		perror("write fd[1]");
+		exit(1);
+	}
+	if (ioctl(fd[0], FIONBIO, &on) < 0) {
+		perror("ioctl(FIONBIO)");
+		exit(1);
+	}
+
+	/*
+	 * Now, put a bad pointer into iov[1]
+	 */
+	clearbuf();
+	iov[1].iov_base = (caddr_t)0xafafafaf;
+	readtest(fd[0]);
+}
+
+
+usefile()
+{
+	int	fd;
+
+	printf("\nUsing File\n");
+	fd = open("tempfile", O_RDWR|O_CREAT|O_TRUNC, 0666);
+	if (fd < 0) {
+		perror("usefile: open");
+		exit(1);
+	}
+	if (write(fd, alpha, alphalen) != alphalen) {
+		perror("usefile: write");
+		exit(1);
+	}
+	if (lseek(fd, 0L, L_SET) < 0) {
+		perror("usefile: lseek");
+		exit(1);
+	}
+	clearbuf();
+	iov[1].iov_base = (caddr_t)0xfafafafa;
+	readtest(fd);
+}
+
+
+readtest(fd)
+	int fd;
+{
+	int	nread;
+	char	next;
+
+	nread = readv(fd, iov, niov);
+	if (nread < 0)
+		perror("readv");
+	printf("nread = %d\n", nread);
+	dumpbuf("bufa", bufa, sizeof(bufa));
+	dumpbuf("bufb", bufb, sizeof(bufb));
+	dumpbuf("bufc", bufc, sizeof(bufc));
+
+	nread = read(fd, &next, 1);
+	if (nread < 0)
+		perror("read");
+	printf("nread = %d\n", nread);
+	dumpbuf("next", &next, 1);
+}
+
+
+clearbuf()
+{
+	bzero(bufa, sizeof(bufa));
+	iov[0].iov_base = (caddr_t)bufa;
+	iov[0].iov_len = sizeof(bufa);
+
+	bzero(bufb, sizeof(bufb));
+	iov[1].iov_base = (caddr_t)bufb;
+	iov[1].iov_len = sizeof(bufb);
+
+	bzero(bufc, sizeof(bufc));
+	iov[2].iov_base = (caddr_t)bufc;
+	iov[2].iov_len = sizeof(bufc);
+}
+
+
+dumpbuf(name, buf, size)
+	char *name;
+	char *buf;
+	int size;
+{
+	int	i;
+
+	printf("%s: ", name);
+	for (i = 0;  i < size;  i++)
+		putchar(buf[i]);
+	putchar('\n');
+}
+---- end sockbug.c ----
+
+Fix:
+
+Calculate the actual number of bytes received by uiomove() and discard
+that number of bytes from receive sockbuf.
+
+*** /sys/sys/uipc_socket.c	Tue Aug 26 00:03:03 1986
+--- uipc_socket.c	Fri Nov 21 10:23:43 1986
+***************
+*** 441,446 ****
+--- 441,447 ----
+  	struct protosw *pr = so->so_proto;
+  	struct mbuf *nextrecord;
+  	int moff;
++ 	int oresid;		/* no. of bytes in uio before uiomove */
+  
+  	if (rightsp)
+  		*rightsp = 0;
+***************
+*** 548,554 ****
+  	while (m && uio->uio_resid > 0 && error == 0) {
+  		if (m->m_type != MT_DATA && m->m_type != MT_HEADER)
+  			panic("receive 3");
+! 		len = uio->uio_resid;
+  		so->so_state &= ~SS_RCVATMARK;
+  		if (tomark && len > tomark)
+  			len = tomark;
+--- 549,555 ----
+  	while (m && uio->uio_resid > 0 && error == 0) {
+  		if (m->m_type != MT_DATA && m->m_type != MT_HEADER)
+  			panic("receive 3");
+! 		oresid = len = uio->uio_resid;
+  		so->so_state &= ~SS_RCVATMARK;
+  		if (tomark && len > tomark)
+  			len = tomark;
+***************
+*** 558,563 ****
+--- 559,565 ----
+  		error =
+  		    uiomove(mtod(m, caddr_t) + moff, (int)len, UIO_READ, uio);
+  		s = splnet();
++ 		len = oresid - uio->uio_resid;	/* actual bytes received */
+  		if (len == m->m_len - moff) {
+  			if (flags & MSG_PEEK) {
+  				m = m->m_next;

@@ -1,0 +1,84 @@
+From stanonik@nprdc.arpa  Tue Jan  3 08:14:49 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA00977; Tue, 3 Jan 89 08:14:49 PST
+Received: from NPRDC.ARPA by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA29219; Tue, 3 Jan 89 08:13:05 PST
+Received: by nprdc.arpa (5.54/ 1.1)
+	id AA15352; Tue, 3 Jan 89 08:13:14 PST
+Date: Tue, 3 Jan 89 08:13:14 PST
+From: stanonik@nprdc.arpa (Ron Stanonik)
+Message-Id: <8901031613.AA15352@nprdc.arpa>
+Subject: imp messages cause system crash, 4.3bsd
+Index: 	sys/netimp/if_imphost.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	imp "interface reset" and "imp going down" messages
+	occassionally cause the system to crash.  The proximate
+	cause is a call to hostcompress (from hostreset) which
+	empties the hosttable (sc->imp_hosts), but fails to clear
+	a hosttable pointer (sc->imp_hostq).  If hostq was zero
+	when the hostreset occured (ie, no active connections),
+	then no problem, otherwise the kernel eventually tries
+	to reference into the hosttable using hostq (which is
+	probably no longer a hosttable mbuf) and gets a segmentation
+	fault.
+Repeat-By:
+	Hard to repeat.  We groveled around in crash dumps.  If
+	you have an ecu, you might try hitting the reset button
+	while you have active imp connections.  Depending on what
+	ends up in the hostq mbuf, you might crash.
+Fix:
+	The Berkeley networking updates contained a fix in hostslowtimo
+	to clear hostq before calling hostcompress.  We moved the
+	clearing of hostq into hostcompress.
+
+RCS file: RCS/if_imphost.c,v
+retrieving revision 1.2
+diff -c -r1.2 if_imphost.c
+*** /tmp/,RCSt1013362	Tue Jan  3 07:14:57 1989
+--- if_imphost.c	Fri Dec 30 07:30:28 1988
+***************
+*** 179,191 ****
+  hostcompress(unit)
+  	int unit;
+  {
+  	register struct mbuf *m, **mprev;
+  
+! 	mprev = &imp_softc[unit].imp_hosts;
+  	while (m = *mprev) {
+! 		if (mtod(m, struct hmbuf *)->hm_count == 0)
+  			*mprev = m_free(m);
+! 		else
+  			mprev = &m->m_next;
+  	}
+  }
+--- 179,195 ----
+  hostcompress(unit)
+  	int unit;
+  {
++ 	struct imp_softc *sc;
+  	register struct mbuf *m, **mprev;
+  
+! 	sc = &imp_softc[unit];
+! 	mprev = &sc->imp_hosts;
+  	while (m = *mprev) {
+! 		if (mtod(m, struct hmbuf *)->hm_count == 0) {
+  			*mprev = m_free(m);
+! 			if (sc->imp_hostq == m)
+! 				sc->imp_hostq = 0;
+! 		} else
+  			mprev = &m->m_next;
+  	}
+  }
+***************
+*** 223,230 ****
+  			} else {
+  				any = 1;
+  				hostrelease(hp);
+- 				if (sc->imp_hostq == m)
+- 					sc->imp_hostq = 0;
+  			}
+  		    }
+  		}
+--- 227,232 ----

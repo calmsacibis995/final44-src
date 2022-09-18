@@ -1,0 +1,108 @@
+Return-Path: <donn@utah-cs.ARPA>
+Date: Fri, 3 Oct 86 02:24:23 MDT
+From: donn@utah-cs.arpa (Donn Seeley)
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: Certain f77 arrays aren't printed correctly by dbx
+
+Subject: Certain f77 arrays aren't printed correctly by dbx
+Index:	bin/as 4.3BSD
+
+Description:
+	Here's a complaint from John McInerney:
+
+	----------------------------------------------------------------
+	...  The following Fortran program breaks dbx under just about
+	every 4.3 system I have tried it on.  The symptom is that if
+	you print the array x it says that each entry is zero.  Change
+	the 128's in the code to 64's and printing x gives the correct
+	result.  I tried it on my SUN III and it works fine.  It looks
+	like a 4.3 problem.
+
+		dimension x(128)
+		do 5 i=1,128
+	5	    x(i)=1.
+		print *,x
+		end
+
+					John McInerney
+					john@sdcsvax
+	----------------------------------------------------------------
+
+Repeat-By:
+	Compile John's program and run it under dbx, with a breakpoint
+	at the END statement.  When you hit the breakpoint, print 'x'
+	and observe that the contents are all zeroes.  This problem
+	will occur with any uninitialized local f77 array whose
+	aggregate length is greater than or equal to 512 bytes.
+
+Fix:
+	The f77 compiler is behaving correctly.  It does have one
+	peculiar feature which bears on the problem -- if the space
+	required for an uninitialized local array is greater than or
+	equal to 512 bytes, the compiler allocates it in ordinary bss
+	space with a '.lcomm' assembly directive rather than putting it
+	in the usual base-register space with the other local variables.
+
+	The problem is actually in the assembler, which screws up when
+	presented with a '.stabs' symbol table entry that references a
+	previously seen '.lcomm' object.  The equivalent C data
+	structures pose no problems for the assembler since the symbol
+	table entry for a local static array always precedes the
+	'.lcomm' declaration which allocates it.
+
+	An ugly and lamentable hack seems to fix the problem.  Since
+	the 'value' of a '.lcomm' object is its length rather than its
+	address, we can't get the address in the usual way when
+	processing the '.stabs' which references it.  Instead we
+	pretend that we haven't seen the '.lcomm' at all, and special
+	fixup code which handles forward references will automatically
+	install the address later.  The changes are in two files in
+	bin/as; first, asexpr.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1014460	Thu Oct  2 18:07:31 1986
+	--- asexpr.c	Thu Oct  2 03:02:28 1986
+	***************
+	*** 332,338 ****
+			lastnam = (struct symtab *)np;
+			/* FALLTHROUGH */
+		case NAME:
+	! 		exprisname++;
+			locxp->e_xtype = ((struct symtab *)np)->s_type;
+			if (( ((struct symtab *)np)->s_type&XTYPE)==XUNDEF) { /*forward*/
+				locxp->e_xname = (struct symtab *)np;
+	--- 332,338 ----
+			lastnam = (struct symtab *)np;
+			/* FALLTHROUGH */
+		case NAME:
+	! 		exprisname = (int) np;
+			locxp->e_xtype = ((struct symtab *)np)->s_type;
+			if (( ((struct symtab *)np)->s_type&XTYPE)==XUNDEF) { /*forward*/
+				locxp->e_xname = (struct symtab *)np;
+	----------------------------------------------------------------
+
+	Then asparse.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1014483	Thu Oct  2 18:08:58 1986
+	--- asparse.c	Thu Oct  2 03:00:53 1986
+	***************
+	*** 540,545 ****
+	--- 540,548 ----
+			if (exprisname){
+				stpt->s_type = locxp->e_xtype;
+				switch(stpt->s_ptype){
+	+ 				case N_LCSYM:
+	+ 					stpt->s_dest = (struct symtab *)exprisname;
+	+ 					stpt->s_type |= STABFLAG;
+					case N_GSYM:
+					case N_FNAME:
+					case N_RSYM:
+	----------------------------------------------------------------
+
+	I would have installed this in the source tree at Berkeley
+	but the master sources moved to another machine which I
+	don't have access to...
+
+	Donn Seeley    University of Utah CS Dept    donn@utah-cs.arpa
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    decvax!utah-cs!donn

@@ -1,0 +1,80 @@
+From steve@umiacs.UMD.EDU  Thu Aug 11 07:21:47 1988
+Date: Thu, 11 Aug 88 10:21:40 EDT
+From: steve@umiacs.UMD.EDU (Steven D. Miller)
+Message-Id: <8808111421.AA17149@fnord.umiacs.UMD.EDU>
+To: 4bsd-bugs@okeeffe.Berkeley.EDU
+Subject: Finger doesn't do the proper TELNET CR/LF mappings on output
+Index: ucb/finger.c 4.3BSD
+
+Description:
+	Finger doesn't properly handle the TELNET CR/LF mapping.  This means
+	that the output from finger has spurious \r's in it.  Ordinarily,
+	these are invisible, but they can mess up other programs (like
+	more).
+
+Repeat-By:
+	testit% finger @some-host > /tmp/f.out
+	testit% vi /tmp/f.out
+	(look at all the ^M's at the end of the lines)
+	(make your window smaller than the number of lines in /tmp/f.out)
+	testit% more /tmp/f.out
+	(note that when you hit <space> to see the next screen, you end up
+	with a blank line in your output.  There was data on that blank
+	line...)
+Fix:
+	Make finger do the proper TELNET CR/LF translation on the data
+	it gets back from a network finger.  The diff to finger.c appears
+	below.  It may be possible to clean the code up a bit.  Note that
+	I haven't thought about whether or not the interaction with more is
+	also a bug on more's part.
+
+	Making finger do all the TELNET processing (including options
+	processing and the like) is left as an exercise for the reader... (-:
+
+Spoken: Steve Miller    Domain: steve@mimsy.umd.edu    UUCP: uunet!mimsy!steve
+Phone: +1-301-454-1808  USPS: UMIACS, Univ. of Maryland, College Park, MD 20742
+
+*** old finger.c	Thu Aug 11 09:36:07 1988
+--- new finger.c	Thu Aug 11 09:36:09 1988
+***************
+*** 828,833 ****
+--- 828,834 ----
+  	struct servent *sp;
+  	struct sockaddr_in sin;
+  	int s;
++ 	int sawcr = 0;
+  	char *rindex();
+  	register FILE *f;
+  	register int c;
+***************
+*** 886,891 ****
+--- 887,902 ----
+  	f = fdopen(s, "r");
+  	while ((c = getc(f)) != EOF) {
+  		switch(c) {
++ 		case '\n':
++ 			if (sawcr)
++ 				sawcr = 0;
++ 			break;
++ 		case '\r':
++ 			if (sawcr)
++ 				putchar('\r');
++ 			else
++ 				sawcr++;
++ 			continue;
+  		case 0210:
+  		case 0211:
+  		case 0212:
+***************
+*** 897,902 ****
+--- 908,917 ----
+  			break;
+  		}
+  		lastc = c;
++ 		if (sawcr && c != '\n') {
++ 			sawcr = 0;
++ 			putchar('\r');
++ 		}
+  		if (isprint(c) || isspace(c))
+  			putchar(c);
+  		else

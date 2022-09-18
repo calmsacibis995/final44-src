@@ -1,0 +1,229 @@
+Return-Path: <mogul@coyote>
+Date: Mon, 13 Feb 84 15:00:27 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: incorrect implementation of software loopback in 3com ethernet driver
+Index: 	sys/vaxif/if_e.c 4.2BSD
+
+Description:
+	3com Unibus ethernet interfaces don't hear themselves, so
+	if_ec.c has code to fake this by looping packets.  The comment
+	at ecoutput() says "If destination is this address or broadcast,
+	send packet to loop device ..." but in fact the code only
+	checks for broadcasts, and then only by checking the IP address.
+	So, it won't loopback directed packets or non-IPs.
+	
+	Fixing this for IPs is easy; fixing it for other AFs is hard
+	because if_loop.c only handles IPs.  The fix below works for
+	IPs; separate code (marked by #if NENETFILTER) works for users
+	of Stanford's ethernet filter pseudo-device.
+	
+	Another, somewhat subtler bug, is that in certain cases the
+	original code could lose mbufs; it didn't free mcopy if it
+	bailed out for some error conditions.
+
+Repeat-By:
+	Can't be repeated on a vanilla 4.2BSD system; if_ether.c does
+	IP loopbacks before they get to the driver (except for broadcasts,
+	which the driver already does right) unless Chris Kent's changes
+	to if_ether.c have been installed.
+	
+	Otherwise, repeat by trying (somehow) to send a packet to yourself.
+Fix:
+*** if_ec.c.old	Mon Feb 13 13:57:17 1984
+--- if_ec.c	Mon Feb 13 14:41:06 1984
+***************
+*** 7,12
+  /*
+   * 3Com Ethernet Controller interface
+   */
+  #include "../machine/pte.h"
+  
+  #include "../h/param.h"
+
+--- 7,26 -----
+  /*
+   * 3Com Ethernet Controller interface
+   */
++ 
++ /*
++  * HISTORY:
++  * 13 February 1984	Jeff Mogul	Stanford
++  *	- Original code in ecoutput() to fake loopback only handled
++  *	IP packets, didn't handle non-broadcasts even though the comment
++  *	said it did, and used an inadequate way of determining what a
++  *	broadcast is.  Fixed all this, at least for AF_INET and AF_IMPLINK
++  *	feeding the enetfilter. The general case would be somewhat harder.
++  *
++  *	- Minor bug apparently could lose mbufs if (1) packet was to be
++  *	looped back and (2) output queue was full or (3) ran out of mbufs.
++  *	Fixed by ensuring that mcopy is freed at bad: or qfull:
++  */
+  #include "../machine/pte.h"
+  
+  #include "../h/param.h"
+***************
+*** 559,564
+  	register struct ether_header *ec;
+  	register int off;
+  	struct mbuf *mcopy = (struct mbuf *)0;
+  
+  	switch (dst->sa_family) {
+  
+
+--- 573,581 -----
+  	register struct ether_header *ec;
+  	register int off;
+  	struct mbuf *mcopy = (struct mbuf *)0;
++ #if	NENETFILTER > 0
++ 	struct mbuf *enetcopy = (struct mbuf *)0;
++ #endif	NENETFILTER
+  
+  	switch (dst->sa_family) {
+  
+***************
+*** 567,572
+  		idst = ((struct sockaddr_in *)dst)->sin_addr;
+  		if (!arpresolve(&es->es_ac, m, &idst, edst))
+  			return (0);	/* if not yet resolved */
+  		if ((in_lnaof(idst)&0xff) == INADDR_ANY)
+  			mcopy = m_copy(m, 0, (int)M_COPYALL);
+  		off = ntohs((u_short)mtod(m, struct ip *)->ip_len) - m->m_len;
+
+--- 584,590 -----
+  		idst = ((struct sockaddr_in *)dst)->sin_addr;
+  		if (!arpresolve(&es->es_ac, m, &idst, edst))
+  			return (0);	/* if not yet resolved */
++ #ifdef	wrong
+  		if ((in_lnaof(idst)&0xff) == INADDR_ANY)
+  			mcopy = m_copy(m, 0, (int)M_COPYALL);
+  #else
+***************
+*** 569,574
+  			return (0);	/* if not yet resolved */
+  		if ((in_lnaof(idst)&0xff) == INADDR_ANY)
+  			mcopy = m_copy(m, 0, (int)M_COPYALL);
+  		off = ntohs((u_short)mtod(m, struct ip *)->ip_len) - m->m_len;
+  		/* need per host negotiation */
+  		if ((ifp->if_flags & IFF_NOTRAILERS) == 0)
+
+--- 587,602 -----
+  #ifdef	wrong
+  		if ((in_lnaof(idst)&0xff) == INADDR_ANY)
+  			mcopy = m_copy(m, 0, (int)M_COPYALL);
++ #else
++ 		if (		/* is packet to us? */
++ 		    (!bcmp((caddr_t)edst, (caddr_t)es->es_addr, sizeof(edst)))
++ 		    ||		/* or is it a broadcast? */
++ 		    (!bcmp((caddr_t)edst, (caddr_t)etherbroadcastaddr,
++ 		    						sizeof(edst)))
++ 		) {
++ 			mcopy = m_copy(m, 0, (int)M_COPYALL);
++ 		}
++ #endif	wrong
+  		off = ntohs((u_short)mtod(m, struct ip *)->ip_len) - m->m_len;
+  		/* need per host negotiation */
+  		if ((ifp->if_flags & IFF_NOTRAILERS) == 0)
+***************
+*** 587,593
+  #endif
+  
+  	case AF_IMPLINK:
+! 		/* should do some ARP here? */
+  		ec = mtod(m, struct ether_header *);
+  		goto gotheader;
+  
+
+--- 615,621 -----
+  #endif
+  
+  	case AF_IMPLINK:
+! 		/* should do some ARP here? */	/* No. */
+  		ec = mtod(m, struct ether_header *);
+  #if	NENETFILTER > 0
+  		/* see if we need to fake loopback */
+***************
+*** 589,594
+  	case AF_IMPLINK:
+  		/* should do some ARP here? */
+  		ec = mtod(m, struct ether_header *);
+  		goto gotheader;
+  
+  	case AF_UNSPEC:
+
+--- 617,636 -----
+  	case AF_IMPLINK:
+  		/* should do some ARP here? */	/* No. */
+  		ec = mtod(m, struct ether_header *);
++ #if	NENETFILTER > 0
++ 		/* see if we need to fake loopback */
++ 		if (		/* is packet to us? */
++ 		    (!bcmp((caddr_t)ec->ether_dhost,
++ 		    			(caddr_t)es->es_addr,
++ 						sizeof(ec->ether_dhost)))
++ 		    ||		/* or is it a broadcast? */
++ 		    (!bcmp((caddr_t)ec->ether_dhost,
++ 		    			(caddr_t)etherbroadcastaddr,
++ 		    				sizeof(ec->ether_dhost)))
++ 		) {
++ 			enetcopy = m_copy(m, 0, (int)M_COPYALL);
++ 		}
++ #endif	NENETFILTER
+  		goto gotheader;
+  
+  	case AF_UNSPEC:
+***************
+*** 654,659
+  	IF_ENQUEUE(&ifp->if_snd, m);
+  	if (es->es_oactive == 0)
+  		ecstart(ifp->if_unit);
+  	splx(s);
+  	return (mcopy ? looutput(&loif, mcopy, dst) : 0);
+  
+
+--- 696,720 -----
+  	IF_ENQUEUE(&ifp->if_snd, m);
+  	if (es->es_oactive == 0)
+  		ecstart(ifp->if_unit);
++ #if	NENETFILTER > 0
++ 	if (enetcopy) {	/* we have a loopback that isn't an IP */
++ 		register int count = 0;
++ 		register struct mbuf *mt = enetcopy;
++ 		
++ 		/* figure out how long the packet is */
++ 		do {
++ 		    count += mt->m_len;
++ 		    mt = mt->m_next;
++ 		} while (mt);
++ 
++ 		/*
++ 		 * should perhaps reject certain packet types here,
++ 		 * but probably less total effort to let enetFilter
++ 		 * reject them.
++ 		 */
++ 		enetFilter(es->es_enetunit, enetcopy, count);
++ 	}
++ #endif	NENETFILTER
+  	splx(s);
+  	return (mcopy ? looutput(&loif, mcopy, dst) : 0);
+  
+***************
+*** 662,667
+  	splx(s);
+  bad:
+  	m_freem(m0);
+  	return (error);
+  }
+  
+
+--- 723,734 -----
+  	splx(s);
+  bad:
+  	m_freem(m0);
++ 	if (mcopy)
++ 		m_freem(mcopy);
++ #if	NENETFILTER > 0
++ 	if (enetcopy)
++ 		m_freem(enetcopy);
++ #endif	NENETFILTER
+  	return (error);
+  }

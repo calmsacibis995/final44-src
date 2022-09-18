@@ -1,0 +1,131 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Thu Dec 11 00:10:44 1986
+Date: Wed, 10 Dec 86 18:01:38 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Subject: debugging enhancement to sendmail
+Index: 	usr.lib/sendmail/src/util.c 4.3BSD
+
+Description:
+	When using the detailed debugging options (i.e. -d21.99)
+	the debugging output from sendmail is cryptic.  The patch
+	below converts the internal form of macro substitutions, etc.
+	into a human readable format.
+Repeat-By:
+	/usr/lib/sendmail -d21.99 any_old_address
+
+	Observe output like:
+
+	Version 5.51
+	rewrite: ruleset  3   input: "jeff"
+	-----trying rule: "<" ">"
+	ap="jeff", rp="<"
+	----- rule fails
+	-----trying rule: "^P" "<" "^Q" ">" "^P"
+	ap="jeff", rp="^P"
+	ap="jeff", rp="<"
+	ap=<null>, rp="<"
+	----- rule fails
+	-----trying rule: "^Q" "at" "^Q"
+	ap="jeff", rp="^Q"
+
+Fix:
+	Make the changes below, run '/usr/lib/sendmail -d21.99 any_old_address'
+	and observe output like:
+
+	Version 5.51
+	rewrite: ruleset  3   input: "jeff"
+	-----trying rule: "<" ">"
+	ap="jeff", rp="<"
+	----- rule fails
+	-----trying rule: "$*" "<" "$+" ">" "$*"
+	ap="jeff", rp="$*"
+	ap="jeff", rp="<"
+	ap=<null>, rp="<"
+	----- rule fails
+	-----trying rule: "$+" "at" "$+"
+	ap="jeff", rp="$+"
+
+RCS file: RCS/util.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1017772	Wed Dec 10 18:00:30 1986
+--- /tmp/,RCSt2017772	Wed Dec 10 18:00:34 1986
+***************
+*** 277,283 ****
+		}
+		if (c < 040 || c >= 0177)
+		{
+! 			(void) putchar('^');
+			c ^= 0100;
+		}
+		(void) putchar(c);
+--- 277,345 ----
+		}
+		if (c < 040 || c >= 0177)
+		{
+! 			switch (c) {
+! 			case MATCHZANY:	/* match zero or more tokens */
+! 				fputs("$*", stdout);
+! 				continue;
+! 				break;
+! 			case MATCHANY:	/* match one or more tokens */
+! 				fputs("$+", stdout);
+! 				continue;
+! 				break;
+! 			case MATCHONE:	/* match exactly one token */
+! 				fputs("$-", stdout);
+! 				continue;
+! 				break;
+! 			case MATCHCLASS:/* match one token in a class */
+! 				fputs("$=", stdout);
+! 				continue;
+! 				break;
+! 			case MATCHNCLASS:/* match anything not in class */
+! 				fputs("$~", stdout);
+! 				continue;
+! 				break;
+! 			case MATCHREPL:	/* replacement on RHS for above */
+! 				fputs("$", stdout);
+! 				continue;
+! 				break;
+! 			case CANONNET:	/* canonical net, next token */
+! 				fputs("$#", stdout);
+! 				continue;
+! 				break;
+! 			case CANONHOST:	/* canonical host, next token */
+! 				fputs("$@", stdout);
+! 				continue;
+! 				break;
+! 			case CANONUSER:	/* canonical user, next N tokens */
+! 				fputs("$:", stdout);
+! 				continue;
+! 				break;
+! 			case CALLSUBR:	/* call another rewriting set */
+! 				fputs("$>", stdout);
+! 				continue;
+! 				break;
+! 			case CONDIF:	/* conditional if-then */
+! 				fputs("$?", stdout);
+! 				continue;
+! 				break;
+! 			case CONDELSE:	/* conditional else */
+! 				fputs("$|", stdout);
+! 				continue;
+! 				break;
+! 			case CONDFI:	/* conditional fi */
+! 				fputs("$.", stdout);
+! 				continue;
+! 				break;
+! 			case HOSTBEGIN:	/* hostname lookup begin */
+! 				fputs("$[", stdout);
+! 				continue;
+! 				break;
+! 			case HOSTEND:	/* hostname lookup end */
+! 				fputs("$]", stdout);
+! 				continue;
+! 				break;
+! 			}
+! 			putchar('^');
+			c ^= 0100;
+		}
+		(void) putchar(c);

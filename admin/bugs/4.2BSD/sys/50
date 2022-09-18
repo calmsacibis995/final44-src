@@ -1,0 +1,277 @@
+Return-Path: <spgggm@ucbopal.CC>
+Date: Tue, 31 Jan 84 18:32:47 pst
+From: spgggm@ucbopal.CC (Greg Minshall)
+Subject: connect() for Data grams in Unix domain ineffective
+Index: 	sys/uipc_usrreq.c 4.2BSD
+
+Description:
+	If you open a socket in the Unix domain, using Datagrams, you
+	should be able to do a connect(), and then just standard writes
+	(or send()s, or whatever).  Instead, after the connect(), a write
+	gives you an EDESTADDRREQ.  This is because connect()
+	(actually, unp_connect2() in uipc_userreq.c) never actually sets
+	SS_ISCONNECTED.
+Repeat-By:
+	Procedure to repeat the problem.
+	Here are two programs, main()+hintSet and main2()+hintSend
+	that demonstrate the problem.  (also included is makefile)
+###main.c
+#include <sys/time.h>
+#include <signal.h>
+
+main()
+{
+	int hintSet(), hintClear();
+	int nfds, hintNo;
+	long readfs;
+	struct timeval timeout;
+
+	timeout.tv_usec = 0;		/* micro seconds */
+	timeout.tv_sec = 10;		/* seconds */
+
+	hintNo = hintSet("hint");
+
+	for (; 1 ;) {
+		readfs = 1<<hintNo;
+	
+		nfds = select(hintNo+1, &readfs, (long *) 0,
+						(long *) 0, &timeout);
+		
+		if (nfds > 0) {
+			if ((readfs & (1<<hintNo)) != 0)
+				hintClear(hintNo);
+			printf("hinted\n");
+		} else if (nfds == 0)
+			printf("timed out\n");
+		else {
+			perror("select");
+			exit(1);
+		}
+	}
+
+	return(0);
+}
+###hintSet.c
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+extern int errno;
+
+
+/*  hintSet - make room for someone to send us a hint 
+
+	path is a unix path name to be used as the address of the
+	hint.
+
+	we return an int (actually, a file descriptor), which should
+	then be used in a select(2).  the following code shows usage...
+
+		#include <sys/time.h>
+		#include <signal.h>
+
+		main()
+		{
+			int hintSet(), hintClear();
+			int nfds, hintNo;
+			long readfs;
+			struct timeval timeout;
+
+			timeout.tv_usec = 0;		 micro seconds 
+			timeout.tv_sec = 10;		 seconds 
+		
+			hintNo = hintSet("hint");
+		
+			for (; 1 ;) {
+				readfs = 1<<hintNo;
+			
+				nfds = select(hintNo+1, &readfs, (long *) 0,
+								(long *) 0, &timeout);
+				
+				if (nfds > 0) {
+					if ((readfs & (1<<hintNo)) != 0)
+						hintClear(hintNo);
+					printf("hinted\n");
+				else if (nfds == 0)
+					printf("timed out\n");
+					else {
+						perror("select");
+						exit(1);
+					}
+				}
+			}
+		
+			return(0);
+		}
+	
+	Note that after the select, "hintClear" MUST be called, else
+	any future selects become no-ops.
+
+	We take error exits for strange events.
+
+	If the file name is already in use as a socket, we attempt to
+	unlink it (and unfortunate occurrence).
+
+	If hintSet is called TWICE (even from two seperate users) with
+	the same pathname, the second caller will pick up all future
+	hints from "hintSend".
+ */
+int
+hintSet(path)
+char *path;		/* path name for hint */
+{
+	int s, length, diddle, savedError;
+	long mypid;
+	struct sockaddr_un foo;
+
+	s = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+	if (s == -1) {
+		perror("hintSet: socket");
+		exit(1);
+	}
+
+	length = strlen(path);
+	if (length > sizeof foo.sun_path)
+		length = sizeof foo.sun_path;
+	
+	strncpy(foo.sun_path, path, length);
+
+	if (bind(s, &foo, (sizeof foo)-1) == -1) {
+		if (	((savedError = errno) == EADDRINUSE) &&
+			(open(path, O_RDONLY) == -1) &&
+			(errno == EOPNOTSUPP) &&
+			(unlink(path) != -1) &&
+			(bind(s, &foo, (sizeof foo)-1) != -1) )
+				;
+		else {
+			errno = savedError;
+			perror("hintSet: bind");
+			exit(1);
+		}
+	}
+
+	/* set non blocking... */
+	diddle = fcntl(s, F_GETFL, 0);
+
+	if (diddle == -1) {
+		perror("hintSet: fcntl F_GETFL");
+		exit(1);
+	}
+
+	diddle = fcntl(s, F_SETFL, diddle | FNDELAY);
+
+	if (diddle == -1) {
+		perror("hintSet: fcntl F_SETFL");
+		exit(1);
+	}
+
+	hintClear(s);
+
+	return(s);
+}
+
+/*  hintClear - clear any hints outstanding on our area... */
+int
+hintClear(s)
+int s;
+{
+	char buffer[1024];
+
+	while (((read(s, buffer, 1024)) != -1) ||
+		(errno != EWOULDBLOCK))
+			;
+}
+###main2.c
+
+#include <sys/time.h>
+#include <signal.h>
+
+main()
+{
+	int hintSend();
+
+	hintSend("hint");
+}
+###hintSend2.c
+
+
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#define MESSAGE "hint"
+
+extern int errno;
+
+/* hintSend - send a hint to an address in the Unix domain.
+
+	the argument 'path' is the Unix pathname waiting for
+	the hint.
+
+	hintSend takes error exits if too strange of things happen
+
+	if "path" doesn't exist, or if no one is connected to it,
+	we just quietly return to the caller.
+ */
+hintSend(path)
+char *path;		/* path name for hint */
+{
+	int s, length;
+	struct sockaddr_un foo;
+
+	s = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+	if (s == -1) {
+		perror("hintSend: socket");
+		exit(1);
+	}
+
+	length = strlen(path);
+	if (length > sizeof foo.sun_path)
+		length = sizeof foo.sun_path;
+	
+	strncpy(foo.sun_path, path, length);
+
+	if (connect(s, &foo, (sizeof foo)-1) == -1) {
+		perror("hintSend: connect");
+		exit(1);
+	}
+
+	if (write(s, MESSAGE, strlen(MESSAGE)) == -1) {
+		perror("hintSend: write");
+		exit(1);
+	}
+}
+###makefile
+CFLAGS = -g
+
+main:	main.o hintSet.o
+	$(CC) $(CFLAGS) main.o hintSet.o -o main
+
+main2:	main2.o hintSend.o
+	$(CC) $(CFLAGS) main2.o hintSend.o -o main2
+
+main3:	main2.o hintSend2.o
+	$(CC) $(CFLAGS) main2.o hintSend2.o -o main3
+
+main.o:	main.c
+
+hintSet.o:	hintSet.c
+
+main2.o:	main2.c
+
+hintSend.o:	hintSend.c
+
+hintSend2.o:	hintSend2.c
+Fix:
+	in sys/sys/uipc_usrreq.c, routine unp_connect2, in the switch
+	under "case SOCK_DGRAM", add the line 
+		soisconnected(so);
+	to get the stuff set right.  (untested fix).

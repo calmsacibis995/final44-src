@@ -1,0 +1,50 @@
+Date: Wed, 6 May 87 18:03:35 PDT
+From: decwrl!vjs@rhyolite.sgi.com (Vernon Schryver)
+Subject: 4.3 IP MBUF bug
+Index: sys 4.3BSD
+
+I have found 1-3 mbuf bugs in 4.3bsd TCP.  One is clear and easily fixed.
+The second seems easy.  I'm uneasy about the implications of the
+obvious fix to the third.
+
+1) When one or more machines are used to flood another machine with large
+    UDP packets, so that the receipent receives lots of IP fragments, I
+    have found that the receipent can crash.  Our 4.3 port crashes
+    because sleep() has been called from ip_input, which is called
+    as an interrupt routine.  Sleep() is called because line 303 of
+    in ip_reass() of netinet/ip_input.c does m_get(M_WAIT, MT_FTABLE).
+    Under such high loads, our fastest machines (MIPS Co. CPU based
+    workstations) run out of memory.
+
+    This crash may be hard to reproduce with slower machines.  We run
+    SUN NFS, and so have 8KB UDP packets.  It takes at least 1MB at
+    around 300KB/sec thru the receiving interface before it happens.
+    I wrote a small program which sends to the inetd discard port
+    as fast possible in order to make the crash reproducible.
+
+    The fix in this case seems obvious.  The offending call to ip_reass()
+    is already prepared for m_get to fail.  It need only be changed to
+    use M_DONTWAIT.  ip_reass() seems to be called only from interrupts,
+    so M_DONTWAIT seems to be the correct parameter.
+
+2) inspection suggested by the 1st crash found that ip_srcrrout()
+    in ip_input.c also does m_get(M_WAIT,...), and is called from
+    interrupt routines.
+
+    ip_srcroute() could be changed to use M_DONTWAIT and return 0 if
+    m_get fails.  It seems to be called from two places, first from 
+    in ip_icmp.c icmp_reflect().  It seems safe to ignore source 
+    routing there, but I could easily be wrong.
+
+3) ip_srcroute() is also called from tcp_input.c.  I do not know if it
+    is better to allow ip_srcroute() to return 0 and end up with 
+    inp_options=0 or to drop the segment.  The latter seems messier.
+
+I would appreciate any suggestions about the best way to fix these bugs, 
+or the knowledge that I'm wrong and have misunderstood.
+
+Thanks
+Vernon Schryver
+Silicon Graphics, Mtn.View
+415-962-3462
+vjs@sgi.com    or   ucbvax!sgi!vjs

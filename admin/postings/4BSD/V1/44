@@ -1,0 +1,290 @@
+Subject: Fixes for bin/mail
+Index: bin/mail.c 4.3BSD
+
+Description:
+	Two problems with bin/mail keep turning up.  They are the
+	buffer overrun with long (> 100 chars) return addresses
+	and that it can get into infinite loops.
+Repeat-By:
+	Use /bin/mail with the -r option and a long return address.
+Fix:
+	The attached patch fixes both of those problems as well as
+	several other things.
+
+*** mail.c.orig	Tue Dec 15 09:50:14 1987
+--- mail.c	Tue Dec 15 09:50:20 1987
+***************
+*** 1,8 ****
+  #ifndef lint
+! static char sccsid[] = "@(#)mail.c	4.25 (Berkeley) 5/1/85";
+  #endif
+  
+! #include <sys/types.h>
+  #include <sys/stat.h>
+  #include <sys/file.h>
+  
+--- 1,8 ----
+  #ifndef lint
+! static char sccsid[] = "@(#)mail.c	4.30 (Berkeley) 10/22/87";
+  #endif
+  
+! #include <sys/param.h>
+  #include <sys/stat.h>
+  #include <sys/file.h>
+  
+***************
+*** 44,50 ****
+  char	forwmsg[] = " forwarded\n";
+  FILE	*tmpf;
+  FILE	*malf;
+! char	*my_name;
+  char	*getlogin();
+  int	error;
+  int	changed;
+--- 44,50 ----
+  char	forwmsg[] = " forwarded\n";
+  FILE	*tmpf;
+  FILE	*malf;
+! char	my_name[60];
+  char	*getlogin();
+  int	error;
+  int	changed;
+***************
+*** 64,86 ****
+  char **argv;
+  {
+  	register i;
+  	struct passwd *pwent;
+  
+! 	my_name = getlogin();
+! 	if (my_name == NULL || *my_name == '\0') {
+  		pwent = getpwuid(getuid());
+  		if (pwent==NULL)
+! 			my_name = "???";
+  		else
+! 			my_name = pwent->pw_name;
+  	}
+  	else {
+! 		pwent = getpwnam(my_name);
+! 		if ( getuid() != pwent->pw_uid) {
+  			pwent = getpwuid(getuid());
+! 			my_name = pwent->pw_name;
+  		}
+  	}
+  	if (setjmp(sjbuf))
+  		done();
+  	for (i=SIGHUP; i<=SIGTERM; i++)
+--- 64,88 ----
+  char **argv;
+  {
+  	register i;
++ 	char *name;
+  	struct passwd *pwent;
+  
+! 	name = getlogin();
+! 	if (name == NULL || *name == '\0') {
+  		pwent = getpwuid(getuid());
+  		if (pwent==NULL)
+! 			name = "???";
+  		else
+! 			name = pwent->pw_name;
+  	}
+  	else {
+! 		pwent = getpwnam(name);
+! 		if (!pwent || getuid() != pwent->pw_uid) {
+  			pwent = getpwuid(getuid());
+! 			name = pwent->pw_name;
+  		}
+  	}
++ 	strncpy(my_name, name, sizeof(my_name)-1);
+  	if (setjmp(sjbuf))
+  		done();
+  	for (i=SIGHUP; i<=SIGTERM; i++)
+***************
+*** 368,374 ****
+  {
+  	int ch;
+  	long k;
+! 	char hostname[32];
+  
+  	fseek(tmpf, let[n].adr, L_SET);
+  	k = let[n+1].adr - let[n].adr;
+--- 370,376 ----
+  {
+  	int ch;
+  	long k;
+! 	char hostname[MAXHOSTNAMELEN];
+  
+  	fseek(tmpf, let[n].adr, L_SET);
+  	k = let[n+1].adr - let[n].adr;
+***************
+*** 418,427 ****
+  bulkmail(argc, argv)
+  char **argv;
+  {
+! 	char truename[100];
+  	int first;
+  	register char *cp;
+- 	int gaver = 0;
+  	char *newargv[1000];
+  	register char **ap;
+  	register char **vp;
+--- 420,428 ----
+  bulkmail(argc, argv)
+  char **argv;
+  {
+! 	char *truename;
+  	int first;
+  	register char *cp;
+  	char *newargv[1000];
+  	register char **ap;
+  	register char **vp;
+***************
+*** 428,433 ****
+--- 429,435 ----
+  	int dflag;
+  
+  	dflag = 0;
++ 	delflg = 0;
+  	if (argc < 1) {
+  		fprintf(stderr, "puke\n");
+  		return;
+***************
+*** 448,454 ****
+  		exit(EX_UNAVAILABLE);
+  	}
+  
+! 	truename[0] = 0;
+  	line[0] = '\0';
+  
+  	/*
+--- 450,456 ----
+  		exit(EX_UNAVAILABLE);
+  	}
+  
+! 	truename = 0;
+  	line[0] = '\0';
+  
+  	/*
+***************
+*** 463,470 ****
+  		case 'r':
+  			if (argc <= 1)
+  				usage();
+! 			gaver++;
+! 			strcpy(truename, argv[1]);
+  			fgets(line, LSIZE, stdin);
+  			if (strcmpn("From", line, 4) == 0)
+  				line[0] = '\0';
+--- 465,471 ----
+  		case 'r':
+  			if (argc <= 1)
+  				usage();
+! 			truename = argv[1];
+  			fgets(line, LSIZE, stdin);
+  			if (strcmpn("From", line, 4) == 0)
+  				line[0] = '\0';
+***************
+*** 489,496 ****
+  	}
+  	if (argc <= 1)
+  		usage();
+! 	if (gaver == 0)
+! 		strcpy(truename, my_name);
+  	time(&iop);
+  	fprintf(tmpf, "%s%s %s", from, truename, ctime(&iop));
+  	iop = ftell(tmpf);
+--- 490,497 ----
+  	}
+  	if (argc <= 1)
+  		usage();
+! 	if (truename == 0)
+! 		truename = my_name;
+  	time(&iop);
+  	fprintf(tmpf, "%s%s %s", from, truename, ctime(&iop));
+  	iop = ftell(tmpf);
+***************
+*** 578,586 ****
+  	}
+  	setuid(getuid());
+  	if (any('!', name+1))
+! 		sprintf(cmd, "uux - %s!rmail \\(%s\\)", rsys, name+1);
+  	else
+! 		sprintf(cmd, "uux - %s!rmail %s", rsys, name+1);
+  	if ((rmf=popen(cmd, "w")) == NULL)
+  		exit(1);
+  	copylet(n, rmf, REMOTE);
+--- 579,587 ----
+  	}
+  	setuid(getuid());
+  	if (any('!', name+1))
+! 		(void)sprintf(cmd, "uux - %s!rmail \\(%s\\)", rsys, name+1);
+  	else
+! 		(void)sprintf(cmd, "uux - %s!rmail %s", rsys, name+1);
+  	if ((rmf=popen(cmd, "w")) == NULL)
+  		exit(1);
+  	copylet(n, rmf, REMOTE);
+***************
+*** 618,624 ****
+  	if (addr.sin_family) {
+  		if (f < 0)
+  			f = socket(AF_INET, SOCK_DGRAM, 0);
+! 		sendto(f, msg, strlen(msg)+1, 0, &addr, sizeof (addr));
+  	}
+  }
+  
+--- 619,626 ----
+  	if (addr.sin_family) {
+  		if (f < 0)
+  			f = socket(AF_INET, SOCK_DGRAM, 0);
+! 		if (f >= 0)
+! 			sendto(f, msg, strlen(msg)+1, 0, &addr, sizeof (addr));
+  	}
+  }
+  
+***************
+*** 662,668 ****
+  		return(0);
+  	}
+  	fchown(fd, pw->pw_uid, pw->pw_gid);
+! 	sprintf(buf, "%s@%d\n", name, ftell(malf)); 
+  	copylet(n, malf, ORDINARY);
+  	fclose(malf);
+  	notifybiff(buf);
+--- 664,670 ----
+  		return(0);
+  	}
+  	fchown(fd, pw->pw_uid, pw->pw_gid);
+! 	(void)sprintf(buf, "%s@%d\n", name, ftell(malf));
+  	copylet(n, malf, ORDINARY);
+  	fclose(malf);
+  	notifybiff(buf);
+***************
+*** 671,680 ****
+  
+  delex(i)
+  {
+! 	setsig(i, delex);
+  	putc('\n', stderr);
+  	if (delflg)
+  		longjmp(sjbuf, 1);
+  	done();
+  }
+  
+--- 673,687 ----
+  
+  delex(i)
+  {
+! 	if (i != SIGINT) {
+! 		setsig(i, SIG_DFL);
+! 		sigsetmask(sigblock(0) &~ sigmask(i));
+! 	}
+  	putc('\n', stderr);
+  	if (delflg)
+  		longjmp(sjbuf, 1);
++ 	if (error == 0)
++ 		error = i;
+  	done();
+  }
+
+

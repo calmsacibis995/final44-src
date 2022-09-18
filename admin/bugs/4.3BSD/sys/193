@@ -1,0 +1,52 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:08:31 1988
+Date: Mon, 18 Apr 88 13:26:35 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) can't boot on VAXen with "hp" drives
+#Index: sys/vax/autoconf.c MORE/bsd 4.3 (10/5/87)
+Index: sys/vax/autoconf.c 4.3BSD
+
+[This may have already been reported and/or fixed;
+this report is just to make sure it doesn't fall through the cracks.]
+
+Description:
+	When bootstrapping a kernel built from the 10/5/87 maintenance
+	release, things will hang after the system prints
+		
+		hp0:
+
+Repeat-By:
+	Find a VAX with hp drives, build a kernel, and boot.
+
+Analysis:
+	The maintenance release contains new code to read partition
+	information from disk drives.  This is done at configuration
+	time, but using the "normal" device driver stuff.  The problem is that
+	Massbus interrupts aren't enabled before the individual drives
+	are queried, so completion of the disk operations to read the pack
+	labels never caused interrupts and thus were never sensed by the
+	computer.
+
+Fix:
+	There's almost surely a better fix, since there's almost surely a
+	good reason that up to now the system waited until attaches were
+	complete before enabling interrupts.  But this works for us.
+
+	*** 3.3/autoconf.c	Sat Nov  7 22:40:26 1987
+	--- 3.4/autoconf.c	Sat Nov  7 22:40:34 1987
+	***************
+	*** 402,407 ****
+	--- 402,414 ----
+		setscbnex(mbaintv[nummba]);
+		fnd.mi_mba = mdp;
+		fnd.mi_mbanum = nummba;
+	+ #if !defined ASWAS
+	+ 	/*
+	+ 	** Need interrupt enabled so reads of pack labels can succeed.
+	+ 	*/
+	+ 	mdp->mba_cr = MBCR_INIT;
+	+ 	mdp->mba_cr = MBCR_IE;
+	+ #endif /* !defined ASWAS */
+		for (mbd = mdp->mba_drv, dn = 0; mbd < &mdp->mba_drv[8]; mbd++, dn++) {
+			if ((mbd->mbd_ds&MBDS_DPR) == 0)
+				continue;
+

@@ -1,0 +1,215 @@
+From @relay.cs.net:kwlalonde@orchid.waterloo.edu  Mon Jun  8 22:35:36 1987
+Date: Tue, 9 Jun 87 01:09:13 EDT
+From: Ken Lalonde <kwlalonde%orchid.waterloo.edu@relay.cs.net>
+Subject: TM78/TU-78 driver makes crass config assumption
+Index:  sys/vaxmba/mt.c 4.3BSD
+
+Description:
+	Assume the configuration
+		mt0 at mba?
+		mu0 at mt0 slave 0
+		mt1 at mba?
+		mu1 at mt1 slave 0
+	The second drive is unusable, because at interrupt
+	time the driver thinks interrupts from mu1 are
+	coming from mu0.
+
+Repeat-By:
+	Configure a machine as above, or have a close look
+	at the patch below.
+
+Fix:
+	The problem is that the driver assumes an mu is identifiable by
+	a slave number alone.  That is, it assumes the hardware slave
+	number and logical mu unit are the same.  It is possible to work
+	around the problem by careful choice of slave and mu
+	values, but that's ugly.  The right way to fix it is
+	to have the driver record the (mt,slave)->mu mapping
+	at attach time to correctly locate the mu unit at interrupt time.
+	The patch below adds an array to do this.
+
+*** mt.c.orig	Tue Jun  9 00:22:57 1987
+--- mt.c	Tue Jun  9 00:36:28 1987
+***************
+*** 94,99 ****
+--- 94,101 ----
+  struct	buf	rmtbuf[NMT];		/* data transfer buffer structures */
+  struct	buf	cmtbuf[NMT];		/* tape command buffer structures */
+  
++ #define MAXMU 4				/* max number of mu's per mt */
++ char	mttomu[NMT][MAXMU];		/* map (mt unit, slave) to logical mu unit */
+  struct	mba_device *mtinfo[NMT];	/* unit massbus structure pointers */
+  short	mutomt[NMU];			/* tape unit to controller number map */
+  char	mtds_bits[] = MTDS_BITS;	/* mtds bit names for error messages */
+***************
+*** 121,126 ****
+--- 123,135 ----
+  	register struct mtdevice *mtaddr = (struct mtdevice *)mi->mi_drv;
+  	int s = spl5(), rtn = 0, i;
+  
++ 	if (sn >= MAXMU) {
++ 		printf("mt%d: slave value %d > max %d; device not configured\n",
++ 			mi->mi_unit, sn, MAXMU-1);
++ 		splx(s);
++ 		return(0);
++ 	}
++ 
+  	/* Just in case the controller is ill, reset it.  Then issue	*/
+  	/* a sense operation and wait about a second for it to respond.	*/
+  
+***************
+*** 148,153 ****
+--- 157,165 ----
+  		sc->sc_mi = mi;
+  		sc->sc_slave = sn;
+  		mutomt[ms->ms_unit] = mi->mi_unit;
++ 		mttomu[mi->mi_unit][sn] = ms->ms_unit;
++ 		if (mtaddr->mtdt & MTDT_DRQ)
++ 			printf("Dual-ported ");	/* followed by config message */
+  		rtn = 1;
+  	}
+  
+***************
+*** 343,349 ****
+  
+  		/* It's a command, do it now. */
+  
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+  			(bp->b_repcnt<<8)|bp->b_command|MT_GO;
+  		return (MBU_STARTED);
+  	}
+--- 355,361 ----
+  
+  		/* It's a command, do it now. */
+  
+! 		mtaddr->mtncs[sc->sc_slave] =
+  			(bp->b_repcnt<<8)|bp->b_command|MT_GO;
+  		return (MBU_STARTED);
+  	}
+***************
+*** 357,366 ****
+  	    || ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) ) {
+  		if (mi->mi_tab.b_errcnt == 2) {
+  			mtaddr->mtbc = -(bp->b_bcount);
+! 			mtaddr->mtca = MUUNIT(bp->b_dev);
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+! 			mtaddr->mtca = (1<<2)|MUUNIT(bp->b_dev);
+  		}
+  		return (MBU_DODATA);
+  	}
+--- 369,378 ----
+  	    || ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) ) {
+  		if (mi->mi_tab.b_errcnt == 2) {
+  			mtaddr->mtbc = -(bp->b_bcount);
+! 			mtaddr->mtca = sc->sc_slave;
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+! 			mtaddr->mtca = (1<<2)|sc->sc_slave;
+  		}
+  		return (MBU_DODATA);
+  	}
+***************
+*** 373,379 ****
+  		count = (unsigned)(blkno - bdbtofsb(bp->b_blkno));
+  	if (count > 0377)
+  		count = 0377;
+! 	mtaddr->mtncs[MUUNIT(bp->b_dev)] = count | MT_SFORW|MT_GO;
+  	return (MBU_STARTED);
+  }
+  
+--- 385,391 ----
+  		count = (unsigned)(blkno - bdbtofsb(bp->b_blkno));
+  	if (count > 0377)
+  		count = 0377;
+! 	mtaddr->mtncs[sc->sc_slave] = count | MT_SFORW|MT_GO;
+  	return (MBU_STARTED);
+  }
+  
+***************
+*** 403,415 ****
+  
+  	/* I'M still NOT SURE IF THIS SHOULD ALWAYS BE THE CASE SO FOR NOW... */
+  
+! 	if ((mtaddr->mtca & 3) != MUUNIT(bp->b_dev)) {
+! 		printf("mt: wrong unit!\n");
+! 		mtaddr->mtca = MUUNIT(bp->b_dev);
+  	}
+  
+  	er = MASKREG(mtaddr->mter);
+- 	sc = &mu_softc[MUUNIT(bp->b_dev)];
+  	sc->sc_erreg = er;
+  	if (bp->b_flags & B_READ)
+  		sc->sc_flags &= ~H_WRITTEN;
+--- 415,427 ----
+  
+  	/* I'M still NOT SURE IF THIS SHOULD ALWAYS BE THE CASE SO FOR NOW... */
+  
+! 	sc = &mu_softc[MUUNIT(bp->b_dev)];
+! 	if ((mtaddr->mtca & 3) != sc->sc_slave) {
+! 		printf("mt%d: wrong unit!\n", mi->mi_unit);
+! 		mtaddr->mtca = sc->sc_slave;
+  	}
+  
+  	er = MASKREG(mtaddr->mter);
+  	sc->sc_erreg = er;
+  	if (bp->b_flags & B_READ)
+  		sc->sc_flags &= ~H_WRITTEN;
+***************
+*** 595,607 ****
+  
+  	unit = (mtaddr->mtner >> 8) & 3;
+  	er = MASKREG(mtaddr->mtner);
+! 	sc = &mu_softc[unit];
+  	sc->sc_erreg = er;
+  
+  	/* Check for unsolicited interrupts. */
+  
+! 	if (bp == 0 || unit != MUUNIT(bp->b_dev)) {	/* consistency check */
+! 		if ((er & MTER_INTCODE) != MTER_ONLINE) {
+  			printf("mt: unit %d unexpected interrupt (non data transfer) er=%o (octal) ds=%b\n",
+  			    unit, er, MASKREG(sc->sc_dsreg), mtds_bits);
+  #ifdef MTLERRM
+--- 607,620 ----
+  
+  	unit = (mtaddr->mtner >> 8) & 3;
+  	er = MASKREG(mtaddr->mtner);
+! 	sc = &mu_softc[mttomu[mi->mi_unit][unit]];
+  	sc->sc_erreg = er;
+  
+  	/* Check for unsolicited interrupts. */
+  
+! 	if (bp == 0 || unit != sc->sc_slave) {	/* consistency check */
+! 		if ((er & MTER_INTCODE) != MTER_ONLINE &&
+! 		    (er & MTER_INTCODE) != MTER_DONE) {
+  			printf("mt: unit %d unexpected interrupt (non data transfer) er=%o (octal) ds=%b\n",
+  			    unit, er, MASKREG(sc->sc_dsreg), mtds_bits);
+  #ifdef MTLERRM
+***************
+*** 629,636 ****
+  		}
+  		return (MBN_SKIP);
+  	}
+- 	if (bp == 0)
+- 		return (MBN_SKIP);
+  
+  	fc = (mtaddr->mtncs[unit] >> 8) & 0xff;
+  	sc->sc_resid = fc;
+--- 642,647 ----
+***************
+*** 859,865 ****
+  			fcount = mtop->mt_count;
+  			break;
+  
+! 		case MTREW: case MTOFFL:
+  			callcount = 1;
+  			fcount = 1;
+  			break;
+--- 870,876 ----
+  			fcount = mtop->mt_count;
+  			break;
+  
+! 		case MTREW: case MTOFFL: case MTNOP:
+  			callcount = 1;
+  			fcount = 1;
+  			break;

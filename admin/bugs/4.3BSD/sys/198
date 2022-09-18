@@ -1,0 +1,81 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:01:14 1988
+Date: Mon, 18 Apr 88 13:14:34 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 lp driver hoards final form feed (with fix)
+Index: sys/vaxuba/lp.c 4.3BSD
+
+Description:
+	The MORE/bsd 4.3 lp driver hoards the form feed that's generated
+	when lpclose is called.
+
+Repeat-By:
+	echo hi > /dev/lp
+Fix:
+	With a tip of the hat to Chris Torek (seismo!mimsy!chris):
+
+*** OLD/lp.c	Tue Mar 10 09:40:26 1987
+--- NEW/lp.c	Mon Mar  9 08:15:44 1987
+***************
+*** 1,6 ****
+! /*	@(#)lp.c	3.2	86/10/02	mt Xinu
+   *
+   * Copyright (c) 1982, 1986 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+--- 1,13 ----
+! #ifndef ASWAS
+! #ifndef lint
+! #ifndef NOID
+! static char	elsieid[] =  "@(#)lp.c	3.3";
+! #endif /* !NOID */
+! #endif /* !lint */
+! #endif /* !ASWAS */
+! /*	@(#)lp.c	3.3	87/03/09	mt Xinu
+   *
+   * Copyright (c) 1982, 1986 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+***************
+*** 288,303 ****
+--- 295,327 ----
+  	register struct uba_device *ui = lpinfo[lp11];
+  	register struct lpdevice *lpaddr = (struct lpdevice *)ui->ui_addr;
+  
+  	lpaddr->lpsr &= ~IENABLE;
+  	n = sc->sc_outq.c_cc;
++ #ifdef ASWAS
+  	if (sc->sc_lpchar < 0)
+  		sc->sc_lpchar = getc(&sc->sc_outq);
+  	while ((lpaddr->lpsr&DONE) && sc->sc_lpchar >= 0) {
+  		lpaddr->lpbuf = sc->sc_lpchar;
+  		sc->sc_lpchar = getc(&sc->sc_outq);
+  	}
++ #else /* !ASWAS */
++ 	for ( ; ; ) {
++ 		register int	c;
++ 
++  		/* a weird sort of busy wait */
++  		if ((lpaddr->lpsr&DONE) == 0 && (lpaddr->lpsr&DONE) == 0 &&
++  		    (lpaddr->lpsr&DONE) == 0 && (lpaddr->lpsr&DONE) == 0 &&
++  		    (lpaddr->lpsr&DONE) == 0 && (lpaddr->lpsr&DONE) == 0 &&
++  		    (lpaddr->lpsr&DONE) == 0 && (lpaddr->lpsr&DONE) == 0 &&
++  		    (lpaddr->lpsr&DONE) == 0 && (lpaddr->lpsr&DONE) == 0)
++  			break;
++  		if ((c = getc(&sc->sc_outq)) < 0)
++  			break;
++  		lpaddr->lpbuf = c;
++ 	}
++ #endif /* !ASWAS */
+  	sc->sc_state |= MOD;
+  	if (sc->sc_outq.c_cc > 0 && (lpaddr->lpsr&ERROR)==0)
+  		lpaddr->lpsr |= IENABLE;	/* ok and more to do later */
+  	if (n>LPLWAT && sc->sc_outq.c_cc<=LPLWAT && sc->sc_state&ASLP) {
+  		sc->sc_state &= ~ASLP;
+...
+
+Once the above fix is in place you can, if you want, eliminate the sc_lpchar
+element from the lp_softc structure declared in lpreg.h (provided you also
+eliminate the "sc->sc_lpchar = -1" assignment in lp.c).
+

@@ -1,0 +1,2903 @@
+Subject: Login, rshd, rlogind and trusted hosts
+Index: bin 4.3BSD
+
+Description:
+	These versions of login, rshd and rlogind have several changes
+	that make it harder to spoof a trusted host in certain ways.  The
+	translation of the client host's address to name is verified by
+	looking up the addresses for the name.  Because this may be slow
+	with distant servers, and because hosts from other domains cannot
+	generally be considered to be trusted, this verification is done
+	only for local clients by default.  Local systems are those whose
+	domain names match the server's domain name in the last two
+	components.  A command-line option to the server allows the system
+	administrator to verify all host names; this should only be necessary
+	on hosts that trust hosts from other domains.  Another new
+	command-line option allows the use of users' .rhosts files to be
+	disabled.
+
+Fix:
+	Install the attached copies of login, rshd, and rlogind.  Note,
+	a new library is required, as well as replacing the current rcmd.o
+	module in the C library.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	libc
+#	libc/net
+#	libc/net/rcmd.c
+#	libutil
+#	libutil/Makefile
+#	libutil/login.c
+#	libutil/logwtmp.c
+#	libutil/logout.c
+#	libutil/profiled
+#	libutil/pathnames.h
+#	login
+#	login/login.c
+#	login/Makefile
+#	login/pathnames.h
+#	rlogind
+#	rlogind/rlogind.8
+#	rlogind/Makefile
+#	rlogind/rlogind.c
+#	rshd
+#	rshd/Makefile
+#	rshd/rshd.8
+#	rshd/pathnames.h
+#	rshd/rshd.c
+#
+echo c - libc
+mkdir libc > /dev/null 2>&1
+echo c - libc/net
+mkdir libc/net > /dev/null 2>&1
+echo x - libc/net/rcmd.c
+sed 's/^X//' >libc/net/rcmd.c << 'END-of-libc/net/rcmd.c'
+X/*
+X * Copyright (c) 1983 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)rcmd.c	5.20 (Berkeley) 1/24/89";
+X#endif /* LIBC_SCCS and not lint */
+X
+X#include <stdio.h>
+X#include <ctype.h>
+X#include <pwd.h>
+X#include <sys/param.h>
+X#include <sys/file.h>
+X#include <sys/signal.h>
+X#include <sys/socket.h>
+X#include <sys/stat.h>
+X
+X#include <netinet/in.h>
+X
+X#include <netdb.h>
+X#include <errno.h>
+X
+Xextern	errno;
+Xchar	*index();
+X
+Xrcmd(ahost, rport, locuser, remuser, cmd, fd2p)
+X	char **ahost;
+X	u_short rport;
+X	char *locuser, *remuser, *cmd;
+X	int *fd2p;
+X{
+X	int s, timo = 1, pid;
+X	long oldmask;
+X	struct sockaddr_in sin, sin2, from;
+X	char c;
+X	int lport = IPPORT_RESERVED - 1;
+X	struct hostent *hp;
+X	fd_set reads;
+X
+X	pid = getpid();
+X	hp = gethostbyname(*ahost);
+X	if (hp == 0) {
+X		herror(*ahost);
+X		return (-1);
+X	}
+X	*ahost = hp->h_name;
+X	oldmask = sigblock(sigmask(SIGURG));
+X	for (;;) {
+X		s = rresvport(&lport);
+X		if (s < 0) {
+X			if (errno == EAGAIN)
+X				fprintf(stderr, "socket: All ports in use\n");
+X			else
+X				perror("rcmd: socket");
+X			sigsetmask(oldmask);
+X			return (-1);
+X		}
+X		fcntl(s, F_SETOWN, pid);
+X		sin.sin_family = hp->h_addrtype;
+X		bcopy(hp->h_addr_list[0], (caddr_t)&sin.sin_addr, hp->h_length);
+X		sin.sin_port = rport;
+X		if (connect(s, (caddr_t)&sin, sizeof (sin), 0) >= 0)
+X			break;
+X		(void) close(s);
+X		if (errno == EADDRINUSE) {
+X			lport--;
+X			continue;
+X		}
+X		if (errno == ECONNREFUSED && timo <= 16) {
+X			sleep(timo);
+X			timo *= 2;
+X			continue;
+X		}
+X		if (hp->h_addr_list[1] != NULL) {
+X			int oerrno = errno;
+X
+X			fprintf(stderr,
+X			    "connect to address %s: ", inet_ntoa(sin.sin_addr));
+X			errno = oerrno;
+X			perror(0);
+X			hp->h_addr_list++;
+X			bcopy(hp->h_addr_list[0], (caddr_t)&sin.sin_addr,
+X			    hp->h_length);
+X			fprintf(stderr, "Trying %s...\n",
+X				inet_ntoa(sin.sin_addr));
+X			continue;
+X		}
+X		perror(hp->h_name);
+X		sigsetmask(oldmask);
+X		return (-1);
+X	}
+X	lport--;
+X	if (fd2p == 0) {
+X		write(s, "", 1);
+X		lport = 0;
+X	} else {
+X		char num[8];
+X		int s2 = rresvport(&lport), s3;
+X		int len = sizeof (from);
+X
+X		if (s2 < 0)
+X			goto bad;
+X		listen(s2, 1);
+X		(void) sprintf(num, "%d", lport);
+X		if (write(s, num, strlen(num)+1) != strlen(num)+1) {
+X			perror("write: setting up stderr");
+X			(void) close(s2);
+X			goto bad;
+X		}
+X		FD_ZERO(&reads);
+X		FD_SET(s, &reads);
+X		FD_SET(s2, &reads);
+X		errno = 0;
+X		if (select(32, &reads, 0, 0, 0) < 1 ||
+X		    !FD_ISSET(s2, &reads)) {
+X			if (errno != 0)
+X				perror("select: setting up stderr");
+X			else
+X			    fprintf(stderr,
+X				"select: protocol failure in circuit setup.\n");
+X			(void) close(s2);
+X			goto bad;
+X		}
+X		s3 = accept(s2, &from, &len, 0);
+X		(void) close(s2);
+X		if (s3 < 0) {
+X			perror("accept");
+X			lport = 0;
+X			goto bad;
+X		}
+X		*fd2p = s3;
+X		from.sin_port = ntohs((u_short)from.sin_port);
+X		if (from.sin_family != AF_INET ||
+X		    from.sin_port >= IPPORT_RESERVED ||
+X		    from.sin_port < IPPORT_RESERVED / 2) {
+X			fprintf(stderr,
+X			    "socket: protocol failure in circuit setup.\n");
+X			goto bad2;
+X		}
+X	}
+X	(void) write(s, locuser, strlen(locuser)+1);
+X	(void) write(s, remuser, strlen(remuser)+1);
+X	(void) write(s, cmd, strlen(cmd)+1);
+X	if (read(s, &c, 1) != 1) {
+X		perror(*ahost);
+X		goto bad2;
+X	}
+X	if (c != 0) {
+X		while (read(s, &c, 1) == 1) {
+X			(void) write(2, &c, 1);
+X			if (c == '\n')
+X				break;
+X		}
+X		goto bad2;
+X	}
+X	sigsetmask(oldmask);
+X	return (s);
+Xbad2:
+X	if (lport)
+X		(void) close(*fd2p);
+Xbad:
+X	(void) close(s);
+X	sigsetmask(oldmask);
+X	return (-1);
+X}
+X
+Xrresvport(alport)
+X	int *alport;
+X{
+X	struct sockaddr_in sin;
+X	int s;
+X
+X	sin.sin_family = AF_INET;
+X	sin.sin_addr.s_addr = INADDR_ANY;
+X	s = socket(AF_INET, SOCK_STREAM, 0);
+X	if (s < 0)
+X		return (-1);
+X	for (;;) {
+X		sin.sin_port = htons((u_short)*alport);
+X		if (bind(s, (caddr_t)&sin, sizeof (sin)) >= 0)
+X			return (s);
+X		if (errno != EADDRINUSE) {
+X			(void) close(s);
+X			return (-1);
+X		}
+X		(*alport)--;
+X		if (*alport == IPPORT_RESERVED/2) {
+X			(void) close(s);
+X			errno = EAGAIN;		/* close */
+X			return (-1);
+X		}
+X	}
+X}
+X
+Xint	_check_rhosts_file = 1;
+X
+Xruserok(rhost, superuser, ruser, luser)
+X	char *rhost;
+X	int superuser;
+X	char *ruser, *luser;
+X{
+X	FILE *hostf;
+X	char fhost[MAXHOSTNAMELEN];
+X	int first = 1;
+X	register char *sp, *p;
+X	int baselen = -1;
+X
+X	sp = rhost;
+X	p = fhost;
+X	while (*sp) {
+X		if (*sp == '.') {
+X			if (baselen == -1)
+X				baselen = sp - rhost;
+X			*p++ = *sp++;
+X		} else {
+X			*p++ = isupper(*sp) ? tolower(*sp++) : *sp++;
+X		}
+X	}
+X	*p = '\0';
+X	hostf = superuser ? (FILE *)0 : fopen("/etc/hosts.equiv", "r");
+Xagain:
+X	if (hostf) {
+X		if (!_validuser(hostf, fhost, luser, ruser, baselen)) {
+X			(void) fclose(hostf);
+X			return(0);
+X		}
+X		(void) fclose(hostf);
+X	}
+X	if (first == 1 && (_check_rhosts_file || superuser)) {
+X		struct stat sbuf;
+X		struct passwd *pwd;
+X		char pbuf[MAXPATHLEN];
+X
+X		first = 0;
+X		if ((pwd = getpwnam(luser)) == NULL)
+X			return(-1);
+X		(void)strcpy(pbuf, pwd->pw_dir);
+X		(void)strcat(pbuf, "/.rhosts");
+X		if ((hostf = fopen(pbuf, "r")) == NULL)
+X			return(-1);
+X		/*
+X		 * if owned by someone other than user or root or if
+X		 * writeable by anyone but the owner, quit
+X		 */
+X		if (fstat(fileno(hostf), &sbuf) ||
+X		    sbuf.st_uid && sbuf.st_uid != pwd->pw_uid ||
+X		    sbuf.st_mode&022) {
+X			fclose(hostf);
+X			return(-1);
+X		}
+X		goto again;
+X	}
+X	return (-1);
+X}
+X
+X/* don't make static, used by lpd(8) */
+X_validuser(hostf, rhost, luser, ruser, baselen)
+X	char *rhost, *luser, *ruser;
+X	FILE *hostf;
+X	int baselen;
+X{
+X	char *user;
+X	char ahost[MAXHOSTNAMELEN];
+X	register char *p;
+X
+X	while (fgets(ahost, sizeof (ahost), hostf)) {
+X		p = ahost;
+X		while (*p != '\n' && *p != ' ' && *p != '\t' && *p != '\0') {
+X			*p = isupper(*p) ? tolower(*p) : *p;
+X			p++;
+X		}
+X		if (*p == ' ' || *p == '\t') {
+X			*p++ = '\0';
+X			while (*p == ' ' || *p == '\t')
+X				p++;
+X			user = p;
+X			while (*p != '\n' && *p != ' ' && *p != '\t' && *p != '\0')
+X				p++;
+X		} else
+X			user = p;
+X		*p = '\0';
+X		if (_checkhost(rhost, ahost, baselen) &&
+X		    !strcmp(ruser, *user ? user : luser)) {
+X			return (0);
+X		}
+X	}
+X	return (-1);
+X}
+X
+Xstatic
+X_checkhost(rhost, lhost, len)
+X	char *rhost, *lhost;
+X	int len;
+X{
+X	static char ldomain[MAXHOSTNAMELEN + 1];
+X	static char *domainp = NULL;
+X	static int nodomain = 0;
+X	register char *cp;
+X
+X	if (len == -1)
+X		return(!strcmp(rhost, lhost));
+X	if (strncmp(rhost, lhost, len))
+X		return(0);
+X	if (!strcmp(rhost, lhost))
+X		return(1);
+X	if (*(lhost + len) != '\0')
+X		return(0);
+X	if (nodomain)
+X		return(0);
+X	if (!domainp) {
+X		if (gethostname(ldomain, sizeof(ldomain)) == -1) {
+X			nodomain = 1;
+X			return(0);
+X		}
+X		ldomain[MAXHOSTNAMELEN] = NULL;
+X		if ((domainp = index(ldomain, '.')) == (char *)NULL) {
+X			nodomain = 1;
+X			return(0);
+X		}
+X		for (cp = ++domainp; *cp; ++cp)
+X			if (isupper(*cp))
+X				*cp = tolower(*cp);
+X	}
+X	return(!strcmp(domainp, rhost + len +1));
+X}
+END-of-libc/net/rcmd.c
+echo c - libutil
+mkdir libutil > /dev/null 2>&1
+echo x - libutil/Makefile
+sed 's/^X//' >libutil/Makefile << 'END-of-libutil/Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation, advertising
+X# materials, and other materials related to such redistribution and
+X# use acknowledge that the software was developed by the University
+X# of California, Berkeley.  The name of the University may not be
+X# used to endorse or promote products derived from this software
+X# without specific prior written permission.  THIS SOFTWARE IS PROVIDED
+X# ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+X# WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND
+X# FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X# @(#)Makefile	5.3 (Berkeley) 5/10/89
+X#
+X
+XDEFS=	-DLIBC_SCCS
+XCFLAGS=	-O ${DEFS}
+XSRCS=	login.c logout.c logwtmp.c
+XOBJS=	login.o logout.o logwtmp.o
+X
+X.c.o:
+X	@${CC} -p ${CFLAGS} -c $*.c
+X	@-ld -X -o profiled/$*.o -r $*.o
+X	${CC} ${CFLAGS} -c $*.c
+X	@-ld -x -r $*.o
+X	@mv a.out $*.o
+X
+Xall: libutil.a libutil_p.a
+X
+Xlibutil.a libutil_p.a: ${OBJS}
+X	@echo building normal libutil
+X	@ar cu libutil.a ${OBJS}
+X	ranlib libutil.a
+X	@echo building profiled libutil
+X	@cd profiled; ar cu ../libutil_p.a ${OBJS}
+X	ranlib libutil_p.a
+X
+Xclean:
+X	rm -f ${OBJS} profiled/*.o libutil.a libutil_p.a
+X
+Xcleandir: clean
+X	rm -f .depend
+X
+Xdepend:
+X	mkdep ${CFLAGS} ${SRCS}
+X
+Xinstall:
+X	install -o bin -g bin -m 644 libutil.a ${DESTDIR}/usr/lib
+X	ranlib -t ${DESTDIR}/usr/lib/libutil.a
+X	install -o bin -g bin -m 644 libutil_p.a ${DESTDIR}/usr/lib
+X	ranlib -t ${DESTDIR}/usr/lib/libutil_p.a
+X
+Xtags:
+X	ctags ${SRCS}
+END-of-libutil/Makefile
+echo x - libutil/login.c
+sed 's/^X//' >libutil/login.c << 'END-of-libutil/login.c'
+X/*
+X * Copyright (c) 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)login.c	5.2 (Berkeley) 4/18/89";
+X#endif /* LIBC_SCCS and not lint */
+X
+X#include <sys/types.h>
+X#include <sys/file.h>
+X#include <utmp.h>
+X#include <stdio.h>
+X#include "pathnames.h"
+X
+Xvoid
+Xlogin(ut)
+X	struct utmp *ut;
+X{
+X	register int fd;
+X	int tty;
+X	off_t lseek();
+X
+X	tty = ttyslot();
+X	if (tty > 0 && (fd = open(_PATH_UTMP, O_WRONLY, 0)) >= 0) {
+X		(void)lseek(fd, (long)(tty * sizeof(struct utmp)), L_SET);
+X		(void)write(fd, (char *)ut, sizeof(struct utmp));
+X		(void)close(fd);
+X	}
+X	if ((fd = open(_PATH_WTMP, O_WRONLY|O_APPEND, 0)) >= 0) {
+X		(void)write(fd, (char *)ut, sizeof(struct utmp));
+X		(void)close(fd);
+X	}
+X}
+END-of-libutil/login.c
+echo x - libutil/logwtmp.c
+sed 's/^X//' >libutil/logwtmp.c << 'END-of-libutil/logwtmp.c'
+X/*
+X * Copyright (c) 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)logwtmp.c	5.3 (Berkeley) 4/2/89";
+X#endif /* LIBC_SCCS and not lint */
+X
+X#include <sys/types.h>
+X#include <sys/file.h>
+X#include <sys/time.h>
+X#include <sys/stat.h>
+X#include <utmp.h>
+X#include "pathnames.h"
+X
+Xlogwtmp(line, name, host)
+X	char *line, *name, *host;
+X{
+X	struct utmp ut;
+X	struct stat buf;
+X	int fd;
+X	time_t time();
+X	char *strncpy();
+X
+X	if ((fd = open(_PATH_WTMP, O_WRONLY|O_APPEND, 0)) < 0)
+X		return;
+X	if (!fstat(fd, &buf)) {
+X		(void)strncpy(ut.ut_line, line, sizeof(ut.ut_line));
+X		(void)strncpy(ut.ut_name, name, sizeof(ut.ut_name));
+X		(void)strncpy(ut.ut_host, host, sizeof(ut.ut_host));
+X		(void)time(&ut.ut_time);
+X		if (write(fd, (char *)&ut, sizeof(struct utmp)) !=
+X		    sizeof(struct utmp))
+X			(void)ftruncate(fd, buf.st_size);
+X	}
+X	(void)close(fd);
+X}
+END-of-libutil/logwtmp.c
+echo x - libutil/logout.c
+sed 's/^X//' >libutil/logout.c << 'END-of-libutil/logout.c'
+X/*
+X * Copyright (c) 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#if defined(LIBC_SCCS) && !defined(lint)
+Xstatic char sccsid[] = "@(#)logout.c	5.3 (Berkeley) 4/18/89";
+X#endif /* LIBC_SCCS and not lint */
+X
+X#include <sys/types.h>
+X#include <sys/file.h>
+X#include <sys/time.h>
+X#include <utmp.h>
+X#include <stdio.h>
+X#include "pathnames.h"
+X
+X/* 0 on failure, 1 on success */
+X
+Xlogout(line)
+X	register char *line;
+X{
+X	register FILE *fp;
+X	struct utmp ut;
+X	int rval;
+X	time_t time();
+X
+X	if (!(fp = fopen(_PATH_UTMP, "r+")))
+X		return(0);
+X	rval = 0;
+X	while (fread((char *)&ut, sizeof(struct utmp), 1, fp) == 1) {
+X		if (!ut.ut_name[0] ||
+X		    strncmp(ut.ut_line, line, sizeof(ut.ut_line)))
+X			continue;
+X		bzero(ut.ut_name, sizeof(ut.ut_name));
+X		bzero(ut.ut_host, sizeof(ut.ut_host));
+X		(void)time(&ut.ut_time);
+X		(void)fseek(fp, (long)-sizeof(struct utmp), L_INCR);
+X		(void)fwrite((char *)&ut, sizeof(struct utmp), 1, fp);
+X		(void)fseek(fp, (long)0, L_INCR);
+X		rval = 1;
+X	}
+X	(void)fclose(fp);
+X	return(rval);
+X}
+END-of-libutil/logout.c
+echo c - libutil/profiled
+mkdir libutil/profiled > /dev/null 2>&1
+echo x - libutil/pathnames.h
+sed 's/^X//' >libutil/pathnames.h << 'END-of-libutil/pathnames.h'
+X/*
+X * Copyright (c) 1989 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef _PATH_UTMP
+X#define	_PATH_UTMP	"/etc/utmp"
+X#endif
+X
+X#ifndef _PATH_WTMP
+X#define	_PATH_WTMP	"/usr/adm/wtmp"
+X#endif
+END-of-libutil/pathnames.h
+echo c - login
+mkdir login > /dev/null 2>&1
+echo x - login/login.c
+sed 's/^X//' >login/login.c << 'END-of-login/login.c'
+X/*
+X * Copyright (c) 1980, 1987, 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1980, 1987, 1988 The Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)login.c	5.40 (Berkeley) 5/9/89";
+X#endif /* not lint */
+X
+X/*
+X * login [ name ]
+X * login -h hostname	(for telnetd, etc.)
+X * login -f name	(for pre-authenticated login: datakit, xterm, etc.)
+X */
+X
+X#include <sys/param.h>
+X#include <sys/quota.h>
+X#include <sys/stat.h>
+X#include <sys/time.h>
+X#include <sys/resource.h>
+X#include <sys/file.h>
+X#include <sgtty.h>
+X
+X#include <utmp.h>
+X#include <signal.h>
+X#include <errno.h>
+X#include <ttyent.h>
+X#include <syslog.h>
+X#include <grp.h>
+X#include <pwd.h>
+X#include <setjmp.h>
+X#include <stdio.h>
+X#include <strings.h>
+X#include <tzfile.h>
+X#include <lastlog.h>
+X#include "pathnames.h"
+X
+X#ifdef	KERBEROS
+X#include <kerberos/krb.h>
+X#include <sys/termios.h>
+Xchar	realm[REALM_SZ];
+Xint	kerror = KSUCCESS, notickets = 1;
+X#endif
+X
+X#define	TTYGRPNAME	"tty"		/* name of group to own ttys */
+X
+X/*
+X * This bounds the time given to login.  Not a define so it can
+X * be patched on machines where it's too small.
+X */
+Xint	timeout = 300;
+X
+Xstruct	passwd *pwd;
+Xint	failures;
+Xchar	term[64], *hostname, *username, *tty;
+X
+Xstruct	sgttyb sgttyb;
+Xstruct	tchars tc = {
+X	CINTR, CQUIT, CSTART, CSTOP, CEOT, CBRK
+X};
+Xstruct	ltchars ltc = {
+X	CSUSP, CDSUSP, CRPRNT, CFLUSH, CWERASE, CLNEXT
+X};
+X
+Xchar *months[] =
+X	{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+X	  "Sep", "Oct", "Nov", "Dec" };
+X
+Xmain(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	extern int errno, optind;
+X	extern char *optarg, **environ;
+X	struct timeval tp;
+X	struct tm *ttp;
+X	struct group *gr;
+X	register int ch;
+X	register char *p;
+X	int ask, fflag, hflag, pflag, cnt;
+X	int quietlog, passwd_req, ioctlval, timedout();
+X	char *domain, *salt, *envinit[1], *ttyn, *pp;
+X	char tbuf[MAXPATHLEN + 2], tname[sizeof(_PATH_TTY) + 10];
+X	char *ctime(), *ttyname(), *stypeof(), *crypt(), *getpass();
+X	time_t time();
+X	off_t lseek();
+X
+X	(void)signal(SIGALRM, timedout);
+X	(void)alarm((u_int)timeout);
+X	(void)signal(SIGQUIT, SIG_IGN);
+X	(void)signal(SIGINT, SIG_IGN);
+X	(void)setpriority(PRIO_PROCESS, 0, 0);
+X	(void)quota(Q_SETUID, 0, 0, 0);
+X
+X	/*
+X	 * -p is used by getty to tell login not to destroy the environment
+X 	 * -f is used to skip a second login authentication 
+X	 * -h is used by other servers to pass the name of the remote
+X	 *    host to login so that it may be placed in utmp and wtmp
+X	 */
+X	(void)gethostname(tbuf, sizeof(tbuf));
+X	domain = index(tbuf, '.');
+X
+X	fflag = hflag = pflag = 0;
+X	passwd_req = 1;
+X	while ((ch = getopt(argc, argv, "fh:p")) != EOF)
+X		switch (ch) {
+X		case 'f':
+X			fflag = 1;
+X			break;
+X		case 'h':
+X			if (getuid()) {
+X				(void)fprintf(stderr,
+X				    "login: -h for super-user only.\n");
+X				exit(1);
+X			}
+X			hflag = 1;
+X			if (domain && (p = index(optarg, '.')) &&
+X			    strcasecmp(p, domain) == 0)
+X				*p = 0;
+X			hostname = optarg;
+X			break;
+X		case 'p':
+X			pflag = 1;
+X			break;
+X		case '?':
+X		default:
+X			(void)fprintf(stderr,
+X			    "usage: login [-fp] [username]\n");
+X			exit(1);
+X		}
+X	argc -= optind;
+X	argv += optind;
+X	if (*argv) {
+X		username = *argv;
+X		ask = 0;
+X	} else
+X		ask = 1;
+X
+X	ioctlval = 0;
+X	(void)ioctl(0, TIOCLSET, &ioctlval);
+X	(void)ioctl(0, TIOCNXCL, 0);
+X	(void)fcntl(0, F_SETFL, ioctlval);
+X	(void)ioctl(0, TIOCGETP, &sgttyb);
+X	sgttyb.sg_erase = CERASE;
+X	sgttyb.sg_kill = CKILL;
+X	(void)ioctl(0, TIOCSLTC, &ltc);
+X	(void)ioctl(0, TIOCSETC, &tc);
+X	(void)ioctl(0, TIOCSETP, &sgttyb);
+X
+X	for (cnt = getdtablesize(); cnt > 2; cnt--)
+X		close(cnt);
+X
+X	ttyn = ttyname(0);
+X	if (ttyn == NULL || *ttyn == '\0') {
+X		(void)sprintf(tname, "%s??", _PATH_TTY);
+X		ttyn = tname;
+X	}
+X	if (tty = rindex(ttyn, '/'))
+X		++tty;
+X	else
+X		tty = ttyn;
+X
+X	openlog("login", LOG_ODELAY, LOG_AUTH);
+X
+X	for (cnt = 0;; ask = 1) {
+X		ioctlval = 0;
+X		(void)ioctl(0, TIOCSETD, &ioctlval);
+X
+X		if (ask) {
+X			fflag = 0;
+X			getloginname();
+X		}
+X		/*
+X		 * Note if trying multiple user names;
+X		 * log failures for previous user name,
+X		 * but don't bother logging one failure
+X		 * for nonexistent name (mistyped username).
+X		 */
+X		if (failures && strcmp(tbuf, username)) {
+X			if (failures > (pwd ? 0 : 1))
+X				badlogin(tbuf);
+X			failures = 0;
+X		}
+X		(void)strcpy(tbuf, username);
+X		if (pwd = getpwnam(username))
+X			salt = pwd->pw_passwd;
+X		else
+X			salt = "xx";
+X
+X		/* if user not super-user, check for disabled logins */
+X		if (pwd == NULL || pwd->pw_uid)
+X			checknologin();
+X
+X		/*
+X		 * Disallow automatic login to root; if not invoked by
+X		 * root, disallow if the uid's differ.
+X		 */
+X		if (fflag && pwd) {
+X			int uid = getuid();
+X
+X			passwd_req = pwd->pw_uid == 0 ||
+X			    (uid && uid != pwd->pw_uid);
+X		}
+X
+X		/*
+X		 * If trying to log in as root, but with insecure terminal,
+X		 * refuse the login attempt.
+X		 */
+X		if (pwd->pw_uid == 0 && !rootterm(tty)) {
+X			(void)fprintf(stderr,
+X			    "%s login refused on this terminal.\n",
+X			    pwd->pw_name);
+X			if (hostname)
+X				syslog(LOG_NOTICE,
+X				    "LOGIN %s REFUSED FROM %s ON TTY %s",
+X				    pwd->pw_name, hostname, tty);
+X			else
+X				syslog(LOG_NOTICE,
+X				    "LOGIN %s REFUSED ON TTY %s",
+X				     pwd->pw_name, tty);
+X			continue;
+X		}
+X
+X		/*
+X		 * If no pre-authentication and a password exists
+X		 * for this user, prompt for one and verify it.
+X		 */
+X		if (!passwd_req || (pwd && !*pwd->pw_passwd))
+X			break;
+X
+X		setpriority(PRIO_PROCESS, 0, -4);
+X		pp = getpass("Password:");
+X		p = crypt(pp, salt);
+X		setpriority(PRIO_PROCESS, 0, 0);
+X
+X#ifdef	KERBEROS
+X
+X		/*
+X		 * If not present in pw file, act as we normally would.
+X		 * If we aren't Kerberos-authenticated, try the normal
+X		 * pw file for a password.  If that's ok, log the user
+X		 * in without issueing any tickets.
+X		 */
+X
+X		if (pwd && !krb_get_lrealm(realm,1)) {
+X			/*
+X			 * get TGT for local realm; be careful about uid's
+X			 * here for ticket file ownership
+X			 */
+X			(void)setreuid(geteuid(),pwd->pw_uid);
+X			kerror = krb_get_pw_in_tkt(pwd->pw_name, "", realm,
+X				"krbtgt", realm, DEFAULT_TKT_LIFE, pp);
+X			(void)setuid(0);
+X			if (kerror == INTK_OK) {
+X				bzero(pp, strlen(pp));
+X				notickets = 0;	/* user got ticket */
+X				break;
+X			}
+X		}
+X#endif
+X		(void) bzero(pp, strlen(pp));
+X		if (pwd && !strcmp(p, pwd->pw_passwd))
+X			break;
+X
+X		(void)printf("Login incorrect\n");
+X		failures++;
+X		/* we allow 10 tries, but after 3 we start backing off */
+X		if (++cnt > 3) {
+X			if (cnt >= 10) {
+X				badlogin(username);
+X				(void)ioctl(0, TIOCHPCL, (struct sgttyb *)NULL);
+X				sleepexit(1);
+X			}
+X			sleep((u_int)((cnt - 3) * 5));
+X		}
+X	}
+X
+X	/* committed to login -- turn off timeout */
+X	(void)alarm((u_int)0);
+X
+X	/* paranoia... */
+X	endpwent();
+X
+X	if (quota(Q_SETUID, pwd->pw_uid, 0, 0) < 0 && errno != EINVAL) {
+X		switch(errno) {
+X		case EUSERS:
+X			(void)fprintf(stderr,
+X		"Too many users logged on already.\nTry again later.\n");
+X			break;
+X		case EPROCLIM:
+X			(void)fprintf(stderr,
+X			    "You have too many processes running.\n");
+X			break;
+X		default:
+X			perror("quota (Q_SETUID)");
+X		}
+X		sleepexit(0);
+X	}
+X
+X	if (chdir(pwd->pw_dir) < 0) {
+X		(void)printf("No directory %s!\n", pwd->pw_dir);
+X		if (chdir("/"))
+X			exit(0);
+X		pwd->pw_dir = "/";
+X		(void)printf("Logging in with home = \"/\".\n");
+X	}
+X
+X	quietlog = access(_PATH_HUSHLOGIN, F_OK) == 0;
+X
+X#ifdef KERBEROS
+X	if (notickets && !quietlog)
+X		(void)printf("Warning: no Kerberos tickets issued\n");
+X#endif
+X
+X#define	TWOWEEKS	(14*24*60*60)
+X	if (pwd->pw_change || pwd->pw_expire)
+X		(void)gettimeofday(&tp, (struct timezone *)NULL);
+X	if (pwd->pw_change)
+X		if (tp.tv_sec >= pwd->pw_change) {
+X			(void)printf("Sorry -- your password has expired.\n");
+X			sleepexit(1);
+X		}
+X		else if (tp.tv_sec - pwd->pw_change < TWOWEEKS && !quietlog) {
+X			ttp = localtime(&pwd->pw_change);
+X			(void)printf("Warning: your password expires on %s %d, %d\n",
+X			    months[ttp->tm_mon], ttp->tm_mday, TM_YEAR_BASE + ttp->tm_year);
+X		}
+X	if (pwd->pw_expire)
+X		if (tp.tv_sec >= pwd->pw_expire) {
+X			(void)printf("Sorry -- your account has expired.\n");
+X			sleepexit(1);
+X		}
+X		else if (tp.tv_sec - pwd->pw_expire < TWOWEEKS && !quietlog) {
+X			ttp = localtime(&pwd->pw_expire);
+X			(void)printf("Warning: your account expires on %s %d, %d\n",
+X			    months[ttp->tm_mon], ttp->tm_mday, TM_YEAR_BASE + ttp->tm_year);
+X		}
+X
+X	/* nothing else left to fail -- really log in */
+X	{
+X		struct utmp utmp;
+X
+X		bzero((char *)&utmp, sizeof(utmp));
+X		(void)time(&utmp.ut_time);
+X		strncpy(utmp.ut_name, username, sizeof(utmp.ut_name));
+X		if (hostname)
+X			strncpy(utmp.ut_host, hostname, sizeof(utmp.ut_host));
+X		strncpy(utmp.ut_line, tty, sizeof(utmp.ut_line));
+X		login(&utmp);
+X	}
+X
+X	dolastlog(quietlog);
+X
+X	if (!hflag) {					/* XXX */
+X		static struct winsize win = { 0, 0, 0, 0 };
+X
+X		(void)ioctl(0, TIOCSWINSZ, &win);
+X	}
+X
+X	(void)chown(ttyn, pwd->pw_uid,
+X	    (gr = getgrnam(TTYGRPNAME)) ? gr->gr_gid : pwd->pw_gid);
+X	(void)chmod(ttyn, 0620);
+X	(void)setgid(pwd->pw_gid);
+X
+X	initgroups(username, pwd->pw_gid);
+X
+X	quota(Q_DOWARN, pwd->pw_uid, (dev_t)-1, 0);
+X
+X	if (*pwd->pw_shell == '\0')
+X		pwd->pw_shell = _PATH_BSHELL;
+X	/* turn on new line discipline for the csh */
+X	else if (!strcmp(pwd->pw_shell, _PATH_CSHELL)) {
+X		ioctlval = NTTYDISC;
+X		(void)ioctl(0, TIOCSETD, &ioctlval);
+X	}
+X
+X	/* destroy environment unless user has requested preservation */
+X	if (!pflag)
+X		environ = envinit;
+X	(void)setenv("HOME", pwd->pw_dir, 1);
+X	(void)setenv("SHELL", pwd->pw_shell, 1);
+X	if (term[0] == '\0')
+X		strncpy(term, stypeof(tty), sizeof(term));
+X	(void)setenv("TERM", term, 0);
+X	(void)setenv("USER", pwd->pw_name, 1);
+X	(void)setenv("PATH", _PATH_DEFPATH, 0);
+X
+X	if (tty[sizeof("tty")-1] == 'd')
+X		syslog(LOG_INFO, "DIALUP %s, %s", tty, pwd->pw_name);
+X	if (pwd->pw_uid == 0)
+X		if (hostname)
+X			syslog(LOG_NOTICE, "ROOT LOGIN ON %s FROM %s",
+X			    tty, hostname);
+X		else
+X			syslog(LOG_NOTICE, "ROOT LOGIN ON %s", tty);
+X
+X	if (!quietlog) {
+X		struct stat st;
+X
+X		motd();
+X		(void)sprintf(tbuf, "%s/%s", _PATH_MAILDIR, pwd->pw_name);
+X		if (stat(tbuf, &st) == 0 && st.st_size != 0)
+X			(void)printf("You have %smail.\n",
+X			    (st.st_mtime > st.st_atime) ? "new " : "");
+X	}
+X
+X	(void)signal(SIGALRM, SIG_DFL);
+X	(void)signal(SIGQUIT, SIG_DFL);
+X	(void)signal(SIGINT, SIG_DFL);
+X	(void)signal(SIGTSTP, SIG_IGN);
+X
+X	tbuf[0] = '-';
+X	strcpy(tbuf + 1, (p = rindex(pwd->pw_shell, '/')) ?
+X	    p + 1 : pwd->pw_shell);
+X
+X	/* discard permissions last so can't get killed and drop core */
+X	(void)setuid(pwd->pw_uid);
+X
+X	execlp(pwd->pw_shell, tbuf, 0);
+X	(void)fprintf(stderr, "login: no shell: %s.\n", strerror(errno));
+X	exit(0);
+X}
+X
+Xgetloginname()
+X{
+X	register int ch;
+X	register char *p;
+X	static char nbuf[UT_NAMESIZE + 1];
+X
+X	for (;;) {
+X		(void)printf("login: ");
+X		for (p = nbuf; (ch = getchar()) != '\n'; ) {
+X			if (ch == EOF) {
+X				badlogin(username);
+X				exit(0);
+X			}
+X			if (p < nbuf + UT_NAMESIZE)
+X				*p++ = ch;
+X		}
+X		if (p > nbuf)
+X			if (nbuf[0] == '-')
+X				(void)fprintf(stderr,
+X				    "login names may not start with '-'.\n");
+X			else {
+X				*p = '\0';
+X				username = nbuf;
+X				break;
+X			}
+X	}
+X}
+X
+Xtimedout()
+X{
+X	(void)fprintf(stderr, "Login timed out after %d seconds\n", timeout);
+X	exit(0);
+X}
+X
+Xrootterm(ttyn)
+X	char *ttyn;
+X{
+X	struct ttyent *t;
+X
+X	return((t = getttynam(ttyn)) && t->ty_status&TTY_SECURE);
+X}
+X
+Xjmp_buf motdinterrupt;
+X
+Xmotd()
+X{
+X	register int fd, nchars;
+X	int (*oldint)(), sigint();
+X	char tbuf[8192];
+X
+X	if ((fd = open(_PATH_MOTDFILE, O_RDONLY, 0)) < 0)
+X		return;
+X	oldint = signal(SIGINT, sigint);
+X	if (setjmp(motdinterrupt) == 0)
+X		while ((nchars = read(fd, tbuf, sizeof(tbuf))) > 0)
+X			(void)write(fileno(stdout), tbuf, nchars);
+X	(void)signal(SIGINT, oldint);
+X	(void)close(fd);
+X}
+X
+Xsigint()
+X{
+X	longjmp(motdinterrupt, 1);
+X}
+X
+Xchecknologin()
+X{
+X	register int fd, nchars;
+X	char tbuf[8192];
+X
+X	if ((fd = open(_PATH_NOLOGIN, O_RDONLY, 0)) >= 0) {
+X		while ((nchars = read(fd, tbuf, sizeof(tbuf))) > 0)
+X			(void)write(fileno(stdout), tbuf, nchars);
+X		sleepexit(0);
+X	}
+X}
+X
+Xdolastlog(quiet)
+X	int quiet;
+X{
+X	struct lastlog ll;
+X	int fd;
+X	char *ctime();
+X
+X	if ((fd = open(_PATH_LASTLOG, O_RDWR, 0)) >= 0) {
+X		(void)lseek(fd, (off_t)pwd->pw_uid * sizeof(ll), L_SET);
+X		if (!quiet) {
+X			if (read(fd, (char *)&ll, sizeof(ll)) == sizeof(ll) &&
+X			    ll.ll_time != 0) {
+X				(void)printf("Last login: %.*s ",
+X				    24-5, (char *)ctime(&ll.ll_time));
+X				if (*ll.ll_host != '\0')
+X					(void)printf("from %.*s\n",
+X					    sizeof(ll.ll_host), ll.ll_host);
+X				else
+X					(void)printf("on %.*s\n",
+X					    sizeof(ll.ll_line), ll.ll_line);
+X			}
+X			(void)lseek(fd, (off_t)pwd->pw_uid * sizeof(ll), L_SET);
+X		}
+X		bzero((char *)&ll, sizeof(ll));
+X		(void)time(&ll.ll_time);
+X		strncpy(ll.ll_line, tty, sizeof(ll.ll_line));
+X		if (hostname)
+X			strncpy(ll.ll_host, hostname, sizeof(ll.ll_host));
+X		(void)write(fd, (char *)&ll, sizeof(ll));
+X		(void)close(fd);
+X	}
+X}
+X
+Xbadlogin(name)
+X	char *name;
+X{
+X	if (failures == 0)
+X		return;
+X	if (hostname)
+X		syslog(LOG_NOTICE, "%d LOGIN FAILURE%s FROM %s, %s",
+X		    failures, failures > 1 ? "S" : "", hostname, name);
+X	else
+X		syslog(LOG_NOTICE, "%d LOGIN FAILURE%s ON %s, %s",
+X		    failures, failures > 1 ? "S" : "", tty, name);
+X}
+X
+X#undef	UNKNOWN
+X#define	UNKNOWN	"su"
+X
+Xchar *
+Xstypeof(ttyid)
+X	char *ttyid;
+X{
+X	struct ttyent *t;
+X
+X	return(ttyid && (t = getttynam(ttyid)) ? t->ty_type : UNKNOWN);
+X}
+X
+Xgetstr(buf, cnt, err)
+X	char *buf, *err;
+X	int cnt;
+X{
+X	char ch;
+X
+X	do {
+X		if (read(0, &ch, sizeof(ch)) != sizeof(ch))
+X			exit(1);
+X		if (--cnt < 0) {
+X			(void)fprintf(stderr, "%s too long\r\n", err);
+X			sleepexit(1);
+X		}
+X		*buf++ = ch;
+X	} while (ch);
+X}
+X
+Xsleepexit(eval)
+X	int eval;
+X{
+X	sleep((u_int)5);
+X	exit(eval);
+X}
+END-of-login/login.c
+echo x - login/Makefile
+sed 's/^X//' >login/Makefile << 'END-of-login/Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation, advertising
+X# materials, and other materials related to such redistribution and
+X# use acknowledge that the software was developed by the University
+X# of California, Berkeley.  The name of the University may not be
+X# used to endorse or promote products derived from this software
+X# without specific prior written permission.  THIS SOFTWARE IS PROVIDED
+X# ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+X# WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND
+X# FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X# @(#)Makefile	5.3 (Berkeley) 5/9/89
+X#
+X
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	login.c
+XOBJS=
+XMAN=
+X
+Xall: login
+X
+Xlogin: ${LIBC}
+X	${CC} -o $@ ${CFLAGS} $@.c -lutil
+X
+Xclean:
+X	rm -f ${OBJS} core login
+X
+Xcleandir: clean
+X	rm -f ${MAN} tags .depend
+X
+Xdepend: ${SRCS}
+X	mkdep -p ${CFLAGS} ${SRCS}
+X
+Xinstall:
+X	install -s -o root -g bin -m 4755 login ${DESTDIR}/bin/login
+X
+Xlint: ${SRCS}
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: ${SRCS}
+X	ctags ${SRCS}
+END-of-login/Makefile
+echo x - login/pathnames.h
+sed 's/^X//' >login/pathnames.h << 'END-of-login/pathnames.h'
+X/*
+X * Copyright (c) 1989 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X *	@(#)pathnames.h	5.3 (Berkeley) 5/9/89
+X */
+X
+X#include <paths.h>
+X
+X#define	_PATH_DEFPATH	"/bin:/usr/ucb:/usr/bin:/usr/games:"
+X#define	_PATH_HUSHLOGIN	".hushlogin"
+X#define	_PATH_LASTLOG	"/usr/adm/lastlog"
+X#define	_PATH_MAILDIR	"/var/spool/mail"
+X#define	_PATH_MOTDFILE	"/etc/motd"
+X#define	_PATH_NOLOGIN	"/etc/nologin"
+END-of-login/pathnames.h
+echo c - rlogind
+mkdir rlogind > /dev/null 2>&1
+echo x - rlogind/rlogind.8
+sed 's/^X//' >rlogind/rlogind.8 << 'END-of-rlogind/rlogind.8'
+X.\" Copyright (c) 1983, 1989 The Regents of the University of California.
+X.\" All rights reserved.
+X.\"
+X.\" Redistribution and use in source and binary forms are permitted
+X.\" provided that the above copyright notice and this paragraph are
+X.\" duplicated in all such forms and that any documentation,
+X.\" advertising materials, and other materials related to such
+X.\" distribution and use acknowledge that the software was developed
+X.\" by the University of California, Berkeley.  The name of the
+X.\" University may not be used to endorse or promote products derived
+X.\" from this software without specific prior written permission.
+X.\" THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X.\" IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X.\" WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X.\"
+X.\"	@(#)rlogind.8	6.10 (Berkeley) 9/11/89
+X.\"
+X.TH RLOGIND 8 "September 11, 1989"
+X.UC 5
+X.SH NAME
+Xrlogind \- remote login server
+X.SH SYNOPSIS
+X.B rlogind
+X[
+X.B \-aln
+X]
+X.SH DESCRIPTION
+X.I Rlogind
+Xis the server for the 
+X.IR rlogin (1)
+Xprogram.  The server provides a remote login facility
+Xwith authentication based on privileged port numbers from trusted hosts.
+X.PP
+X.I Rlogind
+Xlistens for service requests at the port indicated in
+Xthe ``login'' service specification; see
+X.IR services (5).
+XWhen a service request is received the following protocol
+Xis initiated:
+X.IP 1)
+XThe server checks the client's source port.
+XIf the port is not in the range 512-1023, the server
+Xaborts the connection.
+X.IP 2)
+XThe server checks the client's source address
+Xand requests the corresponding host name (see
+XIR gethostbyaddr (3),
+X.IR hosts (5)
+Xand
+X.IR named (8)).
+XIf the hostname cannot be determined,
+Xthe dot-notation representation of the host address is used.
+XIf the hostname is in the same domain as the server (according to
+Xthe last two components of the domain name),
+Xor if the
+X.B \-a
+Xoption is given,
+Xthe addresses for the hostname are requested,
+Xverifying that the name and address correspond.
+XNormal authentication is bypassed if the address verification fails.
+X.PP
+XOnce the source port and address have been checked, 
+X.I rlogind
+Xproceeds with the authentication process described in
+X.IR rshd (8).
+XIt then allocates a pseudo terminal (see 
+X.IR pty (4)),
+Xand manipulates file descriptors so that the slave
+Xhalf of the pseudo terminal becomes the 
+X.B stdin ,
+X.B stdout ,
+Xand
+X.B stderr 
+Xfor a login process.
+XThe login process is an instance of the
+X.IR login (1)
+Xprogram, invoked with the
+X.B \-f
+Xoption if authentication has succeeded.
+XIf automatic authentication fails, the user is
+Xprompted to log in as if on a standard terminal line.  The
+X.B \-l
+Xoption prevents any authentication based on the user's
+X``.rhosts'' file, unless the user is logging in as the superuser.
+X.PP
+XThe parent of the login process manipulates the master side of
+Xthe pseudo terminal, operating as an intermediary
+Xbetween the login process and the client instance of the
+X.I rlogin
+Xprogram.  In normal operation, the packet protocol described
+Xin
+X.IR pty (4)
+Xis invoked to provide ^S/^Q type facilities and propagate
+Xinterrupt signals to the remote programs.  The login process
+Xpropagates the client terminal's baud rate and terminal type,
+Xas found in the environment variable, ``TERM''; see
+X.IR environ (7).
+XThe screen or window size of the terminal is requested from the client,
+Xand window size changes from the client are propagated to the pseudo terminal.
+X.PP
+XTransport-level keepalive messages are enabled unless the
+X.B \-n
+Xoption is present.
+XThe use of keepalive messages allows sessions to be timed out
+Xif the client crashes or becomes unreachable.
+X.SH DIAGNOSTICS
+XAll initial diagnostic messages are indicated
+Xby a leading byte with a value of 1,
+Xafter which any network connections are closed.
+XIf there are no errors before
+X.I login
+Xis invoked, a null byte is returned as in indication of success.
+X.PP
+X.B ``Try again.''
+X.br
+XA
+X.I fork
+Xby the server failed.
+X.SH "SEE ALSO"
+Xlogin(1), ruserok(3), rshd(8)
+X.SH BUGS
+XThe authentication procedure used here assumes the integrity
+Xof each client machine and the connecting medium.  This is
+Xinsecure, but is useful in an ``open'' environment.
+X.PP
+XA facility to allow all data exchanges to be encrypted should be
+Xpresent.
+X.PP
+XA more extensible protocol should be used.
+END-of-rlogind/rlogind.8
+echo x - rlogind/Makefile
+sed 's/^X//' >rlogind/Makefile << 'END-of-rlogind/Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation, advertising
+X# materials, and other materials related to such redistribution and
+X# use acknowledge that the software was developed by the University
+X# of California, Berkeley.  The name of the University may not be
+X# used to endorse or promote products derived from this software
+X# without specific prior written permission.  THIS SOFTWARE IS PROVIDED
+X# ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+X# WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND
+X# FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X# @(#)Makefile	5.5 (Berkeley) 5/9/89
+X#
+X
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	rlogind.c
+XOBJS=
+XMAN=	rlogind.0
+X
+Xall: rlogind
+X
+Xrlogind: ${SRCS} ${LIBC}
+X	${CC} -o $@ ${CFLAGS} ${SRCS} -lutil
+X
+Xclean:
+X	rm -f ${OBJS} core rlogind
+X
+Xcleandir: clean
+X	rm -f ${MAN} tags .depend
+X
+Xdepend: ${SRCS}
+X	mkdep -p ${CFLAGS} ${SRCS}
+X
+Xinstall: ${MAN}
+X	install -s -o bin -g bin -m 755 rlogind ${DESTDIR}/etc
+X	install -c -o bin -g bin -m 444 rlogind.0 ${DESTDIR}/usr/man/cat8
+X
+Xlint: ${SRCS}
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: ${SRCS}
+X	ctags ${SRCS}
+END-of-rlogind/Makefile
+echo x - rlogind/rlogind.c
+sed 's/^X//' >rlogind/rlogind.c << 'END-of-rlogind/rlogind.c'
+X/*
+X * Copyright (c) 1983, 1988 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983, 1988 The Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)rlogind.c	5.22.1.7 (Berkeley) 9/11/89";
+X#endif /* not lint */
+X
+X/*
+X * remote login server:
+X *	\0
+X *	remuser\0
+X *	locuser\0
+X *	terminal_type/speed\0
+X *	data
+X *
+X * Automatic login protocol is done here, using login -f upon success,
+X * unless OLD_LOGIN is defined (then done in login, ala 4.2/4.3BSD).
+X */
+X
+X#include <stdio.h>
+X#include <sys/param.h>
+X#include <sys/stat.h>
+X#include <sys/socket.h>
+X#include <sys/wait.h>
+X#include <sys/file.h>
+X#include <sys/ioctl.h>
+X#if BSD > 43
+X#include <sys/termios.h>
+X#endif
+X
+X#include <netinet/in.h>
+X
+X#include <errno.h>
+X#include <pwd.h>
+X#include <signal.h>
+X#include <stdio.h>
+X#include <netdb.h>
+X#include <syslog.h>
+X#include <strings.h>
+X
+X#ifndef TIOCPKT_WINDOW
+X#define TIOCPKT_WINDOW 0x80
+X#endif
+X
+Xchar	*env[2];
+X#define	NMAX 30
+Xchar	lusername[NMAX+1], rusername[NMAX+1];
+Xstatic	char term[64] = "TERM=";
+X#define	ENVSIZE	(sizeof("TERM=")-1)	/* skip null for concatenation */
+Xint	keepalive = 1;
+Xint	check_all = 0;
+X
+X#define	SUPERUSER(pwd)	((pwd)->pw_uid == 0)
+X
+Xextern	int errno;
+Xint	reapchild();
+Xstruct	passwd *getpwnam(), *pwd;
+Xchar	*malloc();
+X
+Xmain(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	extern int opterr, optind, _check_rhosts_file;
+X	int ch;
+X	int on = 1, fromlen;
+X	struct sockaddr_in from;
+X
+X	openlog("rlogind", LOG_PID | LOG_CONS, LOG_AUTH);
+X
+X	opterr = 0;
+X	while ((ch = getopt(argc, argv, "aln")) != EOF)
+X		switch (ch) {
+X		case 'a':
+X			check_all = 1;
+X			break;
+X		case 'l':
+X			_check_rhosts_file = 0;
+X			break;
+X		case 'n':
+X			keepalive = 0;
+X			break;
+X		case '?':
+X		default:
+X			syslog(LOG_ERR, "usage: rlogind [-a] [-l] [-n]");
+X			break;
+X		}
+X	argc -= optind;
+X	argv += optind;
+X
+X	fromlen = sizeof (from);
+X	if (getpeername(0, &from, &fromlen) < 0) {
+X		syslog(LOG_ERR, "Couldn't get peer name of remote host: %m");
+X		fatalperror("Can't get peer name of remote host");
+X	}
+X	if (keepalive &&
+X	    setsockopt(0, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof (on)) < 0)
+X		syslog(LOG_WARNING, "setsockopt (SO_KEEPALIVE): %m");
+X	doit(0, &from);
+X}
+X
+Xint	child;
+Xint	cleanup();
+Xint	netf;
+Xchar	*line;
+Xextern	char	*inet_ntoa();
+X
+Xstruct winsize win = { 0, 0, 0, 0 };
+X
+X
+Xdoit(f, fromp)
+X	int f;
+X	struct sockaddr_in *fromp;
+X{
+X	int i, p, t, pid, on = 1;
+X#ifndef OLD_LOGIN
+X	int authenticated = 0, hostok = 0;
+X	char remotehost[2 * MAXHOSTNAMELEN + 1];
+X#endif
+X	register struct hostent *hp;
+X	struct hostent hostent;
+X	char c;
+X
+X	alarm(60);
+X	read(f, &c, 1);
+X	if (c != 0)
+X		exit(1);
+X
+X	alarm(0);
+X	fromp->sin_port = ntohs((u_short)fromp->sin_port);
+X	hp = gethostbyaddr(&fromp->sin_addr, sizeof (struct in_addr),
+X		fromp->sin_family);
+X	if (hp == 0) {
+X		/*
+X		 * Only the name is used below.
+X		 */
+X		hp = &hostent;
+X		hp->h_name = inet_ntoa(fromp->sin_addr);
+X#ifndef OLD_LOGIN
+X		hostok++;
+X#endif
+X	}
+X#ifndef OLD_LOGIN
+X	else if (check_all || local_domain(hp->h_name)) {
+X		/*
+X		 * If name returned by gethostbyaddr is in our domain,
+X		 * attempt to verify that we haven't been fooled by someone
+X		 * in a remote net; look up the name and check that this
+X		 * address corresponds to the name.
+X		 */
+X		strncpy(remotehost, hp->h_name, sizeof(remotehost) - 1);
+X		remotehost[sizeof(remotehost) - 1] = 0;
+X		hp = gethostbyname(remotehost);
+X		if (hp)
+X#ifdef h_addr	/* 4.2 hack */
+X		    for (; hp->h_addr_list[0]; hp->h_addr_list++)
+X			if (!bcmp(hp->h_addr_list[0], (caddr_t)&fromp->sin_addr,
+X			    sizeof(fromp->sin_addr))) {
+X				hostok++;
+X				break;
+X			}
+X#else
+X			if (!bcmp(hp->h_addr, (caddr_t)&fromp->sin_addr,
+X			    sizeof(fromp->sin_addr)))
+X				hostok++;
+X#endif
+X	} else
+X		hostok++;
+X#endif /* OLD_LOGIN */
+X
+X	if (fromp->sin_family != AF_INET ||
+X	    fromp->sin_port >= IPPORT_RESERVED ||
+X	    fromp->sin_port < IPPORT_RESERVED/2) {
+X		syslog(LOG_NOTICE, "Connection from %s on illegal port",
+X			inet_ntoa(fromp->sin_addr));
+X		fatal(f, "Permission denied");
+X	}
+X#ifdef IP_OPTIONS
+X      {
+X	u_char optbuf[BUFSIZ/3], *cp;
+X	char lbuf[BUFSIZ], *lp;
+X	int optsize = sizeof(optbuf), ipproto;
+X	struct protoent *ip;
+X
+X	if ((ip = getprotobyname("ip")) != NULL)
+X		ipproto = ip->p_proto;
+X	else
+X		ipproto = IPPROTO_IP;
+X	if (getsockopt(0, ipproto, IP_OPTIONS, (char *)optbuf, &optsize) == 0 &&
+X	    optsize != 0) {
+X		lp = lbuf;
+X		for (cp = optbuf; optsize > 0; cp++, optsize--, lp += 3)
+X			sprintf(lp, " %2.2x", *cp);
+X		syslog(LOG_NOTICE,
+X		    "Connection received using IP options (ignored):%s", lbuf);
+X		if (setsockopt(0, ipproto, IP_OPTIONS,
+X		    (char *)NULL, &optsize) != 0) {
+X			syslog(LOG_ERR, "setsockopt IP_OPTIONS NULL: %m");
+X			exit(1);
+X		}
+X	}
+X      }
+X#endif
+X	write(f, "", 1);
+X#ifndef OLD_LOGIN
+X	if (do_rlogin(hp->h_name) == 0) {
+X		if (hostok)
+X		    authenticated++;
+X		else
+X		    write(f, "rlogind: Host address mismatch.\r\n",
+X		     sizeof("rlogind: Host address mismatch.\r\n") - 1);
+X	}
+X#endif
+X
+X	for (c = 'p'; c <= 's'; c++) {
+X		struct stat stb;
+X		line = "/dev/ptyXX";
+X		line[strlen("/dev/pty")] = c;
+X		line[strlen("/dev/ptyp")] = '0';
+X		if (stat(line, &stb) < 0)
+X			break;
+X		for (i = 0; i < 16; i++) {
+X			line[sizeof("/dev/ptyp") - 1] = "0123456789abcdef"[i];
+X			p = open(line, O_RDWR);
+X			if (p > 0)
+X				goto gotpty;
+X		}
+X	}
+X	fatal(f, "Out of ptys");
+X	/*NOTREACHED*/
+Xgotpty:
+X	(void) ioctl(p, TIOCSWINSZ, &win);
+X	netf = f;
+X	line[strlen("/dev/")] = 't';
+X	t = open(line, O_RDWR);
+X	if (t < 0)
+X		fatalperror(f, line);
+X	if (fchmod(t, 0))
+X		fatalperror(f, line);
+X	(void)signal(SIGHUP, SIG_IGN);
+X	vhangup();
+X	(void)signal(SIGHUP, SIG_DFL);
+X	t = open(line, O_RDWR);
+X	if (t < 0)
+X		fatalperror(f, line);
+X	setup_term(t);
+X#ifndef DEBUG
+X	{
+X		int tt = open("/dev/tty", O_RDWR);
+X		if (tt > 0) {
+X			(void)ioctl(tt, TIOCNOTTY, 0);
+X			(void)close(tt);
+X		}
+X	}
+X#endif
+X	pid = fork();
+X	if (pid < 0)
+X		fatalperror(f, "");
+X	if (pid == 0) {
+X#if BSD > 43
+X		if (setsid() < 0)
+X			fatalperror(f, "setsid");
+X		if (ioctl(t, TIOCSCTTY, 0) < 0)
+X			fatalperror(f, "ioctl(sctty)");
+X#endif
+X		close(f), close(p);
+X		dup2(t, 0), dup2(t, 1), dup2(t, 2);
+X		close(t);
+X#ifdef OLD_LOGIN
+X		execl("/bin/login", "login", "-r", hp->h_name, 0);
+X#else /* OLD_LOGIN */
+X		if (authenticated)
+X			execl("/bin/login", "login", "-p", "-h", hp->h_name,
+X			    "-f", lusername, 0);
+X		else
+X			execl("/bin/login", "login", "-p", "-h", hp->h_name,
+X			    lusername, 0);
+X#endif /* OLD_LOGIN */
+X		fatalperror(2, "/bin/login");
+X		/*NOTREACHED*/
+X	}
+X	close(t);
+X
+X	ioctl(f, FIONBIO, &on);
+X	ioctl(p, FIONBIO, &on);
+X	ioctl(p, TIOCPKT, &on);
+X	signal(SIGTSTP, SIG_IGN);
+X	signal(SIGCHLD, cleanup);
+X	setpgrp(0, 0);
+X	protocol(f, p);
+X	signal(SIGCHLD, SIG_IGN);
+X	cleanup();
+X}
+X
+Xchar	magic[2] = { 0377, 0377 };
+Xchar	oobdata[] = {TIOCPKT_WINDOW};
+X
+X/*
+X * Handle a "control" request (signaled by magic being present)
+X * in the data stream.  For now, we are only willing to handle
+X * window size changes.
+X */
+Xcontrol(pty, cp, n)
+X	int pty;
+X	char *cp;
+X	int n;
+X{
+X	struct winsize w;
+X
+X	if (n < 4+sizeof (w) || cp[2] != 's' || cp[3] != 's')
+X		return (0);
+X	oobdata[0] &= ~TIOCPKT_WINDOW;	/* we know he heard */
+X	bcopy(cp+4, (char *)&w, sizeof(w));
+X	w.ws_row = ntohs(w.ws_row);
+X	w.ws_col = ntohs(w.ws_col);
+X	w.ws_xpixel = ntohs(w.ws_xpixel);
+X	w.ws_ypixel = ntohs(w.ws_ypixel);
+X	(void)ioctl(pty, TIOCSWINSZ, &w);
+X	return (4+sizeof (w));
+X}
+X
+X/*
+X * rlogin "protocol" machine.
+X */
+Xprotocol(f, p)
+X	int f, p;
+X{
+X	char pibuf[1024], fibuf[1024], *pbp, *fbp;
+X	register pcc = 0, fcc = 0;
+X	int cc, nfd, pmask, fmask;
+X	char cntl;
+X
+X	/*
+X	 * Must ignore SIGTTOU, otherwise we'll stop
+X	 * when we try and set slave pty's window shape
+X	 * (our controlling tty is the master pty).
+X	 */
+X	(void) signal(SIGTTOU, SIG_IGN);
+X	send(f, oobdata, 1, MSG_OOB);	/* indicate new rlogin */
+X	if (f > p)
+X		nfd = f + 1;
+X	else
+X		nfd = p + 1;
+X	fmask = 1 << f;
+X	pmask = 1 << p;
+X	for (;;) {
+X		int ibits, obits, ebits;
+X
+X		ibits = 0;
+X		obits = 0;
+X		if (fcc)
+X			obits |= pmask;
+X		else
+X			ibits |= fmask;
+X		if (pcc >= 0)
+X			if (pcc)
+X				obits |= fmask;
+X			else
+X				ibits |= pmask;
+X		ebits = pmask;
+X		if (select(nfd, &ibits, obits ? &obits : (int *)NULL,
+X		    &ebits, 0) < 0) {
+X			if (errno == EINTR)
+X				continue;
+X			fatalperror(f, "select");
+X		}
+X		if (ibits == 0 && obits == 0 && ebits == 0) {
+X			/* shouldn't happen... */
+X			sleep(5);
+X			continue;
+X		}
+X#define	pkcontrol(c)	((c)&(TIOCPKT_FLUSHWRITE|TIOCPKT_NOSTOP|TIOCPKT_DOSTOP))
+X		if (ebits & pmask) {
+X			cc = read(p, &cntl, 1);
+X			if (cc == 1 && pkcontrol(cntl)) {
+X				cntl |= oobdata[0];
+X				send(f, &cntl, 1, MSG_OOB);
+X				if (cntl & TIOCPKT_FLUSHWRITE) {
+X					pcc = 0;
+X					ibits &= ~pmask;
+X				}
+X			}
+X		}
+X		if (ibits & fmask) {
+X			fcc = read(f, fibuf, sizeof(fibuf));
+X			if (fcc < 0 && errno == EWOULDBLOCK)
+X				fcc = 0;
+X			else {
+X				register char *cp;
+X				int left, n;
+X
+X				if (fcc <= 0)
+X					break;
+X				fbp = fibuf;
+X
+X			top:
+X				for (cp = fibuf; cp < fibuf+fcc-1; cp++)
+X					if (cp[0] == magic[0] &&
+X					    cp[1] == magic[1]) {
+X						left = fcc - (cp-fibuf);
+X						n = control(p, cp, left);
+X						if (n) {
+X							left -= n;
+X							if (left > 0)
+X								bcopy(cp+n, cp, left);
+X							fcc -= n;
+X							goto top; /* n^2 */
+X						}
+X					}
+X				obits |= pmask;		/* try write */
+X			}
+X		}
+X
+X		if ((obits & pmask) && fcc > 0) {
+X			cc = write(p, fbp, fcc);
+X			if (cc > 0) {
+X				fcc -= cc;
+X				fbp += cc;
+X			}
+X		}
+X
+X		if (ibits & pmask) {
+X			pcc = read(p, pibuf, sizeof (pibuf));
+X			pbp = pibuf;
+X			if (pcc < 0 && errno == EWOULDBLOCK)
+X				pcc = 0;
+X			else if (pcc <= 0)
+X				break;
+X			else if (pibuf[0] == 0) {
+X				pbp++, pcc--;
+X				obits |= fmask;	/* try a write */
+X			} else {
+X				if (pkcontrol(pibuf[0])) {
+X					pibuf[0] |= oobdata[0];
+X					send(f, &pibuf[0], 1, MSG_OOB);
+X				}
+X				pcc = 0;
+X			}
+X		}
+X		if ((obits & fmask) && pcc > 0) {
+X			cc = write(f, pbp, pcc);
+X			if (cc < 0 && errno == EWOULDBLOCK) {
+X				/* also shouldn't happen */
+X				sleep(5);
+X				continue;
+X			}
+X			if (cc > 0) {
+X				pcc -= cc;
+X				pbp += cc;
+X			}
+X		}
+X	}
+X}
+X
+Xcleanup()
+X{
+X	char *p;
+X
+X	p = line + sizeof("/dev/") - 1;
+X	if (logout(p))
+X		logwtmp(p, "", "");
+X	(void)chmod(line, 0666);
+X	(void)chown(line, 0, 0);
+X	*p = 'p';
+X	(void)chmod(line, 0666);
+X	(void)chown(line, 0, 0);
+X	shutdown(netf, 2);
+X	exit(1);
+X}
+X
+Xfatal(f, msg)
+X	int f;
+X	char *msg;
+X{
+X	char buf[BUFSIZ];
+X
+X	buf[0] = '\01';		/* error indicator */
+X	(void) sprintf(buf + 1, "rlogind: %s.\r\n", msg);
+X	(void) write(f, buf, strlen(buf));
+X	exit(1);
+X}
+X
+Xfatalperror(f, msg)
+X	int f;
+X	char *msg;
+X{
+X	char buf[BUFSIZ];
+X	extern int sys_nerr;
+X	extern char *sys_errlist[];
+X
+X	if ((unsigned)errno < sys_nerr)
+X		(void) sprintf(buf, "%s: %s", msg, sys_errlist[errno]);
+X	else
+X		(void) sprintf(buf, "%s: Error %d", msg, errno);
+X	fatal(f, buf);
+X}
+X
+X#ifndef OLD_LOGIN
+Xdo_rlogin(host)
+X	char *host;
+X{
+X
+X	getstr(rusername, sizeof(rusername), "remuser too long");
+X	getstr(lusername, sizeof(lusername), "locuser too long");
+X	getstr(term+ENVSIZE, sizeof(term)-ENVSIZE, "Terminal type too long");
+X
+X	if (getuid())
+X		return(-1);
+X	pwd = getpwnam(lusername);
+X	if (pwd == NULL)
+X		return(-1);
+X	return(ruserok(host, SUPERUSER(pwd), rusername, lusername));
+X}
+X
+X
+Xgetstr(buf, cnt, errmsg)
+X	char *buf;
+X	int cnt;
+X	char *errmsg;
+X{
+X	char c;
+X
+X	do {
+X		if (read(0, &c, 1) != 1)
+X			exit(1);
+X		if (--cnt < 0)
+X			fatal(1, errmsg);
+X		*buf++ = c;
+X	} while (c != 0);
+X}
+X
+Xextern	char **environ;
+X
+Xchar *speeds[] = {
+X	"0", "50", "75", "110", "134", "150", "200", "300", "600",
+X	"1200", "1800", "2400", "4800", "9600", "19200", "38400",
+X};
+X#define	NSPEEDS	(sizeof(speeds) / sizeof(speeds[0]))
+X
+Xsetup_term(fd)
+X	int fd;
+X{
+X	register char *cp = index(term, '/'), **cpp;
+X	char *speed;
+X#if BSD > 43
+X	struct termios tt;
+X
+X	tcgetattr(fd, &tt);
+X	if (cp) {
+X		*cp++ = '\0';
+X		speed = cp;
+X		cp = index(speed, '/');
+X		if (cp)
+X			*cp++ = '\0';
+X		cfsetspeed(&tt, atoi(speed));
+X	}
+X
+X	tt.c_iflag = TTYDEF_IFLAG;
+X	tt.c_oflag = TTYDEF_OFLAG;
+X	tt.c_lflag = TTYDEF_LFLAG;
+X	tcsetattr(fd, TCSADFLUSH, &tt);
+X#else
+X	struct sgttyb sgttyb;
+X
+X	(void)ioctl(fd, TIOCGETP, &sgttyb);
+X	if (cp) {
+X		*cp++ = '\0';
+X		speed = cp;
+X		cp = index(speed, '/');
+X		if (cp)
+X			*cp++ = '\0';
+X		for (cpp = speeds; cpp < &speeds[NSPEEDS]; cpp++)
+X		    if (strcmp(*cpp, speed) == 0) {
+X			sgttyb.sg_ispeed = sgttyb.sg_ospeed = cpp - speeds;
+X			break;
+X		    }
+X	}
+X	sgttyb.sg_flags = ECHO|CRMOD|ANYP|XTABS;
+X	(void)ioctl(fd, TIOCSETP, &sgttyb);
+X#endif
+X
+X	env[0] = term;
+X	env[1] = 0;
+X	environ = env;
+X}
+X
+X/*
+X * Check whether host h is in our local domain,
+X * defined as sharing the last two components of the domain part,
+X * or the entire domain part if the local domain has only one component.
+X * If either name is unqualified (contains no '.'),
+X * assume that the host is local, as it will be
+X * interpreted as such.
+X */
+Xlocal_domain(h)
+X	char *h;
+X{
+X	char localhost[MAXHOSTNAMELEN];
+X	char *p1, *p2, *topdomain();
+X
+X	localhost[0] = 0;
+X	(void) gethostname(localhost, sizeof(localhost));
+X	p1 = topdomain(localhost);
+X	p2 = topdomain(h);
+X	if (p1 == NULL || p2 == NULL || !strcasecmp(p1, p2))
+X		return(1);
+X	return(0);
+X}
+X
+Xchar *
+Xtopdomain(h)
+X	char *h;
+X{
+X	register char *p;
+X	char *maybe = NULL;
+X	int dots = 0;
+X
+X	for (p = h + strlen(h); p >= h; p--) {
+X		if (*p == '.') {
+X			if (++dots == 2)
+X				return (p);
+X			maybe = p;
+X		}
+X	}
+X	return (maybe);
+X}
+X#endif /* OLD_LOGIN */
+END-of-rlogind/rlogind.c
+echo c - rshd
+mkdir rshd > /dev/null 2>&1
+echo x - rshd/Makefile
+sed 's/^X//' >rshd/Makefile << 'END-of-rshd/Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation, advertising
+X# materials, and other materials related to such redistribution and
+X# use acknowledge that the software was developed by the University
+X# of California, Berkeley.  The name of the University may not be
+X# used to endorse or promote products derived from this software
+X# without specific prior written permission.  THIS SOFTWARE IS PROVIDED
+X# ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+X# WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND
+X# FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X# @(#)Makefile	5.2 (Berkeley) 5/9/89
+X#
+X
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	rshd.c
+XOBJS=
+XMAN=	rshd.0
+X
+Xall: rshd
+X
+Xrshd: ${LIBC}
+X	${CC} -o $@ ${CFLAGS} $@.c
+X
+Xclean:
+X	rm -f ${OBJS} core rshd
+X
+Xcleandir: clean
+X	rm -f ${MAN} tags .depend
+X
+Xdepend: ${SRCS}
+X	mkdep -p ${CFLAGS} ${SRCS}
+X
+Xinstall: ${MAN}
+X	install -s -o bin -g bin -m 755 rshd ${DESTDIR}/etc
+X	install -c -o bin -g bin -m 444 rshd.0 ${DESTDIR}/usr/man/cat8
+X
+Xlint: ${SRCS}
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: ${SRCS}
+X	ctags ${SRCS}
+END-of-rshd/Makefile
+echo x - rshd/rshd.8
+sed 's/^X//' >rshd/rshd.8 << 'END-of-rshd/rshd.8'
+X.\" Copyright (c) 1983, 1989 The Regents of the University of California.
+X.\" All rights reserved.
+X.\"
+X.\" Redistribution and use in source and binary forms are permitted
+X.\" provided that the above copyright notice and this paragraph are
+X.\" duplicated in all such forms and that any documentation,
+X.\" advertising materials, and other materials related to such
+X.\" distribution and use acknowledge that the software was developed
+X.\" by the University of California, Berkeley.  The name of the
+X.\" University may not be used to endorse or promote products derived
+X.\" from this software without specific prior written permission.
+X.\" THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X.\" IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X.\" WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X.\"
+X.\"	@(#)rshd.8	6.9 (Berkeley) 9/11/89
+X.\"
+X.TH RSHD 8 "September 11, 1989"
+X.UC 5
+X.SH NAME
+Xrshd \- remote shell server
+X.SH SYNOPSIS
+X.B rshd [-aln]
+X.SH DESCRIPTION
+X.I Rshd
+Xis the server for the 
+X.IR rcmd (3)
+Xroutine and, consequently, for the
+X.IR rsh (1)
+Xprogram.  The server provides remote execution facilities
+Xwith authentication based on privileged port numbers from trusted hosts.
+X.PP
+X.I Rshd
+Xlistens for service requests at the port indicated in
+Xthe ``cmd'' service specification; see
+X.IR services (5).
+XWhen a service request is received the following protocol
+Xis initiated:
+X.IP 1)
+XThe server checks the client's source port.
+XIf the port is not in the range 512-1023, the server
+Xaborts the connection.
+X.IP 2)
+XThe server reads characters from the socket up
+Xto a null (`\e0') byte.  The resultant string is
+Xinterpreted as an ASCII number, base 10.
+X.IP 3)
+XIf the number received in step 2 is non-zero,
+Xit is interpreted as the port number of a secondary
+Xstream to be used for the 
+X.BR stderr .
+XA second connection is then created to the specified
+Xport on the client's machine.  The source port of this
+Xsecond connection is also in the range 512-1023.
+X.IP 4)
+XThe server checks the client's source address
+Xand requests the corresponding host name (see
+X.IR gethostbyaddr (3),
+X.IR hosts (5)
+Xand
+X.IR named (8)).
+XIf the hostname cannot be determined,
+Xthe dot-notation representation of the host address is used.
+XIf the hostname is in the same domain as the server (according to
+Xthe last two components of the domain name),
+Xor if the
+X.B \-a
+Xoption is given,
+Xthe addresses for the hostname are requested,
+Xverifying that the name and address correspond.
+XIf address verification fails, the connection is aborted
+Xwith the message, ``Host address mismatch.''
+X.IP 5)
+XA null terminated user name of at most 16 characters
+Xis retrieved on the initial socket.  This user name
+Xis interpreted as the user identity on the
+X.BR client 's
+Xmachine.
+X.IP 6)
+XA null terminated user name of at most 16 characters
+Xis retrieved on the initial socket.  This user name
+Xis interpreted as a user identity to use on the
+X.BR server 's
+Xmachine.
+X.IP 7)
+XA null terminated command to be passed to a
+Xshell is retrieved on the initial socket.  The length of
+Xthe command is limited by the upper bound on the size of
+Xthe system's argument list.  
+X.IP 8)
+X.I Rshd
+Xthen validates the user using
+X.IR ruserok (3),
+Xwhich uses the file ``/etc/hosts.equiv'' and the ``.rhosts''
+Xfile found in the user's home directory.  The
+X.B \-l
+Xoption prevents
+X.IR ruserok (3)
+Xfrom doing any validation based on the user's ``.rhosts'' file,
+Xunless the user is the superuser.
+X.IP 9)
+XA null byte is returned on the initial socket
+Xand the command line is passed to the normal login
+Xshell of the user.  The
+Xshell inherits the network connections established
+Xby
+X.IR rshd .
+X.PP
+XTransport-level keepalive messages are enabled unless the
+X.B \-n
+Xoption is present.
+XThe use of keepalive messages allows sessions to be timed out
+Xif the client crashes or becomes unreachable.
+X.SH DIAGNOSTICS
+XExcept for the last one listed below,
+Xall diagnostic messages
+Xare returned on the initial socket,
+Xafter which any network connections are closed.
+XAn error is indicated by a leading byte with a value of
+X1 (0 is returned in step 9 above upon successful completion
+Xof all the steps prior to the execution of the login shell).
+X.PP
+X.B ``locuser too long''
+X.br
+XThe name of the user on the client's machine is
+Xlonger than 16 characters.
+X.PP
+X.B ``remuser too long''
+X.br
+XThe name of the user on the remote machine is
+Xlonger than 16 characters.
+X.PP
+X.B ``command too long ''
+X.br
+XThe command line passed exceeds the size of the argument
+Xlist (as configured into the system).
+X.PP
+X.B ``Login incorrect.''
+X.br
+XNo password file entry for the user name existed.
+X.PP
+X.B ``No remote directory.''
+X.br
+XThe 
+X.I chdir
+Xcommand to the home directory failed.
+X.PP
+X.B ``Permission denied.''
+X.br
+XThe authentication procedure described above failed.
+X.PP
+X.B ``Can't make pipe.''
+X.br
+XThe pipe needed for the 
+X.BR stderr ,
+Xwasn't created.
+X.PP
+X.B ``Can't fork; try again.''
+X.br
+XA
+X.I fork
+Xby the server failed.
+X.PP
+X.B ``<shellname>: ...''
+X.br
+XThe user's login shell could not be started.  This message is returned
+Xon the connection associated with the
+X.BR stderr ,
+Xand is not preceded by a flag byte.
+X.SH SEE ALSO
+Xrsh(1), rcmd(3), ruserok(3)
+X.SH BUGS
+XThe authentication procedure used here assumes the integrity
+Xof each client machine and the connecting medium.  This is
+Xinsecure, but is useful in an ``open'' environment.
+X.PP
+XA facility to allow all data exchanges to be encrypted should be
+Xpresent.
+X.PP
+XA more extensible protocol (such as Telnet) should be used.
+END-of-rshd/rshd.8
+echo x - rshd/pathnames.h
+sed 's/^X//' >rshd/pathnames.h << 'END-of-rshd/pathnames.h'
+X/*
+X * Copyright (c) 1989 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X *
+X *	@(#)pathnames.h	5.2 (Berkeley) 5/9/89
+X */
+X
+X#define	_PATH_BSHELL	"/bin/sh"
+X#define	_PATH_DEFPATH	"PATH=/bin:/usr/ucb:/usr/bin:"
+X#define	_PATH_NOLOGIN	"/etc/nologin"
+X#define	_PATH_TTY	"/dev/tty"
+END-of-rshd/pathnames.h
+echo x - rshd/rshd.c
+sed 's/^X//' >rshd/rshd.c << 'END-of-rshd/rshd.c'
+X/*
+X * Copyright (c) 1983, 1988, 1989 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983, 1988, 1989 The Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)rshd.c	5.17.1.3 (Berkeley) 9/11/89";
+X#endif /* not lint */
+X
+X/*
+X * remote shell server:
+X *	[port]\0
+X *	remuser\0
+X *	locuser\0
+X *	command\0
+X *	data
+X */
+X#include <sys/param.h>
+X#include <sys/ioctl.h>
+X#include <sys/socket.h>
+X#include <sys/file.h>
+X#include <sys/signal.h>
+X#include <sys/time.h>
+X
+X#include <netinet/in.h>
+X
+X#include <arpa/inet.h>
+X
+X#include <stdio.h>
+X#include <errno.h>
+X#include <pwd.h>
+X#include <netdb.h>
+X#include <syslog.h>
+X#include "pathnames.h"
+X
+Xint	errno;
+Xint	keepalive = 1;
+Xint	check_all = 0;
+Xchar	*index(), *rindex(), *strncat();
+X/*VARARGS1*/
+Xint	error();
+Xint	sent_null;
+X
+X/*ARGSUSED*/
+Xmain(argc, argv)
+X	int argc;
+X	char **argv;
+X{
+X	extern int opterr, optind;
+X	extern int _check_rhosts_file;
+X	struct linger linger;
+X	int ch, on = 1, fromlen;
+X	struct sockaddr_in from;
+X
+X	openlog("rshd", LOG_PID | LOG_ODELAY, LOG_DAEMON);
+X
+X	opterr = 0;
+X	while ((ch = getopt(argc, argv, "aln")) != EOF)
+X		switch (ch) {
+X		case 'a':
+X			check_all = 1;
+X			break;
+X		case 'l':
+X			_check_rhosts_file = 0;
+X			break;
+X		case 'n':
+X			keepalive = 0;
+X			break;
+X		case '?':
+X		default:
+X			syslog(LOG_ERR, "usage: rshd [-aln]");
+X			break;
+X		}
+X
+X	argc -= optind;
+X	argv += optind;
+X
+X	fromlen = sizeof (from);
+X	if (getpeername(0, &from, &fromlen) < 0) {
+X		syslog(LOG_ERR, "getpeername: %m");
+X		_exit(1);
+X	}
+X	if (keepalive &&
+X	    setsockopt(0, SOL_SOCKET, SO_KEEPALIVE, (char *)&on,
+X	    sizeof(on)) < 0)
+X		syslog(LOG_WARNING, "setsockopt (SO_KEEPALIVE): %m");
+X	linger.l_onoff = 1;
+X	linger.l_linger = 60;			/* XXX */
+X	if (setsockopt(0, SOL_SOCKET, SO_LINGER, (char *)&linger,
+X	    sizeof (linger)) < 0)
+X		syslog(LOG_WARNING, "setsockopt (SO_LINGER): %m");
+X	doit(&from);
+X}
+X
+Xchar	username[20] = "USER=";
+Xchar	homedir[64] = "HOME=";
+Xchar	shell[64] = "SHELL=";
+Xchar	*envinit[] =
+X	    {homedir, shell, _PATH_DEFPATH, username, 0};
+Xchar	**environ;
+X
+Xdoit(fromp)
+X	struct sockaddr_in *fromp;
+X{
+X	char cmdbuf[NCARGS+1], *cp;
+X	char locuser[16], remuser[16];
+X	struct passwd *pwd;
+X	int s;
+X	struct hostent *hp;
+X	char *hostname;
+X	short port;
+X	int pv[2], pid, cc;
+X	int nfd;
+X	fd_set ready, readfrom;
+X	char buf[BUFSIZ], sig;
+X	int one = 1;
+X	char remotehost[2 * MAXHOSTNAMELEN + 1];
+X
+X	(void) signal(SIGINT, SIG_DFL);
+X	(void) signal(SIGQUIT, SIG_DFL);
+X	(void) signal(SIGTERM, SIG_DFL);
+X#ifdef DEBUG
+X	{ int t = open(_PATH_TTY, 2);
+X	  if (t >= 0) {
+X		ioctl(t, TIOCNOTTY, (char *)0);
+X		(void) close(t);
+X	  }
+X	}
+X#endif
+X	fromp->sin_port = ntohs((u_short)fromp->sin_port);
+X	if (fromp->sin_family != AF_INET) {
+X		syslog(LOG_ERR, "malformed from address\n");
+X		exit(1);
+X	}
+X#ifdef IP_OPTIONS
+X      {
+X	u_char optbuf[BUFSIZ/3], *cp;
+X	char lbuf[BUFSIZ], *lp;
+X	int optsize = sizeof(optbuf), ipproto;
+X	struct protoent *ip;
+X
+X	if ((ip = getprotobyname("ip")) != NULL)
+X		ipproto = ip->p_proto;
+X	else
+X		ipproto = IPPROTO_IP;
+X	if (getsockopt(0, ipproto, IP_OPTIONS, (char *)optbuf, &optsize) == 0 &&
+X	    optsize != 0) {
+X		lp = lbuf;
+X		for (cp = optbuf; optsize > 0; cp++, optsize--, lp += 3)
+X			sprintf(lp, " %2.2x", *cp);
+X		syslog(LOG_NOTICE,
+X		    "Connection received using IP options (ignored):%s", lbuf);
+X		if (setsockopt(0, ipproto, IP_OPTIONS,
+X		    (char *)NULL, &optsize) != 0) {
+X			syslog(LOG_ERR, "setsockopt IP_OPTIONS NULL: %m");
+X			exit(1);
+X		}
+X	}
+X      }
+X#endif
+X
+X	if (fromp->sin_port >= IPPORT_RESERVED ||
+X	    fromp->sin_port < IPPORT_RESERVED/2) {
+X		syslog(LOG_NOTICE, "Connection from %s on illegal port",
+X			inet_ntoa(fromp->sin_addr));
+X		exit(1);
+X	}
+X
+X	(void) alarm(60);
+X	port = 0;
+X	for (;;) {
+X		char c;
+X		if ((cc = read(0, &c, 1)) != 1) {
+X			if (cc < 0)
+X				syslog(LOG_NOTICE, "read: %m");
+X			shutdown(0, 1+1);
+X			exit(1);
+X		}
+X		if (c == 0)
+X			break;
+X		port = port * 10 + c - '0';
+X	}
+X
+X	(void) alarm(0);
+X	if (port != 0) {
+X		int lport = IPPORT_RESERVED - 1;
+X		s = rresvport(&lport);
+X		if (s < 0) {
+X			syslog(LOG_ERR, "can't get stderr port: %m");
+X			exit(1);
+X		}
+X		if (port >= IPPORT_RESERVED) {
+X			syslog(LOG_ERR, "2nd port not reserved\n");
+X			exit(1);
+X		}
+X		fromp->sin_port = htons((u_short)port);
+X		if (connect(s, fromp, sizeof (*fromp)) < 0) {
+X			syslog(LOG_INFO, "connect second port: %m");
+X			exit(1);
+X		}
+X	}
+X
+X#ifdef notdef
+X	/* from inetd, socket is already on 0, 1, 2 */
+X	dup2(f, 0);
+X	dup2(f, 1);
+X	dup2(f, 2);
+X#endif
+X	hp = gethostbyaddr((char *)&fromp->sin_addr, sizeof (struct in_addr),
+X		fromp->sin_family);
+X	if (hp) {
+X		/*
+X		 * If name returned by gethostbyaddr is in our domain,
+X		 * attempt to verify that we haven't been fooled by someone
+X		 * in a remote net; look up the name and check that this
+X		 * address corresponds to the name.
+X		 */
+X		if (check_all || local_domain(hp->h_name)) {
+X			strncpy(remotehost, hp->h_name, sizeof(remotehost) - 1);
+X			remotehost[sizeof(remotehost) - 1] = 0;
+X			hp = gethostbyname(remotehost);
+X			if (hp == NULL) {
+X				syslog(LOG_INFO,
+X				    "Couldn't look up address for %s",
+X				    remotehost);
+X				error("Couldn't look up address for your host\n");
+X				exit(1);
+X			}
+X#ifdef h_addr	/* 4.2 hack */
+X			for (; ; hp->h_addr_list++) {
+X				if (!bcmp(hp->h_addr_list[0],
+X				    (caddr_t)&fromp->sin_addr,
+X				    sizeof(fromp->sin_addr)))
+X					break;
+X				if (hp->h_addr_list[0] == NULL) {
+X					syslog(LOG_NOTICE,
+X					  "Host addr %s not listed for host %s",
+X					    inet_ntoa(fromp->sin_addr),
+X					    hp->h_name);
+X					error("Host address mismatch\n");
+X					exit(1);
+X				}
+X			}
+X#else
+X			if (bcmp(hp->h_addr, (caddr_t)&fromp->sin_addr,
+X			    sizeof(fromp->sin_addr))) {
+X				syslog(LOG_NOTICE,
+X				  "Host addr %s not listed for host %s",
+X				    inet_ntoa(fromp->sin_addr),
+X				    hp->h_name);
+X				error("Host address mismatch\n");
+X				exit(1);
+X			}
+X#endif
+X		}
+X		hostname = hp->h_name;
+X	} else
+X		hostname = inet_ntoa(fromp->sin_addr);
+X
+X	getstr(remuser, sizeof(remuser), "remuser");
+X	getstr(locuser, sizeof(locuser), "locuser");
+X	getstr(cmdbuf, sizeof(cmdbuf), "command");
+X	setpwent();
+X	pwd = getpwnam(locuser);
+X	if (pwd == NULL) {
+X		error("Login incorrect.\n");
+X		exit(1);
+X	}
+X	if (chdir(pwd->pw_dir) < 0) {
+X		(void) chdir("/");
+X#ifdef notdef
+X		error("No remote directory.\n");
+X		exit(1);
+X#endif
+X	}
+X
+X	if (pwd->pw_passwd != 0 && *pwd->pw_passwd != '\0' &&
+X	    ruserok(hostname, pwd->pw_uid == 0, remuser, locuser) < 0) {
+X		error("Permission denied.\n");
+X		exit(1);
+X	}
+X
+X	if (pwd->pw_uid && !access(_PATH_NOLOGIN, F_OK)) {
+X		error("Logins currently disabled.\n");
+X		exit(1);
+X	}
+X
+X	(void) write(2, "\0", 1);
+X	sent_null = 1;
+X
+X	if (port) {
+X		if (pipe(pv) < 0) {
+X			error("Can't make pipe.\n");
+X			exit(1);
+X		}
+X		pid = fork();
+X		if (pid == -1)  {
+X			error("Can't fork; try again.\n");
+X			exit(1);
+X		}
+X		if (pv[0] > s)
+X			nfd = pv[0];
+X		else
+X			nfd = s;
+X		nfd++;
+X		if (pid) {
+X			(void) close(0); (void) close(1); (void) close(2);
+X			(void) close(pv[1]);
+X			FD_ZERO(&readfrom);
+X			FD_SET(s, &readfrom);
+X			FD_SET(pv[0], &readfrom);
+X			ioctl(pv[0], FIONBIO, (char *)&one);
+X			/* should set s nbio! */
+X			do {
+X				ready = readfrom;
+X				if (select(nfd, &ready, (fd_set *)0,
+X				    (fd_set *)0, (struct timeval *)0) < 0)
+X					break;
+X				if (FD_ISSET(s, &ready)) {
+X					if (read(s, &sig, 1) <= 0)
+X						FD_CLR(s, &readfrom);
+X					else
+X						killpg(pid, sig);
+X				}
+X				if (FD_ISSET(pv[0], &ready)) {
+X					errno = 0;
+X					cc = read(pv[0], buf, sizeof (buf));
+X					if (cc <= 0) {
+X						shutdown(s, 1+1);
+X						FD_CLR(pv[0], &readfrom);
+X					} else
+X						(void) write(s, buf, cc);
+X				}
+X			} while (FD_ISSET(s, &readfrom) ||
+X			    FD_ISSET(pv[0], &readfrom));
+X			exit(0);
+X		}
+X		setpgrp(0, getpid());
+X		(void) close(s); (void) close(pv[0]);
+X		dup2(pv[1], 2);
+X		close(pv[1]);
+X	}
+X	if (*pwd->pw_shell == '\0')
+X		pwd->pw_shell = _PATH_BSHELL;
+X#if	BSD > 43
+X	if (setlogin(pwd->pw_name) < 0)
+X		syslog(LOG_ERR, "setlogin() failed: %m");
+X#endif
+X	(void) setgid((gid_t)pwd->pw_gid);
+X	initgroups(pwd->pw_name, pwd->pw_gid);
+X	(void) setuid((uid_t)pwd->pw_uid);
+X	environ = envinit;
+X	strncat(homedir, pwd->pw_dir, sizeof(homedir)-6);
+X	strncat(shell, pwd->pw_shell, sizeof(shell)-7);
+X	strncat(username, pwd->pw_name, sizeof(username)-6);
+X	cp = rindex(pwd->pw_shell, '/');
+X	if (cp)
+X		cp++;
+X	else
+X		cp = pwd->pw_shell;
+X	endpwent();
+X	if (pwd->pw_uid == 0)
+X		syslog(LOG_INFO|LOG_AUTH, "ROOT shell from %s@%s, comm: %s\n",
+X		    remuser, hostname, cmdbuf);
+X	execl(pwd->pw_shell, cp, "-c", cmdbuf, 0);
+X	perror(pwd->pw_shell);
+X	exit(1);
+X}
+X
+X/*
+X * Report error to client.
+X * Note: can't be used until second socket has connected
+X * to client, or older clients will hang waiting
+X * for that connection first.
+X */
+X/*VARARGS1*/
+Xerror(fmt, a1, a2, a3)
+X	char *fmt;
+X	int a1, a2, a3;
+X{
+X	char buf[BUFSIZ], *bp = buf;
+X
+X	if (sent_null == 0)
+X		*bp++ = 1;
+X	(void) sprintf(bp, fmt, a1, a2, a3);
+X	(void) write(2, buf, strlen(buf));
+X}
+X
+Xgetstr(buf, cnt, err)
+X	char *buf;
+X	int cnt;
+X	char *err;
+X{
+X	char c;
+X
+X	do {
+X		if (read(0, &c, 1) != 1)
+X			exit(1);
+X		*buf++ = c;
+X		if (--cnt == 0) {
+X			error("%s too long\n", err);
+X			exit(1);
+X		}
+X	} while (c != 0);
+X}
+X
+X/*
+X * Check whether host h is in our local domain,
+X * defined as sharing the last two components of the domain part,
+X * or the entire domain part if the local domain has only one component.
+X * If either name is unqualified (contains no '.'),
+X * assume that the host is local, as it will be
+X * interpreted as such.
+X */
+Xlocal_domain(h)
+X	char *h;
+X{
+X	char localhost[MAXHOSTNAMELEN];
+X	char *p1, *p2, *topdomain();
+X
+X	localhost[0] = 0;
+X	(void) gethostname(localhost, sizeof(localhost));
+X	p1 = topdomain(localhost);
+X	p2 = topdomain(h);
+X	if (p1 == NULL || p2 == NULL || !strcasecmp(p1, p2))
+X		return(1);
+X	return(0);
+X}
+X
+Xchar *
+Xtopdomain(h)
+X	char *h;
+X{
+X	register char *p;
+X	char *maybe = NULL;
+X	int dots = 0;
+X
+X	for (p = h + strlen(h); p >= h; p--) {
+X		if (*p == '.') {
+X			if (++dots == 2)
+X				return (p);
+X			maybe = p;
+X		}
+X	}
+X	return (maybe);
+X}
+END-of-rshd/rshd.c
+exit
+

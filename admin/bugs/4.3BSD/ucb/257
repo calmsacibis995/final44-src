@@ -1,0 +1,106 @@
+From leres@helios.ee.lbl.gov  Wed Jan 25 20:33:05 1989
+Received: from ace.ee.lbl.gov by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA14008; Wed, 25 Jan 89 20:33:05 -0800
+Received: by helios.ee.lbl.gov (5.59/s2.2)
+	id AA01910; Wed, 25 Jan 89 20:31:48 PST
+Message-Id: <8901260431.AA01910@helios.ee.lbl.gov>
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: More bugs with ctags -t
+Index: ucb/ctags/C.c 4.3BSD +FIX
+Date: Wed, 25 Jan 89 20:31:46 PST
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+Description:
+	A struct that doesn't have white space between the token and
+	the brace results in an entry that's missing the last character
+	of the tag token.
+
+	Also, a routine that returns an enum is tagged incorrectly if
+	the entry was split across two lines and the first line ended
+	with a blank.
+
+Repeat-By:
+	(1) Create a C source:
+
+		% echo "struct acme{ int zigzag; };" > lose.c
+	
+	Create a tags file using -t and notice that the last letter of
+	the tag is missing:
+
+		% ctags -t lose.c ; cat tags
+		acm	lose.c	/^struct acme{ int zigzag; };$/
+	
+	(2) Create a C source (the trailing blank is important):
+
+		% echo "enum face " > lose.c
+		% echo "halftone() {}" >> lose.c
+
+	Notice that the search pattern is wrong when you use ctags -t:
+
+		% ctags -t lose.c ; cat tags
+		halftone	lose.c	/^enum face $/
+		ctags lose.c ; cat tags
+		halftone	lose.c	/^halftone() {}$/
+
+
+Fix:
+	Redo str_entry() to not assume the current character is white
+	space.
+
+*** C.c	Wed Jan 25 19:37:35 1989
+--- C.c.new	Wed Jan 25 20:00:09 1989
+***************
+*** 16,22 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)C.c	5.3 (Berkeley) 12/31/88";
+  #endif /* not lint */
+  
+  #include <stdio.h>
+--- 16,22 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)C.c	5.3++ (Berkeley) 12/31/88";
+  #endif /* not lint */
+  
+  #include <stdio.h>
+***************
+*** 318,338 ****
+  		if (!intoken(c))
+  			break;
+  	}
+! 	switch ((char)c) {
+! 		case '{':		/* it was "struct foo{" */
+! 			--sp;
+! 			break;
+! 		case '\n':		/* it was "struct foo\n" */
+  			SETLINE;
+! 			/*FALLTHROUGH*/
+! 		default:		/* probably "struct foo " */
+! 			while (GETC(!=,EOF))
+! 				if (!iswhite(c))
+! 					break;
+! 			if (c != (int)'{') {
+! 				(void)ungetc(c, inf);
+! 				return(NO);
+! 			}
+  	}
+  	*sp = EOS;
+  	pfnote(tok,curline);
+--- 318,331 ----
+  		if (!intoken(c))
+  			break;
+  	}
+! 	if (c == (int)'\n')
+! 		SETLINE;
+! 	while (iswhite(c) && GETC(!=,EOF))
+! 		if (c == (int)'\n')
+  			SETLINE;
+! 	if (c != (int)'{') {
+! 		(void)ungetc(c, inf);
+! 		return(NO);
+  	}
+  	*sp = EOS;
+  	pfnote(tok,curline);

@@ -1,0 +1,6 @@
+(declare (special xx i))
+(setq xx (new-vector 1))
+(setq i 0)
+(defun test ()
+   (vset xx (prog1 i (setq i (1+ i))) 3)
+   xx)

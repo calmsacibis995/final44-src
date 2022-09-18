@@ -1,0 +1,233 @@
+Path: seismo!uunet!mcvax!ukc!stc!root44!miduet!steve
+From: steve@gec-mi-at.co.uk (Steve Lademann)
+Newsgroups: comp.bugs.4bsd
+Subject: Problems with 4.3BSD ftpd (+Fixes)
+Sender: news@gec-mi-at.co.uk
+Index: ucb/ftp 4.3BSD
+
+Problem 1:	When communicating with circa System V.0 ports of the
+		BSD Internet software (this includes a large number
+		of PCs!), the trailing partial block of
+		information is sometimes lost at the 'V.0' end.
+
+Repeat by:	Getting a PC with an aging BSD Internet port, and
+		keep transferring files (initiated from the PC end).
+		Eventually, notice that a transfer reports a multiple
+		of 256 bytes transferred. Look at end of file and
+		notice a chunk missing.
+
+Fix:		Flush the data output buffer and delay for a while
+		prior to closing down the socket. This is due to a
+		timimg problem at the ftp end, but we don't all have
+		the sources for PCs and Work Stations, do we? This
+		fix avoids the problem rather than curing it.
+
+----------------
+
+Problem 2:	ftp and ftpd sometimes get out of sequence. This normally
+		happens after an error occurs.
+
+Repeat by:	Set up an FTP session. Now ask for a directory listing of
+		a file that doesn't exist, e.g
+
+			ls gurglebloopfoodink
+
+		Note error message,
+
+		gurglebloopfoodink not found
+
+		and *absence* of 'Transfer Complete' message. Now do
+		something different, e.g.
+
+			pwd
+
+		and note that 'Transfer Complete' message for previous
+		ls is output.
+
+Fix:		This problem is caused by inet, which connects stdin, stdout
+		*and stderr* to the control socket. The directory listing is
+		obtained by a fork/exec of ls, and piping the output through
+		a routine which transmits it to the initiating ftp down
+		a data socket. However, if the file does not exist, ls
+		outputs an error on stderr. This has not been
+		redirected and goes straight down the *control* socket, which
+		the initiating ftp takes as the termination status. The *real*
+		status is then transmitted by ftpd, and hangs around in the
+		socket until read by the initiating ftp, probably during the
+		next command. Fix is to redirect the stderr in popen to
+		stdout.
+
+----------------
+
+Problem 3:	If an attempt is made to rename a file which doesn't exist,
+		ftpd disconnects ungracefully on a subsequent command.
+
+Repeat by:	Set up an FTP session. Try
+
+			rename loadofgarbage nuffink
+
+		which produces
+
+		550 loadofgarbage: No such file or directory
+
+		then try something else, e.g. pwd and note that ftpd
+		reports an unrecognisable message error, and exits.
+
+Fix:		This problem is caused because the rename command is
+		carried out by two subcommands, RNFR (ReName FRom)
+		and RNTO (ReName TO). The existence of the 'from' file
+		is checked on arrival of the RNFR packet. If it doesn't
+		exist, an error is returned by ftpd. The remote ftp then
+		aborts the rename. However, ftpd is still expecting the
+		RNTO. If it doesn't see it, and sees the start of the next
+		request, it bombs. The fix is to separate the two
+		transactions completely, so they are independent.
+
+*** ftpd.c.old	Thu Apr 30 18:05:59 1987
+--- ftpd.c	Fri Feb  5 17:45:36 1988
+***************
+*** 307,312 ****
+--- 307,319 ----
+  	else if (tmp == 0) {
+  		reply(226, "Transfer complete.");
+  	}
++ /*
++  * Next two lines are a horrendous kludge to make System V.0 TCP/IP from an
++  * IBM PC work - really ought to fix bug properly steve@gec-mi-at.co.uk
++  */
++ 	(void) fflush(dout);
++ 	sleep(3);
++ 
+  	(void) fclose(dout);
+  	data = -1;
+  	pdata = -1;
+***************
+*** 890,895 ****
+--- 897,910 ----
+  		(void) close(myside);
+  		(void) dup2(hisside, tst(0, 1));
+  		(void) close(hisside);
++ /*
++  * Make errors go down the data pipe as well.
++  * Otherwise, the remote ftp gets out of sequence with the daemon
++  * as all the error messages from stderr go down the control socket, as
++  * inetd connects fds 0, 1, and 2 to the control socket.
++  * steve@gec-mi-at.co.uk
++  */
++ 		(void) dup2(1,2);
+  		execv(gav[0], gav);
+  		_exit(1);
+  	}
+
+*** ftpcmd.y.old	Fri Feb  5 19:38:41 1988
+--- ftpcmd.y	Mon Feb  8 10:23:27 1988
+***************
+*** 52,57 ****
+--- 52,60 ----
+  static	int cmd_bytesz;
+  char cbuf[512];
++ /* Part of rename mod - see later steve@gec-mi-at.co.uk */
++ static char *from = 0;
++ 
+  char	*index();
+  %}
+***************
+*** 253,259 ****
+  			if ($4 != NULL)
+  				free((char *) $4);
+  		}
+! 	|	rename_cmd
+  	|	HELP CRLF
+  		= {
+  			help((char *) 0);
+--- 256,276 ----
+  			if ($4 != NULL)
+  				free((char *) $4);
+  		}
+! /*
+!  * There is a problem here, because the following *insists* that if there
+!  * is a RNFR message, it *must* be followed by a RNTO. This means that if
+!  * the file in the RNFR message does not exist, then an error (550) is posted
+!  * by the rename_from state. Most ftps give up at this point and don't bother
+!  * with the RNTO message. This causes ftpd to exit ungracefully. Fix is to
+!  * keep rename_from and rename_to as completely separate states, and remember
+!  * the 'from' name until the 'to' packet arrives.
+!  * steve@gec-mi-at.co.uk
+!  *
+!  *	|	rename_cmd
+!  */
+! 
+! 	|	rename_from
+! 	|	rename_to    	
+  	|	HELP CRLF
+  		= {
+  			help((char *) 0);
+***************
+*** 439,444 ****
+--- 456,462 ----
+  pathstring:	STRING
+  	;
++ /*
+  rename_cmd:	rename_from rename_to
+  	= {
+  		if ($1 && $2)
+***************
+*** 451,472 ****
+  			free((char *) $2);
+  	}
+  	;
+! 
+  rename_from:	RNFR check_login SP pathname CRLF
+  	= {
+! 		char *from = 0, *renamefrom();
+  		if ($2 && $4)
+  			from = renamefrom((char *) $4);
+  		if (from == 0 && $4)
+  			free((char *) $4);
+- 		$$ = (int)from;
+  	}
+  	;
+  rename_to:	RNTO SP pathname CRLF
+  	= {
+! 		$$ = $3;
+  	}
+  	;
+--- 469,503 ----
+  			free((char *) $2);
+  	}
+  	;
+! */
+! /* Test out from name and then remember it. steve@gec-mi-at.co.uk */
+  rename_from:	RNFR check_login SP pathname CRLF
+  	= {
+! 		char *renamefrom();
++ 		if (from)
++ 		  free (from);
+  		if ($2 && $4)
+  			from = renamefrom((char *) $4);
+  		if (from == 0 && $4)
+  			free((char *) $4);
+  	}
+  	;
++ /* Use remembered from name. Get to name and rename. steve@gec-mi-at.co.uk */
+  rename_to:	RNTO SP pathname CRLF
+  	= {
+! 	  	if (from && $3)
+! 			renamecmd((char *) from, (char *) $3);
+! 		else
+! 			reply(503, "Bad sequence of commands.");
+! 		if (from)
+! 		    {
+! 			free(from);
+! 			from = 0;
+! 		    }
+! 		if ($3)
+! 			free($3);
+  	}
+  	;
+
+Steve Lademann          |Phone: 44 727 59292 x326
+Marconi Instruments Ltd |UUCP : ...mcvax!ukc!hrc63!miduet!steve
+St. Albans    AL4 0JN   |     : ...mcvax!ukc!stc!root44!miduet!steve
+Herts.   UK             |NRS  : steve@uk.co.gec-mi-at
+

@@ -1,0 +1,415 @@
+Path: seismo!ut-sally!husc6!endor!dudek
+From: dudek@endor.harvard.edu (Glen Dudek)
+Newsgroups: comp.bugs.4bsd
+Subject: tmscp tape drives give "hard error" on reading too small a record
+Sender: news@husc6.UUCP
+Index: sys/vaxuba/tmscp.c 4.3BSD
+
+Description:
+	When reading a tape written with a blocksize larger than you are
+	using to read, any tmscp tape drive (e.g., TU81, TK50) will die
+	with a kernel printf "hard error: record data truncated" and an
+	I/O error.  This should not be an error when using the raw device.
+
+Repeat-By:
+	Write a tape with a (reasonably) large blocksize, as in:
+	    % tar cvfb /dev/rmt0 20 /etc/motd
+	Use dd to read back the first 512 bytes of the first tape block:
+	    % dd if=/dev/rmt0 of=/dev/null bs=512 count=1
+	Watch the kernel barf.
+
+Fix:
+	Get DEC to stop using proprietary protocols which they cannot even
+	write decent drivers for, or
+
+	Change the following line in /usr/sys/vaxuba/tmscp.c:
+
+*** /tmp/,RCSt1027293	Thu Apr 16 13:49:34 1987
+--- tmscp.c	Thu Apr 16 13:35:05 1987
+***************
+*** 1548,1554 ****
+  			{
+  			if (mp->mscp_flags & M_EF_SEREX)
+  				tms->tms_serex = 1;
+! 			if (st != M_ST_TAPEM)
+  				{
+  				tprintf(tms->tms_ttyp,
+  				    "tms%d: hard error bn%d\n",
+--- 1548,1559 ----
+  			{
+  			if (mp->mscp_flags & M_EF_SEREX)
+  				tms->tms_serex = 1;
+! 			/* Truncated record on read of raw device is not
+! 			 * an error -gd 4/16/87
+! 			 */
+! 			if (st != M_ST_TAPEM &&
+! 			    !(st == M_ST_RDTRN && bp == &rtmsbuf[ui->ui_unit]
+! 			    && (mp->mscp_opcode == (M_OP_READ|M_OP_END))))
+  				{
+  				tprintf(tms->tms_ttyp,
+  				    "tms%d: hard error bn%d\n",
+-----------
+Glen Dudek				dudek@harvard.harvard.edu
+Aiken Computation Lab			(617) 495-2871
+
+==========================================================================
+Path: seismo!gatech!ulysses!ggs
+From: ggs@ulysses.homer.nj.att.com (Griff Smith)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Summary: truncated reads ARE an error!
+In article <1681@husc6.UUCP>, dudek@endor.UUCP writes:
+> Index:	/usr/sys/vaxuba/tmscp.c 4.3BSD, Ultrix 1.2
+> Description:
+> 	When reading a tape written with a blocksize larger than you are
+> 	using to read, any tmscp tape drive (e.g., TU81, TK50) will die
+> 	with a kernel printf "hard error: record data truncated" and an
+> 	I/O error.  This should not be an error when using the raw device.
+
+Please don't destroy what feeble progress has been made in improving UNIX
+system tape drivers.  I agree with your objection to the printf, but
+there should be some notification when data is lost.
+...
+
+> ! 			if (st != M_ST_TAPEM)
+>   				{
+>   				tprintf(tms->tms_ttyp,
+>   				    "tms%d: hard error bn%d\n",
+
+Yes, this is a nasty thing to do.  A simple arror return would have been
+much more appropriate.  There should be an error code that signals "data
+lost", but in lieu of that, ENOMEM is a crude substitute.
+
+The problem with quietly returning the head of truncated blocks is that
+people may do quite a bit of processing on the resulting trash before
+they realize something is missing.  "But the C program won't compile"
+or "tar will complain soon enough" you say?  Not in my building; we get
+a lot of IBM tapes with simple data on them.  If you guess the wrong
+block size but get the right logical record length, many logical
+records are neatly snipped off and thrown into the bit bucket.  It may
+take several days and a few thousand dollars before the mistake is
+discovered.
+-- 
+Griff Smith	AT&T (Bell Laboratories), Murray Hill
+Phone:		1-201-582-7736
+UUCP:		{allegra|ihnp4}!ulysses!ggs
+Internet:	ggs@ulysses.uucp
+----------------------------------------------------------------------
+Path: seismo!ut-sally!husc6!endor!dudek
+From: dudek@endor.harvard.edu (Glen Dudek)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Sender: news@husc6.UUCP
+I realize the dangers of silently truncating data, but UNIX semantics for raw
+tape devices require this behaviour (at least, all such raw tape drivers I've
+ever seen behave this way).  Until the interface is changed to allow more
+out-of-band information to be passed along with the data (e.g., data truncated,
+physical end-of-tape, etc.), vendors need to stick with existing semantics.
+I found this problem when a remote software installation broke because the
+installation assumed 'dd if=/dev/rmt4 of=/dev/null' would successfully
+skip a tape file independent of blocksize.  Since the default blocksize for
+dd is 512, and the tape blocksize was larger, the device reported a hard error.
+
+How can we change the interface to such devices to allow reporting these kinds
+of errors?  Do we need to change the system call interface to do this?  I
+suppose ioctl can be used for the application above, but that would require
+two system calls for every device write.  How about another int (or preferably,
+a more complex structure which hides the data better and allows some
+extensibility) analagous to errno, but which is valid after all system calls
+and can be used to pass such information?  The data can be kept in the user
+structure and copied to some well-known address in the processes' virtual
+address space (blech, kludge, any better ideas?).
+
+Is anyone working on increasing the information passed through the system
+call interface?
+
+Glen Dudek
+Computer Facilities Manager
+Aiken Computation Lab
+----------------------------------------------------------------------
+Path: seismo!rutgers!sri-spam!ames!oliveb!sun!gorodish!guy
+From: guy%gorodish@Sun.COM (Guy Harris)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Sender: news@sun.uucp
+>I realize the dangers of silently truncating data, but UNIX semantics for raw
+>tape devices require this behaviour (at least, all such raw tape drivers I've
+>ever seen behave this way).
+
+There is a significant difference between
+
+	"UNIX semantics for raw tape devices require this behavior"
+
+and
+
+	"all raw tape drivers I've ever seen behave this way".
+
+Does it say anything in the manual about smaller-than-block-size
+reads?
+
+>Until the interface is changed to allow more out-of-band information to be
+>passed along with the data (e.g., data truncated, physical end-of-tape,
+>etc.), vendors need to stick with existing semantics.
+
+Not if the *overall* cost of sticking with existing semantics is
+higher than the cost of changing.  Griff has already testified that
+there can be a cost to silently ignoring errors.
+
+Besides, I think other 4BSD tape drivers also complain about
+smaller-than-block-size reads.
+
+>I found this problem when a remote software installation broke because the
+>installation assumed 'dd if=/dev/rmt4 of=/dev/null' would successfully
+>skip a tape file independent of blocksize.
+
+First of all, that "dd" won't successfully skip files on most UNIX
+systems.  Try 'dd if=/dev/nrmt4 of=/dev/null'.  Second of all, a
+better choice might be
+
+	if [ -x /bin/mt ]
+	then
+		mt -t /dev/nrmt4 fsf 1
+	else
+		dd if=/dev/nrmt4 of=/dev/null
+	fi
+
+A "skip forward one file" command doesn't care how big the blocks
+are, and runs much faster than reading the file, at least with a
+vanilla "dd" (and possibly faster even than Griff's improved "dd").
+(And, before somebody complains that repeatedly checking for the
+existence of "/bin/mt" would slow it down too much - an assertion I
+tend to doubt - you can test it once and set a shell variable
+instead.)
+
+>How can we change the interface to such devices to allow reporting these kinds
+>of errors?  Do we need to change the system call interface to do this?  I
+>suppose ioctl can be used for the application above, but that would require
+>two system calls for every device write.
+
+Nope.  Two system calls for every device read or write *that reports an
+error*.
+
+>How about another int (or preferably, a more complex structure which hides
+>the data better and allows some extensibility) analagous to errno, but which
+>is valid after all system calls and can be used to pass such information?
+
+No.  There are already too many global variables in the UNIX system
+call interface.  I'd rather get rid of the ones we already have, by
+making the "conventional" UNIX calls just be wrappers around calls
+that *don't* muck with global variables, than introduce new global
+variables.
+----------------------------------------------------------------------
+Path: seismo!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Followup-To: comp.unix.wizards
+In article <1696@husc6.UUCP> dudek@endor.harvard.edu (Glen Dudek) writes:
+>... but UNIX semantics for raw tape devices require this behaviour
+
+I do not think so:
+
+>(at least, all such raw tape drivers I've ever seen behave this way).
+
+All save one.  The TU78 driver in 4.[23]BSD gives ENOMEM errors when
+reading with too small a block size.
+
+>I found this problem when a remote software installation broke because the
+>installation assumed 'dd if=/dev/rmt4 of=/dev/null' would successfully
+>skip a tape file independent of blocksize.
+
+I believe the `proper' way to skip a file is to use the magtape ioctls:
+`mt -f /dev/rmt4 fsf'.  Obviously this will not work on systems without
+such ioctls.  (So it goes.)
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7690)
+UUCP:	seismo!mimsy!chris	ARPA/CSNet:	chris@mimsy.umd.edu
+----------------------------------------------------------------------
+Path: seismo!husc6!endor!dudek
+From: dudek@endor.harvard.edu (Glen Dudek)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Sender: news@husc6.UUCP
+Without having the actual tape drives and testing it, I cannot be sure,
+but it appears to me that all other 4.3BSD tape drivers behave the same, that
+is, all record size errors are ignored when reading from the raw tape device.
+
+/dev/rmt4 and /dev/nrmt4 are two names for the same (no rewind) minor device,
+at least on 4.3BSD and Ultrix 1.2.
+
+In fact, the documentation (mtio(4)) states that an error is returned when
+a blocksize is found which is larger than the buffer size passed to the read.
+Oh well... DEC and the documentation are right, and I and the other tape drivers
+are wrong.  Sorry.
+
+It *is* interesting to note that the installation in question was a SUN
+software installation...
+
+	Glen
+----------------------------------------------------------------------
+Path: seismo!gatech!ulysses!ggs
+From: ggs@ulysses.homer.nj.att.com (Griff Smith)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Summary: UNIX System tape semantics is an oxymoron
+In article <1696@husc6.UUCP>, dudek@endor.UUCP writes:
+> I realize the dangers of silently truncating data, but UNIX semantics for raw
+> tape devices require this behaviour (at least, all such raw tape drivers I've
+> ever seen behave this way).  Until the interface is changed to allow more
+> out-of-band information to be passed along with the data (e.g., data truncated,
+> physical end-of-tape, etc.), vendors need to stick with existing semantics.
+
+Sorry to be so abrasive in the summary, but I think it is dangerous to
+invoke "that's the way we've always done it" in cases such as this.
+Using similar reasoning, UNIX tape drivers might be required to crash
+the system when they encounter bad blocks because some of them already
+do it.  Lost data is lost data; people who depend on "benign" cases
+will be bitten by their bad habits.  Calling it a standard is cancerous.
+
+> I found this problem when a remote software installation broke because the
+> installation assumed 'dd if=/dev/rmt4 of=/dev/null' would successfully
+> skip a tape file independent of blocksize.  Since the default blocksize for
+> dd is 512, and the tape blocksize was larger, the device reported a hard error.
+
+So fix the script and scream at the supplier of the software.  They took
+advantage of a bug that has been replicated into most drivers.  The "bs"
+option of "dd" provides a portable solution.
+
+> How can we change the interface to such devices to allow reporting these kinds
+> of errors?  Do we need to change the system call interface to do this?
+
+No, it would just require another error code to be added to errno.h.
+How about EDATALOST?  For something as serious as corrupted data, you
+want the normal case to be an error.  It should be possible, but non-trivial
+to override the error condition.
+
+> I suppose ioctl can be used for the application above, but that would
+> require two system calls for every device write.
+> How about another int (or preferably,
+> a more complex structure which hides the data better and allows some
+> extensibility) analagous to errno, but which is valid after all system calls
+> and can be used to pass such information?  The data can be kept in the user
+> structure and copied to some well-known address in the processes' virtual
+> address space (blech, kludge, any better ideas?).
+If you did add extended error status in some portable form (there is
+already a non-portable version in the BSD drivers), you would only have
+to get the status after an error.
+> Glen Dudek
+> Computer Facilities Manager
+> Aiken Computation Lab
+
+-- 
+Griff Smith	AT&T (Bell Laboratories), Murray Hill
+Phone:		1-201-582-7736
+UUCP:		{allegra|ihnp4}!ulysses!ggs
+Internet:	ggs@ulysses.uucp
+----------------------------------------------------------------------
+Path: seismo!rutgers!princeton!allegra!alice!dmr
+From: dmr@alice.UUCP
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+The Seventh Edition manual, section HT(4), says, "During a read
+[of the raw tape device], the record length is passed back as the
+number of bytes read, provided it is no greater than the buffer
+size; if the record is long, an error is indicated."
+
+I'm certain no console chatter occurred.
+
+	Dennis Ritchie
+----------------------------------------------------------------------
+Path: seismo!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Followup-To: comp.unix.wizards
+In article <1696@husc6.UUCP> dudek@endor.harvard.edu (Glen Dudek) writes:
+>... but UNIX semantics for raw tape devices require this behaviour
+
+I do not think so:
+
+>(at least, all such raw tape drivers I've ever seen behave this way).
+
+All save one.  The TU78 driver in 4.[23]BSD gives ENOMEM errors when
+reading with too small a block size.
+
+>I found this problem when a remote software installation broke because the
+>installation assumed 'dd if=/dev/rmt4 of=/dev/null' would successfully
+>skip a tape file independent of blocksize.
+
+I believe the `proper' way to skip a file is to use the magtape ioctls:
+`mt -f /dev/rmt4 fsf'.  Obviously this will not work on systems without
+such ioctls.  (So it goes.)
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7690)
+UUCP:	seismo!mimsy!chris	ARPA/CSNet:	chris@mimsy.umd.edu
+----------------------------------------------------------------------
+Path: seismo!rutgers!ames!oliveb!pyramid!voder!jeff
+From: jeff@voder.UUCP (Jeff Gilliam)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Followup-To: comp.unix.wizards
+Some facts for consideration:
+
+1) Is is *extremely* dangerous to silently discard data.  That's why tape
+   controllers have a special error bit to indicate that the record length
+   was larger than number of bytes read.
+
+2) All the 4.3 BSD tape drivers silently ignore a "record too long" error
+   if the raw device is being accessed.  They even have a comment to the
+   effect that this behavior is deliberate, though it doesn't explain why.
+
+3) The man pages (at least since 7th Edition) indicate that a long record
+   returns an error indication.
+
+Conclusions?  This situation ought to return an error.  A unique error
+code would be ideal (I kinda like ERLE: Record Length Error) to enable
+user code to distinguish between a problem reading the tape and a
+simple record length error.  This error should *not* provoke a printf
+to the system console; it's not indicative of either a hardware or
+kernel software problem.
+
+If somebody really feels it necessary (examples, please) an ioctl()
+could be added to cause the drive to ignore rle's (analagous to 4.3's
+ioctl() to ignore EOT).
+
+The end result is that "naive" code won't lose data without receiving
+some indication.  (I'm glossing over "stupid" code that ignores the
+return value from read().  But then, such code is likely to have worse
+problems than this ... like ignoring EOF.)  And, "sophisticated" code
+can control how it deals with record length errors.  Sounds like the
+best of all possible worlds.
+
+-- 
+
+Jeff Gilliam	{ucbvax,pyramid,nsc}!voder!jeff
+----------------------------------------------------------------------
+Path: seismo!rutgers!ames!oliveb!sun!gorodish!guy
+From: guy%gorodish@Sun.COM (Guy Harris)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: tmscp tape drives give "hard error" on reading too small a record
+Sender: news@sun.uucp
+>/dev/rmt4 and /dev/nrmt4 are two names for the same (no rewind) minor device,
+>at least on 4.3BSD and Ultrix 1.2.
+
+Not if you use the 4.3BSD MAKEDEV to make those entries:
+
+#!/bin/sh -
+# Copyright (c) 1980 Regents of the University of California.
+# All rights reserved.  The Berkeley software License Agreement
+# specifies the terms and conditions for redistribution.
+#	@(#)MAKEDEV	4.28 (Berkeley) 4/28/86
+
+	...
+
+		/etc/mknod nrmt$unit	c $chr $four ;: sanity w/pdp11 v7
+		/etc/mknod nrmt$eight	c $chr $twelve ;: ditto
+		/etc/mknod rmt$unit	c $chr $unit
+		/etc/mknod rmt$four	c $chr $four
+		/etc/mknod rmt$eight	c $chr $eight
+		/etc/mknod rmt$twelve	c $chr $twelve
+
+>It *is* interesting to note that the installation in question was a SUN
+>software installation...
+
+Why?
+----------------------------------------------------------------------

@@ -1,0 +1,313 @@
+In the following, Edward Moy includes a "volume size" information
+server for Aufs.  It should only be used when getmnt and statfs are
+not available.  It is not known if it works on systems other than
+Ultrix 1.2.  Some care was taken to do things this way instead of just
+grabbing the output from df or whatever because the "volume size"
+information is retrieved once a second by the Finder/AppleShare client
+even when idle.
+
+Sender: edmoy@violet.Berkeley.EDU
+Date: Mon, 11 Apr 88 18:50:58 PDT
+From: edmoy@violet.Berkeley.EDU
+To: cck@cunixc.columbia.edu
+Subject: how about this fix?
+
+Continuing on the idea of a server for volume size information for primative
+systems like Ultrix 1.2, I compromised by having a server for each instance
+of aufs rather than a full-blown server for all instances.  The server code
+is tiny, so having multiple copies shouldn't be to much of a problem.  Making
+it a full server would increase the size considerable, since I get away with
+using socketpair() rather that have to do really socket IPC stuff.
+
+So each instance of aufs calls getvolsize() which forks a copy of sizeserver
+as needed.  The define SIZESERVER is the pathname of the sizeserver.  It
+must run setuid root (like df) to read the superblock of the filesystem.
+It is robost enough to restart a new copy of sizeserver if the original
+one dies.  It also uses select with a half a second timeout to insure it
+never hangs.
+
+Following is a shar file of the diffs to afpos.c and sizeserver.[ch] (afpos.c
+needs sizeserver.h).
+
+Edward Moy
+Workstation Software Support Group
+University of California
+Berkeley, CA  94720
+
+edmoy@violet.Berkeley.EDU
+ucbvax!violet!edmoy
+--------------- cut -------------------- cut -------------------- cut ------
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	afpos.c.diff
+#	sizeserver.c
+#	sizeserver.h
+# sizeserver - archive created: Mon Apr 11 18:42:18 PDT 1988
+if test -f afpos.c.diff
+then
+	echo shar: will not overwrite existing file "'afpos.c.diff'"
+else
+echo 'x - afpos.c.diff'
+cat << \RAZZLE!DAZZLE > afpos.c.diff
+*** afpos.c.bak	Wed Apr  6 14:50:41 1988
+--- afpos.c	Mon Apr 11 17:26:59 1988
+***************
+*** 137,142
+  #include "afppasswd.h"			/* in case we are using privates */
+  #include "afposncs.h"
+  #include "afpgc.h"
+  
+  #ifdef MAXBSIZE
+  # define IOBSIZE MAXBSIZE	/* set to max buf entry size by if there */
+
+--- 137,148 -----
+  #include "afppasswd.h"			/* in case we are using privates */
+  #include "afposncs.h"
+  #include "afpgc.h"
++ #ifdef SIZESERVER
++ #include <setjmp.h>
++ #include <signal.h>
++ #include <sys/socket.h>
++ #include "sizeserver.h"
++ #endif SIZESERVER
+  
+  #ifdef MAXBSIZE
+  # define IOBSIZE MAXBSIZE	/* set to max buf entry size by if there */
+***************
+*** 289,294
+  private OSErr ItoEErr();
+  private int filemode();
+  private char *syserr();
+  
+  /*
+   * Enable OS Dependent functions
+
+--- 295,303 -----
+  private OSErr ItoEErr();
+  private int filemode();
+  private char *syserr();
++ #ifdef SIZESERVER
++ private void getvolsize();
++ #endif SIZESERVER
+  
+  /*
+   * Enable OS Dependent functions
+***************
+*** 1865,1870
+      return(noErr);
+    }
+  #endif
+    v->v_size = 0x1000000;		/* some random number */
+    v->v_free = 0x1000000;		/* same random number */
+    return(noErr);			/* all ok */
+
+--- 1874,1882 -----
+      return(noErr);
+    }
+  #endif
++ #ifdef SIZESERVER
++   getvolsize(path, &v->v_size, &v->v_free);
++ #else SIZESERVER
+    v->v_size = 0x1000000;		/* some random number */
+    v->v_free = 0x1000000;		/* same random number */
+  #endif SIZESERVER
+***************
+*** 1867,1872
+  #endif
+    v->v_size = 0x1000000;		/* some random number */
+    v->v_free = 0x1000000;		/* same random number */
+    return(noErr);			/* all ok */
+  }
+  
+
+--- 1879,1885 -----
+  #else SIZESERVER
+    v->v_size = 0x1000000;		/* some random number */
+    v->v_free = 0x1000000;		/* same random number */
++ #endif SIZESERVER
+    return(noErr);			/* all ok */
+  }
+  
+***************
+*** 1869,1874
+    v->v_free = 0x1000000;		/* same random number */
+    return(noErr);			/* all ok */
+  }
+  
+  #ifdef USEGETMNT
+  /* get info on path using buf when there is ambiguity (ultrix 2.0 or before) */
+
+--- 1882,1957 -----
+  #endif SIZESERVER
+    return(noErr);			/* all ok */
+  }
++ 
++ #ifdef SIZESERVER
++ static jmp_buf gotpipe;
++ 
++ private void
++ getvolsize(path, ntot, nfree)
++ char *path;
++ sdword *ntot, *nfree;
++ {
++ 	register int i;
++ 	int mask, socket[2];
++ 	struct volsize vs;
++ 	static int server = -1, server1, servmask;
++ 	static struct timeval servtimeout = {0, 500000L};
++ 
++ 	if(setjmp(gotpipe)) {
++ 		if(server >= 0)
++ 			close(server);
++ 		server = -1;
++ unknown:
++ 		*ntot = 0x1000000;
++ 		*nfree = 0x1000000;
++ 		return;
++ 	}
++ 	if(server < 0) {
++ 		register int pid;
++ 		int catchsigpipe();
++ 
++ 		if(socketpair(AF_UNIX, SOCK_STREAM, 0, socket) < 0)
++ 			goto unknown;
++ 		if((pid = fork()) < 0) {
++ 			close(socket[0]);
++ 			close(socket[1]);
++ 			goto unknown;
++ 		}
++ 		if(pid == 0) {	/* the child */
++ 			close(socket[0]);
++ 			if(socket[1] != 0) {
++ 				dup2(socket[1], 0);
++ 				close(socket[1]);
++ 			}
++ 			execl(SIZESERVER, SIZESERVER, 0);
++ 			_exit(1);
++ 		}
++ 		close(socket[1]);
++ 		server = socket[0];
++ 		server1 = server + 1;
++ 		servmask = 1 << server;
++ 		signal(SIGPIPE, catchsigpipe);
++ 	}
++ 	for(i = 3 ; ; ) {
++ 		if(i-- <= 0)
++ 			goto unknown;
++ 		lseek(server, 0L, 2);
++ 		write(server, path, strlen(path) + 1);
++ 		mask = servmask;
++ 		if(select(server1, &mask, NULL, NULL, &servtimeout) < 1)
++ 			goto unknown;
++ 		if(read(server, (char *)&vs, sizeof(vs)) == sizeof(vs))
++ 			break;
++ 	}
++ 	*ntot = vs.total;
++ 	*nfree = vs.free;
++ }
++ 
++ catchsigpipe()
++ {
++ 	longjmp(gotpipe, 1);
++ }
++ #endif SIZESERVER
+  
+  #ifdef USEGETMNT
+  /* get info on path using buf when there is ambiguity (ultrix 2.0 or before) */
+RAZZLE!DAZZLE
+fi	# End afpos.c.diff
+if test -f sizeserver.c
+then
+	echo shar: will not overwrite existing file "'sizeserver.c'"
+else
+echo 'x - sizeserver.c'
+cat << \RAZZLE!DAZZLE > sizeserver.c
+#include <stdio.h>
+#include <fstab.h>
+#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/file.h>
+#include <sys/fs.h>
+#include <sys/inode.h>
+#include <sys/stat.h>
+#include "sizeserver.h"
+
+main()
+{
+	register int uid;
+	struct volsize vs;
+	char path[BUFSIZ];
+
+	uid = getuid();
+	for( ; ; ) {
+		if(read(0, path, BUFSIZ) <= 0)
+			exit(0);
+		volumesize(path, uid, &vs.total, &vs.free);
+		write(0, (char *)&vs, sizeof(vs));
+	}
+}
+
+volumesize(path, uid, ntot, nfree)
+char *path;
+int uid;
+long *ntot, *nfree;
+{
+	register int fd;
+	register long total, avail, used;
+	register int i;
+	struct stat statbuf, statbuf2;
+	struct fstab *fsp;
+	struct fs super;
+
+	if(stat(path, &statbuf) < 0) {
+unknown:
+		*ntot = 0x1000000;
+		*nfree = 0x1000000;
+		return;
+	}
+	setfsent();
+	while(fsp = getfsent()) {
+		if(stat(fsp->fs_spec, &statbuf2) == 0 &&
+		 statbuf2.st_rdev == statbuf.st_dev) {
+			path = fsp->fs_spec;
+			break;
+		}
+	}
+	endfsent();
+	if(fsp == NULL)
+		goto unknown;
+	if((fd = open(path, O_RDONLY, 0)) < 0)
+		goto unknown;
+	(void)lseek(fd, (long)(SBLOCK * DEV_BSIZE), 0);
+	i = read(fd, (char *)&super, sizeof(super));
+	(void)close(fd);
+	if(i != sizeof(super))
+		goto unknown;
+	total = super.fs_dsize;
+	used = total - (super.fs_cstotal.cs_nbfree * super.fs_frag +
+	    super.fs_cstotal.cs_nffree);
+	avail = (avail = total * (100 - super.fs_minfree) / 100) > used ?
+	 (avail - used) : 0;
+	*nfree = (uid == 0 ? (total - used) : avail) * super.fs_fsize;
+	*ntot = total * super.fs_fsize;
+}
+RAZZLE!DAZZLE
+fi	# End sizeserver.c
+if test -f sizeserver.h
+then
+	echo shar: will not overwrite existing file "'sizeserver.h'"
+else
+echo 'x - sizeserver.h'
+cat << \RAZZLE!DAZZLE > sizeserver.h
+struct volsize {
+	long total;
+	long free;
+};
+RAZZLE!DAZZLE
+fi	# End sizeserver.h
+echo '***** End of' sizeserver '*****'
+exit
+

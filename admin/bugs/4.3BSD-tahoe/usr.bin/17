@@ -1,0 +1,126 @@
+From mcvax!stl.stc.co.uk!andrew@uunet.UU.NET  Tue Apr  4 10:21:43 1989
+To: uk-sendmail-workers@cs.hw.ac.uk
+Cc: 4bsd-bugs@ucbvax.Berkeley.EDU, Andrew.Findlay@brunel.ac.uk
+Subject: Arpa source routes
+Date: Tue Apr 04 09:58:48 1989
+From: Andrew Macpherson <mcvax!stl.stc.co.uk!andrew@uunet.UU.NET>
+Phone: +44 279 29531 ext 2423
+Organization: STC Technology, London Road, Harlow, England.
+Telex: 81151 stl hw g
+Index: usr.bin/sendmail tahoe
+
+Description:
+You are doubtless aware of the two different forms of From: lines
+
+    From: $?x$x <$g>$|$g$.
+and From: $g $?x($x)$.
+
+infamous for the mistake in the first in Eric Allman's documentation
+(he required the '<' '>', while 822 explicitly prohibits them unless
+the comment text $x is there.)
+
+This format is required for all mailboxes.
+
+Slightly less obvious is that it is impossible to use "new" format
+ie comma seperated addresses, in any case other than the "$x <$g>"
+case if there is any possibility of the address being formatted as
+an 822 source route...
+
+       @aaa,@bbb,@ccc:user@ddd
+
+--- 3 comma seperated recipients, the first 2 with null mailboxes?
+this is a consequence of the code in prescan.
+
+This raises the interesting question of parsing a recipient list
+such as:
+
+     To:   @aaa,@bbb,@ccc:user@ddd,@www,@xxx,@yyy:user2@zzz,u3@mmm
+
+which is noted with a flying side-swipe in the comments in the UK2.1
+configuration package.   The fixes appended to this message cure the problem,
+(and I hope fix the problems noted in UK2.1 --- perhaps the authors
+will let us know?).
+-- 
+Andrew Macpherson         | God bless the King! --- I mean the Faith's Defender
+PSI%234237100122::andrew  | God bless (no harm in blessing) the Pretender!
+andrew@stl.stc.co.uk      | But who Pretender is, or who the King, ---
+...mcvax!ukc!stl!andrew   | God bless us all!  That's quite another thing.
+
+Fix:
+*** parseaddr.c	Tue Apr  4 13:25:35 1989
+--- parseaddr.oc	Tue Apr  4 11:36:24 1989
+***************
+*** 258,264 ****
+  	register int c;
+  	char **avp;
+  	bool bslashmode;
+- 	bool seencolon;			/* Hack for @d1,@d2:u@d3 */
+  	int cmntcnt;
+  	int anglecnt;
+  	char *tok;
+--- 258,263 ----
+***************
+*** 272,278 ****
+  
+  	q = pvpbuf;
+  	bslashmode = FALSE;
+- 	seencolon = FALSE;
+  	cmntcnt = 0;
+  	anglecnt = 0;
+  	avp = av;
+--- 271,276 ----
+***************
+*** 364,371 ****
+  				}
+  				anglecnt--;
+  			}
+- 			else if (c == ':')
+- 				seencolon = TRUE;
+  			else if (delim == ' ' && isspace(c))
+  				c = ' ';
+  
+--- 362,367 ----
+***************
+*** 373,388 ****
+  				continue;
+  
+  			/* see if this is end of input */
+! 			/* The funny expression (delim != ',' || ...) deals
+! 			 * with the case of an RFC822 source route, which is
+! 			 * of the form @d1,@d2,@d3: prepended to a normal
+! 			 * domain address;
+! 			 *
+! 			 * Andrew Macpherson Tue Apr 4 1989
+! 			 * Strange how long some things take to come to light!
+! 			 */
+! 			if (c == delim && anglecnt <= 0 && state != QST &&
+! 			    ( delim != ',' || !(*pvpbuf == '@' && !seencolon)))
+  				break;
+  
+  			newstate = StateTab[state][toktype(c)];
+--- 369,375 ----
+  				continue;
+  
+  			/* see if this is end of input */
+! 			if (c == delim && anglecnt <= 0 && state != QST)
+  				break;
+  
+  			newstate = StateTab[state][toktype(c)];
+***************
+*** 413,420 ****
+  			}
+  			*avp++ = tok;
+  		}
+! 	} while (c != '\0' && (c != delim || anglecnt > 0 ||
+! 		    ( delim == ',' && (*pvpbuf == '@' && !seencolon))));
+  	*avp = NULL;
+  	DelimChar = --p;
+  	if (cmntcnt > 0)
+--- 400,406 ----
+  			}
+  			*avp++ = tok;
+  		}
+! 	} while (c != '\0' && (c != delim || anglecnt > 0));
+  	*avp = NULL;
+  	DelimChar = --p;
+  	if (cmntcnt > 0)

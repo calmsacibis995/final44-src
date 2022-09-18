@@ -1,0 +1,193 @@
+Return-Path: <mogul@Gregorio>
+Date: Thu, 7 Mar 85 18:29:11 pst
+From: Jeffrey Mogul <mogul@Gregorio>
+Subject: IP checksum comparison not adequately robust
+Index:  sys/netinet/ip_icmp.c 4.2BSD Fix
+Index:  sys/netinet/ip_input.c 4.2BSD Fix
+Index:  sys/netinet/tcp_input.c 4.2BSD Fix
+
+Description:
+	IP, TCP, and ICMP packets with valid checksums can occasionally
+	be discarded due to "bad checksum" (about 1 time in 2^16).
+	
+	The problem comes when a checksum that Unix would calculate
+	as 0xFFFF is sent as 0x0 by the peer host.  Since these are
+	one's complement numbers, 0xFFFF == 0x0, and Unix should
+	accept either.
+
+Repeat-By:
+	One way to repeat this problem is to use the "ping" (ICMP
+	Echo) program written by Larry Allen of MIT.  (The BRL
+	ping program does not repeatably provoke the bug.)  When
+	pinging a TOPS-20 host, replies will be discarded by Unix
+	because of an apparently bad checksum.
+	
+	The MIT ping program sends ICMP Echo requests that have
+	all fields zero, except for the Type and Checksum fields.
+	The Type value for ICMP echo reply is zero, and thus the
+	echoing host returns a packet that is entirely zero,
+	except for the checksum.  The "proper" value for the
+	checksum (the one Unix expects) is 0xFFFF, but TOPS-20
+	hosts (and some others, such as WISCVM) convert this
+	to the "equivalent" value 0x0.
+Fix:
+	Jon Postel says that while it might be a good idea to
+	change the TOPS-20 code to send 0xFFFF in this case,
+	the robustness principle implies that Unix should
+	accept either checksum.
+	
+	This change must be made to ip_icmp.c, ip_input.c,
+	and tcp_input.c.  It need not be made to udp_usrreq.c,
+	because of the special UDP convention for null
+	checksums.
+	
+	Line numbers are for comparison only; your line numbers
+	will vary.
+
+*** ip_icmp.c.bad	Wed Mar  6 12:52:37 1985
+--- ip_icmp.c	Wed Mar  6 14:34:48 1985
+***************
+*** 121,126
+  	int (*ctlfunc)(), code;
+  	extern u_char ip_protox[];
+  	struct sockaddr_in *sin;
+  
+  	/*
+  	 * Locate icmp structure in mbuf, and check
+
+--- 121,127 -----
+  	int (*ctlfunc)(), code;
+  	extern u_char ip_protox[];
+  	struct sockaddr_in *sin;
++ 	u_short cksm;
+  
+  	/*
+  	 * Locate icmp structure in mbuf, and check
+***************
+*** 145,151
+  	m->m_len -= hlen;
+  	m->m_off += hlen;
+  	icp = mtod(m, struct icmp *);
+! 	if (in_cksum(m, icmplen)) {
+  		icmpstat.icps_checksum++;
+  		goto free;
+  	}
+
+--- 146,157 -----
+  	m->m_len -= hlen;
+  	m->m_off += hlen;
+  	icp = mtod(m, struct icmp *);
+! 	if (cksm = in_cksum(m, icmplen)) {
+! 	    if (~cksm == 0) {
+! 	    	/* sum is good, one's complement of zero is zero */
+! 		if (icmpprintfs)
+! 		    printf("icmp_input: -0 sum, src %x\n", ip->ip_src);
+! 	    } else {
+  		icmpstat.icps_checksum++;
+  		goto free;
+  	    }
+***************
+*** 148,153
+  	if (in_cksum(m, icmplen)) {
+  		icmpstat.icps_checksum++;
+  		goto free;
+  	}
+  
+  #ifdef ICMPPRINTFS
+
+--- 154,160 -----
+  	    } else {
+  		icmpstat.icps_checksum++;
+  		goto free;
++ 	    }
+  	}
+  
+  #ifdef ICMPPRINTFS
+
+****************************************************************
+*** ip_input.c.bad	Wed Mar  6 14:32:26 1985
+--- ip_input.c	Wed Mar  6 14:36:34 1985
+***************
+*** 110,115
+  	}
+  	if (ipcksum)
+  		if (ip->ip_sum = in_cksum(m, hlen)) {
+  			ipstat.ips_badsum++;
+  			goto bad;
+  		}
+
+--- 110,121 -----
+  	}
+  	if (ipcksum)
+  		if (ip->ip_sum = in_cksum(m, hlen)) {
++ 		    if (~(ip->ip_sum) == 0) {
++ 		    	/* sum is good, one's complement of zero is zero */
++ #ifdef DEBUG
++ 			printf("ipintr: -0 sum, src %x\n", ip->ip_src);
++ #endif DEBUG
++ 			/* packet may be forwarded, change -0 to +0 */
++ 			ip->ip_sum = 0;
++ 		    } else {
+  			ipstat.ips_badsum++;
+  			goto bad;
+  		    }
+***************
+*** 112,117
+  		if (ip->ip_sum = in_cksum(m, hlen)) {
+  			ipstat.ips_badsum++;
+  			goto bad;
+  		}
+  
+  	/*
+
+--- 118,124 -----
+  		    } else {
+  			ipstat.ips_badsum++;
+  			goto bad;
++ 		    }
+  		}
+  
+  	/*
+
+****************************************************************
+*** tcp_input.c.old	Wed Mar  6 14:40:20 1985
+--- tcp_input.c	Wed Mar  6 14:40:24 1985
+***************
+*** 81,86
+  		ti->ti_len = (u_short)tlen;
+  		ti->ti_len = htons((u_short)ti->ti_len);
+  		if (ti->ti_sum = in_cksum(m, len)) {
+  			if (tcpprintfs)
+  				printf("tcp sum: src %x\n", ti->ti_src);
+  			tcpstat.tcps_badsum++;
+
+--- 81,93 -----
+  		ti->ti_len = (u_short)tlen;
+  		ti->ti_len = htons((u_short)ti->ti_len);
+  		if (ti->ti_sum = in_cksum(m, len)) {
++ 		    if (~(ti->ti_sum) == 0) {
++ 		    	/* sum is good, one's complement of zero is zero */
++ 			if (tcpprintfs)
++ 			    printf("tcp_input: -0 sum, src %x\n", ti->ti_src);
++ 			/* preserve original behaviour, change -0 to +0 */
++ 			ti->ti_sum = 0;
++ 		    } else {
+  			if (tcpprintfs)
+  				printf("tcp sum: src %x\n", ti->ti_src);
+  			tcpstat.tcps_badsum++;
+***************
+*** 85,90
+  				printf("tcp sum: src %x\n", ti->ti_src);
+  			tcpstat.tcps_badsum++;
+  			goto drop;
+  		}
+  	}
+  
+
+--- 92,98 -----
+  				printf("tcp sum: src %x\n", ti->ti_src);
+  			tcpstat.tcps_badsum++;
+  			goto drop;
++ 		    }
+  		}
+  	}

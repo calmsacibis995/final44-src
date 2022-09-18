@@ -1,0 +1,65 @@
+From ihnp4!inmet!nrh@gabriel.arpa  Tue May 20 02:17:02 1986
+From: ihnp4!inmet!nrh@gabriel.arpa
+Date: Tue, 20 May 86 04:56:32 edt
+Subject: TCP/IP protocol for uucp doesn't work
+Index: 	usr.bin/uucp/tio 2.9BSD
+
+Description:
+	When sending a short to a pdp-11 uucp from a 4.2 uucp,
+	the file appears to get there, but no Copy-Yes message
+	is received and eventually the 4.2 system hangs up.  On the
+	other side, an LCK file is left, further wedging things.
+Repeat-By:
+	uucp -r /usr/pub/ascii 2.9sys!/tmp/ascii from a 4.2 system.
+	Observe the protocol timeout.
+Fix:
+	The tio protocol sends packets containing a network-byte-order
+	long and a buffer.  On the other side, the long is supposed to
+	be switch to pdp-11 ordering.  Unfortunately, ntohl is left
+	undeclared, so the (long) length of all small-size packets 
+	(and they are ALL short for these purposes) gets 
+	byte-switched and then turned into a 16 bit int.  On the pdp-11
+	the mismatch between expected int and actual long is enough
+	to convince the routine that reads the packet length that the
+	length of all normal packets is zero.  This causes loss of sync,
+	which in turn means a protocol error.
+
+	This'll help:
+
+diff -c -r1.10 tio.c
+*** /tmp/,RCSt1008806	Tue May 20 04:51:32 1986
+--- tio.c	Tue May 20 04:24:29 1986
+***************
+*** 1,4
+! /* $Header: /usr/src/usr.bin/uucp/tio.c,v 1.10 85/05/20 20:03:39 rick Exp $ */
+  
+  #include <signal.h>
+  #include "uucp.h"
+
+--- 1,4 -----
+! /* $Header: /usr/src/usr.bin/uucp/tio.c,v 1.10.1.1 86/05/20 04:24:04 root Exp $ */
+  
+  #include <signal.h>
+  #include "uucp.h"
+***************
+*** 22,27
+   *	host order on a 68000 is	0 1 2 3
+   *	most other machines are		0 1 2 3
+   */
+  
+  struct tbuf {
+  	long t_nbytes;
+
+--- 22,33 -----
+   *	host order on a 68000 is	0 1 2 3
+   *	most other machines are		0 1 2 3
+   */
++ 
++ /* 
++  * Don't forget that htonl and ntohl return longs. -- nrh@inmet
++  */
++ 
++ extern long htonl(), ntohl();
+  
+  struct tbuf {
+  	long t_nbytes;

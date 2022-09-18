@@ -1,0 +1,92 @@
+Return-Path: <allegra!lento!rdg>
+Date: 2 Jul 83 19:29:50 PDT (Sat)
+From: allegra!lento!rdg
+Subject: bugs in compact program
+Date:	July 2, 1983
+From:	allegra!rdg
+Subject: bugs in compact program
+Index:	ucb/compact 4.1C Fix
+
+Description:
+	(1) Compact will fail to compact a file and abort producing a core
+	file without explanation when large (greater than 4.7 Mbyte) files
+	are compacted.
+	(2) Even when compact succeeds, it exits with a non-zero exit code.
+	(3) Signals may cause both the compacted and uncompacted files to
+	disappear.
+Repeat-By:
+	compact large_file
+Fix:
+	(1) the structure array dir, declared in compact.h, is too small.
+	it is declared to be 514 long, which is fine for moderate sized
+	files.  for large files, where compaction would really save
+	megabytes, 514 is not sufficient.  it should be increased to
+	about 1000.
+	typical change to compact.h:
+
+		#define MAXDIR 1024
+
+		struct index {
+			struct node *pt;
+			struct index *next;
+		} dir [MAXDIR], *head, *flist, *dirp, *dirq;
+	
+	typical change to compact.c/uncompact.c:
+
+	dir[MAXDIR-1].next = NULL;
+	for (head = dir + (j = MAXDIR-1); j--; ) {
+		dirp = head--;
+		head -> next = dirp;
+	}
+
+	the macro NEW is used to allocate storage from the dir array.
+	in both compact.c and uncompact.c this macro is applied without
+	checking afterwards to see if it returned NULL.  When NULL is
+	returned the dir array is full.  Since the programs never check
+	for NULL, it is used as a pointer and the program fails.
+	 
+	typical change to compact.c/uncompact.c:
+
+		if (dirq == NULL)
+		{
+			fprintf(stderr,"compact:  Increase MAXDIR\n");
+			exit(1);
+		}
+
+	(2) throughout the compact/uncompact programs, an error status
+	variable should be maintained.  then, when the program exits,
+	it should exit(exit_status).  exit_status should be initialized
+	to 0.
+
+	(3) for completeness, i am including this bug reported by
+	Jonathan Biggar...
+	From sdcrdcf!jonab Tue Jun 28 03:48:08 1983
+	The program "compact" from UNIX 4.1BSD has a bug that makes it possible
+	to loose a file if it receives a signal at the wrong time.  It unlinks
+	the original file before it fcloses the compacted file; thus if it is
+	compacting a short file, it is possible to loose both the uncompacted
+	and compacted versions if it receives a signal after it has unlinked
+	but before it has fclosed the compacted file. The process will terminate
+	without flushing the data that is to be written to the compacted file.
+	One is then left with a zero length compacted file.  Following is the
+	required patch:
+	
+	change the lines just before the closeboth label
+	in compact.c/uncompact.c:
+			    ...
+			    if (i >= argc) break;
+			    unlink (argv [i]);
+		closeboth : fclose (cfp);
+			    ...
+
+	to read:
+			    ...
+			    if (i >= argc) break;
+			    fclose(cfp);
+			    unlink (argv [i]);
+			    goto closein;
+		closeboth : fclose (cfp);
+			    ...
+
+	This will make sure the buffer is flushed before it unlinks the original
+	file.

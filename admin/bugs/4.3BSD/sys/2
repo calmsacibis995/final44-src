@@ -1,0 +1,84 @@
+Return-Path: <dgg@ATHENA.MIT.EDU>
+Date: Fri, 13 Sep 85 17:44:43 edt
+From: dgg@ATHENA.MIT.EDU
+Subject: non-blocking open fix
+
+Index:	sys/sys/tty_pty.c	4.3BSD  Fix
+	sys/h/tty.h		4.3BSD  Fix
+
+Description:
+	The non-blocking open fix made at UEG which we incorporated into our
+	4.2 changes did not make it into 4.3.  Rich Heid at UEG looked at the
+	kernel sources on Monet about an hour ago and it hadn't made it in
+	there yet.
+
+	The symptom that revealed up this problem was that the login window on
+	the X window system did not show up.  The xterm process went to sleep
+	and never woke up.
+
+Repeat-By:
+	Install the X application code and run it under your kernel.
+
+Fix:
+----------------------------------------------
+	Find the "ptsopen" routine in the ttp_pty.c file and make the
+	following change:  (note: the 4 lines do not change, they are just
+	indented.)
+
+
+  ptsopen(dev, flag)
+          dev_t dev;
+  {
+          register struct tty *tp;
+          int error;
+  
+  #ifdef lint
+          npty = npty;
+  #endif
+          if (minor(dev) >= NPTY)
+                  return (ENXIO);
+          tp = &pt_tty[minor(dev)];
+          if ((tp->t_state & TS_ISOPEN) == 0) {
+                  ttychars(tp);           /* Set up default chars */
+                  tp->t_ispeed = tp->t_ospeed = EXTB;
+                  tp->t_flags = 0;        /* No features (nor raw mode) */
+          } else if (tp->t_state&TS_XCLUDE && u.u_uid != 0)
+                  return (EBUSY);
+          if (tp->t_oproc)                        /* Ctrlr still around. */
+                  tp->t_state |= TS_CARR_ON;
+===========
+79,82c79,85
+<         while ((tp->t_state & TS_CARR_ON) == 0) {
+<                 tp->t_state |= TS_WOPEN;
+<                 sleep((caddr_t)&tp->t_rawq, TTIPRI);
+<         }
+---
+>         if (flag & O_NDELAY)
+>                 tp->t_state |= TS_ONDELAY;
+>         else
+>                 while ((tp->t_state & TS_CARR_ON) == 0) {
+>                         tp->t_state |= TS_WOPEN;
+>                         sleep((caddr_t)&tp->t_rawq, TTIPRI);
+>                 }
+===========
+          error = (*linesw[tp->t_line].l_open)(dev, tp);
+          ptcwakeup(tp, FREAD|FWRITE);
+          return (error);
+  }
+
+------------------------------------------------
+	Add the following define to the "tty.h" file:
+
+  #define TS_WCOLL        0x001000        /* collision in write select */
+  #define TS_NBIO         0x002000        /* tty in non-blocking mode */
+  #define TS_ASYNC        0x004000        /* tty in async i/o mode */
+=============
+119a120
+> #define TS_ONDELAY      0x008000        /* tty open in no delay mode */
+=============
+  /* state for intra-line fancy editing work */
+  #define TS_BKSL         0x010000        /* state for lowercase \ work */
+  #define TS_QUOT         0x020000        /* last character input was \ */
+  #define TS_ERASE        0x040000        /* within a \.../ for PRTRUB */
+
+------------------------------------------------

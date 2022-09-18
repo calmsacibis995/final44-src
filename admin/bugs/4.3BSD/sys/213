@@ -1,0 +1,115 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 25 16:19:34 1988
+Received: from FCS280S.NCIFCRF.GOV by okeeffe.Berkeley.EDU (5.59/1.28)
+	id AA06331; Mon, 25 Apr 88 16:19:34 PDT
+Received: by fcs280s.ncifcrf.gov (4.0/NCIFCRF-1.0)
+	id AA05667; Mon, 25 Apr 88 19:11:14 EDT
+Received: by elsie.UUCP (5.51/4.7)
+	id AA08567; Mon, 25 Apr 88 19:05:47 EDT
+Date: Mon, 25 Apr 88 19:05:47 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Message-Id: <8804252305.AA08567@elsie.UUCP>
+Cc: emoryu1!arnold@emory.arpa
+Cc: bugs@okeeffe.Berkeley.EDU
+Cc: mark@ncifcrf.gov
+Subject: MORE/bsd 4.3 (10/5/87) ht driver clobbers buffer on EOF?
+Index: 	sys/vaxmba/ht.c 4.3BSD
+
+Description:
+	Well, this problem may be specific to our hardware
+	(Cipher M990 tape drive on an Emulex TC7000 controller). . .
+	and it may be specific to MORE/bsd. . .
+	and in any event, here goes.
+
+	The first two bytes of the buffer used in a read(2) are overwritten
+	even when the read returns zero.
+
+Repeat-By:
+		Script started on Mon Apr 25 19:00:55 1988
+		$ cat try.c
+		main()
+		{
+			func();
+			func();
+			return 0;
+		}
+
+		func()
+		{
+			int		result;
+			int		i;
+			extern int	errno;
+			char		x[512];
+
+			result = read(0, x, sizeof x);
+			(void) printf("result %d, errno %d\n", result, errno);
+			for (i = 0; i < 10; ++i)
+				(void) printf("x[%d]: %d\n", i, x[i]);
+		}
+		$ cc try.c
+		$ dd if=/usr/pub/ascii of=/dev/rmt8 bs=512 count=1
+		1+0 records in
+		1+0 records out
+		$ dd if=/usr/pub/ascii of=/dev/rts8 bs=512 count=1
+		1+0 records in
+		1+0 records out
+		$ a.out < /dev/rmt8
+		result 512, errno 0
+		x[0]: 124
+		x[1]: 48
+		x[2]: 48
+		x[3]: 48
+		x[4]: 32
+		x[5]: 110
+		x[6]: 117
+		x[7]: 108
+		x[8]: 124
+		x[9]: 48
+		result 0, errno 0
+>>>>		x[0]: 19
+>>>>		x[1]: 19
+		x[2]: 48
+		x[3]: 48
+		x[4]: 32
+		x[5]: 110
+		x[6]: 117
+		x[7]: 108
+		x[8]: 124
+		x[9]: 48
+		$ a.out < /dev/rts8
+		result 512, errno 0
+		x[0]: 124
+		x[1]: 48
+		x[2]: 48
+		x[3]: 48
+		x[4]: 32
+		x[5]: 110
+		x[6]: 117
+		x[7]: 108
+		x[8]: 124
+		x[9]: 48
+		result 0, errno 0
+>>>>		x[0]: 124
+>>>>		x[1]: 48
+		x[2]: 48
+		x[3]: 48
+		x[4]: 32
+		x[5]: 110
+		x[6]: 117
+		x[7]: 108
+		x[8]: 124
+		x[9]: 48
+		$ exit
+
+		script done on Mon Apr 25 19:01:50 1988
+
+	Note that the first two bytes of "x" *are* changed after a read from
+	/dev/rmt8 (which uses the /sys/vaxmba/ht.c code) returns zero,
+	but *are not* changed after a read from /dev/rts8 (which uses the
+	/sys/vaxuba/ts.c code).
+
+Fix:
+	May not be in Mt. Xinu's or Berkeley's ballpark.  If somebody could
+	tell me whether the same problem shows up with other hardware (and
+	whether I should be kvetching to Emulex), I'd appreciate it.
+-- 
+	ado@ncifcrf.gov			ADO is a trademark of Ampex.

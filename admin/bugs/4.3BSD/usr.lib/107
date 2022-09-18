@@ -1,0 +1,88 @@
+From @uhmanoa.ics.hawaii.edu:tholen@uhifa.ifa.hawaii.edu  Thu May 26 22:04:20 1988
+Date: Thu, 26 May 88 19:01:45-1000
+From: tholen@uhifa.ifa.hawaii.edu (Dave Tholen)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Index: usr.lib 4.3BSD
+Subject: F77 bugs
+
+I'd like to report a few problems I've encountered with the FORTRAN I/O
+library associated with Berkeley F77 version 2.0 running under BSD 4.3
+(on a VAX 11/785).
+
+      CHARACTER LINE*10
+      INTEGER NREC
+      OPEN (1,FILE='test.dat',ACCESS='DIRECT',FORM='FORMATTED',RECL=10)
+      NREC = -2
+      READ (1,'(A)',REC=NREC) LINE
+         .
+         .
+         .
+
+As one would expect, the execution of this program fragment results in
+   read dfe: [22] Invalid argument
+   logical unit 1, named 'test.dat'
+   lately: reading direct formatted external I/O
+   format: (A)
+   part of last data: ^?^?^?^?^?^?^?^?^?^?^?^?|
+   *** Execution terminated
+because the record number is negative.  One way to prevent a crash from
+occurring under such conditions is to include either the ERR= or IOSTAT=
+options.  Unfortunately, after either keyword is added to the READ statement,
+a negative record number no longer triggers an error condition!  The read
+returns a blank record and the program continues execution!  That is, the
+ERR= option does not transfer control as it should, or if IOSTAT= is used
+by itself, its value remains 0, so there is no error value to trap on.
+
+The second bug also involves direct access files.  Consider a direct access
+file with 10 records in it.  If one attempts to read record number 12, which
+doesn't exist, IOSTAT sets its integer variable to have a negative value, as
+it should.  However, if you then attempt to read record number 3, which does
+exist, the IOSTAT variable continues to have a negative value.  At first
+glance, this action would seem to be correct according to the ANSI standard,
+which states (section 12.9.6) "If the file is positioned after the endfile
+record, execution of a data transfer input/output statement is prohibited."
+However, endfile records are normally associated only with sequential access
+files. Specifically, the ANSI standard states (section 12.2.4.2) with regard
+to direct access files "If the sequential access method is also a member of
+the set of allowed access methods for the file, its endfile record, if any,
+is not considered to be part of the file while it is connected for direct
+access."  Also, with regard to file position, the standard states (section
+12.9.4.2) "For direct access, the file is positioned at the beginning of the
+record specified by the record specifier."  This obviously isn't happening
+in the above example.  The only way I've been able to get around this bug is
+to detect the IOSTAT variable negative value when the program attempts to
+read beyond the end of the file, and then reposition the file using a REWIND
+statement.  This practice, however, violates the standard, which states
+(section 12.10.4) "The external unit specified by a BACKSPACE, ENDFILE, or
+REWIND statement must be connected for sequential access."  Similarly, the
+compiler violates the standard by allowing the END= and REC= options to
+coexist.  In section 12.8.1 the standard states "A control information list
+must not contain both a record specifier and an end-of-file specifier."
+Once a program has attempted to access a record beyond the end of a direct
+access file, how can the program access a record in the file using a
+standard-conforming method?  Resetting the record number doesn't work, and
+the use of REWIND isn't standard conforming.
+
+Lastly, the following program fragment produces interesting results:
+
+      CHARACTER FILE*1
+      LOGICAL EXIST
+      FILE = ' '
+      INQUIRE (FILE=FILE,EXIST=EXIST)
+         .
+         .
+         .
+
+If the filename is blank, as in the example, the program sets the value of
+the logical variable EXIST to true!  One can open this file, read it, and
+display its contents.  There's some garbage in it, but it also contains the
+filenames in the current working directory!
+
+The question I have is whether any of these bugs have been previously
+reported and whether any patches are available.  If not, what are the
+chances of patches becoming availble on a reasonable time scale?
+
+Sincerely,
+David J. Tholen
+tholen@uhifa.ifa.hawaii.edu
+

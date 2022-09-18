@@ -1,0 +1,74 @@
+From dpk@brl.arpa  Thu Dec  4 10:01:34 1986
+Date:     Wed, 3 Dec 86 18:33:39 EST
+From: Doug Kingston <dpk@brl.arpa>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU, gouldbugs@brl.arpa, unix-wizards@brl.arpa
+Subject:  ping in_cksum() calculates bad checksum on big endian machines,  FIX
+Index: etc/ping.c 4.3BSD FIX
+
+Description:
+	The internet checksum routine in ping.c will not calculate
+	the correct checksum when used on big endian machines like
+	Suns and Goulds and the packet length is odd.  The problem
+	is that bytes are ordered differently in shorts on these machines.
+	The special case code for the trailing odd byte is broken.
+
+Repeat-By:
+	Compile ping.c on a big endian machine and say "ping host 111"
+	and watch no pings return.  The remote end will start tallying
+	checksum errors in the ICMP code (visible with netstat -s).
+
+Fix:
+	The bug has to do with how the odd byte is added into the sum.
+	I have reproduced the entire routine below with the fixed "if"
+	statement.
+
+	The old version looked like this:
+		if( nleft == 1 ) {
+			sum += *(u_char *)w ;
+
+	The new version (correct) version is given below.
+
+#include <sys/types.h>
+
+/*
+ *			I N _ C K S U M
+ *
+ * Checksum routine for Internet Protocol family headers (C Version)
+ *
+ */
+in_cksum(addr, len)
+u_short *addr;
+int len;
+{
+	register int nleft = len;
+	register u_short *w = addr;
+	register u_short answer = 0;
+	register int sum = 0;
+
+	/*
+	 *  Our algorithm is simple, using a 32 bit accumulator (sum),
+	 *  we add sequential 16 bit words to it, and at the end, fold
+	 *  back all the carry bits from the top 16 bits into the lower
+	 *  16 bits.
+	 */
+	while( nleft > 1 )  {
+		sum += *w++;
+		nleft -= 2;
+	}
+
+	/* mop up an odd byte, if necessary */
+	if( nleft == 1 ) {
+		*(u_char *)(&answer) = *(u_char *)w ;
+		sum += answer;
+	}
+
+	/*
+	 * add back carry outs from top 16 bits to low 16 bits
+	 */
+	sum = (sum >> 16) + (sum & 0xffff);	/* add hi 16 to low 16 */
+	sum += (sum >> 16);			/* add carry */
+	answer = ~sum;				/* truncate to 16 bits */
+	return (answer);
+}
+
+============ End of Fix ==============

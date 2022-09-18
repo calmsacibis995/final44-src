@@ -1,0 +1,78 @@
+Return-Path: <ihnp4!ut-ngp!jbc>
+Date: 15 Jun 83 19:40:16 CDT (Wed)
+From: jbc <ut-ngp!jbc>
+Subject: Security hole in TIOCCDTR ioctl
+To: ihnp4!ucbvax!4bsd-bugs
+
+Date:	83.06.16
+From:	...!ihnp4!ut-ngp!jbc
+Subject: security bug in TIOCCDTR ioctl
+Index:	sys/vaxuba/d[hz].c	4.1BSD	FIX
+ 
+ Description:
+
+	The TIOCCDTR ioctl, used to clear the DTR bit, does
+	not perform suitable permission checking.
+
+	For example, if a terminal device can be opened for
+	writing by a process in a group other than that
+	of the device, that process can then force DTR low
+	on that terminal line. While some processes are only
+	mildly susceptible to having random garbage written
+	to the terminal, they may be extremely vulnerable to
+	the logout which results from loss of DTR on a
+	typical dialup.
+
+	TIOCCDTR, and, less importantly, TIOCSDTR, should
+	return error if the file descriptor passed in the
+	ioctl does not refer to the controlling terminal
+	for the process which invokes the ioctl and the
+	uid is not superuser.
+
+ Repeat-By:
+
+	#include	<sys/file.h>
+	#include	<sgtty.h>	/* or whatever */
+	#define		error( s )	{perror( (s) ); exit( 1 );}
+
+	main( argc, argv )
+	int	argc;
+	char 	*argv[];
+	{
+		register	int	fd;
+
+		if ( (fd = open( *++argv, FWRONLY )) < 0 )
+			error( *argv );
+
+		if ( ioctl( fd, TIOCCDTR, 0 ) < 0 )
+			error( "TIOCCDTR" );
+
+		exit( 0 );
+	}
+
+	Now, suppose that someone is logged in on /dev/ttyxx, where
+	/dev/ttyxx is a dialup line. Execution of the above program
+	as in, say,
+
+			a.out /dev/ttyxx
+
+	will typically result in termination of the user's login process.
+
+ Fix:
+
+	To fix the problem specifically mentioned, a test of
+	the type
+
+		if ( u.u_uid && u.u_ttyp != tp )
+			return EACCES;
+
+	should be added at or around dz.c:319 (dh.c:349), just
+	after the case TIOCCDTR: line. This is similar to the
+	criterion used for TIOCSTI in sys/tty.c.
+
+	It should be carefully considered which of the similar
+	ioctls should have similar permission restrictions. All
+	could be covered by including a test such as the one
+	above at or around dz.c:296 (dh.c:335) before the switch.
+	Whether this is appropriate or not is a matter for debate.
+

@@ -1,0 +1,252 @@
+From chris@mimsy.umd.edu  Sun Mar 26 03:33:08 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA02438; Sun, 26 Mar 89 03:33:08 -0800
+Received: from mimsy.umd.edu by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA11659; Sun, 26 Mar 89 03:32:48 -0800
+Received: by mimsy.umd.edu (5.58/4.7)
+	id AA08741; Sun, 26 Mar 89 06:30:38 EST
+Date: Sun, 26 Mar 89 06:30:38 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+Message-Id: <8903261130.AA08741@mimsy.umd.edu>
+Subject: talk mishandles ^W
+Index: 	ucb/talk/display.c 4.3BSD-tahoe Fix
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Talk's ^W word-eating code fails if characters are received
+	and printed in bunches.
+
+Repeat-By:
+	Difficult; happens most often on `lumpy' network connections.
+	Can be found by inspection: the problem is the variable `i'
+	is reused in the ^W processing code.
+
+Fix:
+	While I was at it, I pulled out some unused code and made
+	things generally shorter and simpler.
+
+RCS file: RCS/display.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c2 -r1.1 -r1.2
+*** /tmp/,RCSt1009867	Sun Mar 26 06:28:09 1989
+--- /tmp/,RCSt2009867	Sun Mar 26 06:28:11 1989
+***************
+*** 22,36 ****
+  
+  /*
+-  * max HAS to be a function, it is called with
+-  * a argument of the form --foo at least once.
+-  */
+- max(a,b)
+- 	int a, b;
+- {
+- 
+- 	return (a > b ? a : b);
+- }
+- 
+- /*
+   * Display some text on somebody's window, processing some control
+   * characters while we are at it.
+--- 22,25 ----
+***************
+*** 39,61 ****
+  	register xwin_t *win;
+  	register char *text;
+! 	int size;
+  {
+  	register int i;
+- 	char cch;
+  
+! 	for (i = 0; i < size; i++) {
+! 		if (*text == '\n') {
+! 			xscroll(win, 0);
+! 			text++;
+  			continue;
+  		}
+  		/* erase character */
+! 		if (*text == win->cerase) {
+! 			wmove(win->x_win, win->x_line, max(--win->x_col, 0));
+! 			getyx(win->x_win, win->x_line, win->x_col);
+  			waddch(win->x_win, ' ');
+  			wmove(win->x_win, win->x_line, win->x_col);
+- 			getyx(win->x_win, win->x_line, win->x_col);
+- 			text++;
+  			continue;
+  		}
+--- 28,48 ----
+  	register xwin_t *win;
+  	register char *text;
+! 	register int size;
+  {
+  	register int i;
+  
+! 	while (--size >= 0) {
+! 		i = *text++;
+! 		if (i == '\n') {
+! 			xscroll(win);
+  			continue;
+  		}
+  		/* erase character */
+! 		if (i == win->cerase) {
+! 			if (win->x_col)
+! 				win->x_col--;
+! 			wmove(win->x_win, win->x_line, win->x_col);
+  			waddch(win->x_win, ' ');
+  			wmove(win->x_win, win->x_line, win->x_col);
+  			continue;
+  		}
+***************
+*** 65,121 ****
+  		 * the line.
+  		 */
+! 		if (*text == win->werase) {
+! 			int endcol, xcol, i, c;
+  
+  			endcol = win->x_col;
+  			xcol = endcol - 1;
+! 			while (xcol >= 0) {
+! 				c = readwin(win->x_win, win->x_line, xcol);
+! 				if (c != ' ')
+! 					break;
+  				xcol--;
+! 			}
+! 			while (xcol >= 0) {
+! 				c = readwin(win->x_win, win->x_line, xcol);
+! 				if (c == ' ')
+! 					break;
+  				xcol--;
+! 			}
+! 			wmove(win->x_win, win->x_line, xcol + 1);
+! 			for (i = xcol + 1; i < endcol; i++)
+  				waddch(win->x_win, ' ');
+! 			wmove(win->x_win, win->x_line, xcol + 1);
+! 			getyx(win->x_win, win->x_line, win->x_col);
+  			continue;
+  		}
+  		/* line kill */
+! 		if (*text == win->kill) {
+! 			wmove(win->x_win, win->x_line, 0);
+  			wclrtoeol(win->x_win);
+- 			getyx(win->x_win, win->x_line, win->x_col);
+- 			text++;
+  			continue;
+  		}
+! 		if (*text == '\f') {
+  			if (win == &my_win)
+  				wrefresh(curscr);
+- 			text++;
+  			continue;
+  		}
+! 		if (win->x_col == COLS-1) {
+! 			/* check for wraparound */
+! 			xscroll(win, 0);
+! 		}
+! 		if (*text < ' ' && *text != '\t') {
+  			waddch(win->x_win, '^');
+  			getyx(win->x_win, win->x_line, win->x_col);
+  			if (win->x_col == COLS-1) /* check for wraparound */
+! 				xscroll(win, 0);
+! 			cch = (*text & 63) + 64;
+! 			waddch(win->x_win, cch);
+  		} else
+! 			waddch(win->x_win, *text);
+  		getyx(win->x_win, win->x_line, win->x_col);
+- 		text++;
+  	}
+  	wrefresh(win->x_win);
+--- 52,96 ----
+  		 * the line.
+  		 */
+! 		if (i == win->werase) {
+! 			register int endcol, xcol;
+  
+  			endcol = win->x_col;
+  			xcol = endcol - 1;
+! #define char_at(col) (wmove(win->x_win, win->x_line, col), winch(win->x_win))
+! 			while (xcol >= 0 && char_at(xcol) == ' ')
+  				xcol--;
+! 			while (xcol >= 0 && char_at(xcol) != ' ')
+  				xcol--;
+! #undef char_at
+! 			xcol++;
+! 			wmove(win->x_win, win->x_line, xcol);
+! 			for (i = xcol; i < endcol; i++)
+  				waddch(win->x_win, ' ');
+! 			wmove(win->x_win, win->x_line, xcol);
+! 			win->x_col = xcol;
+  			continue;
+  		}
+  		/* line kill */
+! 		if (i == win->kill) {
+! 			wmove(win->x_win, win->x_line, win->x_col = 0);
+  			wclrtoeol(win->x_win);
+  			continue;
+  		}
+! 		if (i == '\f') {
+  			if (win == &my_win)
+  				wrefresh(curscr);
+  			continue;
+  		}
+! 		if (win->x_col == COLS-1) /* check for wraparound */
+! 			xscroll(win);
+! 		if (i < ' ' && i != '\t') {
+  			waddch(win->x_win, '^');
+  			getyx(win->x_win, win->x_line, win->x_col);
+  			if (win->x_col == COLS-1) /* check for wraparound */
+! 				xscroll(win);
+! 			waddch(win->x_win, (i & 63) + 64);
+  		} else
+! 			waddch(win->x_win, i);
+  		getyx(win->x_win, win->x_line, win->x_col);
+  	}
+  	wrefresh(win->x_win);
+***************
+*** 123,156 ****
+  
+  /*
+-  * Read the character at the indicated position in win
+-  */
+- readwin(win, line, col)
+- 	WINDOW *win;
+- {
+- 	int oldline, oldcol;
+- 	register int c;
+- 
+- 	getyx(win, oldline, oldcol);
+- 	wmove(win, line, col);
+- 	c = winch(win);
+- 	wmove(win, oldline, oldcol);
+- 	return (c);
+- }
+- 
+- /*
+   * Scroll a window, blanking out the line following the current line
+   * so that the current position is obvious
+   */
+! xscroll(win, flag)
+  	register xwin_t *win;
+- 	int flag;
+  {
+  
+- 	if (flag == -1) {
+- 		wmove(win->x_win, 0, 0);
+- 		win->x_line = 0;
+- 		win->x_col = 0;
+- 		return;
+- 	}
+  	win->x_line = (win->x_line + 1) % win->x_nlines;
+  	win->x_col = 0;
+--- 98,109 ----
+  
+  /*
+   * Scroll a window, blanking out the line following the current line
+   * so that the current position is obvious
+   */
+! static
+! xscroll(win)
+  	register xwin_t *win;
+  {
+  
+  	win->x_line = (win->x_line + 1) % win->x_nlines;
+  	win->x_col = 0;

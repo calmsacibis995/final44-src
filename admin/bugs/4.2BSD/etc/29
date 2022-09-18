@@ -1,0 +1,230 @@
+Return-Path: <mogul@Gregorio>
+Date: Wed, 20 Jun 84 16:51:48 pdt
+From: Jeff Mogul <mogul@Gregorio>
+Subject: savecore doesn't really work with alternate system image
+Index: etc/savecore.c  4.2BSD Fix
+
+Description:
+	Savecore takes an optional argument to specify a file besides
+	/vmunix as the system that was running when a crash dump
+	was made.  This does not work properly, because savecore
+	uses the namelist from /vmunix even if an alternate system
+	is specified, and so unless the systems are almost identical
+	it decides that the crash dump has a bad magic number and
+	fails to save it.
+Repeat-By:
+	Configure a system differently from the one you normally run;
+	make sure that the address of the variable _dumpmag is different.
+	Call the new kernel /newvmunix; do NOT replace /vmunix
+	
+	boot /newvmunix and make it crash (with a dump.)
+	
+	boot /vmunix single-user, mount the appropriate filesystems,
+	and type
+
+	# /etc/savecore /usr/crash /newvmunix
+
+	No core dump will be saved.
+Fix:
+	One cannot fix this simply by having savecore read the namelist
+	from the alternate system instead of /vmunix; this is because
+	the program wants to compare values from the dump and from /dev/kmem.
+	So, we need to use two copies of the namelist and change the
+	appropriate references in the code to use one or the other.
+
+	Note that the alternate system must still use the same dump
+	partition and size as /vmunix uses (you'd be a fool if you
+	tried to do otherwise.)
+	
+	The "diff" listing given below also includes code for an additional
+	"-v" command-line flag, to make savecore a little more verbose
+	about why it rejects a crash dump.
+
+diff savecore.c.old savecore.c
+7a8,16
+> 
+> /*
+>  * HISTORY:
+>  * 20 June 1984	Jeff Mogul	Stanford
+>  *	- Works properly with optional "system" argument (original
+>  *	version assumed identical offsets into /dev/kmem and dump.)
+>  *	- -v flag for more verbose output
+>  */
+> 
+28c37
+< struct nlist nl[] = {
+---
+> struct nlist current_nl[] = {	/* namelist for currently running system */
+45a55,65
+> struct nlist dump_nl[] = {	/* name list for dumped system */
+> 	{ "_dumpdev" },		/* entries MUST be the same as */
+> 	{ "_dumplo" },		/*	those in current_nl[]  */
+> 	{ "_time" },
+> 	{ "_dumpsize" },
+> 	{ "_version" },
+> 	{ "_panicstr" },
+> 	{ "_dumpmag" },
+> 	{ "" },
+> };
+> 
+64a85
+> int	Verbose;
+70a92,107
+> 	while ((argc > 1) && (argv[1][0] == '-')) {
+> 		switch (argv[1][1]) {
+> 		case 'v':
+> 			Verbose = 1;
+> 			break;
+> 		default:
+> 			fprintf(stderr, "savecore: illegal flag -%c\n",
+> 				argv[1][1]);
+> 			fprintf(stderr,
+> 				"usage: savecore [-v] dirname [ system ]\n");
+> 			exit(1);
+> 		}
+> 		argc--;
+> 		argv++;
+> 	}
+> 
+72c109
+< 		fprintf(stderr, "usage: savecore dirname [ system ]\n");
+---
+> 		fprintf(stderr, "usage: savecore [-v] dirname [ system ]\n");
+90c127,129
+< 		} else
+---
+> 		} else {
+> 			if (Verbose)
+> 				fprintf(stderr, "No space or time\n");
+91a131
+> 		}
+92a133,135
+> 	else if (Verbose) {
+> 		fprintf(stderr, "No dump exists\n");
+> 	}
+103c146
+< 	Lseek(dumpfd, (off_t)(dumplo + ok(nl[X_DUMPMAG].n_value)), 0);
+---
+> 	Lseek(dumpfd, (off_t)(dumplo + ok(dump_nl[X_DUMPMAG].n_value)), 0);
+105a149,152
+> 	if (Verbose && (word != dumpmag)) {
+> 		printf("dumplo = %d (%d bytes)\n", dumplo/512, dumplo);
+> 		printf("magic number mismatch: %x != %x\n", word, dumpmag);
+> 	}
+115c162
+< 	Lseek(dumpfd, (off_t)(dumplo + ok(nl[X_DUMPMAG].n_value)), 0);
+---
+> 	Lseek(dumpfd, (off_t)(dumplo + ok(dump_nl[X_DUMPMAG].n_value)), 0);
+158a206,208
+> 	char *dump_sys;
+> 	
+> 	dump_sys = system ? system : "/vmunix";
+160,161c210,221
+< 	nlist("/vmunix", nl);
+< 	if (nl[X_DUMPDEV].n_value == 0) {
+---
+> 	nlist("/vmunix", current_nl);
+> 	nlist(dump_sys, dump_nl);
+> 
+> 	/*
+> 	 * Some names we need for the currently running system,
+> 	 * others for the system that was running when the dump was made.
+> 	 * The values obtained from the current system are used
+> 	 * to look for things in /dev/kmem that cannot be found
+> 	 * in the dump_sys namelist, but are presumed to be the same
+> 	 * (since the disk partitions are probably the same!)
+> 	 */
+> 	if (current_nl[X_DUMPDEV].n_value == 0) {
+165c225
+< 	if (nl[X_DUMPLO].n_value == 0) {
+---
+> 	if (current_nl[X_DUMPLO].n_value == 0) {
+169,170c229,231
+< 	if (nl[X_TIME].n_value == 0) {
+< 		fprintf(stderr, "savecore: /vmunix: time not in namelist\n");
+---
+> 	if (dump_nl[X_TIME].n_value == 0) {
+> 		fprintf(stderr, "savecore: %s: time not in namelist\n",
+> 				dump_sys);
+173,174c234,236
+< 	if (nl[X_DUMPSIZE].n_value == 0) {
+< 		fprintf(stderr, "savecore: /vmunix: dumpsize not in namelist\n");
+---
+> 	if (dump_nl[X_DUMPSIZE].n_value == 0) {
+> 		fprintf(stderr, "savecore: %s: dumpsize not in namelist\n",
+> 				dump_sys);
+177,178c239,242
+< 	if (nl[X_VERSION].n_value == 0) {
+< 		fprintf(stderr, "savecore: /vmunix: version not in namelist\n");
+---
+> 	/* we need VERSION in both images */
+> 	if (current_nl[X_VERSION].n_value == 0) {
+> 		fprintf(stderr, "savecore: /vmunix: version not in namelist\n",
+> 				dump_sys);
+181,182c245,247
+< 	if (nl[X_PANICSTR].n_value == 0) {
+< 		fprintf(stderr, "savecore: /vmunix: panicstr not in namelist\n");
+---
+> 	if (dump_nl[X_VERSION].n_value == 0) {
+> 		fprintf(stderr, "savecore: %s: version not in namelist\n",
+> 				dump_sys);
+185c250,256
+< 	if (nl[X_DUMPMAG].n_value == 0) {
+---
+> 	if (dump_nl[X_PANICSTR].n_value == 0) {
+> 		fprintf(stderr, "savecore: %s: panicstr not in namelist\n",
+> 				dump_sys);
+> 		exit(1);
+> 	}
+> 	/* we need DUMPMAG in both images */
+> 	if (current_nl[X_DUMPMAG].n_value == 0) {
+188a260,264
+> 	if (dump_nl[X_DUMPMAG].n_value == 0) {
+> 		fprintf(stderr, "savecore: %s: dumpmag not in namelist\n",
+> 				dump_sys);
+> 		exit(1);
+> 	}
+190c266
+< 	Lseek(kmem, (long)nl[X_DUMPDEV].n_value, 0);
+---
+> 	Lseek(kmem, (long)current_nl[X_DUMPDEV].n_value, 0);
+192c268
+< 	Lseek(kmem, (long)nl[X_DUMPLO].n_value, 0);
+---
+> 	Lseek(kmem, (long)current_nl[X_DUMPLO].n_value, 0);
+194c270
+< 	Lseek(kmem, (long)nl[X_DUMPMAG].n_value, 0);
+---
+> 	Lseek(kmem, (long)current_nl[X_DUMPMAG].n_value, 0);
+204c280
+< 	fseek(fp, (long)nl[X_VERSION].n_value, 0);
+---
+> 	fseek(fp, (long)current_nl[X_VERSION].n_value, 0);
+218c294
+< 	fseek(fp, (off_t)(dumplo+ok(nl[X_VERSION].n_value)), 0);
+---
+> 	fseek(fp, (off_t)(dumplo+ok(dump_nl[X_VERSION].n_value)), 0);
+221c297
+< 	if (!eq(vers, core_vers))
+---
+> 	if (!eq(vers, core_vers) && (system == 0))
+226c302
+< 	fseek(fp, (off_t)(dumplo + ok(nl[X_PANICSTR].n_value)), 0);
+---
+> 	fseek(fp, (off_t)(dumplo + ok(dump_nl[X_PANICSTR].n_value)), 0);
+246c322
+< 	Lseek(dumpfd, (off_t)(dumplo + ok(nl[X_TIME].n_value)), 0);
+---
+> 	Lseek(dumpfd, (off_t)(dumplo + ok(dump_nl[X_TIME].n_value)), 0);
+249c325,327
+< 	if (dumptime == 0)
+---
+> 	if (dumptime == 0) {
+> 		if (Verbose)
+> 			printf("dump time not found\n");
+250a329
+> 	}
+333c412
+< 	Lseek(ifd, (off_t)(dumplo + ok(nl[X_DUMPSIZE].n_value)), 0);
+---
+> 	Lseek(ifd, (off_t)(dumplo + ok(dump_nl[X_DUMPSIZE].n_value)), 0);

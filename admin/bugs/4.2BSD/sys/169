@@ -1,0 +1,82 @@
+Return-Path: <thomas@utah-cs>
+Date: 26 Jul 83 21:18 MDT
+From: Spencer W. Thomas  <thomas@utah-cs>
+Subject: Long writes to PTY controller lose characters
+To: 4bsd-bugs@BERKELEY
+Index:	sys/pty.c 4.2BSD Fix
+
+Description:
+	When writing more than TTYHOG characters to the controlling end
+	of a PTY in cooked mode, characters will be lost.  The PTY
+	should either block or return a partial count (in non-blocking
+	mode).  However, the write completes, but all characters above
+	TTYHOG have been dumped on the floor by ttyinput.  [Note: the
+	string being written should have several newlines in it.]
+Repeat-By:
+	This program demonstrates the problem.  It writes 6 65
+	character lines (including newline) in one write into the
+	controlling end of a pty.  A fork reads the lines from the
+	slave end.  It only successfully reads the first 3 lines.  The
+	write returns successfully with a count of 390 bytes written.
+	When a newline is finally written to the controlling end, the
+	slave reads one more partial line.  The total number of bytes
+	read by the slave is TTYHOG (+1 for the extra newline).  If
+	TTYHOG is greater than 390 on your system, increase the number
+	of bytes written by the controller.
+================================================================
+/* 
+ * tstpty.c - Test pty bug.
+ * 
+ * Author:	Spencer W. Thomas
+ */
+
+#include <stdio.h>
+
+char tststring[] =
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
+char sendbuf[BUFSIZ];
+
+main()
+{
+    int ptcfd, ptsfd, n;
+
+    if ( (ptcfd = open("/dev/ptyqf", 2)) < 0) { perror("ptyqf"); exit(1); }
+    if ( (ptsfd = open("/dev/ttyqf", 2)) < 0) { perror("ttyqf"); exit(1); }
+
+    if (fork() == 0)
+    {
+	close(ptcfd);
+	while ((n = read(ptsfd, sendbuf, BUFSIZ)) > 0)
+	    printf( "%d:%*.*s", n, n, n, sendbuf );
+	exit(0);
+    }
+
+    strcpy( sendbuf, tststring );
+    for (n=0; n<5; n++)
+	strcat( sendbuf, tststring );
+
+    printf( "Buflen = %d\n", strlen(sendbuf) );
+    n = write( ptcfd, sendbuf, strlen(sendbuf) );
+    printf( "Write returned %d\n", n );
+    sleep(2);
+    printf( "Sending newline\n" );
+    write( ptcfd, "\n", 1 );
+    close( ptcfd );
+    wait(0);
+}
+================================================================
+Fix:
+	In pty.c:ptcwrite, there is a test for overflow of the input queue:
+
+			while (tp->t_delct && tp->t_rawq.c_cc >= TTYHOG - 2) {
+
+	This should be changed to:
+
+			while ((tp->t_delct || tp->t_canq.c_cc)
+			&& (tp->t_rawq.c_cc + tp->t_canq.c_cc) >= TTYHOG - 2) {
+
+This code is identical in our 4.1a pty.c and the 4.2 tty_pty.c on
+ucbmonet.  It appears that 4.2 will not through away characters (in
+ttyinput), but it will feed a lot of ^G's back in the echo stream.
+
+=Spencer Thomas

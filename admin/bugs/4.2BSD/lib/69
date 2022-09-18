@@ -1,0 +1,112 @@
+Return-Path: <speck@cit-vax>
+Date: Wed, 20 Feb 85 00:04:06 pst
+From: speck@cit-vax (Don Speck)
+Subject: Optimize unsigneds in PCC, speed up 4.2bsd raw I/O
+
+Index:	lib/mip 4.2BSD Fix
+Description:  Speed up raw I/O by making PCC produce better code.
+	Kernel profiling reveals that large (8K) raw writes spend
+	close to half of their time in vslock()/vsunlock().  Much
+	of this is spent doing unsigned division by 2 via udiv().
+	A right shift will accomplish the same thing according to
+	Appendix A section 7.5 of K&R.	Two more raw I/O speedups
+	(in vslock/vsunlock, and ubasetup) also given.
+Repeat-by:
+	time a full dump before and after applying fixes;
+	system time will be reduced ~20%.
+Fix:
+	The shift optimization is just as machine-independent as
+	changing multiply to shift, so we can do it in the machine-
+	independent part of PCC (this should be done in ALL pcc's).
+	Also optimize unsigned modulus by powers of two (dump uses
+	this a lot for bitmaps) and addition of zero.
+
+diff -c old/optim.c /usr/src/lib/mip/optim.c
+*** /usr/src/lib/mip/old/optim.c	Tue Jun  8 20:43:45 1982
+--- /usr/src/lib/mip/optim.c	Sat Jan 26 16:05:43 1985
+***************
+*** 138,143
+			RV(p) = -RV(p);
+			o = p->in.op = MINUS;
+			}
+		break;
+
+	case DIV:
+
+--- 138,150 -----
+			RV(p) = -RV(p);
+			o = p->in.op = MINUS;
+			}
++
++		/*FALLTHROUGH*/
++	case RS:
++	case LS:
++		/* Operations with zero -- DAS 1/20/85 */
++		if( (o==PLUS || o==MINUS || o==OR || o==ER || o==LS || o==RS)
++			&& nncon(p->in.right) && RV(p)==0 ) goto zapright;
+		break;
+
+	case DIV:
+***************
+*** 142,147
+
+	case DIV:
+		if( nncon( p->in.right ) && p->in.right->tn.lval == 1 ) goto zapright;
+		break;
+
+	case EQ:
+
+--- 149,169 -----
+
+	case DIV:
+		if( nncon( p->in.right ) && p->in.right->tn.lval == 1 ) goto zapright;
++
++		/* Unsigned division by a power of two -- DAS 1/13/85 */
++		if( nncon(p->in.right) && (i=ispow2(RV(p)))>=0 && ISUNSIGNED(p->in.type) ){
++			o = p->in.op = RS;
++			p->in.right->in.type = p->in.right->fn.csiz = INT;
++			RV(p) = i;
++			}
++		break;
++
++	case MOD:
++		/* Unsigned mod by a power of two -- DAS 1/13/85 */
++		if( nncon(p->in.right) && (i=ispow2(RV(p)))>=0 && ISUNSIGNED(p->in.type) ){
++			o = p->in.op = AND;
++			RV(p)--;
++			}
+		break;
+
+	case EQ:
+--------end of diff--------
+
+    The second biggest speedup again comes in vslock/vsunlock, by
+in-line expansion of mlock()/munlock().  This is extremely easy
+and obvious to do, so no diff is given.  [/sys/sys/vm_mem.c]
+
+    The third biggest speedup is to optimize the main loop in
+ubasetup().  The loop that sets the map registers unnecessarily
+repeats a bit-field extraction.  Bit-field operations are rather
+expensive even with the fancy VAX field instructions; PCC needs
+to learn to use simpler instructions (BIC/BIS) when possible.
+
+diff old/uba.c /sys/vaxuba/uba.c
+162c162,163
+<		if (pte->pg_pfnum == 0)
+---
+>		register int pfnum;
+>		if ((pfnum=pte->pg_pfnum) == 0)
+164c165,166
+<		*(int *)io++ = pte++->pg_pfnum | temp;
+---
+>		pte++;
+>		*(int *)io++ = pfnum | temp;
+
+With these three fixes installed, and recompiling the kernel,
+the per-page part of raw I/O setup fell from 160us to 60us
+on our vax/750.  It takes about 20% off the CPU requirements
+of /etc/dump.  It's probably not necessary to recompile the
+entire kernel; /sys/sys/vm_mem.c, /sys/sys/vm_subr.c, and
+etc/dump/dumptraverse.c are the biggest benefactors of the
+added PCC optimization.
+					Don Speck

@@ -1,0 +1,256 @@
+From sms@WLV.IMSD.CONTEL.COM  Sat Jan 20 00:38:08 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA02078; Sat, 20 Jan 90 00:38:08 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA02451; Sat, 20 Jan 90 00:38:11 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA20867; Sat, 20 Jan 90 00:37:56 -0800
+Date: Sat, 20 Jan 90 00:37:56 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9001200837.AA20867@WLV.IMSD.CONTEL.COM>
+Subject: tip has braindead hayes dialer
+Index: 	usr.bin/tip/aculib/hayes.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Using 'tip' with a Hayes modem simply doesn't work.
+
+	a synposis of what i found/fixed:
+
+	1) for machines other than vaxen (i.e systems where sizeof 'int' !=
+	sizeof 'long') the FIONREAD calls were using an int rather han a 'long'.
+	Extremely "annoying" on the 2.10.1 systems! ;-)
+
+	2) of interest to all systems were the TIOCFLUSH calls - the 
+	stupid (brain-dead?) hayes.c module was passing a 0 as the third 
+	parameter rather than a POINTER to a 0!  Grrrr...
+
+	This fault is common to many of 'tip's smart modem dialers.  If you
+	are having problems with the 'biz31', 'courier', 'ventel' dialers,
+	you will want to fix the TIOCFLUSH calls.
+	The only dialer that really worked out of the box (for me at least)
+	was the DN11.
+
+	3) there were superfluous calls to a function to eat a \r.  the mode
+	the modem had been placed in by this time would guarantee that no
+	blank lines would be emitted - it's as if the code was derived from
+	a time when 'english' responses were expected.  'tip' would hang
+	at this point if it hadn't given up as a result of earlier errors.
+
+	4) There was no guarantee that echoing of commands was turned off,
+	   so the initial AT command was amplified to include this, also
+	   the command set was forced to the "basic" set - this handles
+	   the compatible modems who return codes above '4'.
+
+Repeat-By:
+	Attempt to use 'tip' on a Hayes (or compatible) modem.  Watch
+	the non-success.
+Fix:
+	
+*** hayes.c.old	Tue Apr 30 12:54:47 1985
+--- hayes.c	Fri Jan 19 23:20:09 1990
+***************
+*** 54,59 ****
+--- 54,60 ----
+  {
+  	register char *cp;
+  	register int connected = 0;
++ 	int zero = 0;
+  	char dummy;
+  #ifdef ACULOG
+  	char line[80];
+***************
+*** 64,84 ****
+  		printf("\ndialing...");
+  	fflush(stdout);
+  	ioctl(FD, TIOCHPCL, 0);
+! 	ioctl(FD, TIOCFLUSH, 0);	/* get rid of garbage */
+! 	write(FD, "ATv0\r", 5);	/* tell modem to use short status codes */
+! 	gobble("\r");
+! 	gobble("\r");
+! 	write(FD, "ATTD", 4);	/* send dial command */
+  	write(FD, num, strlen(num));
+  	state = DIALING;
+  	write(FD, "\r", 1);
+  	connected = 0;
+! 	if (gobble("\r")) {
+! 		if ((dummy = gobble("01234")) != '1')
+! 			error_rep(dummy);
+! 		else
+! 			connected = 1;
+! 	}
+  	if (connected)
+  		state = CONNECTED;
+  	else {
+--- 65,84 ----
+  		printf("\ndialing...");
+  	fflush(stdout);
+  	ioctl(FD, TIOCHPCL, 0);
+! 	ioctl(FD,TIOCFLUSH, &zero);
+! 	write(FD, "ATV0E0X0\r", 9);	/* numeric codes,noecho,base cmds */
+! 	sleep(1);
+! 	ioctl(FD, TIOCFLUSH, &zero);	/* get rid of garbage */
+! 
+! 	write(FD, "ATDT", 4);	/* send dial command */
+  	write(FD, num, strlen(num));
+  	state = DIALING;
+  	write(FD, "\r", 1);
+  	connected = 0;
+! 	if ((dummy = gobble("01234")) != '1')
+! 		error_rep(dummy);
+! 	else
+! 		connected = 1;
+  	if (connected)
+  		state = CONNECTED;
+  	else {
+***************
+*** 85,91 ****
+  		state = FAILED;
+  		return (connected);	/* lets get out of here.. */
+  	}
+! 	ioctl(FD, TIOCFLUSH, 0);
+  #ifdef ACULOG
+  	if (timeout) {
+  		sprintf(line, "%d second dial timeout",
+--- 85,91 ----
+  		state = FAILED;
+  		return (connected);	/* lets get out of here.. */
+  	}
+! 	ioctl(FD, TIOCFLUSH, &zero);
+  #ifdef ACULOG
+  	if (timeout) {
+  		sprintf(line, "%d second dial timeout",
+***************
+*** 140,146 ****
+  	int (*f)();
+  	int i, status = 0;
+  
+! 	signal(SIGALRM, sigALRM);
+  	timeout = 0;
+  #ifdef DEBUG
+  	printf("\ngobble: waiting for %s\n", match);
+--- 140,146 ----
+  	int (*f)();
+  	int i, status = 0;
+  
+! 	f = signal(SIGALRM, sigALRM);
+  	timeout = 0;
+  #ifdef DEBUG
+  	printf("\ngobble: waiting for %s\n", match);
+***************
+*** 211,223 ****
+  goodbye()
+  {
+  	int len, rlen;
+  	char c;
+  
+! 	ioctl(FD, TIOCFLUSH, &len);	/* get rid of trash */
+  	if (hay_sync()) {
+  		sleep(1);
+  #ifndef DEBUG
+! 		ioctl(FD, TIOCFLUSH, 0);
+  #endif
+  		write(FD, "ATH0\r", 5);		/* insurance */
+  #ifndef DEBUG
+--- 211,225 ----
+  goodbye()
+  {
+  	int len, rlen;
++ 	int zero = 0;
++ 	long llen;
+  	char c;
+  
+! 	ioctl(FD, TIOCFLUSH, &zero);	/* get rid of trash */
+  	if (hay_sync()) {
+  		sleep(1);
+  #ifndef DEBUG
+! 		ioctl(FD, TIOCFLUSH, &zero);
+  #endif
+  		write(FD, "ATH0\r", 5);		/* insurance */
+  #ifndef DEBUG
+***************
+*** 228,234 ****
+  		}
+  #endif
+  		sleep(1);
+! 		ioctl(FD, FIONREAD, &len);
+  #ifdef DEBUG
+  		printf("goodbye1: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+--- 230,237 ----
+  		}
+  #endif
+  		sleep(1);
+! 		ioctl(FD, FIONREAD, &llen);
+! 		len = llen;
+  #ifdef DEBUG
+  		printf("goodbye1: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+***************
+*** 235,244 ****
+  		dumbuf[rlen] = '\0';
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+  #endif
+! 		write(FD, "ATv1\r", 5);
+  		sleep(1);
+  #ifdef DEBUG
+! 		ioctl(FD, FIONREAD, &len);
+  		printf("goodbye2: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+  		dumbuf[rlen] = '\0';
+--- 238,248 ----
+  		dumbuf[rlen] = '\0';
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+  #endif
+! 		write(FD, "ATV1\r", 5);
+  		sleep(1);
+  #ifdef DEBUG
+! 		ioctl(FD, FIONREAD, &llen);
+! 		len = llen;
+  		printf("goodbye2: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+  		dumbuf[rlen] = '\0';
+***************
+*** 245,251 ****
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+  #endif
+  	}
+! 	ioctl(FD, TIOCFLUSH, 0);	/* clear the input buffer */
+  	ioctl(FD, TIOCCDTR, 0);		/* clear DTR (insurance) */
+  	close(FD);
+  }
+--- 249,255 ----
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+  #endif
+  	}
+! 	ioctl(FD, TIOCFLUSH, &zero);	/* clear the input buffer */
+  	ioctl(FD, TIOCCDTR, 0);		/* clear DTR (insurance) */
+  	close(FD);
+  }
+***************
+*** 255,265 ****
+  hay_sync()
+  {
+  	int len, retry = 0;
+  
+  	while (retry++ <= MAXRETRY) {
+  		write(FD, "AT\r", 3);
+  		sleep(1);
+! 		ioctl(FD, FIONREAD, &len);
+  		if (len) {
+  			len = read(FD, dumbuf, min(len, DUMBUFLEN));
+  			if (index(dumbuf, '0') || 
+--- 259,271 ----
+  hay_sync()
+  {
+  	int len, retry = 0;
++ 	long llen;
+  
+  	while (retry++ <= MAXRETRY) {
+  		write(FD, "AT\r", 3);
+  		sleep(1);
+! 		ioctl(FD, FIONREAD, &llen);
+! 		len = llen;
+  		if (len) {
+  			len = read(FD, dumbuf, min(len, DUMBUFLEN));
+  			if (index(dumbuf, '0') || 

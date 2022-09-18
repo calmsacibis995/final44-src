@@ -1,0 +1,369 @@
+From elsie!ado@ncifcrf.gov  Thu Jun  9 14:25:46 1988
+Received: from FCS280S.NCIFCRF.GOV by okeeffe.berkeley.edu (5.59/1.28)
+	id AA09646; Thu, 9 Jun 88 14:25:46 PDT
+Received: by fcs280s.ncifcrf.gov (4.0/NCIFCRF-1.0)
+	id AA22032; Thu, 9 Jun 88 17:18:49 EDT
+Received: by elsie.UUCP (5.51/4.7)
+	id AA21566; Thu, 9 Jun 88 17:21:22 EDT
+Date: Thu, 9 Jun 88 17:21:22 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Message-Id: <8806092121.AA21566@elsie.UUCP>
+Cc: emoryu1!arnold@emory.arpa
+Cc: bugs@okeeffe.berkeley.edu
+Subject: MORE/bsd 4.3 (10/5/87) dbx misreports conditional breakpoints (w/fix)
+Index: 	ucb/dbx 4.3BSD
+
+Description:
+	Some Pascal fan wrote dbx, as revealed by the Pascal-style messages
+	it produces for conditional breakpoints even when you're debugging C
+	code.  I'm getting too old to keep track of two languages at once.
+
+Repeat-By:
+	Script started on Thu Jun  9 16:28:56 1988
+	$ cat try.c
+	main()
+	{
+		int	i;
+
+		for (i = 0; i < 10; ++i)
+			(void) printf("%d\n", i);
+	}
+	$ cc -g try.c
+	$ dbx a.out
+	dbx version 3.22 of 6/9/88 14:29 (elsie).
+	Type 'help' for help.
+	reading symbolic information ...
+	(dbx) /printf/
+	    6   		(void) printf("%d\n", i);
+	(dbx) stop at 6 if i == 10
+>>>>	[1] if i = 10 { stop } at 6
+	(dbx) quit
+	$ exit
+
+	script done on Thu Jun  9 16:29:45 1988
+Fix:
+*** 3.1/tree.c	Thu Jun  9 17:16:12 1988
+--- 3.2/tree.c	Thu Jun  9 17:16:17 1988
+***************
+*** 324,329 ****
+--- 324,332 ----
+      register Command c;
+      register Node p;
+  
++ #ifndef ASWAS
++ 	int	isc = strcmp(language_name(program->language), "c") == 0;
++ #endif /* !defined ASWAS */
+      switch (cmd->op) {
+  	case O_PRINTIFCHANGED:
+  	case O_PRINTSRCPOS:
+***************
+*** 380,394 ****
+--- 383,413 ----
+  	case O_ONCE:
+  	case O_IF:
+  	    fprintf(f, " ");
++ #ifndef ASWAS
++ 	    if (isc)
++ 		fprintf(f, "( ");
++ #endif
+  	    prtree(f, cmd->value.event.cond);
++ #ifndef ASWAS
++ 	    if (isc)
++ 		fprintf(f, " )");
++ #endif
+  	    fprintf(f, " { ");
+  	    foreach (Command, c, cmd->value.event.actions)
+  		printcmd(f, c);
++ #ifdef ASWAS
+  		if (not list_islast()) {
++ #else
++ 		if (isc || not list_islast()) {
++ #endif
+  		    fprintf(f, ";");
+  		}
+  	    endfor
++ #ifdef ASWAS
+  	    fprintf(f, " }", opinfo[ord(cmd->op)].opstring);
++ #else
++ 	    fprintf(f, " }");
++ #endif
+  	    break;
+  
+  	case O_TRACEON:
+***************
+*** 477,482 ****
+--- 496,504 ----
+      register Node q;
+      Operator op;
+  
++ #ifndef ASWAS
++ 	int	isc = strcmp(language_name(program->language), "c") == 0;
++ #endif /* !defined ASWAS */
+      if (p != nil) {
+  	op = p->op;
+  	if (ord(op) > ord(O_LASTOP)) {
+***************
+*** 545,552 ****
+--- 567,584 ----
+  		break;
+  
+  	    case O_INDIR:
++ #ifdef ASWAS
+  		prtree(f, p->value.arg[0]);
+  		fprintf(f, "^");
++ #else
++ 		if (isc) {
++ 			fprintf(f, "*");
++ 			prtree(f, p->value.arg[0]);
++ 		} else {
++ 			prtree(f, p->value.arg[0]);
++ 			fprintf(f, "^");
++ 		}
++ #endif
+  		break;
+  
+  	    case O_DOT:
+***************
+*** 565,576 ****
+--- 597,620 ----
+  		switch (degree(op)) {
+  		    case BINARY:
+  			prtree(f, p->value.arg[0]);
++ #ifdef ASWAS
+  			fprintf(f, "%s", opinfo[ord(op)].opstring);
++ #else /* !defined ASWAS */
++ 			fprintf(f, "%s", isc && opinfo[ord(op)].copstring ?
++ 				opinfo[ord(op)].copstring :
++ 				opinfo[ord(op)].opstring);
++ #endif /* !defined ASWAS */
+  			prtree(f, p->value.arg[1]);
+  			break;
+  
+  		    case UNARY:
++ #ifdef ASWAS
+  			fprintf(f, "%s", opinfo[ord(op)].opstring);
++ #else /* !defined ASWAS */
++ 			fprintf(f, "%s", isc && opinfo[ord(op)].copstring ?
++ 				opinfo[ord(op)].copstring :
++ 				opinfo[ord(op)].opstring);
++ #endif /* !defined ASWAS */
+  			prtree(f, p->value.arg[0]);
+  			break;
+  
+*** 3.1/operators.c	Thu Jun  9 17:16:29 1988
+--- 3.2/operators.c	Thu Jun  9 17:16:34 1988
+***************
+*** 22,27 ****
+--- 22,28 ----
+      char numargs;
+      char opflags;
+      String opstring;
++     String copstring;
+  } Opinfo;
+  
+  typedef enum {
+***************
+*** 129,227 ****
+   */
+  
+  public Opinfo opinfo[] ={
+! /* O_NOP */		0,	null,		0,
+! /* O_NAME */		-1,	LEAF,		0,
+! /* O_SYM */		-1,	LEAF,		0,
+! /* O_LCON */		-1,	LEAF,		0,
+! /* O_CCON */		-1,	LEAF,		0,
+! /* O_FCON */		-1,	LEAF,		0,
+! /* O_SCON */		-1,	LEAF,		0,
+! /* O_RVAL */		1,	UNARY,		0,
+! /* O_INDEX */		2,	null,		0,
+! /* O_INDIR */		1,	UNARY,		"^",
+! /* O_DOT */		2,	null,		".",
+! /* O_COMMA */		2,	null,		",",
+! /* O_ITOF */		1,	UNARY|INTOP,	0,
+! /* O_ADD */		2,	BINARY|INTOP,	"+",
+! /* O_ADDF */		2,	BINARY|REALOP,	"+",
+! /* O_SUB */		2,	BINARY|INTOP,	"-",
+! /* O_SUBF */		2,	BINARY|REALOP,	"-",
+! /* O_NEG */		1,	UNARY|INTOP,	"-",
+! /* O_NEGF */		1,	UNARY|REALOP,	"-",
+! /* O_MUL */		2,	BINARY|INTOP,	"*",
+! /* O_MULF */		2,	BINARY|REALOP,	"*",
+! /* O_DIVF */		2,	BINARY|REALOP,	"/",
+! /* O_DIV */		2,	BINARY|INTOP,	" div ",
+! /* O_MOD */		2,	BINARY|INTOP,	" mod ",
+! /* O_AND */		2,	BINARY|INTOP,	" and ",
+! /* O_OR */		2,	BINARY|INTOP,	" or ",
+! /* O_LT */		2,	BINARY|INTOP,	" < ",
+! /* O_LTF */		2,	BINARY|REALOP,	" < ",
+! /* O_LE */		2,	BINARY|INTOP,	" <= ",
+! /* O_LEF */		2,	BINARY|REALOP,	" <= ",
+! /* O_GT */		2,	BINARY|INTOP,	" > ",
+! /* O_GTF */		2,	BINARY|REALOP,	" > ",
+! /* O_GE */		2,	BINARY|INTOP,	" >= ",
+! /* O_GEF */		2,	BINARY|REALOP,	" >= ",
+! /* O_EQ */		2,	BINARY|INTOP,	" = ",
+! /* O_EQF */		2,	BINARY|REALOP,	" = ",
+! /* O_NE */		2,	BINARY|INTOP,	" <> ",
+! /* O_NEF */		2,	BINARY|REALOP,	" <> ",
+  
+! /* O_ALIAS */		2,	null,		"alias",
+! /* O_ASSIGN */		2,	null,		" := ",
+! /* O_CALL */		2,	null,		"call",
+! /* O_CATCH */		0,	null,		"catch",
+! /* O_CHFILE */		0,	null,		"file",
+! /* O_CONT */		0,	null,		"cont",
+! /* O_DEBUG */		0,	null,		"debug",
+! /* O_DELETE */		1,	null,		"delete",
+! /* O_DUMP */		1,	null,		"dump",
+! /* O_EDIT */		0,	null,		"edit",
+! /* O_FUNC */		1,	null,		"func",
+! /* O_GRIPE */		0,	null,		"gripe",
+! /* O_HELP */		0,	null,		"help",
+! /* O_IGNORE */		0,	null,		"ignore",
+! /* O_LIST */		2,	null,		"list",
+! /* O_PRINT */		1,	null,		"print",
+! /* O_PSYM */		1,	null,		"psym",
+! /* O_RUN */		0,	null,		"run",
+! /* O_SKIP */		0,	null,		"skip",
+! /* O_SOURCE */		0,	null,		"source",
+! /* O_STATUS */		0,	null,		"status",
+! /* O_STEP */		0,	null,		"step",
+! /* O_STOP */		3,	null,		"stop",
+! /* O_STOPI */		3,	null,		"stopi",
+! /* O_TRACE */		3,	null,		"trace",
+! /* O_TRACEI */		3,	null,		"tracei",
+! /* O_WHATIS */		1,	null,		"whatis",
+! /* O_WHERE */		0,	null,		"where",
+! /* O_WHEREIS */		1,	null,		"whereis",
+! /* O_WHICH */		1,	null,		"which",
+! /* O_EXAMINE */		0,	null,		"examine",
+  
+! /* O_ADDEVENT */	0,	null,		"when",
+! /* O_ENDX */		0,	null,		nil,
+! /* O_IF */		0,	null,		"if",
+! /* O_ONCE */		0,	null,		"once",
+! /* O_PRINTCALL */	1,	null,		"printcall",
+! /* O_PRINTIFCHANGED */	1,	null,		"printifchanged",
+! /* O_PRINTRTN */	1,	null,		"printrtn",
+! /* O_PRINTSRCPOS */	1,	null,		"printsrcpos",
+! /* O_PROCRTN */		1,	null,		"procrtn",
+! /* O_QLINE */		2,	null,		nil,
+! /* O_STOPIFCHANGED */	1,	null,		"stopifchanged",
+! /* O_STOPX */		0,	null,		"stop",
+! /* O_TRACEON */		1,	null,		"traceon",
+! /* O_TRACEOFF */	1,	null,		"traceoff",
+! /* O_TYPERENAME */	2,	UNARY,		"type rename",
+! /* O_RERUN */		0,	null,		"rerun",
+! /* O_RETURN */		1,	null,		"return",
+! /* O_UP */		1,	UNARY,		"up",
+! /* O_DOWN */		1,	UNARY,		"down",
+! /* O_CALLPROC */	2,	null,		"call",
+! /* O_SEARCH */		2,	null,		"search",
+! /* O_SET */		2,	null,		"set",
+! /* O_UNSET */		1,	null,		"unset",
+! /* O_UNALIAS */		1,	null,		"unalias",
+  };
+--- 130,228 ----
+   */
+  
+  public Opinfo opinfo[] ={
+! /* O_NOP */		0,	null,		0,			nil,
+! /* O_NAME */		-1,	LEAF,		0,			nil,
+! /* O_SYM */		-1,	LEAF,		0,			nil,
+! /* O_LCON */		-1,	LEAF,		0,			nil,
+! /* O_CCON */		-1,	LEAF,		0,			nil,
+! /* O_FCON */		-1,	LEAF,		0,			nil,
+! /* O_SCON */		-1,	LEAF,		0,			nil,
+! /* O_RVAL */		1,	UNARY,		0,			nil,
+! /* O_INDEX */		2,	null,		0,			nil,
+! /* O_INDIR */		1,	UNARY,		"^",			" * ",
+! /* O_DOT */		2,	null,		".",			nil,
+! /* O_COMMA */		2,	null,		",",			nil,
+! /* O_ITOF */		1,	UNARY|INTOP,	0,			nil,
+! /* O_ADD */		2,	BINARY|INTOP,	"+",			nil,
+! /* O_ADDF */		2,	BINARY|REALOP,	"+",			nil,
+! /* O_SUB */		2,	BINARY|INTOP,	"-",			nil,
+! /* O_SUBF */		2,	BINARY|REALOP,	"-",			nil,
+! /* O_NEG */		1,	UNARY|INTOP,	"-",			nil,
+! /* O_NEGF */		1,	UNARY|REALOP,	"-",			nil,
+! /* O_MUL */		2,	BINARY|INTOP,	"*",			nil,
+! /* O_MULF */		2,	BINARY|REALOP,	"*",			nil,
+! /* O_DIVF */		2,	BINARY|REALOP,	"/",			nil,
+! /* O_DIV */		2,	BINARY|INTOP,	" div ",		" / ",
+! /* O_MOD */		2,	BINARY|INTOP,	" mod ",		" % ",
+! /* O_AND */		2,	BINARY|INTOP,	" and ",		" && ",
+! /* O_OR */		2,	BINARY|INTOP,	" or ",			" || ",
+! /* O_LT */		2,	BINARY|INTOP,	" < ",			nil,
+! /* O_LTF */		2,	BINARY|REALOP,	" < ",			nil,
+! /* O_LE */		2,	BINARY|INTOP,	" <= ",			nil,
+! /* O_LEF */		2,	BINARY|REALOP,	" <= ",			nil,
+! /* O_GT */		2,	BINARY|INTOP,	" > ",			nil,
+! /* O_GTF */		2,	BINARY|REALOP,	" > ",			nil,
+! /* O_GE */		2,	BINARY|INTOP,	" >= ",			nil,
+! /* O_GEF */		2,	BINARY|REALOP,	" >= ",			nil,
+! /* O_EQ */		2,	BINARY|INTOP,	" = ",			" == ",
+! /* O_EQF */		2,	BINARY|REALOP,	" = ",			" == ",
+! /* O_NE */		2,	BINARY|INTOP,	" <> ",			" != ",
+! /* O_NEF */		2,	BINARY|REALOP,	" <> ",			" != ",
+  
+! /* O_ALIAS */		2,	null,		"alias",		nil,
+! /* O_ASSIGN */		2,	null,		" := ",			" = ",
+! /* O_CALL */		2,	null,		"call",			nil,
+! /* O_CATCH */		0,	null,		"catch",		nil,
+! /* O_CHFILE */		0,	null,		"file",			nil,
+! /* O_CONT */		0,	null,		"cont",			nil,
+! /* O_DEBUG */		0,	null,		"debug",		nil,
+! /* O_DELETE */		1,	null,		"delete",		nil,
+! /* O_DUMP */		1,	null,		"dump",			nil,
+! /* O_EDIT */		0,	null,		"edit",			nil,
+! /* O_FUNC */		1,	null,		"func",			nil,
+! /* O_GRIPE */		0,	null,		"gripe",		nil,
+! /* O_HELP */		0,	null,		"help",			nil,
+! /* O_IGNORE */		0,	null,		"ignore",		nil,
+! /* O_LIST */		2,	null,		"list",			nil,
+! /* O_PRINT */		1,	null,		"print",		nil,
+! /* O_PSYM */		1,	null,		"psym",			nil,
+! /* O_RUN */		0,	null,		"run",			nil,
+! /* O_SKIP */		0,	null,		"skip",			nil,
+! /* O_SOURCE */		0,	null,		"source",		nil,
+! /* O_STATUS */		0,	null,		"status",		nil,
+! /* O_STEP */		0,	null,		"step",			nil,
+! /* O_STOP */		3,	null,		"stop",			nil,
+! /* O_STOPI */		3,	null,		"stopi",		nil,
+! /* O_TRACE */		3,	null,		"trace",		nil,
+! /* O_TRACEI */		3,	null,		"tracei",		nil,
+! /* O_WHATIS */		1,	null,		"whatis",		nil,
+! /* O_WHERE */		0,	null,		"where",		nil,
+! /* O_WHEREIS */		1,	null,		"whereis",		nil,
+! /* O_WHICH */		1,	null,		"which",		nil,
+! /* O_EXAMINE */		0,	null,		"examine",		nil,
+  
+! /* O_ADDEVENT */	0,	null,		"when",			nil,
+! /* O_ENDX */		0,	null,		nil,			nil,
+! /* O_IF */		0,	null,		"if",			nil,
+! /* O_ONCE */		0,	null,		"once",			nil,
+! /* O_PRINTCALL */	1,	null,		"printcall",		nil,
+! /* O_PRINTIFCHANGED */	1,	null,		"printifchanged",	nil,
+! /* O_PRINTRTN */	1,	null,		"printrtn",		nil,
+! /* O_PRINTSRCPOS */	1,	null,		"printsrcpos",		nil,
+! /* O_PROCRTN */		1,	null,		"procrtn",		nil,
+! /* O_QLINE */		2,	null,		nil,			nil,
+! /* O_STOPIFCHANGED */	1,	null,		"stopifchanged",	nil,
+! /* O_STOPX */		0,	null,		"stop",			nil,
+! /* O_TRACEON */		1,	null,		"traceon",		nil,
+! /* O_TRACEOFF */	1,	null,		"traceoff",		nil,
+! /* O_TYPERENAME */	2,	UNARY,		"type rename",		nil,
+! /* O_RERUN */		0,	null,		"rerun",		nil,
+! /* O_RETURN */		1,	null,		"return",		nil,
+! /* O_UP */		1,	UNARY,		"up",			nil,
+! /* O_DOWN */		1,	UNARY,		"down",			nil,
+! /* O_CALLPROC */	2,	null,		"call",			nil,
+! /* O_SEARCH */		2,	null,		"search",		nil,
+! /* O_SET */		2,	null,		"set",			nil,
+! /* O_UNSET */		1,	null,		"unset",		nil,
+! /* O_UNALIAS */		1,	null,		"unalias",		nil,
+  };
+-- 
+    "Only external identifiers and macro names described in the Standard
+    as reserved shall be reserved" must go in.  This is non-negotiable.
+	ado@ncifcrf.gov			ADO is a trademark of Ampex.

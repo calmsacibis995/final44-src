@@ -1,0 +1,115 @@
+/* $XConsortium: inqallcf.pi,v 5.1 91/02/16 10:01:55 rws Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+## inqallcf.pi -
+## Test inquire all conflicting structures
+##
+## Note: a->b means str a executes str b, ae means struct a is empty,
+##       a' means this str a has same name as str a, but different contents
+##
+## Test the following cases:
+##	   in CSS	in archive	conflicting structures
+## case 1: NULL	  	NULL		NULL
+## case 2: 0->1->2 3	NULL		NULL
+## case 3: 0->1->2 3	0->1->2 3	0->1->2 3
+## case 4: NULL		0->1->2 3	NULL
+## case 5: 2' 3' 4	0->1->2 3	2 3
+##
+## Verify by comparing the list of conflicting structures with the expected
+##
+
+source macro.pi
+source armacro.pi
+
+/*
+ * inquire all conflicting structures expected,
+ * print with specified format string if doesn't match
+ *
+ * NOTE: this macro requires the initialization of the variable "inqids"
+ *       @num determines the number of significant arguments that follows
+ *       assuming enough buffer spaces for 10 ids
+ */
+macro im_confirm_allconfstrs(@arid,@num,@s1,@s2,@s3,@s4,@formatstring)
+        err = i_bogus_error();
+        pinq_all_conf_structs(@arid,10,0,&err,&inqids,&total);
+        im_ifneq(err,0,"ERROR: %d in pinq_all_conf_structs\n",err);
+        status = i_compare_Pint_list_to_ints(inqids,@num,@s1,@s2,@s3,@s4);
+        im_ifneq(status,1,@formatstring,NULL);
+endmacro
+
+
+tbegintest("inqallcf","inquire all conflicting structures");
+
+# INITIALIZE: storage for inq str ids
+buf = malloc(256)
+inqids = I_Pint_list(0,buf);
+
+# SETUP: open phigs, remove existing archive file, create archive file
+i_open_phigs(NULL,PDEF_MEM_SIZE);
+unlink("archfile1");
+popen_ar_file(1,"archfile1");
+
+# case 1: no structures in CSS and archive
+
+im_confirm_allconfstrs(1,0,NULL,NULL,NULL,NULL,
+	"failed: conflicting structures != NULL when there are no strs in CSS and archive\n");
+
+# case 2: some structures in CSS, none in archive
+
+im_buildstr0();
+im_buildstr1();
+im_buildstr2();
+im_buildstr3();
+
+im_confirm_allconfstrs(1,0,NULL,NULL,NULL,NULL,
+	"failed: conflicting structures != NULL when there are strs in CSS only\n");
+
+# case 3: same structures in archive and in CSS, all in conflict
+
+par_all_structs(1);
+im_confirm_allconfstrs(1,4,0,1,2,3,
+	"failed: conflicting structures != (0,1,2,3) when strs 0,1,2&3 exist in both CSS and archive\n");
+
+# case 4: some structures in CSS, none in archive
+
+pdel_all_structs();
+im_confirm_allconfstrs(1,0,NULL,NULL,NULL,NULL,
+	"failed: conflicting structures != NULL when all archive strs has been removed\n");
+
+# case 5: some structures in CSS, some in archive, some conflict
+im_buildstr2_();
+im_buildstr3_();
+popen_struct(4);
+pclose_struct();
+im_confirm_allconfstrs(1,2,2,3,NULL,NULL,
+	"failed: conflicting structures != (2,3) when strs 2&3 exist in both CSS and archive\n");
+
+# CLEANUP: remove created archive files
+unlink("archfile1");
+
+tendtest();
+

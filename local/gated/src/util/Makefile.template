@@ -1,0 +1,507 @@
+#
+#	Makefile for gated
+#
+#	$Id: Makefile.template,v 1.37.2.1 1994/07/12 19:57:12 jch Exp $
+#
+# %(Copyright.header)
+#
+
+#  The name of this Makefile
+MAKEFILE=Makefile
+CONFIG=Config
+
+#  Directories
+DESTDIR=@(DESTDIR)
+BINDIR=@(BINDIR)
+SBINDIR=@(SBINDIR)
+SRCDIR=@(SRCDIR)
+SMANDIR=@(SRCDIR)/@(SMANDIR)
+MANDIR=@(MANDIR)
+MIBDIR=@(MIBDIR)
+UTILDIR=@(UTILDIR)
+COMPATDIR=@(SRCDIR)/@(COMPATDIR)
+OBJDIR=@(OBJDIR)
+
+#  Man stuff
+MANTYPE=@(MANTYPE)
+TROFF=ptroff
+LPR="| lpr"
+
+#  Program names
+GATED=@(GATED)
+GDC=@(GDC)
+RIPQUERY=@(RIPQUERY)
+OSPF_MONITOR=@(OSPF_MONITOR)
+
+#  Files
+PATH_CONFIG=@(_path_config)
+
+SIGNAL_H=@(SIGNAL_H)
+
+#  Programs we use
+AR=@(AR)
+AWK=@(AWK)
+CAT=@(CAT)
+CHGRP=@(CHGRP)
+CHMOD=@(CHMOD)
+DATE=@(DATE)
+TAGS=@(TAGS)
+TFLAGS=@(TFLAGS)
+HEAD=@(HEAD)
+INSTALL=@(INSTALL)
+INSTALLFLAGS=@(INSTALLFLAGS)
+LINK=@(LINK)
+MAKE=@(MAKE)
+MKDEP=${SRCDIR}/${UTILDIR}/@(MKDEP)
+MKDEP_BUILD=${SRCDIR}/${UTILDIR}/mkdep.build
+MV=@(MV)
+RANLIB=@(RANLIB)
+RM=@(RM)
+SED=@(SED)
+SIZE=@(SIZE)
+TEE=@(TEE)
+TOUCH=@(TOUCH)
+
+#  Stuff for gdc
+GDC_MODE=@(GDC_MODE)
+GDC_GROUP=@(GDC_GROUP)
+
+# Stuff for ospf_monitor
+OSPFM_MODE=@(OSPFM_MODE)
+OSPFM_USER=@(OSPFM_USER)
+
+@BEGIN:	PROTO_ISODE_SNMP
+ISODE_SNMP_INCLUDE=@(ISODE_SNMP_INCLUDE)
+ISODE_SNMPI=@(ISODE_SNMPI)
+ISODE_MOSY=@(ISODE_MOSY)
+SNMP_IFLAGS=-I${ISODE_SNMP_INCLUDE}
+@END:	PROTO_ISODE_SNMP
+@BEGIN:	NOT PROTO_ISODE_SNMP
+SNMP_IFLAGS=
+@END:	NOT PROTO_ISODE_SNMP
+
+CC=@(CC)
+CFLAGS=@(CFLAGS)
+CWFLAGS=@(CWFLAGS)
+
+LDFLAGS=@(LDFLAGS)
+LDOTHERS=@(LDOTHERS)
+
+LINT=@(LINT)
+LINTFLAGS=-hxz
+
+LEX=@(LEX)
+LFLAGS=@(LFLAGS)
+
+YACC=@(YACC)
+YFLAGS=@(YFLAGS)
+
+LIBGATED=libgated.a
+
+SIGCONV.AWK=${SRCDIR}/${UTILDIR}/sigconv.awk
+VERSION.AWK=${SRCDIR}/${UTILDIR}/version.awk
+CONFIG.SCRIPT=config_script
+IDPR_YY.SED=${SRCDIR}/idpr/parser/idpr_yy.sed
+CONFIG_SCRIPT=${UTILDIR}/config
+FILES=${SRCDIR}/${UTILDIR}/files
+TEMPLATE=${SRCDIR}/${UTILDIR}/@(TEMPLATE)
+@BEGIN:	LOCAL_VERSION
+LOCAL_VERSION=@(LOCAL_VERSION)
+@END:	LOCAL_VERSION
+
+IFLAGS=${SNMP_IFLAGS}
+
+.c.o:
+	@echo "Compiling:	$*.c"
+	@${CC} -c ${CFLAGS} ${CWFLAGS} ${IFLAGS} $*.c
+
+#
+#  The default is to build gated and ripquery
+#
+
+all::	make-start
+
+.BEGIN:	make-start
+.INIT:	make-start
+
+make-start:	true
+	@echo "Make started at `${DATE}` with:"
+	@echo "CC = ${CC}"
+	@echo "CFLAGS = ${CFLAGS}"
+	@echo "CWFLAGS = ${CWFLAGS}"
+	@echo "IFLAGS = ${IFLAGS}"
+
+.DONE:	make-end
+.END:	make-end
+
+make-end:	true
+	@echo "Make ended at `${DATE}`"
+
+true:;
+
+#
+#	Rebuild Makefile
+#
+
+all::	${MAKEFILE}
+
+.PRECIOUS:	${MAKEFILE} defines.h
+
+config defines.h ${MAKEFILE}:	${CONFIG} ${FILES} ${TEMPLATE}
+	@${MV} ${MAKEFILE} ${MAKEFILE}.bak
+	@cd ${SRCDIR}; ${CONFIG_SCRIPT} ${OBJDIR}/${CONFIG}
+	@${RM} -f ${MAKEFILE}.bak
+
+#	Rules for gated
+#	
+${GATED}: ${OBJS} ${LIBGATED}
+	@echo "Linking:	${GATED}"
+	@${CC} ${CFLAGS} ${CWFLAGS} ${OBJS} -o ${GATED} ${LDFLAGS} ${LIBGATED} ${LDOTHERS} \
+		&& ${SIZE} ${GATED}
+
+all::	${GATED}
+
+lint::
+	${LINT} ${LINTFLAGS} ${IFLAGS} ${SRCS} version.c |\
+		${SED} -e '/.*math.h.*/d' -e '/.*floatingpoint.h.*/d' -e '/trace.*used inconsistently.*/d' \
+		-e '/[sf]printf.*used inconsistently.*/d' -e '/.*warning: possible pointer alignment problem.*/d' \
+		| ${TEE} linterrs.${GATED}
+
+#
+#	This is the idpr specific parser
+#
+
+idpr_parser: idpr_lex.c idpr_parser.c
+
+idpr_lex.c: idpr_lex.l
+	@echo "Building:	idpr lex"
+	@${LEX} -t idpr_lex.l | ${SED} -f ${IDPR_YY.SED} > idpr_lex.c
+
+idpr_parser.c idpr_tokens.h: ${SRCDIR}/idpr/parser/idpr_parser.y
+	@echo "Building:	idpr_parser"
+	@$(YACC) -d ${SRCDIR}/idpr/parser/idpr_parser.y
+	@${SED} -f ${IDPR_YY.SED} < y.tab.c > idpr_parser.c
+	@${SED} -f ${IDPR_YY.SED} < y.tab.h > idpr_tokens.h
+	@${RM} -f y.tab.c y.tab.h
+
+clean::
+	-${RM} -f core core.${GATED} ${GATED} ${OBJS} linterrs.${GATED}
+
+cleanall::	clean
+
+
+install:: ${DESTDIR}${SBINDIR}/${GATED}
+
+${DESTDIR}${SBINDIR}/${GATED}:	${GATED}
+	${INSTALL} ${INSTALLFLAGS} ${GATED} ${DESTDIR}${SBINDIR}/${GATED}
+
+paths.h:	${CONFIG.SCRIPT} ${SRCDIR}/paths.h
+	@echo "Building:	paths list"
+	@./${CONFIG.SCRIPT} < ${SRCDIR}/paths.h > paths.h
+
+man::	${MANS}
+
+install-man::	inst-man ${MANS}
+	MANDIR=${MANDIR} ./inst-man -${MANTYPE} ${MANS}
+
+#
+#	Man pages
+#
+	
+all::	man
+
+clean::	clean-man
+
+clean-man:
+	-${RM} -f ${ALL_MANS} inst-man
+
+${ALL_MANS}:
+	@echo "Building:	$@"
+	@./${CONFIG.SCRIPT} < ${SMANDIR}/$@ | ${SED} s/%s/${GATED}/ > $@
+	
+inst-man:	${SRCDIR}/${UTILDIR}/inst-man.sh
+	@echo "Building:	inst-man script"
+	@./${CONFIG.SCRIPT} < ${SRCDIR}/${UTILDIR}/inst-man.sh > inst-man && ${CHMOD} +x inst-man
+
+print-man:	${ALL_MANS}
+	@for man in ${ALL_MANS}; do \
+		${TROFF} $${man} ${LPR} ; \
+	done
+
+@BEGIN:	NEED_SIGNAME
+#
+#  Build sys_signame[] if not available on this system.
+#
+
+signames.c:	${SIGCONV.AWK} ${SIGNAL_H}
+	@echo "Building:	signal name list"
+	@${AWK} -f ${SIGCONV.AWK} < ${SIGNAL_H} > signames.c
+
+clean::
+	-${RM} -f signames.c
+@END:	NEED_SIGNAME
+	
+#
+#	The parser is not normally rebuilt as not all systems will have
+#	yacc (bison) and lex (flex) available
+#
+
+parser:	parser.c lexer.c parse.c
+
+parser.c parser.h:	parser.y
+	@echo "Building:	parser"
+	@${RM} -f parser.c parser.h
+	@$(YACC) $(YFLAGS) parser.y
+	@${MV} y.tab.c parser.c
+	@${MV} y.tab.h parser.h
+
+parser.y:	${SRCDIR}/parser.y ${CONFIG.SCRIPT}
+	@echo "Configuring:	parser"
+	@${RM} -f parser.y
+	@./${CONFIG.SCRIPT} < ${SRCDIR}/parser.y > parser.y
+	
+lexer.c: lexer.l
+	@echo "Building:	lexical analyzer"
+	@${RM} -f lexer.c
+	@${LEX} ${LFLAGS} lexer.l
+	@${MV} lex.yy.c lexer.c
+
+clean::
+	-${RM} -f y.tab.* y.output
+
+cleanall::
+	-${RM} -f lexer.c parser.c parser.h
+
+#
+#  Build version ID from RCS info in file headers
+#
+
+version:	version.c
+
+version.c:	${SRCDIR}/VERSION version.ids
+	@echo 'Building:	version.c'
+	@DATE=`${DATE}` ; \
+		VERSION="`${CAT} ${SRCDIR}/VERSION`" ; \
+@BEGIN:	LOCAL_VERSION
+		VERSION="$${VERSION} ${LOCAL_VERSION}" ; \
+@END:	LOCAL_VERSION
+		echo '#include "include.h"' > version.c ; \
+		echo >> version.c ; \
+		echo 'const char *gated_version = "'$${VERSION}'";' >> version.c ; \
+		echo 'const char *build_date = "'$${DATE}'";' >> version.c ; \
+		echo >> version.c ; \
+		${CAT} version.c ; \
+		echo >> version.c ; \
+		echo 'const char *version_id = "@(#)${GATED} '$${VERSION}' '$${DATE}'";' >> version.c ; \
+		echo >> version.c ; \
+		${CAT} version.ids >> version.c
+
+version.ids:	${SRCS} ${HDRS}
+	@echo 'Updating:	version.ids with ${?}'
+	@${TOUCH} version.ids
+	@${AWK} -f ${VERSION.AWK} VERSION_IDS=version.ids version.ids ${?} >> version.ids.new
+	@${MV} version.ids.new version.ids
+
+clean::
+	-${RM} -f version.c version.ids version.ids.new
+	
+#
+#	Build the links
+#
+
+links:	cleanall
+	@${MV} defines.h defines.h.save
+	@${RM} -r -f *.[chlyo58] gated-mib.defs inst-man
+	@${MV} defines.h.save defines.h
+	@${LINK} ${LINKS} .
+
+@BEGIN:	NOT PROTO_RIP
+#
+#	RIP is not configured
+#
+${RIPQUERY}:	true
+
+@END:	NOT PROTO_RIP	
+@BEGIN:	PROTO_RIP
+#
+#  Build the ripquery program
+#
+
+${RIPQUERY}:	${R_OBJS} ${LIBGATED}
+	@echo 'Linking:	${RIPQUERY}'
+	@${CC} ${CFLAGS} ${CWFLAGS} ${IFLAGS} ${R_OBJS} -o ${RIPQUERY} ${LDFLAGS} ${LIBGATED} ${LDOTHERS} \
+		&& ${SIZE} ${RIPQUERY}
+
+all::	${RIPQUERY}
+	
+lint::
+	${LINT} ${LINTFLAGS} ${R_SRCS} | ${TEE} linterrs.${RIPQUERY}
+
+clean::
+	-${RM} -f core.${RIPQUERY} ${RIPQUERY} ${R_OBJS} linterrs.${RIPQUERY}
+
+install:: ${DESTDIR}${BINDIR}/${RIPQUERY}
+
+man::	${R_MANS}
+
+install-man::	inst-man ${R_MANS}
+	MANDIR=${MANDIR} ./inst-man -${MANTYPE} ${R_MANS}
+
+${DESTDIR}${BINDIR}/${RIPQUERY}:	${RIPQUERY}
+	${INSTALL} ${INSTALLFLAGS} ${RIPQUERY} ${DESTDIR}${BINDIR}/${RIPQUERY}
+
+@END:	PROTO_RIP
+@BEGIN:	NOT PROTO_OSPF
+#
+#	OSPF is not configured
+#
+${OSPF_MONITOR}:	true
+
+@END:	NOT PROTO_OSPF
+@BEGIN:	PROTO_OSPF
+#
+#	Build the OSPF monitor program
+#
+
+${OSPF_MONITOR}:	${O_OBJS} ${LIBGATED}
+	@echo 'Linking:	${OSPF_MONITOR}'
+	@${CC} ${CFLAGS} ${CWFLAGS} ${IFLAGS} ${O_OBJS} -o ${OSPF_MONITOR} ${LDFLAGS} ${LIBGATED} ${LDOTHERS} \
+		&& ${SIZE} ${OSPF_MONITOR}
+
+all::	${OSPF_MONITOR}
+
+lint::
+	${LINT} ${LINTFLAGS} ${O_SRCS} | ${TEE} linterrs.${OSPF_MONITOR}
+
+clean::
+	-${RM} -f core.${OSPF_MONITOR} ${OSPF_MONITOR} ${O_OBJS} linterrs.${OSPF_MONITOR}
+	
+install:: ${DESTDIR}${BINDIR}/${OSPF_MONITOR}
+
+man::	${O_MANS}
+
+install-man::	inst-man ${O_MANS}
+	MANDIR=${MANDIR} ./inst-man -${MANTYPE} ${O_MANS}
+
+${DESTDIR}${BINDIR}/${OSPF_MONITOR}:	${OSPF_MONITOR}
+	${INSTALL} ${INSTALLFLAGS} -o ${OSPFM_USER} -m ${OSPFM_MODE} ${OSPF_MONITOR} ${DESTDIR}${BINDIR}/${OSPF_MONITOR}
+
+@END:	PROTO_OSPF
+
+#
+#  Build the gdc program
+#
+
+${GDC}:	${G_OBJS} ${LIBGATED}
+	@echo 'Linking:	${GDC}'
+	@${CC} ${CFLAGS} ${CWFLAGS} ${IFLAGS} ${G_OBJS} -o ${GDC} ${LDFLAGS} ${LIBGATED} ${LDOTHERS} \
+		&& ${SIZE} ${GDC}
+
+all::	${GDC}
+	
+lint::
+	${LINT} ${LINTFLAGS} ${G_SRCS} | ${TEE} linterrs.${GDC}
+
+clean::
+	-${RM} -f core.${GDC} ${GDC} ${G_OBJS} linterrs.${GDC}
+
+install:: ${DESTDIR}${BINDIR}/${GDC}
+
+man::	${G_MANS}
+
+install-man::	inst-man ${G_MANS}
+	MANDIR=${MANDIR} ./inst-man -${MANTYPE} ${G_MANS}
+
+${DESTDIR}${BINDIR}/${GDC}:	${GDC}
+	-@${TOUCH} /tmp/$$ ; ${CHGRP} ${GDC_GROUP} /tmp/$$ ;\
+		if [ $$? -eq 0 ]; then \
+			MODES="-m ${GDC_MODE} -g ${GDC_GROUP}" ; \
+		else \
+			MODES= ; \
+		fi ; \
+		( set -x ; ${INSTALL} ${INSTALLFLAGS} $${MODES} ${GDC} ${DESTDIR}${BINDIR}/${GDC} ) ; \
+		${RM} -f /tmp/$$
+		
+
+#
+#	Build the emacs TAGS file
+#
+
+tags:	TAGS
+
+TAGS:	${SRCS} ${HDRS}
+	@echo "Building:	TAGS"
+	@${TAGS} ${TFLAGS} ${SRCS} ${HDRS}
+
+cleanall::
+	-${RM} -f TAGS
+	
+#
+#	Compatibility library
+#
+
+${LIBGATED}: ${C_OBJS}
+	${AR} rc ${@} ${?}
+	${RANLIB} ${@}
+#	${RM} -f ${OBJS}
+
+clean::
+	-${RM} -f ${LIBGATED} ${C_OBJS}
+
+@BEGIN:	PROTO_ISODE_SNMP
+#
+#	ISODE SNMP
+#
+
+gated-mib.defs:	${DEFS}
+	@echo "Building:	gated-mib.defs"
+	@${CAT} ${DEFS} > gated-mib.defs
+			
+gated-mib.c: gated-mib.defs
+	@echo "Building:	gated-mib.c"
+	@(ISODE_SNMP_DEFS_C)
+
+gated-mib.o: gated-mib.c
+	@echo "Compiling:	gated-mib.c"
+	@(ISODE_SNMP_C_O)
+
+clean::
+	-${RM} -f gated-mib.o
+
+cleanall::
+	-${RM} -f gated-mib.defs gated-mib.c
+
+@END:	PROTO_ISODE_SNMP
+@BEGIN:	NOT PROTO_ISODE_SNMP
+#
+#	ISODE SNMP is not configured
+#
+
+gated-mib.defs:	true
+
+@END:	NOT PROTO_ISODE_SNMP
+
+#
+#	Build dependency lists
+#
+
+depend:	${SRCS} ${HDRS} ${R_SRCS} ${C_SRCS} ${G_SRCS}
+	@echo "Building:	dependency list using ${MKDEP}"
+	@CC="${CC}" ${MKDEP} ${IFLAGS} ${SRCS} ${R_SRCS} ${O_SRCS} ${C_SRCS} ${G_SRCS}
+
+build_depend:
+	@echo "Building:	canned dependency list using ${MKDEP_BUILD}"
+	@CC="${CC}" ${MKDEP_BUILD} ${IFLAGS}
+
+#
+#	Print a message at the end
+#
+all::	make-end
+
+#
+# %(Copyright)
+#
+
+# DO NOT DELETE THIS LINE -- make depend uses it.
+
+

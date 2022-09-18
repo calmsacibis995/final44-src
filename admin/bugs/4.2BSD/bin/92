@@ -1,0 +1,84 @@
+Return-Path: <ihnp4!utcsri!larry@utecfa>
+Date: 2 Jul 85 19:34:37 CDT (Tue)
+From: ihnp4!utcsri!larry@utecfa (Larry Philps)
+Subject: chown(1) / chgrp(1) do not work on symbolic links
+Index: 	bin/chgrp.c 4.2BSD
+
+Description:
+	The chown system call does not follow symbolic links in
+	namei so that it is possible to change the owner and group
+	of the link itself and not just what it points to.  Also
+	chown changes both the owner and group.  Thus chown (1)
+	stat' the destination file in order to find its current group.
+	This value is then used in the call to chown (2).  A similar
+	situtation exists for chgrp it which is needs to know the current
+	owner of the file before calling chown (2).  However, both
+	chgrp and chown use the stat (2) system call, so that if you
+	try to chown/chgrp a symbolic link, the group/owner will also
+	be set to the group/owner of the file the link points to.
+Repeat-By:
+	Script started on Tue Jul  2 13:35:55 1985
+	# echo > junk
+	# chown 9998 junk
+	# chgrp 9999 junk
+	# ln -s junk symlink
+	# ls -lg symlink junk
+	-rw-r--r--  1 9998     9999            0 Jul  2 13:36 junk
+	lrwxr-xr-x  1 0        0               4 Jul  2 13:36 symlink@ -> junk
+	# chown root symlink
+	# ls -lg junk symlink
+	-rw-r--r--  1 9998     9999            0 Jul  2 13:36 junk
+	lrwxr-xr-x  1 0        9999            4 Jul  2 13:36 symlink@ -> junk
+			       ----
+	# rm symlink
+	# ln -s junk symlink
+	# ls -lg symlink junk
+	-rw-r--r--  1 9998     9999            0 Jul  2 13:36 junk
+	lrwxr-xr-x  1 0        0               4 Jul  2 13:36 symlink@ -> junk
+	# chgrp daemon symlink
+	# lg -lg junk symlink
+	-rw-r--r--  1 9998     9999            0 Jul  2 13:36 junk
+	lrwxr-xr-x  1 9998     1               4 Jul  2 13:37 symlink@ -> junk
+		      ----
+Fix:
+	Change the call to stat (2) in both chgrp.c and chown.c to be
+	a call to lstat (2).
+
+	*** /tmp/,RCSt1001285	Tue Jul  2 13:43:07 1985
+	--- chown.c	Tue Jul  2 11:29:46 1985
+	***************
+	*** 41,45
+	  cho:
+		for(c=2; c<argc; c++) {
+	! 		stat(argv[c], &stbuf);
+			if(chown(argv[c], uid, stbuf.st_gid) < 0 && !fflag) {
+				perror(argv[c]);
+
+	--- 45,49 -----
+	  cho:
+		for(c=2; c<argc; c++) {
+	! 		lstat(argv[c], &stbuf);
+			if(chown(argv[c], uid, stbuf.st_gid) < 0 && !fflag) {
+				perror(argv[c]);
+
+	*** /tmp/,RCSt1001291	Tue Jul  2 13:43:23 1985
+	--- chgrp.c	Tue Jul  2 11:32:33 1985
+	***************
+	*** 71,75
+	  ok:
+		for (c = 1; c < argc; c++) {
+	! 		if (stat(argv[c], &stbuf)) {
+				perror(argv[c]);
+				continue;
+
+	--- 72,76 -----
+	  ok:
+		for (c = 1; c < argc; c++) {
+	! 		if (lstat(argv[c], &stbuf)) {
+				perror(argv[c]);
+				continue;
+
+						Larry Philps
+						Engineering Computing Facility
+						University of Toronto
+		{linus,ihnp4,uw-beaver,floyd,decvax,utzoo}!utcsri!utecfa!larry

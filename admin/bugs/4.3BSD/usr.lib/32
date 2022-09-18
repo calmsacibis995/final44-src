@@ -1,0 +1,78 @@
+From gregc@degas.berkeley.edu  Thu Nov 20 21:43:53 1986
+Date: Thu, 20 Nov 86 21:42:58 PST
+From: gregc@degas.berkeley.edu (Greg Couch)
+Subject: MX support for sendmail uses the wrong hostname to prevent looping
+Index: 	usr.lib/sendmail/src/deliver.c 4.3BSD
+
+Description:
+	The MX support suppresses loops by stripping all MX records of
+	lower or equal preference than the current host; the current host
+	name is found in the w macro.  If the w macro isn't set to the
+	host's domain name then the loop suppression fails.
+
+Repeat-By:
+
+	Here are the sendmail.cf lines that contributed to the problem:
+
+		Dwcgl
+		Dj$w.ucsf.edu
+
+	Here are the nameserver records that contributed to the problem:
+
+		cgl		in	a	192.5.49.1
+				in	wks	192.5.49.1 tcp smtp
+				in	mx	0	cgl
+
+		socrates	in	a	192.5.49.7
+				in	wks	192.5.49.7 tcp smtp
+				in	mx	0	socrates
+				in	mx	10	cgl
+
+	With the above setup, socrates.ucsf.edu being down, and a .forward
+	file on cgl which forwards mail to socrates, the following will
+	happen:
+
+		From postmaster@cgl.ucsf.edu Thu Nov  6 09:36:42 1986
+		Received: from cgl.ucsf.edu by cardio.ucsf.edu (4.12/GSC4.0)
+			id AA16679; Thu, 6 Nov 86 09:36:39 pst
+		Received: by cgl.ucsf.edu (5.54/GSC4.0)
+			id AA04035; Thu, 6 Nov 86 09:32:36 PST
+		Date: Thu, 6 Nov 86 09:32:36 PST
+		From: postmaster@cgl.ucsf.edu (Mail Delivery Subsystem)
+		Subject: Returned mail: Service unavailable
+		Message-Id: <8611061732.AA04035@cgl.ucsf.edu>
+		To: <steve@cardio.ucsf.edu>
+		Status: RO
+		
+		   ----- Transcript of session follows -----
+		>>> HELO cgl.ucsf.edu
+		<<< 553 cgl.ucsf.edu I refuse to talk to myself
+		554 tef@socrates... Service unavailable: Bad file number
+		
+		   ----- Unsent message follows -----
+
+
+Fix:
+	The one character fix is to use the j macro, "the official domain
+	name for this site," as the host name to prevent MX looping instead
+	of the w macro.
+
+*** deliver.c.old	Thu Nov 20 11:11:33 1986
+--- deliver.c	Thu Nov 20 11:11:50 1986
+***************
+*** 362,368 ****
+  	if (clever)
+  	{
+  # ifdef MXDOMAIN
+! 		expand("\001w", buf, &buf[sizeof buf - 1], e);
+  		if ((nmx = getmxrr(host, mxhosts, MAXMXHOSTS, buf)) < 0)
+  		{
+  			/*
+--- 362,368 ----
+  	if (clever)
+  	{
+  # ifdef MXDOMAIN
+! 		expand("\001j", buf, &buf[sizeof buf - 1], e);
+  		if ((nmx = getmxrr(host, mxhosts, MAXMXHOSTS, buf)) < 0)
+  		{
+  			/*

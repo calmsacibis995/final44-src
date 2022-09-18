@@ -1,0 +1,48 @@
+From bostic@okeeffe.Berkeley.EDU  Wed Mar 25 09:32:53 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA16488; Wed, 25 Mar 87 09:32:53 PST
+Received: by ucbvax.Berkeley.EDU (5.57/1.23)
+	id AA28728; Wed, 25 Mar 87 09:30:46 PST
+Received: by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA16482; Wed, 25 Mar 87 09:31:57 PST
+Date: Wed, 25 Mar 87 09:31:57 PST
+Message-Id: <8703251731.AA16482@okeeffe.Berkeley.EDU>
+Path: seismo!lll-lcc!mordor!styx!ames!ptsfa!ihnp4!inuxc!pur-ee!uiucdcs!uiucdcsb!richards
+From: richards@b.cs.uiuc.edu
+Newsgroups: comp.unix.wizards
+Subject: ProNET network interface on uVAXen
+Index: sys/vaxif 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+I was bitten by this too -- it turns out that the driver is a little sloppy
+in not masking off extended address bits for DMA.  The UNIBUS proNET card
+pays attention to only 18 address bits, but the Q-bus card is sensitive to
+22 address bits.  The integer returned by if_ubainit() in the ifrw_info field
+actually contains several fields, which have non-zero bits in the positions
+that get pushed into the extended bus addr register of the Q-bus card, giving
+bogus DMA addresses. The whole address should be masked to 18 bits for both
+UNIBUS and Q-bus systems.  (At least Ultrix 2.1 worked that way -- have later
+BSD derivitives used the full 22 bit Q-bus address space?).
+
+In sys/vaxif/if_vv.c, change all references of the form:
+
+	ubainfo = vs->vs_ifuba.ifu_r.ifrw_info;
+and
+	ubainfo = vs->vs_ifuba.ifu_w.ifrw_info;
+
+to something like
+
+	ubainfo = UBA_ADDRMASK(vs->vs_ifuba.ifu_r.ifrw_info);
+or
+	ubainfo = UBA_ADDRMASK(vs->vs_ifuba.ifu_w.ifrw_info);
+
+and define this in the top of the file:
+	#define UBA_ADDRMASK(i) UBAI_ADDR(i)
+
+(or if your system doesn't have UBAI_ADDR() in sys/vaxuba/ubavar.h, use this)
+	#define UBA_ADDRMASK(i) ((int)(i) & 0x3ffff)
+
+Paul Richards	University of Illinois at Urbana-Champaign, Dept of Comp Sci
+	UUCP:	{pur-ee,convex,inhp4}!uiucdcs!richards
+	ARPA:	richards@b.cs.uiuc.edu

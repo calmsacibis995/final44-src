@@ -1,0 +1,114 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Tue, 27 Mar 84 02:14:49 pst
+Subject: Ghastly f77 bug in common subexpression elimination -- IMPORTANT
+Index: usr.bin/f77/src/f77pass1/optcse.c 4.2BSD
+
+Description:
+	F77 considers two variables from the same COMMON block to be
+	the same variable for the purposes of common subexpression
+	elimination.  This is almost always wrong.
+
+Repeat-By:
+	Copy the following program into a file com.f.  Compile it with
+	the optimizer turned on.
+
+	----------------------------------------------------------------
+		program com
+
+		common /x/ a, b, c, d
+		integer result, a, b, c, d
+
+		a = 2
+		b = 3
+		c = 4
+		d = 5
+
+		result = a * b + c * d
+
+		print *, result
+
+		stop
+		end
+	----------------------------------------------------------------
+
+	The expected result of running the program is '26'.  What the
+	program actually prints is '12'.  To see why, here is the code
+	produced (comments and other prettification added):
+
+	----------------------------------------------------------------
+		.globl	_MAIN_
+		.set	LF1,4
+	_MAIN_:
+		.word	LWM1
+		subl2	$LF1,sp
+		jmp	L12
+	L13:
+		movl	$2,_x_
+		movl	$3,_x_+4
+		movl	$4,_x_+8
+		movl	$5,_x_+12
+		mull3	_x_+4,_x_,-4(fp)
+		addl3	-4(fp),-4(fp),{result}	# Mistake!
+		pushal	v.3
+		calls	$1,_s_wsle
+		pushl	$4
+		pushab	{result}
+		pushal	{1}
+		pushal	{3}
+		calls	$4,_do_lio
+		calls	$0,_e_wsle
+		pushl	$0
+		pushal	{00,00}
+		calls	$2,_s_stop
+		ret
+		.align	1
+	_com_:
+		.word	LWM1
+	L12:
+		moval	v.1,r11
+		jmp	L13
+	----------------------------------------------------------------
+
+	The two multiplies were treated as common subexpressions, and
+	the same temporary [-4(fp)] was used to store both results.
+
+Fix:
+	I agonized over this one.  Since this is a very urgent problem
+	I have decided to can my earlier inconclusive changes and make
+	a single, one-line change that has the effect of making COMMON
+	variables pretty much ineligible for CSE (actually it gives
+	them the status of arrays, which is convenient since COMMON
+	blocks look just like arrays to the compiler).  This is fast
+	and has the advantage of introducing few new bugs.  The change
+	is to optcse.c in routine scantree():
+
+	----------------------------------------------------------------
+	***************
+	*** 564,570
+					ap = (Addrp) p->exprblock.leftp;
+					idp = findid(ap);
+					killdepnodes(idp);
+	! 				if( ! ap->isarray ) {
+						if(rnode->is_dead)idp->assgnval=idp->initval;
+						else idp->assgnval = rnode;
+					}
+
+	--- 584,590 -----
+					ap = (Addrp) p->exprblock.leftp;
+					idp = findid(ap);
+					killdepnodes(idp);
+	! 				if( ! (ap->isarray || ap->vstg == STGCOMMON) ) {
+						if(rnode->is_dead)idp->assgnval=idp->initval;
+						else idp->assgnval = rnode;
+					}
+	----------------------------------------------------------------
+
+	This bug is responsible for many seemingly unrelated errors,
+	such as the previously reported 'exponentiation' error where
+	'x1 ** alpha + x2 ** alpha + x3 ** alpha' always turned out
+	to be '3 * x1 ** alpha'.  You should fix this as soon as you
+	can...
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016  sdcsvax!sdchema!donn@nosc.ARPA

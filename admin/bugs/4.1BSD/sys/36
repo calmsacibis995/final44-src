@@ -1,0 +1,90 @@
+Date:     3 Oct 83 (Monday) 02:45 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  Exceeding file size limits doesn't work as advertised
+To: 4bsd-bugs@BERKELEY
+
+Index:	sys/sys/sys_generic.c 4.1BSD  Fix
+Description:
+	I claim that exceeding file size limits does not work as
+	advertised.  According to the man page for getrlimit(2), when
+	you hit a soft limit you should get a signal (in this case
+	SIGXFSZ) and when you hit the hard limit things stop working.
+
+	Here is what the man page for getrlimit(2) has to say about it:
+	     "A resource limit is specified as a soft limit and a hard
+	     limit.  When a soft limit is exceeded a process may receive
+	     a signal (for example, if the cpu time is exceeded), but it
+	     will be allowed to continue execution until it reaches the
+	     hard limit (or modifies its resource limit)....
+	     A file i/o operation which would create a file which is too
+	     large will cause a signal SIGXFSZ to be generated, this nor-
+	     mally terminates the process, but may be caught."
+
+ 	The way I read this is that the write should succeed if the
+	"soft" limit is exceeded, so if you ignore SIGXFSZ you effectively
+	ignore the soft limit. However the write fails (with the wrong
+	error code, but that's another bug report).
+
+	The man page for write(2) is no help, here's what it says about it:
+	     "[EFBIG]       An attempt was made to write a file that
+			    exceeds the process's file size limit or the
+			    maximum file size."
+	It doesn't specify "soft" or "hard" limit. I, of course, understood
+	"hard" limit.
+Repeat-By:
+	Read the man page for getrlimit(2) and become confused about
+	whether or not write()s will succeed after you hit the soft
+	file limit. Write a program that expects that when you ignore
+	SIGXFSZ, the "soft" limit will be ignored. Set your "soft"
+	filesize limit to something small, and run the program. Watch
+	in amazement as the program runs to completion, but the file
+	it produces is incomplete. 
+	E.g. compile and run this program and watch it fail:
+
+	#include
+	#include <resource.h>
+	#include <stdio.h>
+	#include <signal.h>
+	main() {
+		struct rlimit lims; int fd, rc;
+		signal(SIGXFSZ, SIG_IGN);
+		lims.rlim_cur = 0;
+		lims.rlim_max = RLIM_INFINITY;
+		setrlimit(RLIMIT_FSIZE, &lims);
+		fd = creat("/tmp/fsizetest", 0666);
+		rc = write(fd, "This will not work\n", 19);
+		if (rc < 0) perror("write");
+	}
+Fix:
+	Either make the man page for getrlimit clearer or:
+	change the rwip() routine to do SIGXFSZ when you write
+	to a file which is larger than the "soft" limit, but
+	otherwise allows the write, unless the "hard" limit
+	is also exceeded, in which case abort with errno EFBIG.
+	(NOTE: this fix also includes EMFILE-->EFBIG fix)
+	*** sys_generic.c.ucb	Thu Sep 29 00:24:12 1983
+	--- sys_generic.c	Thu Sep 29 00:39:44 1983
+	***************
+	*** 237,243
+		    uio->uio_offset + uio->uio_resid >
+		      u.u_rlimit[RLIMIT_FSIZE].rlim_cur) {
+			psignal(u.u_procp, SIGXFSZ);
+	! 		return (EMFILE);
+		}
+		if (type != IFBLK) {
+			dev = ip->i_dev;
+
+	--- 237,246 -----
+		    uio->uio_offset + uio->uio_resid >
+		      u.u_rlimit[RLIMIT_FSIZE].rlim_cur) {
+			psignal(u.u_procp, SIGXFSZ);
+	! 		if (uio->uio_offset + uio->uio_resid >
+	! 	            u.u_rlimit[RLIMIT_FSIZE].rlim_max)
+	! 			return (EFBIG);
+	! 		}
+		}
+		if (type != IFBLK) {
+			dev = ip->i_dev;
+	====END OF FIX====
+

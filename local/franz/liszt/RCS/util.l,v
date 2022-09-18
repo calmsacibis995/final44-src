@@ -1,0 +1,1161 @@
+head     1.15;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.15
+date     87.12.15.17.09.21;  author sklower;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     83.08.28.17.13.11;  author layer;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     83.08.22.22.57.17;  author layer;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     83.08.22.13.48.25;  author layer;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.08.17.00.09.26;  author layer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.08.14.01.49.40;  author layer;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.08.12.02.49.05;  author layer;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.08.04.01.41.27;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.06.30.18.52.48;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.04.08.18.44.12;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.04.06.16.41.37;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.04.06.15.23.46;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.03.23.20.49.42;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.20.14.04.38;  author jkf;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.17.30;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@random utilities
+@
+
+
+1.15
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file util
+   "$Header: /b/users/housel/lisp/liszt/RCS/util.l,v 1.4 86/12/08 09:29:34 housel Exp $")
+
+;;; ----	u t i l			general utility functions
+;;;
+;;;				-[Tue Aug 16 17:17:32 1983 by layer]-
+
+
+;--- d-handlecc :: handle g-cc
+; at this point the Z condition code has been set up and if g-cc is
+; non nil, we must jump on condition to the label given in g-cc
+;
+(defun d-handlecc nil
+   (if (car g-cc)
+       then (e-gotot (car g-cc))
+    elseif (cdr g-cc)
+       then (e-gotonil (cdr g-cc))))
+
+;--- d-invert :: handle inverted condition codes
+; this routine is called if a result has just be computed which alters
+; the condition codes such that Z=1 if the result is t, and Z=0 if the
+; result is nil (this is the reverse of the usual sense).  The purpose
+; of this routine is to handle g-cc and g-loc.  That is if g-loc is 
+; specified, we must convert the value of the Z bit of the condition 
+; code to t or nil and store that in g-loc.  After handling g-loc we
+; must handle g-cc, that is if the part of g-cc is non nil which matches
+; the inverse of the current condition code, we must jump to that.
+;
+(defun d-invert nil
+  (if (null g-loc) 
+      then (if (car g-cc) then (e-gotonil (car g-cc))
+	    elseif (cdr g-cc) then  (e-gotot (cdr g-cc)))
+      else (let ((lab1 (d-genlab))
+		 (lab2 (if (cdr g-cc) thenret else (d-genlab))))
+		(e-gotonil lab1)
+		; Z=1, but remember that this implies nil due to inversion
+		(d-move 'Nil g-loc)
+		(e-goto lab2)
+		(e-label lab1)
+		; Z=0, which means t
+		(d-move 'T g-loc)
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(if (null (cdr g-cc)) then (e-label lab2)))))
+			
+;--- d-noninvert :: handle g-cc and g-loc assuming cc non inverted
+; 
+; like d-invert except Z=0 implies nil, and Z=1 implies t
+;
+(defun d-noninvert nil
+  (if (null g-loc) 
+      then (if (car g-cc) then (e-gotot (car g-cc))
+	    elseif (cdr g-cc) then  (e-gotonil (cdr g-cc)))
+      else (let ((lab1 (d-genlab))
+		 (lab2 (if (cdr g-cc) thenret else (d-genlab))))
+		(e-gotot lab1)
+		; Z=0, this implies nil
+		(d-move 'Nil g-loc)
+		(e-goto lab2)
+		(e-label lab1)
+		; Z=1, which means t
+		(d-move 'T g-loc)
+		(if (car g-cc) then (e-goto (car g-cc)))
+		(if (null (cdr g-cc)) then (e-label lab2)))))
+
+;--- d-macroexpand :: macro expand a form as much as possible
+;
+; only macro expands the top level though.
+(defun d-macroexpand (i)
+   (prog (first type)
+      loop
+      (if (and (dtpr i) (symbolp (setq first (car i))))
+	 then (if (eq 'macro (setq type (d-functyp first 'macro-ok)))
+		 then (setq i (apply first i))
+		      (go loop)
+	       elseif (eq 'cmacro type)
+		 then (setq i (apply (get first 'cmacro) i))
+		      (go loop)))
+      (return i)))
+
+;--- d-fullmacroexpand :: macro expand down all levels
+; this is not always possible to due since it is not always clear
+; if a function is a lambda or nlambda, and there are lots of special
+; forms.  This is just a first shot at such a function, this should
+; be improved upon.
+;
+(defun d-fullmacroexpand (form)
+   (if (not (dtpr form))
+       then form
+       else (setq form (d-macroexpand form))	; do one level
+            (if (and (dtpr form) (symbolp (car form)))
+		then (let ((func (getd (car form))))
+			  (if (or (and (bcdp func)
+				       (eq 'lambda (getdisc func)))
+				  (and (dtpr func)
+				       (memq (car func) '(lambda lexpr)))
+				  (memq (car form) '(or and)))
+			      then `(,(car form)
+				      ,@@(mapcar 'd-fullmacroexpand
+						(cdr form)))
+			    elseif (eq (car form) 'setq)
+			      then (d-setqexpand form)
+			    else form))
+		else form)))
+
+;--- d-setqexpand :: macro expand a setq statemant
+; a setq is unusual in that alternate values are macroexpanded.
+;
+(defun d-setqexpand (form)
+   (if (oddp (length (cdr form)))
+       then (comp-err "wrong number of args to setq " form)
+       else (do ((xx (reverse (cdr form)) (cddr xx))
+		 (res))
+		((null xx) (cons 'setq res))
+		(setq res `(,(cadr xx)
+			     ,(d-fullmacroexpand (car xx))
+			     ,@@res)))))
+   
+;--- d-typesimp ::  determine the type of the argument 
+;
+#+(or for-vax for-tahoe)
+(defun d-typesimp (arg val)
+  (let ((argloc (d-simple arg)))
+	(if (null argloc)
+	    then (let ((g-loc 'reg)
+		       g-cc g-ret)
+		     (d-exp arg))
+		 (setq argloc 'reg))
+	#+for-vax (e-write4 'ashl '$-9 (e-cvt argloc) 'r0)
+	#+for-tahoe (e-write4 'shar '$9 (e-cvt argloc) 'r0)
+	(e-write3 'cmpb '"_typetable+1[r0]" val)
+	(d-invert)))
+
+#+for-68k
+(defun d-typesimp (arg val)
+   (let ((argloc (d-simple arg)))
+       (if (null argloc)
+	   then (let ((g-loc 'reg)
+		      g-cc g-ret)
+		    (d-exp arg))
+		(setq argloc 'reg)
+	   else (e-move (e-cvt argloc) 'd0))
+       (e-sub '#.nil-reg 'd0)
+       (e-write3 'moveq '($ 9) 'd1)
+       (e-write3 'asrl 'd1 'd0)
+       (e-write3 'lea '"_typetable+1" 'a5)
+       (e-write3 'cmpb val '(% 0 a5 d0))
+       (d-invert)))
+
+;--- d-typecmplx  :: determine if arg has one of many types
+;	- arg : lcode argument to be evaluated and checked
+;	- vals : fixnum with a bit in position n if we are to check type n
+;
+#+(or for-vax for-tahoe)
+(defun d-typecmplx (arg vals)
+  (let ((argloc (d-simple arg))
+	(reg))
+       (if (null argloc) then (let ((g-loc 'reg)
+				    g-cc g-ret)
+				   (d-exp arg))
+			      (setq argloc 'reg))
+       (setq reg 'r0)
+       #+for-vax (e-write4 'ashl '$-9 (e-cvt argloc) reg)
+       #+for-tahoe (e-write4 'shar '$9 (e-cvt argloc) reg)
+       (e-write3 'cvtbl (concat "_typetable+1[" reg "]") reg)
+       (e-write4 #+for-vax 'ashl #+for-tahoe 'shal reg '$1 reg)
+       (e-write3 'bitw vals reg)
+       (d-noninvert)))
+
+#+for-68k
+(defun d-typecmplx (arg vals)
+   (let ((argloc (d-simple arg))
+	 (l1 (d-genlab))
+	 (l2 (d-genlab)))
+       (makecomment '(d-typecmplx: type check))
+       (if (null argloc)
+	   then (let ((g-loc 'reg)
+		      g-cc g-ret)
+		    (d-exp arg))
+		(setq argloc 'reg)
+	   else (e-move (e-cvt argloc) 'd0))
+       (e-sub '#.nil-reg 'd0)
+       (e-write3 'moveq '($ 9) 'd1)
+       (e-write3 'asrl 'd1 'd0)
+       (e-write3 'lea '"_typetable+1" 'a5)
+       (e-add 'd0 'a5)
+       (e-write3 'movb '(0 a5) 'd0)
+       (e-write2 'extw 'd0)
+       (e-write2 'extl 'd0)
+       (e-write3 'moveq '($ 1) 'd1)
+       (e-write3 'asll 'd0 'd1)
+       (e-move 'd1 'd0)
+       (e-write3 'andw vals 'd0)
+       (d-noninvert)
+       (makecomment '(d-typecmplx: end))))
+
+;---- register handling routines.
+
+;--- d-allocreg :: allocate a register 
+;  name - the name of the register to allocate or nil if we should
+;	  allocate the least recently used.
+;
+(defun d-allocreg (name)
+  (if name 
+      then (let ((av (assoc name g-reguse)))
+		(if av then (rplaca (cdr av) (1+ (cadr av)))) ; inc used count
+		name)
+      else ; find smallest used count
+	   (do ((small (car g-reguse))
+		(smc (cadar g-reguse))
+		(lis (cdr g-reguse) (cdr lis)))
+	       ((null lis)
+		(rplaca (cdr small) (1+ smc))
+		(car small))
+	       (if (< (cadar lis) smc)
+		   then (setq small (car lis)
+			      smc   (cadr small))))))
+
+
+;--- d-bestreg :: determine the register which is closest to what we have
+;  name - name of variable whose subcontents we want
+;  pat  - list of d's and a's which tell which part we want
+;
+(defun d-bestreg (name pat)
+  (do ((ll g-reguse (cdr ll))
+       (val)
+       (best)
+       (tmp)
+       (bestv -1))
+      ((null ll)
+       (if best
+	   then (rplaca (cdr best) (1+ (cadr best)))
+		(list (car best)
+		      (if (> bestv 0) 
+			  then (rplacd (nthcdr (1- bestv)
+					       (setq tmp
+						     (copy pat)))
+				       nil)
+			       tmp
+			  else nil)
+		      (nthcdr bestv pat))))
+      (if (and (setq val (cddar ll))
+	       (eq name (car val)))
+	  then (if (> (setq tmp (d-matchcnt pat (cdr val)))
+		      bestv)
+		   then (setq bestv tmp
+			      best  (car ll))))))
+
+;--- d-matchcnt :: determine how many parts of a pattern match
+; want - pattern we want to achieve
+; have - pattern whose value exists in a register
+; 
+; we return a count of the number of parts of the pattern match.
+; If this pattern will be any help at all, we return a value from 
+; 0 to the length of the pattern.
+; If this pattern will not work at all, we return a number smaller
+; than -1.  
+; For `have' to be useful for `want', `have' must be a substring of 
+; `want'.  If it is a substring, we return the length of `have'.
+; 
+(defun d-matchcnt (want have)
+  (let ((length 0))
+       (if (do ((hh have (cdr hh))
+		(ww want (cdr ww)))
+	       ((null hh) t)
+	       (if (or (null ww) (not (eq (car ww) (car hh))))
+		   then (return nil)
+		   else (incr length)))
+	   then  length
+	   else  -2)))
+
+;--- d-clearreg :: clear all values in registers or just one
+; if no args are given, clear all registers.
+; if an arg is given, clear that register
+;
+(defun d-clearreg n
+  (cond ((zerop n) 
+	 (mapc '(lambda (x) (rplaca (cdr x) 0)
+		     (rplacd (cdr x) nil))
+	       g-reguse))
+	(t (let ((av (assoc (arg 1) g-reguse)))
+		(if av
+		   then
+			#+for-68k (d-regused (car av))
+			(rplaca (cdr av) 0)
+			(rplacd (cdr av) nil)
+		   else nil)))))
+
+;--- d-clearuse :: clear all register which reference a given variable
+;
+(defun d-clearuse (varib)
+  (mapc '(lambda (x)
+		 (if (eq (caddr x) varib) then (rplacd (cdr x) nil)))
+	g-reguse))
+
+;--- d-inreg :: declare that a value is in a register
+; name - register name
+; value - value in a register
+;
+(defun d-inreg (name value)
+  (let ((av (assoc name g-reguse)))
+       (if av then (rplacd (cdr av) value))
+       name))
+
+(defun e-setup-np-lbot nil
+   (e-move '#.np-reg '#.np-sym)
+   (e-move '#.lbot-reg '#.lbot-sym))
+
+;---------------MC68000 only routines
+#+for-68k
+(progn 'compile
+
+;--- d-regtype :: find out what type of register the operand goes
+;		  in.
+; eiadr - an EIADR
+;
+(defun d-regtype (eiadr)
+   (if (symbolp eiadr)
+       then (if (memq eiadr '(d0 d1 d2 d3 d4 d5 d6 d7 reg)) then 'd
+	     elseif (memq eiadr '(a0 a1 a2 a3 a4 a5 a6 a7 sp areg)) then 'a)
+    elseif (or (eq '\# (car eiadr))
+	       (eq '$ (car eiadr))
+	       (and (eq '* (car eiadr))
+		    (eq '\# (cadr eiadr))))
+       then 'd
+       else 'a))
+
+;--- d-regused :: declare that a reg is used in a function
+;	regname - name of the register that is going to be used
+;		  (ie, 'd0 'a2...)
+;
+(defun d-regused (regname)
+   (let ((regnum (diff (cadr (exploden regname)) 48))
+	 (regtype (car (explode regname))))
+       (if (memq regname '(a0 a1 d0 d1))
+	   thenret
+	elseif (equal 'd regtype)
+	   then (rplacx regnum g-regmaskvec t) regname
+	   else (rplacx (plus regnum 8) g-regmaskvec t) regname)))
+
+;--- d-makemask :: make register mask for moveml instr
+;
+(defun d-makemask ()
+   (do ((ii 0 (1+ ii))
+	(mask 0))
+       ((greaterp ii 15) mask)
+       (if (cxr ii g-regmaskvec)
+	   then (setq mask (plus mask (expt 2 ii))))))
+
+;--- init-regmaskvec :: initalize hunk structure to all default
+;			save mask.
+;
+; nil means don't save it, and t means save the register upon function entry.
+; order in vector: d0 .. d7, a0 .. a7.
+; d3 : lbot (if $global-reg$ is t then save)
+; d7 : _nilatom
+; a2 : _np
+; a3 : literal table ptr
+; a4 : old _lbot (if $global-reg$ is t don't save)
+; a5 : intermediate address calc
+;
+(defun init-regmaskvec ()
+   (setq g-regmaskvec
+	 (makhunk
+	     (if $global-reg$
+		 then (quote (nil nil nil t   nil nil nil t
+			      nil nil t   t   t   t   nil nil))
+		 else (quote (nil nil nil nil nil nil nil t
+			      nil nil t   t   t   t   nil nil))))))
+
+;--- Cstackspace :: calc local space on C stack
+; space = 4 * (no. of register variables saved on stack)
+;
+(defun Cstackspace ()
+   (do ((ii 0 (1+ ii))
+	(retval 0))
+       ((greaterp ii 15) (* 4 retval))
+       (if (cxr ii g-regmaskvec) then (setq retval (1+ retval)))))
+
+;--- d-alloc-register :: allocate a register
+;  type - type of register (a or d)
+;  name - the name of the register to allocate or nil if we should
+;	  allocate the least recently used.
+;
+(defun d-alloc-register (type name)
+   (if name 
+       then (let ((av (assoc name g-reguse)))
+		(d-regused name)
+		(if av then (rplaca (cdr av) (1+ (cadr av)))) ; inc used count
+		name)
+       else ; find smallest used count
+	    (let ((reguse))
+		(do ((cur g-reguse (cdr cur)))
+		    ((null cur))
+		    (if (eq type (car (explode (caar cur))))
+			then (setq reguse (cons (car cur) reguse))))
+		(do ((small (car reguse))
+		     (smc (cadar reguse))
+		     (lis (cdr reguse) (cdr lis)))
+		    ((null lis)
+		     (rplaca (cdr small) (1+ smc))
+		     (d-regused (car small))
+		     (car small))
+		    (if (< (cadar lis) smc)
+			then (setq small (car lis)
+				   smc   (cadr small)))))))
+
+); end 68000 only routines
+@
+
+
+1.14
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.13 83/08/22 22:57:17 layer Exp $")
+d121 1
+a121 1
+#+for-vax
+d129 2
+a130 1
+	(e-write4 'ashl '$-9 (e-cvt argloc) 'r0)
+d154 1
+a154 1
+#+for-vax
+d163 2
+a164 1
+       (e-write4 'ashl '$-9 (e-cvt argloc) reg)
+d166 1
+a166 1
+       (e-write4 'ashl reg '$1 reg)
+@
+
+
+1.13
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.12 83/08/22 13:48:25 layer Exp $")
+a13 1
+;.. cc-arg, cc-cxxr, cc-quote, cc-setq, d-exp, d-supercxr
+a29 1
+;.. cc-eq, d-typesimp
+a49 1
+;.. d-typecmplx
+a68 1
+;.. d-fullmacroexpand, d-mapconvert, liszt-form
+a86 1
+;.. d-fullmacroexpand, d-setqexpand, liszt-form
+a108 1
+;.. d-fullmacroexpand
+a120 1
+;.. cc-bcdp, cc-bigp, cc-dtpr, cc-floatp, cc-stringp, cc-symbolp
+a152 1
+;.. cc-atom, cc-fixp, cc-numberp
+a200 1
+;.. cc-cxxr
+a221 1
+;.. cc-cxxr, d-loc, d-rsimple
+a258 1
+;.. d-bestreg
+a273 4
+;.. c-*catch, c-cond, c-cons, c-do, c-errset, c-get, c-lambexp
+;.. c-list, c-prog, c-rplaca, c-rplacd, c-setarg, cc-and, cc-arg
+;.. cc-equal, cc-memq, cc-or, d-callbig, d-dodef, d-fixnumbox
+;.. d-fixop, d-lambbody, d-structgen, d-supercxr, d-superrplacx
+a288 1
+;.. cc-setq
+a297 1
+;.. cc-cxxr
+@
+
+
+1.12
+log
+@always save a2 (and d3 if $global-reg$ is t)
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.11 83/08/17 00:09:26 layer Exp $")
+d148 2
+a149 2
+	   else (e-write3 'movl (e-cvt argloc) 'd0))
+       (e-write3 'subl '#.nil-reg 'd0)
+d187 2
+a188 2
+	   else (e-write3 'movl (e-cvt argloc) 'd0))
+       (e-write3 'subl '#.nil-reg 'd0)
+d192 1
+a192 1
+       (e-write3 'addl 'd0 'a5)
+d198 1
+a198 1
+       (e-write3 'movl 'd1 'd0)
+d321 2
+a322 2
+   (e-write3 'movl '#.np-reg '#.np-sym)
+   (e-write3 'movl '#.lbot-reg '#.lbot-sym))
+@
+
+
+1.11
+log
+@minor asthetic change
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.10 83/08/14 01:49:40 layer Exp $")
+d370 1
+a370 1
+; d6 : intermediate address calc (only saved if used)
+d372 1
+a372 1
+; a2 : _np (if $global-reg$ is t don't save)
+d381 2
+a382 2
+		 then (quote (nil nil nil nil nil nil nil t
+			      nil nil nil t   t   t   nil nil))
+@
+
+
+1.10
+log
+@minor mods
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.9 83/08/12 02:49:05 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 21:47:24 1983 by layer]-
+d238 12
+a249 10
+      ((null ll) (if best then (rplaca (cdr best) (1+ (cadr best)))
+			       (list (car best)
+				     (if (> bestv 0) 
+					 then (rplacd (nthcdr (1- bestv) 
+							      (setq tmp 
+								    (copy pat)))
+						      nil)
+					      tmp
+					 else nil)
+				     (nthcdr bestv pat))))
+a280 2
+
+
+a301 1
+
+a308 1
+
+@
+
+
+1.9
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.8 83/08/04 01:41:27 layer Exp $")
+a356 4
+
+#+for-vax
+(defun d-regused (dummy)
+   nil)
+@
+
+
+1.8
+log
+@cleanup time
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.7 83/06/30 18:52:48 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug  4 01:15:06 1983 by layer]-
+a9 96
+;--- d-add :: emit an add intruction (check for quick add: (immed 1 - 8))
+;
+#+for-68k
+(defun d-add (src dst)
+  (If (and (eq '$ (car src))
+	   (and (greaterp (cadr src) 0) (lessp (cadr src) 9)))
+      then (e-write3 'addql src dst)
+      else (e-write3 'addl src dst)))
+
+;--- d-sub :: emit an add intruction (check for quick add: (immed 1 - 8))
+;
+#+for-68k
+(defun d-sub (src dst)
+   (If (and (dtpr src) (zerop (cadr src))) thenret
+    elseif (and (dtpr src)
+		(numberp (cadr src))
+		(and (greaterp (cadr src) 0) (lessp (cadr src) 9)))
+       then (e-write3 'subql src dst)
+       else (e-write3 'subl src dst)))
+
+;--- d-ashl :: emit shift code (don't know what direction to shift)
+#+for-68k
+(defun d-ashl (count src dst)
+  (let ((genlab1 (d-genlab))
+	(genlab2 (d-genlab)))
+       (e-write3 'movl src dst)
+       (e-write2 'tstl count)
+       (e-write2 'bmi genlab1)
+       (e-write3 'asll count dst)
+       (e-write2 'bra genlab2)
+       (e-label genlab1)
+       (e-write3 'asrl count dst)
+       (e-writel genlab2)))
+
+;--- d-asrl :: emit shift right code
+#+for-68k
+(defun d-asrl (count src dst)
+  (e-write3 'movl src dst)
+  (If (and (numberp count) (greaterp count 8))
+      then (e-write3 'moveq (concat "#" count) 'd0)
+           (e-write3 'asrl 'd0 dst)
+      else (e-write3 'asrl (concat "#" count) dst)))
+
+;--- d-asll :: emit shift left code
+#+for-68k
+(defun d-asll (count src dst)
+  (e-write3 'movl src dst)
+  (If (and (numberp count) (greaterp count 8))
+      then (e-write3 'moveq (concat "#" count) 'd0)
+           (e-write3 'asll 'd0 dst)
+      else (e-write3 'asll (concat "#" count) dst)))
+
+;--- d-cmp :: compare two IADR values
+;
+;.. cc-eq
+#+for-vax
+(defun d-cmp (arg1 arg2)
+  (e-write3 'cmpl (e-cvt arg1) (e-cvt arg2)))
+
+;;;
+; compares on the 68000 are opposite to those on the vax (i.e.,
+; the subraction is done in reverse). The arguments are switched in the
+; below function to allow the vax and 68k to share code!
+#+for-68k
+(defun d-cmp (arg2 arg1)
+   (let ((arg1a (e-cvt arg1))
+	 (arg2a (e-cvt arg2)))
+       (makecomment `(d-cmp ,arg1 ,arg2))
+       (If (and (dtpr arg1a) (eq '+ (car arg1a))
+		(dtpr arg2a) (eq '+ (car arg2a)))
+	   then ;special "cmpm" instr
+		(e-write3 'cmpml arg1a arg2a)
+	   else (If (or (and (eq 'a (d-regtype arg1a))
+			     (memq arg2a '(d0 d1 d2 d3 d4 d5 d6 d7
+					      a0 a1 a2 a3 a4 a5 a6 sp)))
+			(and (eq 'd (d-regtype arg1a))
+			     (eq 'a (d-regtype arg2a))))
+		    then (e-write3 'cmpl arg1a arg2a)
+		    else ;arg1 is too complex to do in one instr
+			 (d-regused 'd6)
+			 (e-write3 'movl arg2a 'd6)
+			 (e-write3 'cmpl arg1a 'd6)))))
+
+;--- d-cmpnil :: compare an IADR to nil
+;
+(defun d-cmpnil (iadr)
+   #+for-vax (d-tst iadr)
+   #+for-68k (d-cmp '#.nil-reg iadr))
+
+;--- e-cmpnil :: compare an EIADR to nil
+;
+(defun e-cmpnil (eiadr)
+   #+for-vax (break 'e-cmpnil)
+   #+for-68k (e-write3 'cmpl eiadr '#.nil-reg))
+
+
+d16 4
+a19 2
+  (If (car g-cc) then (e-gotot (car g-cc))
+   elseif (cdr g-cc) then (e-gotonil (cdr g-cc))))
+a20 1
+
+d33 2
+a34 2
+  (If (null g-loc) 
+      then (If (car g-cc) then (e-gotonil (car g-cc))
+d37 1
+a37 1
+		 (lab2 (If (cdr g-cc) thenret else (d-genlab))))
+d45 2
+a46 2
+		(If (car g-cc) then (e-goto (car g-cc)))
+		(If (null (cdr g-cc)) then (e-label lab2)))))
+a47 1
+
+d54 2
+a55 2
+  (If (null g-loc) 
+      then (If (car g-cc) then (e-gotot (car g-cc))
+d58 1
+a58 1
+		 (lab2 (If (cdr g-cc) thenret else (d-genlab))))
+d66 2
+a67 2
+		(If (car g-cc) then (e-goto (car g-cc)))
+		(If (null (cdr g-cc)) then (e-label lab2)))))
+d76 2
+a77 2
+      (If (and (dtpr i) (symbolp (setq first (car i))))
+	 then (If (eq 'macro (setq type (d-functyp first 'macro-ok)))
+d93 1
+a93 1
+   (If (not (dtpr form))
+d96 1
+a96 1
+            (If (and (dtpr form) (symbolp (car form)))
+d98 1
+a98 1
+			  (If (or (and (bcdp func)
+d116 1
+a116 1
+   (If (oddp (length (cdr form)))
+a124 48
+
+
+;--- d-move :: emit instructions to move value from one place to another
+;
+;.. c-cond, c-do, c-errset, c-list, c-prog, c-rplaca, c-rplacd
+;.. cc-and, cc-arg, cc-cxxr, cc-equal, cc-memq, cc-not
+;.. cc-oneminus, cc-oneplus, cc-or, cc-quote, cc-setq, d-dostore
+;.. d-exp, d-fixnumcode, d-invert, d-noninvert, d-structgen
+;.. d-supercxr, d-superrplacx, e-shallowbind
+#+for-vax
+(defun d-move (from to)
+  (makecomment `(from ,(e-uncvt from) to ,(e-uncvt to)))
+  (cond ((eq 'Nil from) (e-write2 'clrl (e-cvt to)))
+	(t (e-write3 'movl (e-cvt from) (e-cvt to)))))
+
+#+for-68k
+(defun d-move (from to)
+  (makecomment `(from ,(e-uncvt from) to ,(e-uncvt to)))
+  (let ((froma (e-cvt from))
+	(toa (e-cvt to)))
+       (If (and (dtpr froma)
+		(eq '$ (car froma))
+	        (and (greaterp (cadr froma) -1) (lessp (cadr froma) 65))
+		(atom toa)
+		(eq 'd (nthchar toa 1)))
+           then ;it's a mov #immed,Dn, where 0 <= immed <= 64
+		;  i.e., it's a quick move
+	        (e-write3 'moveq froma toa)
+           else (cond ((eq 'Nil froma) (e-write3 'movl '#.nil-reg toa))
+		      (t (e-write3 'movl froma toa))))))
+
+;--- d-movespec :: move from loc to loc where the first addr given is
+;	           an EIADR
+;	- from : EIADR 
+;	- to   : IADR
+;
+;.. cc-cxxr
+(defun d-movespec (from to)
+  (makecomment `(fromspec ,from to ,(e-uncvt to)))
+  (e-write3 'movl from (e-cvt to)))
+
+
+;--- d-tst :: test the given value (set the cc)
+;
+;.. d-exp
+(defun d-tst (arg)
+  (e-write2 'tstl (e-cvt arg)))
+
+d131 5
+a135 4
+	(If (null argloc) then (let ((g-loc 'reg)
+				     g-cc g-ret)
+				    (d-exp arg))
+			       (setq argloc 'reg))
+d143 1
+a143 1
+       (If (null argloc)
+d150 1
+a150 1
+       (e-write3 'moveq "#9" 'd1)
+d153 1
+a153 1
+       (e-write3 'cmpb val "a5@@(0,d0:L)")
+d165 1
+a165 1
+       (If (null argloc) then (let ((g-loc 'reg)
+d182 1
+a182 1
+       (If (null argloc)
+d189 1
+a189 1
+       (e-write3 'moveq '"#9" 'd1)
+d196 1
+a196 1
+       (e-write3 'moveq '"#1" 'd1)
+d211 1
+a211 1
+  (If name 
+d213 1
+a213 1
+		(If av then (rplaca (cdr av) (1+ (cadr av)))) ; inc used count
+d222 1
+a222 1
+	       (If (< (cadar lis) smc)
+d238 1
+a238 1
+      ((null ll) (If best then (rplaca (cdr best) (1+ (cadr best)))
+d240 1
+a240 1
+				     (If (> bestv 0) 
+d248 1
+a248 1
+      (If (and (setq val (cddar ll))
+d250 1
+a250 1
+	  then (If (> (setq tmp (d-matchcnt pat (cdr val)))
+d270 1
+a270 1
+       (If (do ((hh have (cdr hh))
+d273 1
+a273 1
+	       (If (or (null ww) (not (eq (car ww) (car hh))))
+d295 1
+a295 1
+		(If av
+d308 1
+a308 1
+		 (If (eq (caddr x) varib) then (rplacd (cdr x) nil)))
+d319 1
+a319 1
+       (If av then (rplacd (cdr av) value))
+d322 3
+a324 4
+(defun e-quick-call (what)
+   (e-write2 #+for-vax "jsb"
+	     #+for-68k "jbsr"
+	     what))
+d326 3
+a329 3
+;;; M68000 only routines ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+a333 1
+#+for-68k
+d335 7
+a341 5
+   (If (and (not (atom eiadr))			;symbol
+	    (or (eq '\# (car eiadr))		;immed
+		(eq '$ (car eiadr))
+		(and (eq '* (car eiadr))
+		     (eq '\# (cadr eiadr)))))
+a348 1
+#+for-68k
+d352 1
+a352 1
+       (If (memq regname '(a0 a1 d0 d1))
+a363 1
+#+for-68k
+d368 1
+a368 1
+       (If (cxr ii g-regmaskvec)
+d378 1
+a378 1
+; a2 : _np (if #-no-global-reg don't save)
+d380 1
+a380 1
+; a4 : old _lbot (if #-no-global-reg don't save)
+a382 1
+#+for-68k
+d386 5
+a390 6
+	     #+no-global-reg
+	     (quote (nil nil nil nil nil nil nil t
+			 nil nil t   t   t   t   nil nil))
+	     #-no-global-reg
+	     (quote (nil nil nil nil nil nil nil t
+			 nil nil nil t   t   t   nil nil)))))
+a394 1
+#+for-68k
+d399 1
+a399 1
+       (If (cxr ii g-regmaskvec) then (setq retval (1+ retval)))))
+a405 1
+#+for-68k
+d407 1
+a407 1
+   (If name 
+d410 1
+a410 1
+		(If av then (rplaca (cdr av) (1+ (cadr av)))) ; inc used count
+d416 1
+a416 1
+		    (If (eq type (car (explode (caar cur))))
+d425 1
+a425 1
+		    (If (< (cadar lis) smc)
+d429 1
+a429 4
+#+for-68k
+(defun e-setup-np-lbot nil
+   (e-write3 'movl '#.np-reg '#.np-sym)
+   (e-write3 'movl '#.lbot-reg '#.lbot-sym))
+@
+
+
+1.7
+log
+@portable changes
+@
+text
+@d3 1
+a3 1
+   "$Header: util.l 1.6 83/04/08 18:44:12 layer Exp $")
+d7 1
+d496 1
+a496 1
+       (If (memq regname '(a0 a1 d0 d1 d2))
+d502 4
+d537 1
+a537 2
+			 nil nil nil t   t   t   nil nil))
+		  )))
+d580 2
+a581 2
+   (e-write3 'movl '#.Np-reg '#.Np-sym)
+   (e-write3 'movl '#.Lbot-reg '#.Lbot-sym))
+@
+
+
+1.6
+log
+@problems with cmp on the 68k (reverse of vax)
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.5 83/04/06 16:41:37 layer Exp $")
+d518 1
+a518 1
+; a2 : _np (if #-portable don't save)
+d520 1
+a520 1
+; a4 : old _lbot (if #-portable don't save)
+d527 1
+a527 1
+	     #+portable
+d530 1
+a530 1
+	     #-portable
+@
+
+
+1.5
+log
+@change some compiler constants to syms instead of strings
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.4 83/04/06 15:23:46 layer Exp $")
+d68 4
+d73 1
+a73 1
+(defun d-cmp (arg1 arg2)
+d92 13
+a467 4
+
+(defun d-cmpnil (eiadr)
+   #+for-vax (d-tst eiadr)
+   #+for-68k (d-cmp eiadr '#.nil-reg))
+@
+
+
+1.4
+log
+@forgot all the changes...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.3 83/03/23 20:49:42 layer Exp $")
+d454 1
+a454 1
+   #+for-68k (d-cmp eiadr #.nil-reg))
+d563 2
+a564 2
+   (e-write3 'movl #.Np-reg #.Np-sym)
+   (e-write3 'movl #.Lbot-reg #.Lbot-sym))
+@
+
+
+1.3
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.2 83/03/20 14:04:38 jkf Exp $")
+d454 1
+a454 1
+   #+for-68k (d-cmp eiadr #.Nilatom))
+@
+
+
+1.2
+log
+@merge in 68k version
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/util.l,v 1.1 83/01/26 12:17:30 jkf Exp $")
+d9 52
+d447 13
+a564 9
+
+(defun e-quick-call (what)
+   (e-write2 #+for-vax "jsb"
+	     #+for-68k "jbsr"
+	     what))
+
+(defun d-cmpnil (eiadr)
+   #+for-vax (d-tst eiadr)
+   #+for-68k (d-cmp eiadr #.Nilatom))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d3 1
+a3 1
+   "$Header$")
+d12 1
+d16 19
+d160 1
+d166 16
+d202 1
+d213 16
+d234 1
+d249 27
+a275 1
+       
+d368 6
+a373 2
+		(If av then (rplaca (cdr av) 0)
+			    (rplacd (cdr av) nil))))))
+d395 114
+@

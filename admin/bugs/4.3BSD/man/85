@@ -1,0 +1,251 @@
+From guy@Sun.COM  Thu Sep 15 02:14:49 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.60/1.29)
+	id AA16025; Thu, 15 Sep 88 02:14:49 PDT
+Received: from SUN.COM by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA16549; Thu, 15 Sep 88 02:06:08 PDT
+Received: from snail.sun.com by Sun.COM (4.0/SMI-4.0)
+	id AA05104; Thu, 15 Sep 88 01:43:55 PDT
+Received: from gorodish.sun.com by snail.sun.com (4.0/SMI-4.0)
+	id AA09531; Thu, 15 Sep 88 01:46:48 PDT
+Received: by gorodish.sun.com (4.0/SMI-4.0)
+	id AA12156; Thu, 15 Sep 88 01:44:46 PDT
+Date: Thu, 15 Sep 88 01:44:46 PDT
+From: guy@Sun.COM (Guy Harris)
+Message-Id: <8809150844.AA12156@gorodish.sun.com>
+Subject: DUMP(5) isn't up to date
+Index: 	man/man5/dump.5 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	DUMP(5) doesn't seem to have been updated much since 4.1, except
+	perhaps to change the name of the include file.  "/etc/dump", however,
+	has been changed substantially since 4.1....
+Repeat-By:
+	Read DUMP(5), read "/etc/dumpdates", and read
+	"/usr/include/protocols/dumprestore.h"
+Fix:
+	Try this on for size:
+
+.\" Copyright (c) 1980 Regents of the University of California.
+.\" All rights reserved.  The Berkeley software License Agreement
+.\" specifies the terms and conditions for redistribution.
+.\"
+.\"	@(#)dump.5	6.2 (Berkeley) 6/18/85
+.\"
+.TH DUMP 5  "June 18, 1985"
+.UC 4
+.SH NAME
+dump, dumpdates \- incremental dump format
+.SH SYNOPSIS
+.B #include <sys/types.h>
+.br
+.B #include <sys/inode.h>
+.br
+.B #include <protocols/dumprestore.h>
+.SH DESCRIPTION
+Tapes used by
+.I dump
+and
+.IR restore (8)
+contain:
+.nf
+.IP ""
+a header record
+two groups of bit map records
+a group of records describing directories
+a group of records describing files
+.fi
+.PP
+The format of the header record and of the first
+record of each description as given in the
+include file
+.I <protocols/dumprestore.h>
+is:
+.PP
+.nf
+.ta +\w'#define 'u +\w'HIGHDENSITYTREC 'u
+#define TP_BSIZE	1024
+#define NTREC	10
+#define HIGHDENSITYTREC	32
+#define TP_NINDIR	(TP_BSIZE/2)
+
+#define TS_TAPE	1
+#define TS_INODE	2
+#define TS_BITS	3
+#define TS_ADDR	4
+#define TS_END	5
+#define TS_CLRI	6
+#define OFS_MAGIC	(int)60011
+#define NFS_MAGIC	(int)60012
+#define CHECKSUM	(int)84446
+union u_spcl {
+	char dummy[TP_BSIZE];
+	struct	s_spcl {
+		int		c_type;
+		time_t		c_date;
+		time_t		c_ddate;
+		int		c_volume;
+		daddr_t		c_tapea;
+		ino_t		c_inumber;
+		int		c_magic;
+		int		c_checksum;
+		struct		dinode		c_dinode;
+		int		c_count;
+		char		c_addr[TP_NINDIR];
+	} s_spcl;
+} u_spcl;
+
+#define spcl u_spcl.s_spcl
+  
+#define	DUMPOUTFMT	"%-16s %c %s"		/* for printf */
+						/* name, incno, ctime(date) */
+#define	DUMPINFMT	"%16s %c %[^\en]\en"	/* inverse for scanf */
+.fi
+.DT
+.PP
+TP_BSIZE is the size of file blocks on the dump tapes.
+Note that TP_BSIZE must be a multiple of DEV_BSIZE.
+.PP
+NTREC is the default number of TP_BSIZE byte records in a physical tape block,
+changeable by the
+.B b
+option to
+.IR dump .
+HIGHDENSITYNTREC is the default number of TP_BSIZE byte records in a physical
+tape block on 6250 BPI or higher density tapes.
+.PP
+TP_NINDIR is the number of indirect pointers in a TS_INODE or TS_ADDR
+record.  Note that it must be a power of two.
+.PP
+The
+TS_ entries are used in the
+.I c_type
+field to indicate what sort of header
+this is.
+The types and their meanings are as follows:
+.TP 13
+TS_TAPE
+Tape volume label
+.PD 0
+.TP
+TS_INODE
+A file or directory follows.
+The
+.I c_dinode
+field is a copy of the disk inode and contains
+bits telling what sort of file this is.
+.TP
+TS_BITS
+A bit map follows.
+This bit map has a one bit
+for each inode that was dumped.
+.TP
+TS_ADDR
+A subrecord of a file description.
+See
+.I c_addr
+below.
+.TP
+TS_END
+End of tape record.
+.TP
+TS_CLRI
+A bit map follows.
+This bit map contains a zero bit for
+all inodes that were empty on the file system when dumped.
+.TP
+NFS_MAGIC
+All header records have this number in
+.IR c_magic .
+.TP
+CHECKSUM
+Header records checksum to this value.
+.PD
+.PP
+The fields of the header structure are as follows:
+.TP 13
+c_type
+The type of the header.
+.PD 0
+.TP
+c_date
+The date the dump was taken.
+.TP
+c_ddate
+The date the file system was dumped from.
+.TP
+c_volume
+The current volume number of the dump.
+.TP
+c_tapea
+The current number of this (1024-byte) record.
+.TP
+c_inumber
+The number of the inode being dumped if this
+is of type TS_INODE.
+.TP
+c_magic
+This contains the value MAGIC
+above, truncated as needed.
+.TP
+c_checksum
+This contains whatever value is needed to
+make the record sum to CHECKSUM.
+.TP
+c_dinode
+This is a copy of the inode as it appears on the
+file system; see
+.IR fs (5).
+.TP
+c_count
+The count of characters in
+.IR c_addr .
+.TP
+c_addr
+An array of characters describing the blocks of the
+dumped file.
+A character is zero if the block associated with that character was not
+present on the file system, otherwise the character is non-zero.
+If the block was not present on the file system, no block was dumped;
+the block will be restored as a hole in the file.
+If there is not sufficient space in this record to describe
+all of the blocks in a file, TS_ADDR
+records will be scattered through the file, each one
+picking up where the last left off.
+.PD
+.PP
+Each volume except the last ends with a tapemark (read as an end
+of file).
+The last volume ends with a TS_END
+record and then the tapemark.
+.PP
+The dump history is kept in the file
+.BR /etc/dumpdates .
+It is an ASCII file with three fields separated by white space:
+.IP
+The name of the device on which the dumped file system resides.
+.IP
+The level number of the dump tape;
+see
+.IR dump (8).
+.IP
+The date of the incremental dump in the format generated by
+.IR ctime (3).
+.LP
+DUMPOUTFMT
+is the format to use when using
+.IR fprintf (3S)
+to write an entry to
+.BR /etc/dumpdates ;
+DUMPINFMT
+is the format to use when using
+.IR fscanf (3S)
+to read an entry from
+.BR /etc/dumpdates .
+.SH FILES
+/etc/dumpdates
+.SH "SEE ALSO"
+dump(8),
+restore(8),
+fs(5),
+types(5)

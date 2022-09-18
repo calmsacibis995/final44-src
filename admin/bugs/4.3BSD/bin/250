@@ -1,0 +1,124 @@
+From serge@okeeffe.Berkeley.EDU  Tue Oct 24 20:03:31 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA27219; Tue, 24 Oct 89 20:03:31 -0700
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.38)
+	id AA18131; Tue, 24 Oct 89 20:03:41 -0700
+Received: by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA27208; Tue, 24 Oct 89 20:03:22 -0700
+Date: Tue, 24 Oct 89 20:03:22 -0700
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8910250303.AA27208@okeeffe.Berkeley.EDU>
+Subject: cp -r does not preserve hard links
+Index: bin/cp/cp.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Fix:
+*** /usr/src/bin/cp/cp.c	Mon Oct  2 07:55:12 1989
+--- cp.c	Mon Oct 23 15:43:10 1989
+***************
+*** 53,58 ****
+--- 53,68 ----
+  
+  #define	type(st)	((st).st_mode & S_IFMT)
+  
++ struct linkbuf {
++ 	ino_t	inum;
++ 	dev_t	devnum;
++ 	int	count;
++ 	char	*pathname;
++ 	struct	linkbuf *nextp;
++ };
++ 
++ struct	linkbuf *ihead;
++ 
+  typedef struct {
+  	char	p_path[MAXPATHLEN + 1];	/* pointer to the start of a path. */
+  	char	*p_end;			/* pointer to NULL at end of path. */
+***************
+*** 185,190 ****
+--- 195,211 ----
+  			path_restore(&to, old_to);
+  		}
+  	}
++ 	if (!force_flag)
++ 		for (; ihead != NULL; ihead = ihead->nextp) {
++ 			if (ihead->count != 0) {
++ 				fprintf(stderr,
++ 					"%s: %d missing link%s to %s\n",
++ 					pname,
++ 					ihead->count,
++ 					ihead->count != 1 ? "s" : "",
++ 					ihead->pathname);
++ 			}
++ 		}
+  	exit(exit_val);
+  }
+  
+***************
+*** 281,286 ****
+--- 302,308 ----
+  {
+  	register int from_fd, to_fd, rcount, wcount;
+  	struct stat to_stat;
++ 	char *malloc();
+  
+  	if ((from_fd = open(from.p_path, O_RDONLY, 0)) == -1) {
+  		error(from.p_path);
+***************
+*** 317,322 ****
+--- 339,393 ----
+  		error(to.p_path);
+  		(void)close(from_fd);
+  		return;
++ 	}
++ 
++ 	if (fs->st_nlink > 1) {
++ 		struct linkbuf *lp;
++ 		int found = 0;
++ 
++ 		for (lp = ihead; lp != NULL; lp = lp->nextp)
++ 			if (lp->inum == fs->st_ino &&
++ 			    lp->devnum == fs->st_dev) {
++ 				found++;
++ 				break;
++ 			}
++ 		if (found) {
++ 			(void) close(from_fd);
++ 			(void) close(to_fd);
++ 			if (unlink(to.p_path) != 0) {
++ 				error(to.p_path);
++ 				return;
++ 			}
++ 			if (link(lp->pathname, to.p_path) != 0) {
++ 				error(to.p_path);
++ 				return;
++ 			}
++ 			lp->count--;
++ 			return;
++ 		}
++ 		lp = (struct linkbuf *) malloc(sizeof(*lp));
++ 		if (lp == (struct linkbuf *)0) {
++ 			error(to.p_path);
++ 			(void) close(from_fd);
++ 			(void) close(to_fd);
++ 			return;
++ 		}
++ 		lp->pathname = (char *)malloc(strlen(to.p_path) + 1);
++ 		if (lp->pathname == (char *)0) {
++ 			error(to.p_path);
++ 			(void) close(from_fd);
++ 			(void) close(to_fd);
++ 			(void) free((char *)lp);
++ 			return;
++ 		}
++ 		if (lp != NULL) {
++ 			lp->nextp = ihead;
++ 			ihead = lp;
++ 			lp->inum = fs->st_ino;
++ 			lp->devnum = fs->st_dev;
++ 			lp->count = fs->st_nlink - 1;
++ 			(void) strcpy(lp->pathname, to.p_path);
++ 		}
+  	}
+  
+  	while ((rcount = read(from_fd, buf, MAXBSIZE)) > 0) {

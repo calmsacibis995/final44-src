@@ -1,0 +1,218 @@
+#!/bin/sh
+#
+#	$Id: make_object,v 1.7 1992/07/29 03:09:45 jch Exp $
+#
+#	Build a single object description
+#
+#	This is used by make_table on an object by object basis.
+#	However, it can also be used to add a single object to the
+#	end of a table or group.  This is A Good Thing, because
+#	one doesn't have to stretch the brain to keep track of nroff
+#	text manipulation stuff.  In this case, you will have to edit
+#	the mib table file to add the object to the end of the
+#	SEQUENCE {}.  Sorry about that.
+
+#	input variables:
+#
+#	$object		the full name of the object
+#	$type		the type (INTEGER, OCTET STRING, whatever)
+#	$entry		the name of the mibEntry or Group
+#	$identifier	the object name withn the mibEntry or Group
+#	$mib		the name of the MIB nroff file being added to
+#	$document	the specification being instrumented
+
+yesorno () {
+	while [ "forever" ]; do
+		read input
+		case ${input} in
+			yes|y)
+				return 0;
+				;;
+
+			no|n)
+				return 1;
+				;;
+
+			*)
+				echo -n "Respond yes or no: "
+		esac
+	done
+}
+
+enum() {
+	done=0;
+
+	while [ ${done} -eq 0 ]; do
+	       	echo -n "How many values are there (max) or (min max)? " ;
+		read input
+		set ${input}
+		case ${#} in
+			1)
+				min=1 ;
+				max=${1} ;
+				done=1 ;
+				;;
+
+			2)
+				min=${1} ;
+				max=${2} ;
+				done=1;
+				;;
+		esac
+	done
+
+	i=${min}
+
+       	echo '   ' SYNTAX ' ' ${type} '{' >> ${mib}
+	echo enumeration names MUST have a lower case alphbetic first
+	echo character, and by convention capitalize the first letter of
+	echo each "'word'" in the name
+
+	while [ ${i} -le ${max} ]; do
+		echo -n "Enter 'name for (${i}):' "
+		read number ;
+		echo -n '               ' "${number} (${i})" >> ${mib}
+		if [ ${i} -lt ${max} ]; then
+			echo "," >> ${mib} ;
+		else
+			echo "" >> ${mib} ;
+		fi
+
+		i=`expr ${i} + 1` ;
+	done
+       	echo '             }' >> ${mib}
+}
+count() {
+	line="" ;
+
+	while [ ${min} -le ${max} ]; do
+		line="${line} ${min}" ;
+		min=`expr ${min} + 1` ;
+	done
+
+	echo ${line} ;
+}
+
+object_type() {
+
+	echo ${1} OBJECT-TYPE >> ${mib}
+	done=0
+
+	while [ ${done} -eq 0 ]; do
+		case ${2} in
+			INTEGER)
+				echo -n "Is ${1} enumerated? " ;
+				yesorno ;
+				if [ $? -eq 0 ]; then
+					enum ;
+				else
+					echo -n "Does ${1} have a valid range? "
+					yesorno ;
+			        	if [ ${?} -eq 0 ]; then
+						echo -n "Enter range, in the form lowest..highest: "
+						read input ;
+						echo '   ' SYNTAX ' ' ${2} '(' "${input}" ')' >> ${mib}
+					else
+						echo '   ' SYNTAX ' ' ${2} >> ${mib}
+				        fi
+				fi
+				done=1;
+				;;
+		
+			DisplayString| \
+			Gauge| \
+			Counter| \
+			PhysAddress| \
+			TimeTicks| \
+			ObjectID| \
+			NetworkAddress| \
+			IpAddress| \
+			OctetString)
+				echo '   ' SYNTAX ' ' ${2} >> ${mib}
+				done=1;
+				;;
+
+			*)
+				echo "Invalid type: " ${1} ;
+		esac
+	done
+}
+
+read_only () {
+
+	while [ "forever" ]; do
+		echo -n "Is ${1} readOnly or readWrite? " ;
+		read input
+		case ${input} in
+			readOnly|readWrite)
+				echo '   ' ACCESS ' ' "${input}" >> ${mib} ;
+				return ;
+				;;
+		esac
+	done
+}
+
+if [ $# -eq 6 ]; then
+	object="$1"
+	type="$2"
+	entry="$3"
+	identifier="$4"
+	mib="$5"
+	document="$6"
+else
+	echo -n "Name the object? " ;
+	read object
+	echo -n "What is its ASN.1 type? " ;
+	read type
+	echo -n "What group or entry is this being added to? " ;
+	read entry
+	echo -n "What is its enumeration? " ;
+	read identifier
+	echo -n "What nroff input file? " ;
+	read mib
+	echo -n "What is the document being instruented? " ;
+	read document
+fi
+
+echo '.(b' >> ${mib}
+
+echo "" ;
+object_type ${object} ${type}
+
+echo "" ;
+read_only ${object}
+
+echo '   ' STATUS ' ' mandatory >> ${mib}
+echo '   ' DESCRIPTION >> ${mib}
+echo .fi >> ${mib}
+echo .in +.75i >> ${mib}
+echo "" ;
+echo "Please describe ${object}, in quotes: "
+echo CONTROL D terminates input
+cat >> ${mib}
+echo "" ;
+echo .in -.75i >> ${mib}
+
+echo "" ;
+echo -n "What section and paragragh of ${document} [just return if none]? " ;
+read reference ;
+if [ "$reference" != "" ]; then
+    echo .nf >> ${mib}
+    echo '   ' REFERENCE >> ${mib}
+    echo .fi >> ${mib}
+    echo .in +.75i >> ${mib}
+    echo \"${document} ${reference}\" >> ${mib}
+    echo .in -.75i >> ${mib}
+fi
+
+echo "" ;
+echo -n "What is the default value for ${object} [just return if no default]? " ;
+read defval ;
+echo .nf >> ${mib}
+if [ "${defval}" ]; then
+    echo '   ' DEFVAL \{ ${defval} \} >> ${mib}
+fi
+
+echo '    ::= {' $entry $identifier '}' >> ${mib}
+echo '.)b' >> ${mib}
+echo '' >> ${mib}

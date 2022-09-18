@@ -1,0 +1,143 @@
+Return-Path: <davet@rand-unix.ARPA>
+From: Dave Truesdell <davet@rand-unix.ARPA>
+Date: 26 Sep 85 20:50:56 PDT (Thu)
+Subject: minor bug in dump, can cause system to hang.
+Index:  etc/dump/dumptraverse.c 4.2BSD
+
+Description:
+	Dump would hang the system while doing incremental dumps (levels > 0),
+	during pass II.
+
+	When doing dumps from a raw device, dump does not force all reads
+	to be done in multiples of DEV_BSIZE byte chunks.  In most cases
+	drivers seem to handle this correctly, but one obscure case has
+	caused one of our systems (a VAX 11/785 running 4.2BSD) to hang.
+
+
+Repeat-By:
+	Arrange for a raw read (size != n*512) of a directory to fail.
+
+	In our case, a empty directory (containing ".", and "..") occupied
+	a block which was forwarded by the HP driver.   When dump attempted to
+	read the directory entry ( 24 bytes long ), the system hung.
+
+Fix:
+	Force bread to do all reads in multiples of DEV_BSIZE byte blocks.
+	However, for efficiency, I have added a seperate version of bread
+	called raw_bread, that is used in pass II.
+
+RCS file: RCS/dumptraverse.c,v
+retrieving revision 1.3
+retrieving revision 1.4
+diff -c3 -r1.3 -r1.4
+*** /tmp/,RCSt1018693	Tue Sep 24 12:40:03 1985
+--- /tmp/,RCSt2018693	Tue Sep 24 12:40:05 1985
+***************
+*** 265,271
+  		return;
+  	if (filesize > size)
+  		filesize = size;
+! 	bread(fsbtodb(sblock, d), dblk, filesize);
+  	for (loc = 0; loc < filesize; ) {
+  		dp = (struct direct *)(dblk + loc);
+  		if (dp->d_reclen == 0) {
+
+--- 269,275 -----
+  		return;
+  	if (filesize > size)
+  		filesize = size;
+! 	raw_bread(fsbtodb(sblock, d), dblk, filesize);
+  	for (loc = 0; loc < filesize; ) {
+  		dp = (struct direct *)(dblk + loc);
+  		if (dp->d_reclen == 0) {
+***************
+*** 338,343
+  		goto loop;
+  	}
+  	msg("(This should not happen)bread from %s [block %d]: count=%d, got=%d\n",
+  		disk, da, cnt, n);
+  	if (++breaderrors > BREADEMAX){
+  		msg("More than %d block read errors from %d\n",
+
+--- 342,400 -----
+  		goto loop;
+  	}
+  	msg("(This should not happen)bread from %s [block %d]: count=%d, got=%d\n",
++ 		disk, da, cnt, n);
++ 	if (++breaderrors > BREADEMAX){
++ 		msg("More than %d block read errors from %d\n",
++ 			BREADEMAX, disk);
++ 		broadcast("DUMP IS AILING!\n");
++ 		msg("This is an unrecoverable error.\n");
++ 		if (!query("Do you want to attempt to continue?")){
++ 			dumpabort();
++ 			/*NOTREACHED*/
++ 		} else
++ 			breaderrors = 0;
++ 	}
++ }
++ 
++ /*
++  *     This version of bread forces reads to be done in multiples of DEV_BSIZE
++  * (normally 512) bytes.  This is required for proper operation on raw I/O
++  * devices.  The lack of enforcement, has caused one of our systems to hang
++  * during incremental dumps.
++  */
++ raw_bread(da, ba, cnt)
++ 	daddr_t da;
++ 	char *ba;
++ 	int	cnt;	
++ {
++ 	int n;
++ 	int size;
++ 
++ 	size = cnt;
++ 	/*
++ 	 * Note:  This implicitly assumes that DEV_BSIZE is a power of 2.
++ 	 *	If, for whatever reason, this is not true, an alternate
++ 	 *	function is incuded, but ifdef'd out.
++ 	 */
++ 	if ((size & (DEV_BSIZE - 1)) != 0)
++ 		size = (size + (DEV_BSIZE - 1)) &~ (DEV_BSIZE - 1);
++ #ifdef	not_def
++ 	if ((size % DEV_BSIZE) != 0)
++ 		size += DEV_BSIZE - (size % DEV_BSIZE);
++ #endif
++ loop:
++ 	if (lseek(fi, (long)(da * DEV_BSIZE), 0) < 0){
++ 		msg("raw_bread: lseek fails\n");
++ 	}
++ 	n = read(fi, ba, size);
++ 	if (n == size || n >= cnt)
++ 		return;
++ 	if (da + (size / DEV_BSIZE) > fsbtodb(sblock, sblock->fs_size)) {
++ 		size -= DEV_BSIZE;
++ 		cnt  -= DEV_BSIZE;
++ 		goto loop;
++ 	}
++ 	msg("(This should not happen)raw_bread from %s [block %d]: count=%d, got=%d\n",
+  		disk, da, cnt, n);
+  	if (++breaderrors > BREADEMAX){
+  		msg("More than %d block read errors from %d\n",
+--
+    David A. Truesdell
+    Programmer/Analyst
+
+    The RAND Corporation
+    1700 Main Street
+    P.O. Box 2138
+    CSD/1
+    Santa Monica, CA 90406-2138
+
+Phone:
+    (213) 393-0411 ext. 7173
+ARPAnet:
+    davet@rand-unix
+UUCP/usenet:
+    cbosg ----
+    decvax ---|
+    fortune --|
+    harpo ----|- randvax!davet
+    trw-unix -|
+    ucla-cs --|
+    vortex ---

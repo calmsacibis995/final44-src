@@ -1,0 +1,80 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Wed Dec 10 15:56:21 1986
+Date: Wed, 10 Dec 86 11:30:01 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Subject: enhancement to ^W action
+Index:  ideas 4.3BSD sys/tty.c
+
+Description:
+	The standard action of ^W (the word erase character) erases one
+	"word" of input, where a word is a sequence of non-{blank,tab}
+	characters, followed by zero or more {blank,tab} characters.
+	The following patch changes ^W to also consider '/' a word
+	delimiter.  Basically, typing ^W will erase back to the first
+	previous blank, tab, or '/'.  This is very handy when you make
+	a typing error half-way through a long pathname.
+Fix:
+
+	RCS file: RCS/tty.c,v
+	retrieving revision 1.1
+	retrieving revision 1.2
+	diff -c -r1.1 -r1.2
+	*** /tmp/,RCSt1014814	Wed Dec 10 11:22:11 1986
+	--- /tmp/,RCSt2014814	Wed Dec 10 11:22:19 1986
+	***************
+	*** 875,897 ****
+		 */
+		if (tp->t_line == NTTYDISC) {
+			if (c == tp->t_werasc) {
+	! 			if (tp->t_rawq.c_cc == 0)
+	! 				goto endcase;
+	! 			do {
+					c = unputc(&tp->t_rawq);
+	! 				if (c != ' ' && c != '\t')
+						goto erasenb;
+					ttyrub(c, tp);
+	! 			} while (tp->t_rawq.c_cc);
+	! 			goto endcase;
+		erasenb:
+	! 			do {
+					ttyrub(c, tp);
+	! 				if (tp->t_rawq.c_cc == 0)
+	! 					goto endcase;
+					c = unputc(&tp->t_rawq);
+	! 			} while (c != ' ' && c != '\t');
+	! 			(void) putc(c, &tp->t_rawq);
+				goto endcase;
+			}
+			if (c == tp->t_rprntc) {
+	--- 875,906 ----
+		 */
+		if (tp->t_line == NTTYDISC) {
+			if (c == tp->t_werasc) {
+	! 			while (tp->t_rawq.c_cc > 0) {
+					c = unputc(&tp->t_rawq);
+	! 				if (c != ' ' && c != '\t') {
+	! 					(void) putc(c, &tp->t_rawq);
+						goto erasenb;
+	+ 				}
+					ttyrub(c, tp);
+	! 			}
+		erasenb:
+	! 			while (tp->t_rawq.c_cc > 0) {
+	! 				c = unputc(&tp->t_rawq);
+	! 				if (c == ' ' || c == '\t' || c == '/') {
+	! 					(void) putc(c, &tp->t_rawq);
+	! 					goto eraseslash;
+	! 				}
+					ttyrub(c, tp);
+	! 			}
+	! 	eraseslash:
+	! 			while (tp->t_rawq.c_cc > 0) {
+					c = unputc(&tp->t_rawq);
+	! 				if (c != '/') {
+	! 					(void) putc(c, &tp->t_rawq);
+	! 					goto endcase;
+	! 				}
+	! 				ttyrub(c, tp);
+	! 			}
+				goto endcase;
+			}
+			if (c == tp->t_rprntc) {

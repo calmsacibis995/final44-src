@@ -1,0 +1,79 @@
+From muller%sdcc7@ucsd.edu Fri Jun 10 16:30:55 1988
+Date: Fri, 10 Jun 88 16:32:01 PDT
+From: muller%sdcc7@ucsd.edu (Keith Muller)
+Index: sys/tahoevba/mp.c 4.3BSD-tahoe
+Subject: mpcc ports hang with TS_BUSY
+#Subject: mpcc ports hang with TS_BUSY on an event that never occurs due to a
+#	 firmware hang
+
+Description:
+	It is possible to put a mpcc port into an state where a EVCMD_WRITE
+	command never completes and the port will not respond to any
+	terminal data.
+Repeat-By:
+	(This will seem hard to believe, but it happened several times a day
+	on both CCI's. it took forever to track down).
+
+	This procedure worked on two different CCI's and 8 different MPCC
+	boards. You need the port in raw or cbreak mode to see the problem,
+	using rlogin is an easy way to repeat it.
+	
+	1) log into a mpcc port with a terminal that sends EVEN parity
+	2) use the standard settings for line kill ... etc (as shown by 
+	   stty everything) EXCEPT erase is set to backspace and <delete>
+	   is not set to anything.
+
+	% stty evrything
+	new tty, speed 9600 baud, 60 rows, 80 columns
+	even odd -raw -nl echo -lcase -tandem -tabs -cbreak 
+	crt: (crtbs crterase crtkill ctlecho) -tostop 
+	-tilde -flusho -mdmbuf -litout -pass8 -nohang 
+	-pendin decctlq -noflsh 
+	erase kill  werase rprnt  flush  lnext  susp   intr   quit   stop eof
+	^H    ^U    ^W     ^R     ^O     ^V     ^Z/^Y  ^C     ^\    ^S/^Q  ^D 
+
+	3) rlogin into another machine (like a vax). 
+	4) on the remote machine (the vax) use the standard setting for line
+	   kill ... etc (as shown by stty everything) EXCEPT erase is set
+	   to backspace and <delete> is not set to anything.
+	5) on the remote machine type a few characters then a <delete>,
+	   port is now wedged on the mpcc. The only way to clear it
+	   is to download the microcode for the entire board.
+Fix:
+	Setting the data size and parity correctly for the terminal mode
+	in mpparem() fixed the problem. No side effects have occurred on
+	a heavily used system.  I have alerted CCI to the firmware weirdness
+	on handling an character with 8 ones in a row (a delete with even 
+	parity).
+
+		Keith Muller
+		University of California, San Diego
+
+*** /tmp/,RCSt1005691	Fri Jun 10 15:36:22 1988
+--- mp.c	Thu Jun  9 15:57:23 1988
+***************
+*** 365,376 ****
+  	asp->ap_xoff = tp->t_stopc;
+  	asp->ap_xena = ((tp->t_flags & RAW) ? MPA_DIS : MPA_ENA);
+  	asp->ap_xany = ((tp->t_flags & DECCTQ) ? MPA_DIS : MPA_ENA);
+- #ifdef notnow
+  	if (tp->t_flags & (RAW|LITOUT|PASS8)) {
+- #endif
+  		asp->ap_data = MPCHAR_8;
+  		asp->ap_parity = MPPAR_NONE;
+- #ifdef notnow
+  	} else {
+  		asp->ap_data = MPCHAR_7;
+  		if ((tp->t_flags & (EVENP|ODDP)) == ODDP)
+--- 367,375 ----
+***************
+*** 378,384 ****
+  		else
+  			asp->ap_parity = MPPAR_EVEN;
+  	}
+- #endif
+  	if (tp->t_ospeed == B110)
+  		asp->ap_stop = MPSTOP_2;
+  	else
+--- 377,382 ----
+

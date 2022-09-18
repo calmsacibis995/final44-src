@@ -1,0 +1,61 @@
+From: ittvax!swatt@decvax.UUCP
+Subject: Bug in /dev/MAKE
+Index: sys 4.2BSD
+
+If you have two different types of tape systems, for example one
+TU77 and one TU78, it will attempt to make two sets of device
+nodes with the same name.
+
+I don't claim my solution is elegant, but you can now say
+
+	MAKE ht0 mt0
+
+and have all the software which knows about tape units (dump, tar)
+now able to access both drive.  The "base" name for the tape node
+starts with "mt0" and gets bumped by one each time a new unit
+is added.
+
+The fix is:
+
+======================================================================
+ht*|mt*|tm*|ts*)
+	umask 0 ; unit=`expr $i : '..\(.*\)'`
+	case $i in
+	ht*) blk=1; chr=5 ;;
+	mt*) blk=7; chr=19;;
+	tm*) blk=5; chr=14;;
+	ts*) blk=6; chr=16;;
+	esac
+	case $unit in
+	0|1|2|3|4|5|6|7)
+		: 'to allow different tape drives on same system'
+		nunit=$unit
+		while [ -f mt$nunit ]
+		do nunit=`expr $nunit + 1`
+		done
+		echo tape system $i will be known as device "mt" unit $nunit
+		nfour=`expr $nunit + 4` ; neight=`expr $nunit + 8`
+		ntwelve=`expr $nunit + 12`
+
+		four=`expr $unit + 4` ; eight=`expr $unit + 8`
+		twelve=`expr $unit + 12`
+
+		/etc/mknod mt$nunit	b $blk $unit
+		/etc/mknod mt$nfour	b $blk $four
+		/etc/mknod mt$neight	b $blk $eight
+		/etc/mknod mt$ntwelve	b $blk $twelve
+		/etc/mknod nmt$nunit	b $blk $four ;: sanity with pdp11 v7
+		/etc/mknod nmt$neight	b $blk $twelve ;: ditto
+		/etc/mknod nrmt$nunit	c $chr $four ;: sanity with pdp11 v7
+		/etc/mknod nrmt$neight	c $chr $twelve ;: ditto
+		/etc/mknod rmt$nunit	c $chr $unit
+		/etc/mknod rmt$nfour	c $chr $four
+		/etc/mknod rmt$neight	c $chr $eight
+		/etc/mknod rmt$ntwelve	c $chr $twelve
+		umask 77
+		;;
+	*)
+		bad unit for tape in: $1
+		;;
+	esac
+	;;

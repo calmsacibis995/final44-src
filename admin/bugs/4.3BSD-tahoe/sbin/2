@@ -1,0 +1,118 @@
+From mcooper%acamar.usc.edu@usc.edu  Fri Apr 28 18:17:09 1989
+Date: Fri, 28 Apr 1989 17:59:55 PDT
+From: "Michael A. Cooper" <mcooper%acamar.usc.edu@usc.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Reply-To: mcooper@usc.edu
+Subject: restore(8) setmodes and NULL deref bugs
+Index: sbin/restore tahoe
+
+Description:
+	1 The "setmodes" command in interactive mode will not set
+	  modes if a directory already exists.  If you are recovering
+	  from a bad dump image or restore blowing up, you sometimes
+	  need to override this feature.
+
+	2 When restoring from a dump image with missing directory inodes
+	  (such as when you have a dying disk), a non existent inode
+	  in the modes map will cause a panic.  The user is prompted
+	  whether they want to abort the restore or not.  If they continue
+	  on, a NULL deref occurs and restore dies on systems where
+	  this is illegal.
+
+Repeat-By:
+	1 Do an interactive restore, "add" a directory, and then quit.
+	  Start up another interactive restore, "add" the same directory",
+	  and run "setmodes".  No modes are set.
+
+	2 Do a dump of a filesystem that you can't ready some blocks on
+	  that happen to have directory inodes on them.  Run a restore
+	  and watch it blow up.
+
+Fix:
+	Apply these patches:
+
+*** /tmp/,RCSt1a10337	Fri Apr 28 17:24:45 1989
+--- /tmp/,RCSt2a10337	Fri Apr 28 17:24:46 1989
+***************
+*** 483,488
+  	struct modeinfo node;
+  	struct entry *ep;
+  	char *cp;
+  
+  	vprintf(stdout, "Set directory mode, owner, and times.\n");
+  	(void) sprintf(modefile, "/tmp/rstmode%d", dumpdate);
+
+--- 502,508 -----
+  	struct modeinfo node;
+  	struct entry *ep;
+  	char *cp;
++ 	int override = -1;
+  
+  	vprintf(stdout, "Set directory mode, owner, and times.\n");
+  	(void) sprintf(modefile, "/tmp/rstmode%d", dumpdate);
+***************
+*** 503,510
+  			if (ep == NIL)
+  				continue;
+  			if (ep->e_flags & EXISTED) {
+! 				ep->e_flags &= ~NEW;
+! 				continue;
+  			}
+  			if (node.ino == ROOTINO &&
+  		   	    reply("set owner/mode for '.'") == FAIL)
+
+--- 523,539 -----
+  			if (ep == NIL)
+  				continue;
+  			if (ep->e_flags & EXISTED) {
+! 				if (override < 0) {
+! 					if (reply("Directories already exist, set modes anyway") == FAIL) {
+! 						override = 0;
+! 					} else {
+! 						override = 1;
+! 					}
+! 				}
+! 				if (override == 0) {
+! 					ep->e_flags &= ~NEW;
+! 					continue;
+! 				}
+  			}
+  			if (node.ino == ROOTINO &&
+  		   	    reply("set owner/mode for '.'") == FAIL)
+***************
+*** 510,516
+  		   	    reply("set owner/mode for '.'") == FAIL)
+  				continue;
+  		}
+! 		if (ep == NIL)
+  			panic("cannot find directory inode %d\n", node.ino);
+  		cp = myname(ep);
+  		(void) chown(cp, node.uid, node.gid);
+
+--- 539,545 -----
+  		   	    reply("set owner/mode for '.'") == FAIL)
+  				continue;
+  		}
+! 		if (ep == NIL) {
+  			panic("cannot find directory inode %d\n", node.ino);
+  			continue;
+  		}
+***************
+*** 512,517
+  		}
+  		if (ep == NIL)
+  			panic("cannot find directory inode %d\n", node.ino);
+  		cp = myname(ep);
+  		(void) chown(cp, node.uid, node.gid);
+  		(void) chmod(cp, node.mode);
+
+--- 541,548 -----
+  		}
+  		if (ep == NIL) {
+  			panic("cannot find directory inode %d\n", node.ino);
++ 			continue;
++ 		}
+  		cp = myname(ep);
+  		(void) chown(cp, node.uid, node.gid);
+  		(void) chmod(cp, node.mode);
+

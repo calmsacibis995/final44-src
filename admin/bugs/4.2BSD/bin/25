@@ -1,0 +1,506 @@
+Return-Path: <dpk@BRL-VGR.ARPA>
+Date:     Fri, 23 Nov 84 22:23:21 EST
+From: dpk@BRL-VGR.ARPA
+Subject:  brl-vgr Bug Report
+
+Subject: Tar is inefficient, ignores blocksize
+Index:	bin/tar.c 4.2BSD 2.9BSD SysV (and others) Fix
+
+Description:
+	While technically not a bug, one can always hope that
+	such unnecessary inefficiency is removed from the system.
+
+	A letter on the net mentioning tar's behavior of always
+	reading or writing blocks of 512 bytes from or to files
+	prompted me to analyze it and see just how bad it was.
+	It was quite bad.  It always reads or writes in blocks of 512.
+	This is quite inefficient on systems with a blocksize greater
+	than 512 bytes.  What's more, it spent an inordinate amount
+	of time in the bcopy() routine.  First off, when extracting
+	files it is totally unnecessary to bcopy() the data around,
+	since you can immediately write it out to disk.  Some further
+	work allowed me to actually buffer the data going to disk in
+	blocks of max(diskblocksize,tapeblocksize).  For creating
+	tar archives, some bcopy()s are unavoidable, but the number
+	can be greatly reduced by having the writing to tape and
+	reading from disk "get into sync" so that you begin reading
+	and writing in tapeblocksize and avoiding all bcopy()s.
+	
+	I have made an analysis of the behavior before and after the
+	improvements to tar were made and as you would expect the
+	greatest benefit is achieved when the files involved are
+	significantly larger than the tapeblocksize.  The following
+	figures summarize the behavior of three version of tar.
+	Ntar is the new tar, Tar is 4.2BSD tar, and Tar5 is the
+	System V version of Tar under the BRL/SYSV package.
+
+	Create an archive of large files (1 Meg):
+		Ntar	0.3u	1.9s
+		Tar	1.8u	4.9s
+		Tar5	4.7u	4.8s
+
+	Create an archive of small files (1 Meg):
+		Ntar	4.2u	6.8s
+		Tar	4.4	9.4
+		Tar5	7.7	9.1
+
+	Create an archive of /bin (4.2BSD)
+		Ntar	1.4u	2.9s
+		Tar	2.3	5.5
+		Tar5	5.2	6.7
+
+	Extract an archive of Large files (created above)
+		Ntar	0.2u	 4.2s
+		Tar	1.6	14.0
+
+	Extract an archive of small files (created above)
+		Ntar	2.6	17.1
+		Tar	4.4	25.5
+		Tar5	7.4	29.9
+
+	This inefficency is also present in earlier TARs and is worse
+	in most cases because the "bcopy()" routine (probably named
+	something else or included in the {read/write}tape() routines)
+	is not nearly as efficient as the Berkeley version.
+
+Repeat-By:
+	Time tar for extraction and creation.  The time is significant.
+	Gprof or prof the tar program and analyze the results.  You
+	will find that it is spending a large portion of its time
+	in bcopy() and the number of calls to the read/write system
+	call for files on disk is also unreasonable.
+
+Fix:
+	There were serveral basic changes:
+	  - readtape replaced with a routine readtbuf which is passed
+	    a pointer to a pointer and a maximum number of bytes to be
+	    accepted, returns a pointer to the new data, and the amount
+	    there.  
+	  - small readtape() routine that emulates old behavior.
+	  - writetbuf that take a pointer to data and a count of blocks.
+	    It is smart enough to detect that the buffers contain at least
+	    tapeblock characters and issues a write without bcopying.
+	    This routine also returns the number blocks left to fill
+	    the tape block buffer.  This is used to "get into sync".
+	  - dynamically allocated big buffers and assured they were page
+	    aligned.
+	  - changed the putfile and extract functions to use these changes
+	    to advantage.
+
+	A "diff -e" editor script follows based on the original 4.2BSD
+	tar and a regular diff follows that for other sites.  The changes
+	should also be 	almost directly applicable to other versions of TAR.
+	ARPA sites for whom BRL has copies of your ATT source license,
+	can obtain a copy by sending a message to "~dpk@vgr".
+
+####################################
+diff -e tar.c.old tar.c
+1109c
+		
+	while (n-- > 0) {
+		bcopy(buffer, (char *)&tbuf[recno++], TBLOCK);
+		buffer += TBLOCK;
+		if (recno >= nblock) {
+			if (write(mt, tbuf, TBLOCK*nblock) < 0) {
+				fprintf(stderr, "tar: tape write error\n");
+				done(2);
+			}
+			recno = 0;
+		}
+	}
+
+	/* Tell the user how much to write to get in sync */
+	return (nblock - recno);
+.
+1107c
+		n -= nblock;
+		buffer += (nblock * TBLOCK);
+.
+1101,1103c
+
+	/*
+	 *  Special case:  We have an empty tape buffer, and the
+	 *  users data size is >= the tape block size:  Avoid
+	 *  the bcopy and dma direct to tape.  BIG WIN.  Add the
+	 *  residual to the tape buffer.
+	 */
+	while (recno == 0 && n >= nblock) {
+		if (write(mt, buffer, TBLOCK*nblock) < 0) {
+.
+1090,1091c
+writetbuf(buffer, n)
+	register char *buffer;
+	register int n;
+.
+1086,1087c
+	if (size > ((nblock-recno)*TBLOCK))
+		size = (nblock-recno)*TBLOCK;
+	*bufpp = (char *)&tbuf[recno];
+	recno += (size/TBLOCK);
+	return (size);
+.
+1064a
+	char *bufp;
+	int nread;
+
+	readtbuf (&bufp, TBLOCK);
+	bcopy(bufp, buffer, TBLOCK);
+	return(TBLOCK);
+}
+
+readtbuf(bufpp, size)
+	char **bufpp;
+	int size;
+{
+.
+1062c
+readtape (buffer)
+.
+710a
+			bytes -= nread;
+			blocks -= (((nread-1)/TBLOCK)+1);
+.
+703,705c
+			} else if (write(ofile, bufp, (int) bytes) < 0) {
+.
+694,697c
+		for (; blocks > 0;) {
+			register int nread;
+			char	*bufp;
+			register int nwant;
+			
+			nwant = NBLOCK*TBLOCK;
+			if (nwant > (blocks*TBLOCK))
+				nwant = (blocks*TBLOCK);
+			nread = readtbuf(&bufp, nwant);
+			if (bytes > nread) {
+				if (write(ofile, bufp, nread) < 0) {
+.
+609d
+590a
+		if (bigbuf != buf)
+#ifndef vax
+			free(bigbuf);
+#else
+			free(origbuf);
+#endif
+.
+589a
+#endif vax
+
+		while ((i = read(infile, bigbuf, min((hint*TBLOCK), maxread))) > 0
+		  && blocks > 0) {
+		  	register int nblks;
+
+			nblks = ((i-1)/TBLOCK)+1;
+		  	if (nblks > blocks)
+		  		nblks = blocks;
+			hint = writetbuf(bigbuf, nblks);
+			blocks -= nblks;
+		}
+.
+586,588c
+			if ((origbuf = malloc(maxread+pagesize)) == 0) {
+				maxread = TBLOCK;
+				bigbuf = buf;
+			} else {
+				bigbuf = (char *)(((int)origbuf+pagesize)&~(pagesize-1));
+			}
+.
+584c
+		hint = writetape((char *)&dblock);
+		maxread = max(stbuf.st_blksize, (nblock * TBLOCK));
+#ifndef vax
+		if ((bigbuf = malloc(maxread)) == 0) {
+			maxread = TBLOCK;
+			bigbuf = buf;
+		}
+#else
+		/*
+		 *  The following is for 4.2BSD and related systems to force
+		 *  the buffer to be page aligned.  The kernel will avoid
+		 *  bcopy()'s on disk IO this way by manipulating the page tables.
+		 */
+		{
+			int pagesize = getpagesize();
+.
+534a
+			close(infile);
+.
+416a
+	int	maxread;
+	int	hint;		/* amount to write to get "in sync" */
+.
+410a
+#ifdef vax
+	char *origbuf;
+#endif
+	char *bigbuf;
+.
+400c
+		readtbuf(&bufp, TBLOCK);
+.
+391c
+	char *bufp;
+.
+222a
+#else
+	/*
+	 *  The following is for 4.2BSD and related systems to force
+	 *  the buffer to be page aligned.  The kernel will avoid
+	 *  bcopy()'s on disk IO this way by manipulating the page tables.
+	 */
+	{
+		int pagesize = getpagesize();
+
+		tbuf = (union hblock *)malloc((nblock*TBLOCK)+pagesize);
+		tbuf = (union hblock *)(((int)tbuf+pagesize)&~(pagesize-1));
+	}
+#endif vax
+.
+221a
+#ifndef vax
+.
+21a
+#define	writetape(b)	writetbuf(b, 1)
+#define	min(a,b)  ((a) < (b) ? (a) : (b))
+#define	max(a,b)  ((a) > (b) ? (a) : (b))
+
+.
+1a
+static char RCSid[] = "@(#)$Header: tar.c,v 1.4 84/11/14 00:08:15 root Exp $";
+#endif
+
+#ifndef lint
+.
+0a
+/*
+ *			T A R . C 
+ *
+ * $Revision: 1.4 $
+ *
+ * $Log:	tar.c,v $
+ * Revision 1.4  84/11/14  00:08:15  root
+ * New more efficient version.  Minimizes the number of bcopys
+ * and maximizes block buffering.  Page aligns block buffers.
+ * 
+ * Revision 1.3  84/02/23  20:24:42  dpk
+ * Added missing close(infile) to prevent running out of fd's
+ * 
+ * Revision 1.2  84/02/23  20:17:02  dpk
+ * Added distinctive RCS header
+ * 
+ */
+.
+###################### cut here #########################
+diff tar.c.old tar.c
+0a1,17
+> /*
+>  *			T A R . C 
+>  *
+>  * $Revision: 1.4 $
+>  *
+>  * $Log:	tar.c,v $
+>  * Revision 1.4  84/11/14  00:08:15  root
+>  * New more efficient version.  Minimizes the number of bcopys
+>  * and maximizes block buffering.  Page aligns block buffers.
+>  * 
+>  * Revision 1.3  84/02/23  20:24:42  dpk
+>  * Added missing close(infile) to prevent running out of fd's
+>  * 
+>  * Revision 1.2  84/02/23  20:17:02  dpk
+>  * Added distinctive RCS header
+>  * 
+>  */
+1a19,22
+> static char RCSid[] = "@(#)$Header: tar.c,v 1.4 84/11/14 00:08:15 root Exp $";
+> #endif
+> 
+> #ifndef lint
+21a43,46
+> #define	writetape(b)	writetbuf(b, 1)
+> #define	min(a,b)  ((a) < (b) ? (a) : (b))
+> #define	max(a,b)  ((a) > (b) ? (a) : (b))
+> 
+221a247
+> #ifndef vax
+222a249,261
+> #else
+> 	/*
+> 	 *  The following is for 4.2BSD and related systems to force
+> 	 *  the buffer to be page aligned.  The kernel will avoid
+> 	 *  bcopy()'s on disk IO this way by manipulating the page tables.
+> 	 */
+> 	{
+> 		int pagesize = getpagesize();
+> 
+> 		tbuf = (union hblock *)malloc((nblock*TBLOCK)+pagesize);
+> 		tbuf = (union hblock *)(((int)tbuf+pagesize)&~(pagesize-1));
+> 	}
+> #endif vax
+391c430
+< 	char buf[TBLOCK];
+---
+> 	char *bufp;
+400c439
+< 		readtape(buf);
+---
+> 		readtbuf(&bufp, TBLOCK);
+410a450,453
+> #ifdef vax
+> 	char *origbuf;
+> #endif
+> 	char *bigbuf;
+416a460,461
+> 	int	maxread;
+> 	int	hint;		/* amount to write to get "in sync" */
+534a580
+> 			close(infile);
+584c630,644
+< 		writetape((char *)&dblock);
+---
+> 		hint = writetape((char *)&dblock);
+> 		maxread = max(stbuf.st_blksize, (nblock * TBLOCK));
+> #ifndef vax
+> 		if ((bigbuf = malloc(maxread)) == 0) {
+> 			maxread = TBLOCK;
+> 			bigbuf = buf;
+> 		}
+> #else
+> 		/*
+> 		 *  The following is for 4.2BSD and related systems to force
+> 		 *  the buffer to be page aligned.  The kernel will avoid
+> 		 *  bcopy()'s on disk IO this way by manipulating the page tables.
+> 		 */
+> 		{
+> 			int pagesize = getpagesize();
+586,588c646,651
+< 		while ((i = read(infile, buf, TBLOCK)) > 0 && blocks > 0) {
+< 			writetape(buf);
+< 			blocks--;
+---
+> 			if ((origbuf = malloc(maxread+pagesize)) == 0) {
+> 				maxread = TBLOCK;
+> 				bigbuf = buf;
+> 			} else {
+> 				bigbuf = (char *)(((int)origbuf+pagesize)&~(pagesize-1));
+> 			}
+589a653,664
+> #endif vax
+> 
+> 		while ((i = read(infile, bigbuf, min((hint*TBLOCK), maxread))) > 0
+> 		  && blocks > 0) {
+> 		  	register int nblks;
+> 
+> 			nblks = ((i-1)/TBLOCK)+1;
+> 		  	if (nblks > blocks)
+> 		  		nblks = blocks;
+> 			hint = writetbuf(bigbuf, nblks);
+> 			blocks -= nblks;
+> 		}
+590a666,671
+> 		if (bigbuf != buf)
+> #ifndef vax
+> 			free(bigbuf);
+> #else
+> 			free(origbuf);
+> #endif
+609d689
+< 	char buf[TBLOCK];
+694,697c774,784
+< 		for (; blocks-- > 0; bytes -= TBLOCK) {
+< 			readtape(buf);
+< 			if (bytes > TBLOCK) {
+< 				if (write(ofile, buf, TBLOCK) < 0) {
+---
+> 		for (; blocks > 0;) {
+> 			register int nread;
+> 			char	*bufp;
+> 			register int nwant;
+> 			
+> 			nwant = NBLOCK*TBLOCK;
+> 			if (nwant > (blocks*TBLOCK))
+> 				nwant = (blocks*TBLOCK);
+> 			nread = readtbuf(&bufp, nwant);
+> 			if (bytes > nread) {
+> 				if (write(ofile, bufp, nread) < 0) {
+703,705c790
+< 				continue;
+< 			}
+< 			if (write(ofile, buf, (int) bytes) < 0) {
+---
+> 			} else if (write(ofile, bufp, (int) bytes) < 0) {
+710a796,797
+> 			bytes -= nread;
+> 			blocks -= (((nread-1)/TBLOCK)+1);
+1062c1149
+< readtape(buffer)
+---
+> readtape (buffer)
+1064a1152,1163
+> 	char *bufp;
+> 	int nread;
+> 
+> 	readtbuf (&bufp, TBLOCK);
+> 	bcopy(bufp, buffer, TBLOCK);
+> 	return(TBLOCK);
+> }
+> 
+> readtbuf(bufpp, size)
+> 	char **bufpp;
+> 	int size;
+> {
+1086,1087c1185,1189
+< 	bcopy((char *)&tbuf[recno++], buffer, TBLOCK);
+< 	return (TBLOCK);
+---
+> 	if (size > ((nblock-recno)*TBLOCK))
+> 		size = (nblock-recno)*TBLOCK;
+> 	*bufpp = (char *)&tbuf[recno];
+> 	recno += (size/TBLOCK);
+> 	return (size);
+1090,1091c1192,1194
+< writetape(buffer)
+< 	char *buffer;
+---
+> writetbuf(buffer, n)
+> 	register char *buffer;
+> 	register int n;
+1101,1103c1204,1212
+< 	bcopy(buffer, (char *)&tbuf[recno++], TBLOCK);
+< 	if (recno >= nblock) {
+< 		if (write(mt, tbuf, TBLOCK*nblock) < 0) {
+---
+> 
+> 	/*
+> 	 *  Special case:  We have an empty tape buffer, and the
+> 	 *  users data size is >= the tape block size:  Avoid
+> 	 *  the bcopy and dma direct to tape.  BIG WIN.  Add the
+> 	 *  residual to the tape buffer.
+> 	 */
+> 	while (recno == 0 && n >= nblock) {
+> 		if (write(mt, buffer, TBLOCK*nblock) < 0) {
+1107c1216,1217
+< 		recno = 0;
+---
+> 		n -= nblock;
+> 		buffer += (nblock * TBLOCK);
+1109c1219,1233
+< 	return (TBLOCK);
+---
+> 		
+> 	while (n-- > 0) {
+> 		bcopy(buffer, (char *)&tbuf[recno++], TBLOCK);
+> 		buffer += TBLOCK;
+> 		if (recno >= nblock) {
+> 			if (write(mt, tbuf, TBLOCK*nblock) < 0) {
+> 				fprintf(stderr, "tar: tape write error\n");
+> 				done(2);
+> 			}
+> 			recno = 0;
+> 		}
+> 	}
+> 
+> 	/* Tell the user how much to write to get in sync */
+> 	return (nblock - recno);
+################### End of Bug Report ####################

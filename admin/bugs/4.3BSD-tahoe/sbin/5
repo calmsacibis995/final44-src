@@ -1,0 +1,393 @@
+From chris@cs.UMD.EDU  Tue Jan 30 17:01:51 1990
+Date: Tue, 30 Jan 90 20:01:44 -0500
+From: chris@cs.UMD.EDU (Chris Torek)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: ncheck fixes: bread + lint
+
+Index: sbin/ncheck.c 4.3BSD-tahoe Fix
+
+Description:
+	Since the tahoe release, and now with the dev_bsize variable,
+	ncheck has become very `linty'.
+
+	bread() does not retry in dev_bsize chunks on an error, making
+	ncheck less useful on a disk with a bad block in an inode region.
+
+Repeat-by:
+	run `lint -h ncheck.c'
+	examine bread()
+
+Fix:
+	The diffs below are relative to the current okeeffe sources,
+	hence should apply easily.
+
+Chris
+
+RCS file: RCS/ncheck.c,v
+retrieving revision 1.2
+diff -c2 -r1.2 ncheck.c
+*** /tmp/,RCSt1009764	Tue Jan 30 20:00:35 1990
+--- ncheck.c	Tue Jan 30 19:59:45 1990
+***************
+*** 63,67 ****
+  int	nhent;
+  int	nxfile;
+! long	dev_bsize = 1;
+  
+  int	nerror;
+--- 63,67 ----
+  int	nhent;
+  int	nxfile;
+! int	dev_bsize = 1;
+  
+  int	nerror;
+***************
+*** 68,72 ****
+--- 68,75 ----
+  daddr_t	bmap();
+  long	atol();
++ off_t	lseek();
++ char	*malloc(), *strcpy();
+  struct htab *lookup();
++ struct direct *nreaddir();
+  
+  main(argc, argv)
+***************
+*** 74,78 ****
+  	char *argv[];
+  {
+- 	register i;
+  	long n;
+  
+--- 77,80 ----
+***************
+*** 107,111 ****
+  
+  		default:
+! 			fprintf(stderr, "ncheck: bad flag %c\n", (*argv)[1]);
+  			nerror++;
+  		}
+--- 109,114 ----
+  
+  		default:
+! 			(void) fprintf(stderr, "ncheck: bad flag %c\n",
+! 			    (*argv)[1]);
+  			nerror++;
+  		}
+***************
+*** 119,127 ****
+  {
+  	register int i, j, c;
+- 	int nfiles;
+  
+  	fi = open(file, 0);
+  	if(fi < 0) {
+! 		fprintf(stderr, "ncheck: cannot open %s\n", file);
+  		nerror++;
+  		return;
+--- 122,129 ----
+  {
+  	register int i, j, c;
+  
+  	fi = open(file, 0);
+  	if(fi < 0) {
+! 		(void) fprintf(stderr, "ncheck: cannot open %s\n", file);
+  		nerror++;
+  		return;
+***************
+*** 128,136 ****
+  	}
+  	nhent = 0;
+! 	printf("%s:\n", file);
+  	sync();
+! 	bread(SBOFF, (char *)&sblock, SBSIZE);
+  	if (sblock.fs_magic != FS_MAGIC) {
+! 		printf("%s: not a file system\n", file);
+  		nerror++;
+  		return;
+--- 130,138 ----
+  	}
+  	nhent = 0;
+! 	(void) printf("%s:\n", file);
+  	sync();
+! 	bread(SBOFF, (char *)&sblock, (long)SBSIZE);
+  	if (sblock.fs_magic != FS_MAGIC) {
+! 		(void) printf("%s: not a file system\n", file);
+  		nerror++;
+  		return;
+***************
+*** 138,145 ****
+  	dev_bsize = sblock.fs_fsize / fsbtodb(&sblock, 1);
+  	hsize = sblock.fs_ipg * sblock.fs_ncg - sblock.fs_cstotal.cs_nifree + 1;
+! 	htab = (struct htab *)malloc(hsize * sizeof(struct htab));
+! 	strngtab = (char *)malloc(30 * hsize);
+  	if (htab == 0 || strngtab == 0) {
+! 		printf("not enough memory to allocate tables\n");
+  		nerror++;
+  		return;
+--- 140,147 ----
+  	dev_bsize = sblock.fs_fsize / fsbtodb(&sblock, 1);
+  	hsize = sblock.fs_ipg * sblock.fs_ncg - sblock.fs_cstotal.cs_nifree + 1;
+! 	htab = (struct htab *)malloc((unsigned)hsize * sizeof(struct htab));
+! 	strngtab = malloc((unsigned)(30 * hsize));
+  	if (htab == 0 || strngtab == 0) {
+! 		(void) printf("not enough memory to allocate tables\n");
+  		nerror++;
+  		return;
+***************
+*** 188,192 ****
+  		}
+  	}
+! 	close(fi);
+  	for (i = 0; i < hsize; i++)
+  		htab[i].h_ino = 0;
+--- 190,194 ----
+  		}
+  	}
+! 	(void) close(fi);
+  	for (i = 0; i < hsize; i++)
+  		htab[i].h_ino = 0;
+***************
+*** 220,224 ****
+  		}
+  	}
+! 	lookup(ino, 1);
+  }
+  
+--- 222,226 ----
+  		}
+  	}
+! 	(void) lookup(ino, 1);
+  }
+  
+***************
+*** 235,239 ****
+  	dirp.ip = ip;
+  	gip = ip;
+! 	for (dp = readdir(&dirp); dp != NULL; dp = readdir(&dirp)) {
+  		if(dp->d_ino == 0)
+  			continue;
+--- 237,241 ----
+  	dirp.ip = ip;
+  	gip = ip;
+! 	for (dp = nreaddir(&dirp); dp != NULL; dp = nreaddir(&dirp)) {
+  		if(dp->d_ino == 0)
+  			continue;
+***************
+*** 246,250 ****
+  		hp->h_name = &strngtab[strngloc];
+  		strngloc += strlen(dp->d_name) + 1;
+! 		strcpy(hp->h_name, dp->d_name);
+  	}
+  }
+--- 248,252 ----
+  		hp->h_name = &strngtab[strngloc];
+  		strngloc += strlen(dp->d_name) + 1;
+! 		(void) strcpy(hp->h_name, dp->d_name);
+  	}
+  }
+***************
+*** 262,266 ****
+  	dirp.ip = ip;
+  	gip = ip;
+! 	for(dp = readdir(&dirp); dp != NULL; dp = readdir(&dirp)) {
+  		if(aflg==0 && dotname(dp))
+  			continue;
+--- 264,268 ----
+  	dirp.ip = ip;
+  	gip = ip;
+! 	for(dp = nreaddir(&dirp); dp != NULL; dp = nreaddir(&dirp)) {
+  		if(aflg==0 && dotname(dp))
+  			continue;
+***************
+*** 273,285 ****
+  			continue;
+  		if (mflg)
+! 			printf("mode %-6o uid %-5d gid %-5d ino ",
+  			    ilist[k].mode, ilist[k].uid, ilist[k].gid);
+  	pr:
+! 		printf("%-5u\t", dp->d_ino);
+  		pname(ino, 0);
+! 		printf("/%s", dp->d_name);
+  		if (lookup(dp->d_ino, 0))
+! 			printf("/.");
+! 		printf("\n");
+  	}
+  }
+--- 275,287 ----
+  			continue;
+  		if (mflg)
+! 			(void) printf("mode %-6o uid %-5d gid %-5d ino ",
+  			    ilist[k].mode, ilist[k].uid, ilist[k].gid);
+  	pr:
+! 		(void) printf("%-5lu\t", dp->d_ino);
+  		pname(ino, 0);
+! 		(void) printf("/%s", dp->d_name);
+  		if (lookup(dp->d_ino, 0))
+! 			(void) printf("/.");
+! 		(void) printf("\n");
+  	}
+  }
+***************
+*** 289,293 ****
+   */
+  struct direct *
+! readdir(dirp)
+  	register struct dirstuff *dirp;
+  {
+--- 291,295 ----
+   */
+  struct direct *
+! nreaddir(dirp)
+  	register struct dirstuff *dirp;
+  {
+***************
+*** 335,347 ****
+  		return;
+  	if ((hp = lookup(i, 0)) == 0) {
+! 		printf("???");
+  		return;
+  	}
+  	if (lev > 10) {
+! 		printf("...");
+  		return;
+  	}
+  	pname(hp->h_pino, ++lev);
+! 	printf("/%s", hp->h_name);
+  }
+  
+--- 337,349 ----
+  		return;
+  	if ((hp = lookup(i, 0)) == 0) {
+! 		(void) printf("???");
+  		return;
+  	}
+  	if (lev > 10) {
+! 		(void) printf("...");
+  		return;
+  	}
+  	pname(hp->h_pino, ++lev);
+! 	(void) printf("/%s", hp->h_name);
+  }
+  
+***************
+*** 362,366 ****
+  		return(0);
+  	if (++nhent >= hsize) {
+! 		fprintf(stderr, "ncheck: hsize of %d is too small\n", hsize);
+  		exit(1);
+  	}
+--- 364,369 ----
+  		return(0);
+  	if (++nhent >= hsize) {
+! 		(void) fprintf(stderr, "ncheck: hsize of %ld is too small\n",
+! 		    hsize);
+  		exit(1);
+  	}
+***************
+*** 369,384 ****
+  }
+  
+! bread(bno, buf, cnt)
+  	daddr_t bno;
+! 	char *buf;
+! 	int cnt;
+  {
+! 	register i;
+  
+! 	lseek(fi, bno * dev_bsize, 0);
+  	if (read(fi, buf, cnt) != cnt) {
+! 		fprintf(stderr, "ncheck: read error %d\n", bno);
+! 		for(i=0; i < cnt; i++)
+! 			buf[i] = 0;
+  	}
+  }
+--- 372,406 ----
+  }
+  
+! bread(bno, buf, lcount)
+  	daddr_t bno;
+! 	register char *buf;
+! 	long lcount;
+  {
+! 	register int i, cnt = lcount;
+! 	register off_t off = bno * dev_bsize;
+  
+! 	(void) lseek(fi, off, 0);
+  	if (read(fi, buf, cnt) != cnt) {
+! 		(void) fprintf(stderr, "ncheck: read error %ld\n", bno);
+! 		if (cnt % dev_bsize) {
+! 			/* THIS INDICATES A SERIOUS BUG */
+! 			/* bzero is probably not correct, but will do */
+! 			(void) fprintf(stderr,
+! 			    "ncheck: bread: cnt %d not multiple of %d\n",
+! 			    cnt, dev_bsize);
+! 			bzero(buf, cnt);
+! 			return;
+! 		}
+! 		for (i = 0; i < cnt; i += dev_bsize) {
+! 			(void) lseek(fi, off, 0);
+! 			if (read(fi, buf, dev_bsize) != dev_bsize) {
+! 				(void) fprintf(stderr,
+! 				    "ncheck: re-read error %ld\n", bno);
+! 				bzero(buf, dev_bsize);
+! 			}
+! 			off += dev_bsize;
+! 			buf += dev_bsize;
+! 			bno++;
+! 		}
+  	}
+  }
+***************
+*** 400,404 ****
+  
+  	if (bn < 0) {
+! 		fprintf(stderr, "ncheck: bn %d negative\n", bn);
+  		return ((daddr_t)0);
+  	}
+--- 422,426 ----
+  
+  	if (bn < 0) {
+! 		(void) fprintf(stderr, "ncheck: bn %ld negative\n", bn);
+  		return ((daddr_t)0);
+  	}
+***************
+*** 423,427 ****
+  	}
+  	if (j == 0) {
+! 		printf("ncheck: bn %ld ovf, ino %u\n", bn, ino);
+  		return ((daddr_t)0);
+  	}
+--- 445,449 ----
+  	}
+  	if (j == 0) {
+! 		(void) printf("ncheck: bn %ld ovf, ino %lu\n", bn, ino);
+  		return ((daddr_t)0);
+  	}
+***************
+*** 432,436 ****
+  	nb = gip->di_ib[NIADDR - j];
+  	if (nb == 0) {
+! 		printf("ncheck: bn %ld void1, ino %u\n", bn, ino);
+  		return ((daddr_t)0);
+  	}
+--- 454,458 ----
+  	nb = gip->di_ib[NIADDR - j];
+  	if (nb == 0) {
+! 		(void) printf("ncheck: bn %ld void1, ino %lu\n", bn, ino);
+  		return ((daddr_t)0);
+  	}
+***************
+*** 449,453 ****
+  		nb = bap[i];
+  		if(nb == 0) {
+! 			printf("ncheck: bn %ld void2, ino %u\n", bn, ino);
+  			return ((daddr_t)0);
+  		}
+--- 471,476 ----
+  		nb = bap[i];
+  		if(nb == 0) {
+! 			(void) printf("ncheck: bn %ld void2, ino %lu\n", bn,
+! 			    ino);
+  			return ((daddr_t)0);
+  		}

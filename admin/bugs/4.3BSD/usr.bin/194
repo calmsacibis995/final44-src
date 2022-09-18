@@ -1,0 +1,145 @@
+From serge@okeeffe.Berkeley.EDU  Tue Mar 21 15:18:50 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA20775; Tue, 21 Mar 89 15:18:50 -0800
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA12585; Tue, 21 Mar 89 15:18:50 -0800
+Received: by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA20767; Tue, 21 Mar 89 15:18:44 -0800
+Date: Tue, 21 Mar 89 15:18:44 -0800
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8903212318.AA20767@okeeffe.Berkeley.EDU>
+Subject: yacc generated parser can loop
+Index: usr.bin/yacc/y3.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Path: pasteur!agate!bionet!apple!bloom-beacon!spdcc!ima!compilers-sender
+From: djones@megatest.uucp (Dave Jones)
+Newsgroups: comp.compilers
+Subject: Comments on and fix for old yacc bug.
+Message-ID: <2777@ima.ima.isc.com>
+Date: 14 Oct 88 01:21:49 GMT
+References: <2767@ima.ima.isc.com>
+Sender: compilers-sender@ima.ima.isc.com
+Reply-To: djones@megatest.uucp (Dave Jones)
+Organization: Megatest Corporation, San Jose, Ca
+Lines: 118
+Approved: compilers@ima.UUCP
+
+I would like to thank those who responded to my inquiry about the
+old yacc bug.
+
+I was preparing a summary describing what I have learned about the
+old yacc bug, but Larry Jones beat me to it. Thanks Larry.
+I can, however, add a few remarks.
+
+First of all, I would like to apologize for misspelling a word
+within the text which I called a "verbatim" copy of the text
+in _Introduction to Compiler Construction with Unix_ by Schreiner
+and Friedman.  The mistake did not occur in the original.
+
+Mr George Friedman, one of the authors of the book, asked why I 
+used "sic" after the bsd release numbers.  It was because I thought
+it likely that someone might think I had accidentally reversed
+the numbers 4.1 and 4.2 when transcribing the quoted text.
+
+Now then...
+
+>From article <2767@ima.ima.isc.com>, by sdrc!scjones@uunet.uu.net (Larry Jones):
+> In article <2737@ima.ima.isc.com>, djones@megatest.uucp (Dave Jones) writes:
+>> The main thing I want to know is
+>> whether the Sun Unix 4.2 release 3.4 has the bug, and if so what do
+>> I do about it?
+> 
+> I can't speak for Sun or Berkeley, but I know that it's fixed on the
+> version of System V Release 3.0 that I have.
+
+It is broken in the Sun3(bsd4.2) version, release 3.4.  It is also broken
+in BSB 4.3.  So far as I can tell, bsd 4.1, 4.2, and 4.3 all contain
+the identical botched "fix" for the bug.
+
+>> Some questions"
+>>   1) How one may determine whether or not a given yacc has the bug?
+
+Mr. Larry Jones furnished us with a yacc input file, and the proper
+and buggy versions of the resulting y.output. Thanks.  Interestingly,
+he came up with an example which was isomorphic to the one
+I was going to post.
+
+>>   2) What to do about it if you've got a buggy one?
+> 
+> Complain to your vendor?
+
+If you have the source, you can fix it.
+
+Another thing you can do is to inspect the y.output file to see if you
+have any defective states. The are states which can shift "error",
+but have a default action other than "error".
+
+A couple of people mentioned "bison", the gnu yacc-lookalike.  It does
+not have an equivalent bug.  I ran the my .y file through it, and
+it was accepted, but there were lots of warnings about default actions
+giving incorrect types.  The warnings looked wrong to me, but I guess
+I could live with them.  [ There has been quite a bit of discussion on
+the net about exactly how restrictive the gnu copyright notice is
+with regard to executables derived from gnu's equivalent of yaccpar.
+Did anyone ever get the definitive answer from the FSF?]
+
+BSD also comes with a yacc, /usr/ucb/eyacc, whose manual page
+says does not have the bug.  But it also does not have certain 
+4.1 yacc features, such as %union and %type.
+
+>>   3) Exactly what are the consequences -- does "go into a loop" mean
+>>        "loop forever"?
+> 
+> I believe it is possible to get into an infinite loop, although I haven't
+> seen it happen.  What I have seen is the same rule get reduced twice
+> in a row even though the grammar should not allow that to occur.
+
+Mr. Kirk Hayes says that he has seen the Xenix version go into a spin.
+I've looked at the BSD 4.3 yaccpar, and it looks as though it should
+always terminate, having issued at least one syntax error-message,
+although I will not swear to having proved as much.
+
+>>   4) What is the correction in 4.1? Is it in the source code?
+>>   5) What is the typographical error in the correction?
+>>   6) What is the "definite correction"? Do you have to have source?
+> 
+> The correction is ridiculously simple if you have the source code - as I
+> recall it consisted of changing a 2 to a 1 in one place in the code.
+
+The fix for the old yacc bug is to change the "[1]" into "[2]" 
+in the following line in the procedure wract():
+
+    if( temp1[1] > 0 ) lastred = 0;
+
+In release 4.3, it is in file y3.c on line 288.  Here's a diff
+file that also adds a comment about the change:
+
+286,288c286,302
+< 	/* for error recovery, arrange that, if there is a shift on the
+< 	/* error recovery token, `error', that the default be the error action */
+< 	if( temp1[1] > 0 ) lastred = 0;
+---
+>         /* for error recovery, arrange that, if there is a shift on the
+>         ** error recovery token, `error', that the default be the error action
+>         */
+> 
+>         /* This used to (mistakenly) read
+>         **
+>         ** if(temp1[1] > 0) lastred = 0;
+>         **
+>         ** Slot number two is the one which codes for a synthesized
+>         ** "error" token.  Slot number one is for $eof.  $eof is
+>         ** never shifted, so the old code never set lastred to zero.
+>         **
+>         ** -- djones 10/11/88
+>         **
+>         */
+> 
+> 	if( temp1[2] > 0 ) lastred = 0;
+[From djones@megatest.uucp (Dave Jones)]
+--
+Send compilers articles to ima!compilers or, in a pinch, to Levine@YALE.EDU
+Plausible paths are { decvax | harvard | yale | bbn}!ima
+Please send responses to the originator of the message -- I cannot forward
+mail accidentally sent back to compilers.  Meta-mail to ima!compilers-request

@@ -1,0 +1,52 @@
+Return-Path: <sam@ucbmonet>
+Date: Sat, 9 Jun 84 14:59:21 pdt
+Subject: wait3(0,0,0) causes a copyout of rusage to 0
+From: kre@ucbmonet (Robert ELz)
+Index: sys/kern_exit.c 4.2BSD
+
+Description:
+	If the rusage parameter of wait3() is given as 0
+	the kernel attempts to copyout an rusage struct
+	to 0 in user space.  That usually fails as 0
+	is not writeable.  That doesn't cause the wait3()
+	to fail, as the error from copyout is ignored.
+Repeat-By:
+	Create the following little program, and compile
+	it with -N, run it, and get "Illegal instruction"
+	or something similar after low core has been
+	destroyed by the bug ...
+
+main()
+{
+	if (fork() == 0)
+		exit(0);
+	wait3(0,0,0);
+}
+
+Fix:
+	Here is a diff of kern_exit.c (line numbers are from 6.2 on monet)
+
+*** /sys/sys/kern_exit.c	Tue May 22 11:45:47 1984
+--- ./kern_exit.c	Sat Jun  9 14:50:55 1984
+***************
+*** 175,181
+  	u.u_error = wait1(u.u_ar0[R0], &ru);
+  	if (u.u_error)
+  		return;
+! 	(void) copyout((caddr_t)&ru, (caddr_t)rup, sizeof (struct rusage));
+  }
+  
+  /*
+
+--- 175,183 -----
+  	u.u_error = wait1(u.u_ar0[R0], &ru);
+  	if (u.u_error)
+  		return;
+! 	if (rup != (struct rusage *)0)
+! 		u.u_error = copyout((caddr_t)&ru, (caddr_t)rup,
+! 		    sizeof (struct rusage));
+  }
+  
+  /*
+
+.. kre

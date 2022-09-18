@@ -1,0 +1,76 @@
+Return-Path: <allyn@sdcsvax.ucsd.edu>
+Date: Sun, 16 Feb 86 19:31:45 PST
+From: allyn@sdcsvax.ucsd.edu (Allyn Fratkin)
+Subject: quota can give false "over quota" reports
+Index: 	ucb/quota.c 4.3BSD
+
+Description:
+	Quota fails to reset the flags that mean "over quota" before it checks
+	each filesystem.  The result of this is that if a filesystem is
+	over either the block quota or the inode quota (or both) all subsequent
+	filesystems will be shown (with an asterisk) as over quota 
+	(even filesystems for which no quota exists).  The numbers are
+	correct, but people get in the habit of just looking for
+	the asterisks.
+
+	In the follwing examples, notice that I am over quota on /usr,
+	but not on /eecs, yet the * is there on both lines.  
+	In the second example, even filesystems on which I do not have a
+	quota have the *.
+
+% quota
+Disc quotas for allyn (uid 519):
+    Filsys current   quota   limit  #warns   files   quota   limit  #warns
+      /usr     775*    300    5000       2      16     100     200        
+     /eecs    1421*   1500    2500             332    3000    5000        
+% quota -v
+Disc quotas for allyn (uid 519):
+    Filsys current   quota   limit  #warns   files   quota   limit  #warns
+      /usr     775*    300    5000       2      16     100     200        
+    /guest     319*      0       0       0      12       0       0       0
+    /local       0*      0       0       0       0       0       0       0
+     /eecs    1422*   1500    2500             332    3000    5000        
+
+Repeat-By:
+	Set up quotas on two or more filesystems.  Type
+% quota
+	and notice the order of the listing.  On the first filesystem to be
+	listed, create files of sufficient size to go over the soft limit.
+	Again type
+% quota
+	and notice that all filesystems have the asterisk.
+
+Fix:
+	This fix has not been tested because I am not the superuser, but is so
+	trivial it should work with no problems.  (famous last words)
+
+	This is "quota.c 5.2 9/10/85"
+*** /usr/src/ucb/quota.c	Tue Oct 29 17:47:27 1985
+--- quota.c	Sun Feb 16 19:00:14 1986
+***************
+*** 108,114 ****
+  {
+  	register char c, *p;
+  	register struct fstab *fs;
+! 	register char *msgi = (char *)0, *msgb = (char *)0;
+  	register enab = 1;
+  	dev_t	fsdev;
+  	struct	stat statb;
+--- 108,114 ----
+  {
+  	register char c, *p;
+  	register struct fstab *fs;
+! 	register char *msgi, *msgb;
+  	register enab = 1;
+  	dev_t	fsdev;
+  	struct	stat statb;
+***************
+*** 126,131 ****
+--- 126,132 ----
+  	while (fs = getfsent()) {
+  		if (stat(fs->fs_spec, &statb) < 0)
+  			continue;
++ 		msgi = msgb = (char *) 0;
+  		fsdev = statb.st_rdev;
+  		(void) sprintf(qfilename, "%s/%s", fs->fs_file, qfname);
+  		if (stat(qfilename, &statb) < 0 || statb.st_dev != fsdev)

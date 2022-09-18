@@ -1,0 +1,1081 @@
+head     4.9;
+branch   ;
+access   ;
+symbols  PATCH8:4.9 PATCH7:4.9 KPATCH6:4.9 ASRSNAP1001:4.9 PATCH5:4.9 ADAMS_NSA:4.9 KPATCH4:4.9 KPATCH3:4.9 KPATCH2:4.9 KREL1:4.9 BETA5/24/88:4.6 v1:1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+4.9
+date     88.11.15.11.29.40;  author jtkohl;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.08.01.13.29.11;  author shanzer;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.06.09.16.42.23;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.14.21.53;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.02.05.19.14.47;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.01.14.18.44.53;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.11.24.03.27.04;  author raeburn;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.04.14.55.20;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.41.19;  author steiner;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.08.08.16.26.32;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.08.16.12.49.37;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@ok v1
+@
+
+
+4.9
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@/*
+ * $Source: //ra/mit/wesommer/des/RCS/make_key_perm.c,v $
+ * $Author: shanzer $
+ * $Locker:  $
+ *
+ * Copyright 1988 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine calculates an effective Key schedule set of
+ * permutations for des.  Beginning with the pre-defined key schedule
+ * algorithm, it reduces it to a set of 16 permutations upon the
+ * initial key.  Only needs to execute once to produce a header file.
+ * Note that we subtract one from the values ouput to fix up for C
+ * subscripts starting at 0.
+ */
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <errno.h>
+#include "des_internal.h"
+
+#ifndef lint
+static char rcsid[]=
+    "$Header: make_key_perm.c,v 4.8 88/08/01 13:29:11 shanzer Exp $";
+#endif /* lint */
+
+char *progname;
+extern char *errmsg();
+extern int errno;
+extern long swap_bit_pos_1();
+extern long swap_bit_pos_0();
+int sflag;
+int vflag;
+int dflag;
+int pid;
+int child_status;
+
+int key_position[64+1];
+int C[28+1];
+int D[28+1];
+int C_temp, D_temp;
+
+/*
+ *  CONVENTIONS for numbering the bits
+ *  bit 0 ==> lsb
+ *  L starts at bit 0
+ *  R starts at bit 64
+ *
+ *  BEWARE-- some stuff starts at 0, some at 1;  perhaps some bugs still?
+ */
+
+/*
+ * Sequence of shifts used for the key schedule.
+ */
+int const shift[16+1] = { 0,
+    1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1,
+};
+
+int const pc_1[64+1] = { 0,
+
+    57,49,41,33,25,17, 9,
+     1,58,50,42,34,26,18,
+    10, 2,59,51,43,35,27,
+    19,11, 3,60,52,44,36,
+
+    63,55,47,39,31,23,15,
+     7,62,54,46,38,30,22,
+    14, 6,61,53,45,37,29,
+    21,13, 5,28,20,12, 4,
+};
+
+
+/*
+ * Permuted-choice 2, to pick out the bits from
+ * the CD array that generate the key schedule.
+ */
+int const pc_2[48+1] = { 0,
+
+    14,17,11,24, 1, 5,
+     3,28,15, 6,21,10,
+    23,19,12, 4,26, 8,
+    16, 7,27,20,13, 2,
+
+    41,52,31,37,47,55,
+    30,40,51,45,33,48,
+    44,49,39,56,34,53,
+    46,42,50,36,29,32,
+};
+
+int ks_perm[16+1][48+1];
+
+int des_debug;
+
+gen(stream)
+    FILE *stream;
+{
+    /*  Local Declarations */
+    register i, j, iter;
+
+    /*
+     * initialize the key_position array s.t. key_position[i] = i;
+     * that is, each element is equal to its starting position.
+     *
+     * Also adjust for the bit order within bytes.
+     */
+
+    for (i=0; i<65; i++)
+        key_position[i]= swap_bit_pos_1(i);
+
+    fprintf(stream,"static int const key_perm[16][48] = {\n");
+
+    /*
+     * apply pc_1 to initial key_position to create C[0] and D[0]
+     * Start at pc_1[1], not pc_1[0]
+     */
+    for (i=1; i<=28; i++) {
+        C[i] = key_position[pc_1[i]];
+        D[i] = key_position[pc_1[i+28]];
+    }
+
+    /*
+     * major loop over the 16 iterations
+     * start at iter = 1, not zero.
+     */
+    for (iter = 1; iter <= 16; iter++) {
+        if (des_debug) {
+            /*  for debugging */
+            printf(
+                    "/* DEBUG-- start iteration = %d  shifts = %d",
+                    iter, shift[iter]);
+            printf("\nC array");
+            for (i = 1; i <=4 ; i++) {
+                printf("\n");
+                for (j = 1; j<=7; j++)
+                    printf("%d, ",C[(i-1)*7+j]);
+            }
+            printf("\n\nD array");
+            for (i = 1; i <=4 ; i++) {
+                printf("\n");
+                for (j = 1; j<=7; j++)
+                    printf("%d, ",D[(i-1)*7+j]);
+            }
+            printf("\n */");
+            fflush(stdout);
+        }
+
+        /* apply the appropriate left shifts */
+        for (i = 1; i <= shift[iter]; i++) {
+            C_temp = C[1];
+            D_temp = D[1];
+            for (j =1; j<=27; j++) {
+                C[j] = C[j+1];
+                D[j] = D[j+1];
+            }
+            C[j] = C_temp;
+            D[j] = D_temp;
+        }
+
+
+        if (des_debug) {
+            /* for debugging */
+            printf("/* DEBUG:\n");
+            printf(" * after shifts, iteration = %d  shifts = %d",
+                    iter, shift[iter]);
+            printf("\nC array");
+            for (i = 1; i <=4 ; i++) {
+                printf("\n");
+                for (j = 1; j<=7; j++)
+                    printf("%d, ",C[(i-1)*7+j]);
+            }
+            printf("\n\nD array");
+            for (i = 1; i <=4 ; i++) {
+                printf("\n");
+                for (j = 1; j<=7; j++)
+                    printf("%d, ",D[(i-1)*7+j]);
+            }
+            printf("\n */");
+            fflush(stdout);
+        }
+
+        /*
+         * apply pc_2
+         * Start at pc_2[1], not pc_2[0]
+         *
+         * Start stuffing ks_perm[1][1], not ks_perm[0][0]
+         *
+         * Adjust ks_perm for bit order if needed.
+         */
+        for (i = 1; i <= 48; i++) {
+            if (pc_2[i] <= 28)
+                ks_perm[iter][(i)] = C[pc_2[i]];
+            else
+                ks_perm[iter][(i)] = D[pc_2[i]-28];
+        }
+
+        /* now output the resulting key permutation */
+        fprintf(stream, "    /* ks permutation iteration = %2d */",
+                iter);
+        for (i = 1; i <= 6; i++) {
+            fprintf(stream, "\n    ");
+            for (j = 1; j <= 8; j++) {
+                /*
+                 * IMPORTANT -- subtract one from value to adjust to a
+                 * zero-based subscript for key
+                 */
+                fprintf(stream, "%d", ks_perm[iter][(i-1)*8+j]-1);
+                /* omit last comma */
+                if ((j != 8) || (i != 6) || (iter != 16)) {
+                    fprintf(stream,", ");
+                }
+            }
+        }
+    }
+    fprintf(stream,"\n};\n");
+}
+@
+
+
+4.8
+log
+@Includes conf.h so it does not do ansi style defines when we are not 
+an ansi compatable compiler.
+Programer: shanzer
+Auditor: stiener/raeburn
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/make_key_perm.c,v $
+ * $Author: steiner $
+d22 1
+a22 1
+#include "conf.h"
+d26 1
+a26 1
+    "$Header: make_key_perm.c,v 4.7 88/06/09 16:42:23 steiner Exp $";
+d94 1
+a94 1
+int debug;
+d112 1
+a112 1
+    fprintf(stream,"int const key_perm[16][48] = {\n");
+d128 1
+a128 1
+        if (debug) {
+d162 1
+a162 1
+        if (debug) {
+@
+
+
+4.7
+log
+@Optimizations for vax, change in generating files.
+Programmer: raeburn.
+Auditor: jtkohl.
+@
+text
+@d2 2
+a3 2
+ * $Source: /u2/lockers/kerberos/lib/des/RCS/make_key_perm.c,v $
+ * $Author: raeburn $
+d22 1
+d26 1
+a26 1
+    "$Header: make_key_perm.c,v 4.3 87/11/24 03:27:04 raeburn Exp $";
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d2 3
+a4 2
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+ * $Author: steiner $
+d14 1
+a14 1
+ * initial key.	 Only needs to execute once to produce a header file.
+a16 5
+ *
+ *	exit returns	 0 ==> success
+ *			-1 ==> error
+ *
+ * spm	6/85	project athena 
+a18 5
+#ifndef	lint
+static char rcsid_make_key_perm_c[] =
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+#endif	lint
+
+d23 4
+a26 3
+#ifndef DEBUG
+#define DEBUG
+#endif
+d50 1
+a50 2
+ *  BEWARE-- some stuff starts at 0, some at 1;
+ *  perhaps some bugs still?
+d56 1
+a56 1
+int shift[16+1] = { 0,
+d60 1
+a60 1
+int pc_1[64+1] = { 0,
+d78 1
+a78 1
+int pc_2[48+1] = { 0,
+d92 1
+d95 2
+a96 3
+main(argc,argv)
+    int argc;
+    char *argv[];
+d98 1
+a98 1
+    /*	Local Declarations */
+a100 23
+    progname = argv[0];		/* salt away invoking program */
+
+    while (--argc > 0 && (*++argv)[0] == '-')
+	for (i = 1; argv[0][i] != '\0'; i++) {
+	    switch (argv[0][i]) {
+
+		/* debug flag */
+	    case 'd':
+		debug=1;
+		continue;
+
+	    default:
+		printf("%s: illegal flag \"%c\" ",
+		       progname,argv[0][i]);
+		exit(1);
+	    }
+	};
+
+    if (argc) {
+	fprintf(stderr, "Usage: %s\n", progname);
+	exit(1);
+    }
+
+d109 1
+a109 1
+	key_position[i]= swap_bit_pos_1(i);
+d111 1
+a111 7
+    fprintf(stdout, "/* key_perm.h\n");
+    fprintf(stdout,
+	    " * This header file contains the effective key\n");
+    fprintf(stdout,
+	    " * permutations required to create DES key schedules.\n");
+    fprintf(stdout,
+	    " * It is produced by the routine 'make_key_perm'\n */\n");
+a112 2
+    fprintf(stdout,"int\tkey_perm[16][48] = \n{");
+
+d118 2
+a119 2
+	C[i] = key_position[pc_1[i]];
+	D[i] = key_position[pc_1[i+28]];
+d127 20
+a146 20
+	if (debug) {
+	    /*	for debugging */
+	    fprintf(stderr,
+		    "/* DEBUG-- start iteration = %d  shifts = %d",
+		    iter, shift[iter]);
+	    fprintf(stderr,"\nC array");
+	    for (i = 1; i <=4 ; i++) {
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+		    fprintf(stderr,"%d, ",C[(i-1)*7+j]);
+	    }
+	    fprintf(stderr,"\n\nD array");
+	    for (i = 1; i <=4 ; i++) {
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+		    fprintf(stderr,"%d, ",D[(i-1)*7+j]);
+	    }
+	    fprintf(stderr,"\n */");
+	    fflush(stderr);
+	}
+d148 11
+a158 11
+	/* apply the appropriate left shifts */
+	for (i = 1; i <= shift[iter]; i++) {
+	    C_temp = C[1];
+	    D_temp = D[1];
+	    for (j =1; j<=27; j++) {
+		C[j] = C[j+1];
+		D[j] = D[j+1];
+	    }
+	    C[j] = C_temp;
+	    D[j] = D_temp;
+	}
+d161 20
+a180 21
+	if (debug) {
+	    /* for debugging */
+	    fprintf(stderr, "/* DEBUG:\n");
+	    fprintf(stderr,
+		    " * after shifts, iteration = %d  shifts = %d",
+		    iter, shift[iter]);
+	    fprintf(stderr,"\nC array");
+	    for (i = 1; i <=4 ; i++) {
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+		    fprintf(stderr,"%d, ",C[(i-1)*7+j]);
+	    }
+	    fprintf(stderr,"\n\nD array");
+	    for (i = 1; i <=4 ; i++) {
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+		    fprintf(stderr,"%d, ",D[(i-1)*7+j]);
+	    }
+	    fprintf(stderr,"\n */");
+	    fflush(stderr);
+	}
+d182 14
+a195 14
+	/*
+	 * apply pc_2
+	 * Start at pc_2[1], not pc_2[0]
+	 *
+	 * Start stuffing ks_perm[1][1], not ks_perm[0][0]
+	 *
+	 * Adjust ks_perm for bit order if needed.
+	 */
+	for (i = 1; i <= 48; i++) {
+	    if (pc_2[i] <= 28)
+		ks_perm[iter][(i)] = C[pc_2[i]];
+	    else
+		ks_perm[iter][(i)] = D[pc_2[i]-28];
+	}
+d197 17
+a213 16
+	/* now output the resulting key permutation */
+	fprintf(stdout,"\n/*\tks permutation  iteration = %d */",iter);
+	for (i = 1; i <= 6; i++) {
+	    fprintf(stdout,"\n\t\t");
+	    for (j = 1; j <= 8; j++) {
+		/*
+		 * IMPORTANT -- subtract one from value to adjust to a
+		 * zero-based subscript for key
+		 */
+		fprintf(stdout,"%d",ks_perm[iter][(i-1)*8+j]-1);
+		/* omit last comma */
+		if ((j != 8) || (i != 6) || (iter != 16)) {
+		    fprintf(stdout,", ");
+		}
+	    }
+	}
+d215 1
+a215 2
+    fprintf(stdout,"\n};\n");
+    fflush(stdout);
+@
+
+
+4.5
+log
+@Fixed possible dereferencing of NULL pointer.
+Programmer: Charley Marker.
+Auditors: jon, jtkohl.
+@
+text
+@a0 4
+/* make_key_perm.c */
+
+/* spm	6/85	project athena */
+
+d2 2
+a3 3
+ *	$Source: /mit/kerberos/src/lib/des/RCS/make_key_perm.c,v $
+ *	$Author: steiner $
+ *	$Locker:  $
+d5 5
+d16 1
+a16 4
+ */
+
+
+/*
+d19 2
+d23 6
+a34 5
+
+#ifndef lint
+static char rcsid[]=
+    "$Header: make_key_perm.c,v 4.4 88/01/14 18:44:53 steiner Exp $";
+#endif /* lint */
+@
+
+
+4.4
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d6 2
+a7 2
+ *	$Source: /u2/lockers/kerberos/lib/des/RCS/make_key_perm.c,v $
+ *	$Author: raeburn $
+d33 1
+a33 1
+    "$Header: make_key_perm.c,v 4.3 87/11/24 03:27:04 raeburn Exp $";
+d112 1
+a112 1
+    while (argc-- > 0 && (*++argv)[0] == '-')
+@
+
+
+4.3
+log
+@Re-indented, and now #define's DEBUG only if not already
+defined.
+@
+text
+@d1 1
+a1 1
+/* des_make_key_perm.c */
+d7 2
+a8 2
+ *	$Author: steiner $
+ *	$Locker: raeburn $
+d13 1
+a13 1
+ * initial key.  Only needs to execute once to produce a header file.
+d20 1
+a20 1
+ * 	exit returns 	 0 ==> success
+d24 2
+a25 2
+# include	<stdio.h>
+# include	<errno.h>
+d31 1
+a31 1
+#ifndef	lint
+d33 2
+a34 2
+"$Header: make_key_perm.c,v 4.2 87/09/04 14:55:20 raeburn Locked $";
+#endif lint
+d36 10
+a45 10
+char		*progname;
+extern 	char 	*errmsg();
+extern 	int 	errno;
+extern	long	swap_bit_pos_1();
+extern	long	swap_bit_pos_0();
+int		sflag;
+int		vflag;
+int		dflag;
+int		pid;
+int		child_status;
+d47 4
+a50 4
+int	key_position[64+1];
+int	C[28+1];
+int	D[28+1];
+int	C_temp, D_temp;
+d58 2
+a59 1
+ *  BEWARE-- some stuff starts at 0, some at 1;  perhaps some bugs still?
+d65 2
+a66 2
+int	shift[16+1] = { 0,
+	1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1,
+d69 1
+a69 1
+int	pc_1[64+1] = { 0,
+d71 4
+a74 4
+	57,49,41,33,25,17, 9,
+	 1,58,50,42,34,26,18,
+	10, 2,59,51,43,35,27,
+	19,11, 3,60,52,44,36,
+d76 4
+a79 4
+	63,55,47,39,31,23,15,
+	 7,62,54,46,38,30,22,
+	14, 6,61,53,45,37,29,
+	21,13, 5,28,20,12, 4,
+d87 1
+a87 1
+int	pc_2[48+1] = { 0,
+d89 4
+a92 4
+	14,17,11,24, 1, 5,
+	 3,28,15, 6,21,10,
+	23,19,12, 4,26, 8,
+	16, 7,27,20,13, 2,
+d94 4
+a97 4
+	41,52,31,37,47,55,
+	30,40,51,45,33,48,
+	44,49,39,56,34,53,
+	46,42,50,36,29,32,
+d100 2
+a101 2
+int	ks_perm[16+1][48+1];
+int	debug;
+d107 2
+a108 2
+    /*  Local Declarations	*/
+    register	i, j, iter;
+d110 1
+a110 1
+    progname=argv[0];		/* salt away invoking program */
+d113 2
+a114 2
+    for (i=1; argv[0][i] != '\0'; i++) {
+	switch (argv[0][i]) {
+d116 4
+a119 4
+	    /* debug flag */
+	case 'd':
+	    debug=1;
+	    continue;
+d121 6
+a126 6
+	default:
+	    printf("%s: illegal flag \"%c\" ",
+		   progname,argv[0][i]);
+	    exit(1);
+	}
+    };
+a132 1
+
+d168 1
+a168 1
+	    /*	for debugging*/
+d232 1
+a232 1
+	    if ( pc_2[i] <= 28)
+@
+
+
+4.2
+log
+@Changes for PC compatibility, from Jerry Saltzer.
+@
+text
+@d1 1
+a1 1
+/* 	des_make_key_perm.c																   */
+d3 1
+a3 1
+/*	spm	6/85	project athena		*/
+d5 11
+a15 27
+/*	$Source: /source/kerberos/lib/des/bsd/RCS/des_make_key_perm.c,v $
+ *	$Author: spm $
+ *	$Locker:  $
+ *	$Log:	des_make_key_perm.c,v $
+ * Revision 1.2  86/08/08  16:26:32  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  85/08/16  12:49:37  spm
+ * Initial revision
+ * 
+ * Revision 1.3  85/08/11  14:14:51  spm
+ * works
+ * 
+ * Revision 1.2  85/08/02  16:01:24  spm
+ * ok
+ * 
+ * Revision 1.1  85/07/17  14:30:54  spm
+ * Initial revision
+ * 
+ * 
+ * 
+ *	This routine calculates an effective Key schedule set of permutations for
+ *  des.  Beginning with the pre-defined key schedule algorithm, it
+ *  reduces it to a set of 16 permutations upon the initial key.
+ *  Only needs to execute once to produce a header file.
+ *  Note that we subtract one from the values ouput to fix up for C subscripts
+ *  starting at 0.
+d19 2
+a20 1
+/*	exit returns 	 0 ==> success
+d27 4
+a30 6
+# define	MIN_ARGC	0	/* min # args, not incl flags */
+# define	MAX_ARGC	0	/* max # args, not incl flags */
+					/* MIN_ARGC == MAX_ARGC ==>
+					 * required # args		
+					 */
+#define		DEBUG
+d32 2
+a33 1
+static char		*rcsid_des_make_key_perm_c="$Header: des_make_key_perm.c,v 1.2 86/08/08 16:26:32 spm Exp $";
+d36 1
+a36 1
+char			*progname;
+d52 2
+a53 1
+/* CONVENTIONS for numbering the bits
+d58 1
+a58 1
+ *	BEWARE-- some stuff starts at 0, some at 1;  perhaps some bugs still?
+d63 1
+a63 1
+*/
+d103 2
+a104 3
+	int argc;
+	char *argv[];
+
+d106 2
+a107 2
+/*  Local Declarations	*/
+	register	i, j, iter;
+d109 1
+a109 1
+	progname=argv[0];		/* salt away invoking program */
+d111 3
+a113 3
+	while (argc-- > 0 && (*++argv)[0] == '-')
+	   for (i=1; argv[0][i] != '\0'; i++) {
+		switch (argv[0][i]) {
+d115 4
+a118 4
+	/*	debug flag			*/
+		case 'd':
+			debug=1;
+			continue;
+d120 6
+d127 4
+a130 6
+		default :
+			printf("%s: illegal flag \"%c\" ",
+				progname,argv[0][i]);
+			exit(1);
+		}
+	   };
+a131 5
+	if (argc < MIN_ARGC || argc >MAX_ARGC) {
+		printf("Usage: xxx [-xxx]  xxx xxx\n");
+		exit(1);
+	}
+	
+d133 6
+a138 5
+/* initialize the key_position array s.t. key_position[i] = i;
+ * that is, each element is equal to its starting position.
+ *
+ * Also adjust for the bit order within bytes.
+ */
+d140 2
+a141 4
+	for (i=0; i<65; i++)
+		{
+		key_position[i]= swap_bit_pos_1(i);
+		}
+d143 7
+a149 5
+	
+	fprintf(stdout,
+"\n/*\tkey_perm.h\n * This header file contains the effective key");
+	fprintf(stdout,"\n * permutations required to create DES key schedules.");
+	fprintf(stdout,"\n * It is produced by the routine 'des_make_key_perm'\n */");
+d151 1
+a151 1
+	fprintf(stdout,"\n\nint\tkey_perm[16][48] = \n{");
+d153 8
+a160 8
+/* apply pc_1 to initial key_position to create C[0] and D[0]
+ * Start at pc_1[1], not pc_1[0]
+ */
+	for (i=1; i<=28; i++)
+		{ 
+		C[i] = key_position[pc_1[i]];	 
+		D[i] = key_position[pc_1[i+28]];
+		}	
+d162 25
+a186 5
+/* major loop over the 16 iterations
+ * start at iter = 1, not zero.
+ */
+	for (iter = 1; iter <= 16; iter++)
+		{
+d188 11
+a198 40
+	if (debug)
+		{
+		/*	for debugging*/
+		fprintf(stderr,"\n\n\n\n/* DEBUG-- start iteration = %d  shifts = %d",
+			iter, shift[iter]);
+		fprintf(stderr,"\nC array");
+		for (i = 1; i <=4 ; i++)
+			{
+			fprintf(stderr,"\n");
+			for (j = 1; j<=7; j++)
+				{
+				fprintf(stderr,"%d, ",C[(i-1)*7+j]);
+				}		
+			}	 
+		fprintf(stderr,"\n\nD array");
+		for (i = 1; i <=4 ; i++)
+			{
+			fprintf(stderr,"\n");
+			for (j = 1; j<=7; j++)
+				{
+				fprintf(stderr,"%d, ",D[(i-1)*7+j]);
+				}		
+			}	 
+		fprintf(stderr,"\n */");
+		fflush(stderr);
+		}
+	
+/* apply the appropriate left shifts									   */
+		for (i = 1; i <= shift[iter]; i++)
+			{
+			C_temp = C[1];				
+			D_temp = D[1];				
+			for (j =1; j<=27; j++)
+				{
+				C[j] = C[j+1];
+				D[j] = D[j+1];
+				}
+			C[j] = C_temp;
+			D[j] = D_temp;
+			}		
+d201 8
+a208 8
+if (debug)
+	{
+/*	for debugging*/
+	fprintf(stderr,"\n\n\n\n/* DEBUG-- after shifts, iteration = %d  shifts = %d",
+			iter, shift[iter]);
+	fprintf(stderr,"\nC array");
+	for (i = 1; i <=4 ; i++)
+		{
+d211 4
+a214 7
+			{
+			fprintf(stderr,"%d, ",C[(i-1)*7+j]);
+			}		
+		}	 
+	fprintf(stderr,"\n\nD array");
+	for (i = 1; i <=4 ; i++)
+		{
+d217 4
+a220 6
+			{
+			fprintf(stderr,"%d, ",D[(i-1)*7+j]);
+			}		
+		}	 
+	fprintf(stderr,"\n */");
+	fflush(stderr);
+a221 19
+		
+/* apply pc_2
+ * Start at pc_2[1], not pc_2[0]
+ *
+ * Start stuffing ks_perm[1][1], not ks_perm[0][0]
+ *
+ * Adjust ks_perm for bit order if needed.
+ */
+			for (i = 1; i <= 48; i++ )
+			{
+			if ( pc_2[i] <= 28)
+				{
+				ks_perm[iter][(i)] = C[pc_2[i]];
+				}
+			else
+				{
+				ks_perm[iter][(i)] = D[pc_2[i]-28];
+				}			
+			}
+d223 14
+d238 19
+a256 24
+/*	now output the resulting key permutation*/
+		fprintf(stdout,"\n/*\tks permutation  iteration = %d */",iter);
+		for (i = 1; i <= 6; i++)
+			{
+			fprintf(stdout,"\n\t\t");
+			for (j = 1; j <= 8; j++ )
+				{
+/* IMPORTANT
+ * subtract one from value to adjust to a zero-based subscript for key
+ */
+				fprintf(stdout,"%d",ks_perm[iter][(i-1)*8+j]-1);
+				/* omit last comma									   */
+				if ( (j != 8) || (i != 6) || (iter != 16) )
+					{
+					 fprintf(stdout,", ");
+					 }
+				}
+			}
+			
+			 
+		 
+	}		
+		fprintf(stdout,"\n};\n");
+		fflush(stdout);		
+a257 1
+
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d5 1
+a5 1
+/*	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_make_key_perm.c,v $
+d7 1
+a7 1
+ *	$Locker: steiner $
+a39 1
+# include	<signal.h>
+d49 1
+a49 1
+static char		*rcsid_des_make_key_perm_c="$Header: des_make_key_perm.c,v 1.2 86/08/08 16:26:32 steiner Locked $";
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d5 1
+a5 1
+/*	$Source: /usr/mit/spm/auth/deslib/RCS/des_make_key_perm.c,v $
+d7 1
+a7 1
+ *	$Locker: spm $
+d9 3
+d50 1
+a50 1
+static char		*rcsid_des_make_key_perm_c="$Header: des_make_key_perm.c,v 1.1 85/08/16 12:49:37 spm Exp $";
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 1
+a5 1
+/*	$Source: /usr/mit/spm/auth/test/RCS/des_make_key_perm.c,v $
+d9 3
+d47 1
+a47 1
+static char		*rcsid_des_make_key_perm_c="$Header: .c,v 1.3 85/08/11 14:14:51 spm Exp $";
+d57 1
+d113 1
+d122 24
+d182 4
+a185 3
+#ifdef	DEBUGX
+	/*	for debugging*/
+	fprintf(stderr,"\n\n\n\n/* DEBUG-- start iteration = %d  shifts = %d",
+d187 2
+a188 5
+	fprintf(stderr,"\nC array");
+	for (i = 1; i <=4 ; i++)
+		{
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+d190 8
+a197 8
+			fprintf(stderr,"%d, ",C[(i-1)*7+j]);
+			}		
+		}	 
+	fprintf(stderr,"\n\nD array");
+	for (i = 1; i <=4 ; i++)
+		{
+		fprintf(stderr,"\n");
+		for (j = 1; j<=7; j++)
+d199 9
+a207 6
+			fprintf(stderr,"%d, ",D[(i-1)*7+j]);
+			}		
+		}	 
+	fprintf(stderr,"\n */");
+	fflush(stderr);
+#endif
+d224 2
+a225 1
+#ifdef	DEBUGX
+d227 1
+a227 1
+	fprintf(stderr,"\n\n\n\n/* DEBUGX-- after shifts, iteration = %d  shifts = %d",
+d249 1
+a249 1
+#endif
+@

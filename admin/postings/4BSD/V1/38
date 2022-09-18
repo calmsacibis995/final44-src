@@ -1,0 +1,172 @@
+Subject: login problem
+Index: etc/getty/main.c 4.3BSD
+
+Description:
+	It is suggested that the following fixes be applied to
+	etc/getty/main.c, bin/login.c and man/man8/adduser.8.
+	They take care of a security problem in 4.3BSD.
+Repeat-By:
+	Use your imagination.
+Fix:
+	Apply the following patches.
+
+*** main.c.old	Thu Oct  1 13:43:02 1987
+--- main.c.new	Thu Oct  1 13:43:46 1987
+***************
+*** 11,17 ****
+  #endif not lint
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)main.c	5.5 (Berkeley) 1/23/86";
+  #endif not lint
+  
+  /*
+--- 11,17 ----
+  #endif not lint
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)main.c	5.7 (Berkeley) 10/1/87";
+  #endif not lint
+  
+  /*
+***************
+*** 166,171 ****
+--- 166,172 ----
+  		tname = argv[1];
+  	for (;;) {
+  		int ldisp = OTTYDISC;
++ 		int off = 0;
+  
+  		gettable(tname, tabent, tabstrs);
+  		if (OPset || EPset || APset)
+***************
+*** 172,177 ****
+--- 173,180 ----
+  			APset++, OPset++, EPset++;
+  		setdefaults();
+  		ioctl(0, TIOCFLUSH, 0);		/* clear out the crap */
++ 		ioctl(0, FIONBIO, &off);	/* turn off non-blocking mode */
++ 		ioctl(0, FIOASYNC, &off);	/* ditto for asynchronous mode */
+  		if (IS)
+  			tmode.sg_ispeed = speed(IS);
+  		else if (SP)
+***************
+*** 217,222 ****
+--- 220,229 ----
+  			oflush();
+  			alarm(0);
+  			signal(SIGALRM, SIG_DFL);
++ 			if (name[0] == '-') {
++ 				puts("login names may not start with '-'.");
++ 				continue;
++ 			}
+  			if (!(upper || lower || digit))
+  				continue;
+  			allflags = setflags(2);
+***************
+*** 236,241 ****
+--- 243,249 ----
+  				env[i] = environ[i];
+  			makeenv(&env[i]);
+  			execle(LO, "login", "-p", name, (char *) 0, env);
++ 			syslog(LOG_ERR, "%s: %m", LO);
+  			exit(1);
+  		}
+  		alarm(0);
+
+*** login.c.old	Thu Oct  1 14:01:30 1987
+--- login.c.new	Thu Oct  1 14:02:42 1987
+***************
+*** 122,127 ****
+--- 122,129 ----
+  				printf("Only one of -r and -h allowed\n");
+  				exit(1);
+  			}
++ 			if (argv[2] == 0)
++ 				exit(1);
+  			rflag = 1;
+  			usererr = doremotelogin(argv[2]);
+  			SCPYN(utmp.ut_host, argv[2]);
+***************
+*** 195,202 ****
+  		 */
+  		if (rflag && !invalid)
+  			SCPYN(utmp.ut_name, lusername);
+! 		else
+  			getloginname(&utmp);
+  		invalid = FALSE;
+  		if (!strcmp(pwd->pw_shell, "/bin/csh")) {
+  			ldisc = NTTYDISC;
+--- 197,210 ----
+  		 */
+  		if (rflag && !invalid)
+  			SCPYN(utmp.ut_name, lusername);
+! 		else {
+  			getloginname(&utmp);
++ 			if (utmp.ut_name[0] == '-') {
++ 				puts("login names may not start with '-'.");
++ 				invalid = TRUE;
++ 				continue;
++ 			}
++ 		}
+  		invalid = FALSE;
+  		if (!strcmp(pwd->pw_shell, "/bin/csh")) {
+  			ldisc = NTTYDISC;
+
+*** adduser.8.old	Thu Oct  1 13:42:34 1987
+--- adduser.8.new	Thu Oct  1 13:51:08 1987
+***************
+*** 2,18 ****
+  .\" All rights reserved.  The Berkeley software License Agreement
+  .\" specifies the terms and conditions for redistribution.
+  .\"
+! .\"	@(#)adduser.8	6.2 (Berkeley) 5/23/86
+  .\"
+! .TH ADDUSER 8 "May 23, 1986"
+  .UC 4
+  .SH NAME
+  adduser \- procedure for adding new users
+  .SH DESCRIPTION
+  A new user must choose a login name, which must not already appear in
+! .I /etc/passwd.
+! An account can be added by editing a line into the passwd file; this must
+! be done with the password file locked e.g. by using
+  .IR vipw (8).
+  .PP
+  A new user is given a group and user id.
+--- 2,19 ----
+  .\" All rights reserved.  The Berkeley software License Agreement
+  .\" specifies the terms and conditions for redistribution.
+  .\"
+! .\"	@(#)adduser.8	6.4 (Berkeley) 10/1/87
+  .\"
+! .TH ADDUSER 8 "October 1, 1987"
+  .UC 4
+  .SH NAME
+  adduser \- procedure for adding new users
+  .SH DESCRIPTION
+  A new user must choose a login name, which must not already appear in
+! \fI/etc/passwd\fP or \fI/usr/lib/aliases\fP.  It must also not begin with
+! the hyphen (``-'') character.  An account can be added by editing a line
+! into the passwd file; this must be done with the password file locked
+! e.g. by using
+  .IR vipw (8).
+  .PP
+  A new user is given a group and user id.
+***************
+*** 90,96 ****
+  .br
+  /usr/skel	skeletal login directory
+  .SH SEE ALSO
+! passwd(1), finger(1), chsh(1), chfn(1), passwd(5), vipw(8)
+  .SH BUGS
+  User information should be stored in its own data base separate from
+  the password file.
+--- 91,97 ----
+  .br
+  /usr/skel	skeletal login directory
+  .SH SEE ALSO
+! passwd(1), finger(1), chsh(1), chfn(1), aliases(5), passwd(5), vipw(8)
+  .SH BUGS
+  User information should be stored in its own data base separate from
+  the password file.

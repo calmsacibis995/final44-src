@@ -1,0 +1,881 @@
+From chris@gyre.umd.edu  Thu Jun  4 10:20:07 1987
+Date: Thu, 4 Jun 87 13:18:25 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+To: 4bsd-ideas@ucbvax.Berkeley.EDU
+Subject: Raw I/O can be improved
+Index: sys/sys/vm_swp.c+drivers 4.3BSD
+
+(Kirk has been getting cc's of all this; he can explain....)
+All the disk drivers have some unnecessary code and data space,
+and perform worse with dump than they should.  Here are changes
+to physio and the Vax drivers to fix this.  kre reports that
+something similar was done to V6 back in 1977 or so; it is about
+time it got into 4BSD....
+
+The diffs below are marked according to source directory.  This
+is what is running on gyre.umd.edu.  Only /dev/drum and the uda
+changes are actually tested, but the others are too trivial to
+be wrong (he said confidently).
+
+Chris
+
+[/sys/sys]
+RCS file: RCS/vm_sw.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 vm_sw.c
+*** /tmp/,RCSt1006259	Thu Jun  4 12:26:32 1987
+--- vm_sw.c	Tue Jun  2 03:37:59 1987
+***************
+*** 18,22 ****
+  #include "file.h"
+  
+- struct	buf rswbuf;
+  /*
+   * Indirect driver for multi-controller paging.
+--- 18,21 ----
+***************
+*** 62,81 ****
+  		panic("swstrategy");
+  	(*bdevsw[major(dev)].d_strategy)(bp);
+- }
+- 
+- swread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 
+- 	return (physio(swstrategy, &rswbuf, dev, B_READ, minphys, uio));
+- }
+- 
+- swwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 
+- 	return (physio(swstrategy, &rswbuf, dev, B_WRITE, minphys, uio));
+  }
+  
+--- 61,64 ----
+===================================================================
+RCS file: RCS/vm_swp.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 vm_swp.c
+*** /tmp/,RCSt1006259	Thu Jun  4 12:26:38 1987
+--- vm_swp.c	Thu Jun  4 11:34:06 1987
+***************
+*** 176,183 ****
+  
+  /*
+   * Raw I/O. The arguments are
+   *	The strategy routine for the device
+!  *	A buffer, which will always be a special buffer
+!  *	  header owned exclusively by the device for this purpose
+   *	The device number
+   *	Read/write flag
+--- 176,216 ----
+  
+  /*
++  * Miscellaneous small routines for raw I/O.
++  */
++ 
++ #define	MAXPHYS	(63 * 1024)
++ 
++ unsigned
++ minphys(bp)
++ 	struct buf *bp;
++ {
++ 
++ 	if (bp->b_bcount > MAXPHYS)
++ 		bp->b_bcount = MAXPHYS;
++ }
++ 
++ rawread(dev, uio)
++ 	dev_t dev;
++ 	struct uio *uio;
++ {
++ 
++ 	return (physio(cdevsw[major(dev)].d_strategy, (struct buf *)NULL,
++ 		dev, B_READ, minphys, uio));
++ }
++ 
++ rawwrite(dev, uio)
++ 	dev_t dev;
++ 	struct uio *uio;
++ {
++ 	return (physio(cdevsw[major(dev)].d_strategy, (struct buf *)NULL,
++ 		dev, B_WRITE, minphys, uio));
++ }
++ 
++ /*
+   * Raw I/O. The arguments are
+   *	The strategy routine for the device
+!  *	A buffer, which will either be a special buffer
+!  *	  header owned exclusively by the device for this purpose,
+!  *	  or NULL, indicating that we should find one
+   *	The device number
+   *	Read/write flag
+***************
+*** 200,217 ****
+  	register int c;
+  	char *a;
+! 	int s, error = 0;
+  
+  nextiov:
+  	if (uio->uio_iovcnt == 0)
+! 		return (0);
+  	iov = uio->uio_iov;
+! 	if (useracc(iov->iov_base,(u_int)iov->iov_len,rw==B_READ?B_WRITE:B_READ) == NULL)
+! 		return (EFAULT);
+! 	s = splbio();
+! 	while (bp->b_flags&B_BUSY) {
+! 		bp->b_flags |= B_WANTED;
+! 		sleep((caddr_t)bp, PRIBIO+1);
+  	}
+! 	splx(s);
+  	bp->b_error = 0;
+  	bp->b_proc = u.u_procp;
+--- 233,270 ----
+  	register int c;
+  	char *a;
+! 	int s, release = 0, error = 0;
+  
++ 	if (bp == NULL) {
++ 		/*
++ 		 * Steal a swap I/O buffer header.
++ 		 * Since we take only one, we will not deadlock
++ 		 * in vslock().
++ 		 */
++ 		release = 1;
++ 		s = splbio();
++ 		while ((bp = bswlist.av_forw) == NULL) {
++ 			bswlist.b_flags |= B_WANTED;
++ 			sleep((caddr_t)&bswlist, PRIBIO+1);
++ 		}
++ 		bswlist.av_forw = bp->av_forw;
++ 		splx(s);
++ 	}
+  nextiov:
+  	if (uio->uio_iovcnt == 0)
+! 		goto done;
+  	iov = uio->uio_iov;
+! 	if (!useracc(iov->iov_base, (u_int)iov->iov_len,
+! 			rw == B_READ ? B_WRITE : B_READ)) {
+! 		error = EFAULT;
+! 		goto done;
+  	}
+! 	if (!release) {		/* only if sharing caller's buffer */
+! 		s = splbio();
+! 		while (bp->b_flags&B_BUSY) {
+! 			bp->b_flags |= B_WANTED;
+! 			sleep((caddr_t)bp, PRIBIO+1);
+! 		}
+! 		splx(s);
+! 	}
+  	bp->b_error = 0;
+  	bp->b_proc = u.u_procp;
+***************
+*** 222,226 ****
+  		bp->b_blkno = btodb(uio->uio_offset);
+  		bp->b_bcount = iov->iov_len;
+! 		(*mincnt)(bp);
+  		c = bp->b_bcount;
+  		u.u_procp->p_flag |= SPHYSIO;
+--- 275,283 ----
+  		bp->b_blkno = btodb(uio->uio_offset);
+  		bp->b_bcount = iov->iov_len;
+! 		if (mincnt == minphys) {	/* save time */
+! 			if (bp->b_bcount > MAXPHYS)
+! 				bp->b_bcount = MAXPHYS;
+! 		} else
+! 			(*mincnt)(bp);
+  		c = bp->b_bcount;
+  		u.u_procp->p_flag |= SPHYSIO;
+***************
+*** 230,234 ****
+  		vsunlock(a, c, rw);
+  		u.u_procp->p_flag &= ~SPHYSIO;
+! 		if (bp->b_flags&B_WANTED)
+  			wakeup((caddr_t)bp);
+  		splx(s);
+--- 287,291 ----
+  		vsunlock(a, c, rw);
+  		u.u_procp->p_flag &= ~SPHYSIO;
+! 		if (bp->b_flags&B_WANTED)	/* rare */
+  			wakeup((caddr_t)bp);
+  		splx(s);
+***************
+*** 245,263 ****
+  	error = geterror(bp);
+  	/* temp kludge for tape drives */
+! 	if (bp->b_resid || error)
+! 		return (error);
+! 	uio->uio_iov++;
+! 	uio->uio_iovcnt--;
+! 	goto nextiov;
+! }
+! 
+! #define	MAXPHYS	(63 * 1024)
+! 
+! unsigned
+! minphys(bp)
+! 	struct buf *bp;
+! {
+! 
+! 	if (bp->b_bcount > MAXPHYS)
+! 		bp->b_bcount = MAXPHYS;
+  }
+--- 302,322 ----
+  	error = geterror(bp);
+  	/* temp kludge for tape drives */
+! 	if (bp->b_resid == 0 && !error) {
+! 		uio->uio_iov++;
+! 		uio->uio_iovcnt--;
+! 		goto nextiov;
+! 	}
+! done:
+! 	if (release) {
+! 		s = splbio();
+! 		bp->av_forw = bswlist.av_forw;
+! 		bswlist.av_forw = bp;
+! 		if (bswlist.b_flags & B_WANTED) {
+! 			bswlist.b_flags &= ~B_WANTED;
+! 			wakeup((caddr_t)&bswlist);
+! 			wakeup((caddr_t)&proc[2]);
+! 		}
+! 		splx(s);
+! 	}
+! 	return (error);
+  }
+===================================================================
+[/sys/h]
+RCS file: RCS/conf.h,v
+retrieving revision 1.1
+diff -c2 -r1.1 conf.h
+*** /tmp/,RCSt1006269	Thu Jun  4 11:43:17 1987
+--- conf.h	Tue Jun  2 03:28:51 1987
+***************
+*** 44,47 ****
+--- 44,48 ----
+  	int	(*d_select)();
+  	int	(*d_mmap)();
++ 	int	(*d_strategy)();
+  };
+  #ifdef KERNEL
+===================================================================
+[/sys/vax]
+RCS file: RCS/conf.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 conf.c
+*** /tmp/,RCSt1006286	Thu Jun  4 11:41:33 1987
+--- conf.c	Tue Jun  2 05:14:36 1987
+***************
+*** 14,28 ****
+  #include "conf.h"
+  
+! int	nulldev();
+! int	nodev();
+  
+  #include "hp.h"
+  #if NHP > 0
+! int	hpopen(),hpstrategy(),hpread(),hpwrite(),hpdump(),hpioctl(),hpsize();
+  #else
+  #define	hpopen		nodev
+  #define	hpstrategy	nodev
+- #define	hpread		nodev
+- #define	hpwrite		nodev
+  #define	hpdump		nodev
+  #define	hpioctl		nodev
+--- 14,25 ----
+  #include "conf.h"
+  
+! int	nulldev(), nodev(), rawread(), rawwrite();
+  
+  #include "hp.h"
+  #if NHP > 0
+! int	hpopen(),hpstrategy(),hpdump(),hpioctl(),hpsize();
+  #else
+  #define	hpopen		nodev
+  #define	hpstrategy	nodev
+  #define	hpdump		nodev
+  #define	hpioctl		nodev
+***************
+*** 45,49 ****
+  #include "rk.h"
+  #if NHK > 0
+! int	rkopen(),rkstrategy(),rkread(),rkwrite(),rkintr();
+  int	rkdump(),rkreset(),rksize();
+  #else
+--- 42,46 ----
+  #include "rk.h"
+  #if NHK > 0
+! int	rkopen(),rkstrategy(),rkintr();
+  int	rkdump(),rkreset(),rksize();
+  #else
+***************
+*** 50,55 ****
+  #define	rkopen		nodev
+  #define	rkstrategy	nodev
+- #define	rkread		nodev
+- #define	rkwrite		nodev
+  #define	rkintr		nodev
+  #define	rkdump		nodev
+--- 47,50 ----
+***************
+*** 119,128 ****
+  #include "ra.h"
+  #if NUDA > 0
+! int	udopen(),udstrategy(),udread(),udwrite(),udreset(),uddump(),udsize();
+  #else
+  #define	udopen		nodev
+  #define	udstrategy	nodev
+- #define	udread		nodev
+- #define	udwrite		nodev
+  #define	udreset		nulldev
+  #define	uddump		nodev
+--- 114,121 ----
+  #include "ra.h"
+  #if NUDA > 0
+! int	udopen(),udstrategy(),udreset(),uddump(),udsize();
+  #else
+  #define	udopen		nodev
+  #define	udstrategy	nodev
+  #define	udreset		nulldev
+  #define	uddump		nodev
+***************
+*** 132,141 ****
+  #include "up.h"
+  #if NSC > 0
+! int	upopen(),upstrategy(),upread(),upwrite(),upreset(),updump(),upsize();
+  #else
+  #define	upopen		nodev
+  #define	upstrategy	nodev
+- #define	upread		nodev
+- #define	upwrite		nodev
+  #define	upreset		nulldev
+  #define	updump		nodev
+--- 125,132 ----
+  #include "up.h"
+  #if NSC > 0
+! int	upopen(),upstrategy(),upreset(),updump(),upsize();
+  #else
+  #define	upopen		nodev
+  #define	upstrategy	nodev
+  #define	upreset		nulldev
+  #define	updump		nodev
+***************
+*** 206,210 ****
+  #include "rl.h"
+  #if NRL > 0
+! int	rlopen(),rlstrategy(),rlread(),rlwrite();
+  int	rlreset(),rldump(),rlsize();
+  #else
+--- 197,201 ----
+  #include "rl.h"
+  #if NRL > 0
+! int	rlopen(),rlstrategy();
+  int	rlreset(),rldump(),rlsize();
+  #else
+***************
+*** 211,216 ****
+  #define	rlopen		nodev
+  #define	rlstrategy	nodev
+- #define	rlread		nodev
+- #define	rlwrite		nodev
+  #define	rlreset		nulldev
+  #define	rldump		nodev
+--- 202,205 ----
+***************
+*** 218,222 ****
+  #endif
+  
+! int	swstrategy(),swread(),swwrite();
+  
+  struct bdevsw	bdevsw[] =
+--- 207,211 ----
+  #endif
+  
+! int	swstrategy();
+  
+  struct bdevsw	bdevsw[] =
+***************
+*** 504,636 ****
+  	cnopen,		cnclose,	cnread,		cnwrite,	/*0*/
+  	cnioctl,	nulldev,	nulldev,	&cons,
+! 	ttselect,	nodev,
+  	dzopen,		dzclose,	dzread,		dzwrite,	/*1*/
+  	dzioctl,	dzstop,		dzreset,	dz_tty,
+! 	ttselect,	nodev,
+  	syopen,		nulldev,	syread,		sywrite,	/*2*/
+  	syioctl,	nulldev,	nulldev,	0,
+! 	syselect,	nodev,
+  	nulldev,	nulldev,	mmread,		mmwrite,	/*3*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	mmselect,	nodev,
+! 	hpopen,		nulldev,	hpread,		hpwrite,	/*4*/
+  	hpioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+  	htopen,		htclose,	htread,		htwrite,	/*5*/
+  	htioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+  	vpopen,		vpclose,	nodev,		vpwrite,	/*6*/
+  	vpioctl,	nulldev,	vpreset,	0,
+! 	vpselect,	nodev,
+! 	nulldev,	nulldev,	swread,		swwrite,	/*7*/
+  	nodev,		nodev,		nulldev,	0,
+! 	nodev,		nodev,
+  	flopen,		flclose,	flread,		flwrite,	/*8*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+! 	udopen,		nulldev,	udread,		udwrite,	/*9*/
+  	nodev,		nodev,		udreset,	0,
+! 	seltrue,	nodev,
+  	vaopen,		vaclose,	nodev,		vawrite,	/*10*/
+  	vaioctl,	nulldev,	vareset,	0,
+! 	vaselect,	nodev,
+! 	rkopen,		nulldev,	rkread,		rkwrite,	/*11*/
+  	nodev,		nodev,		rkreset,	0,
+! 	seltrue,	nodev,
+  	dhopen,		dhclose,	dhread,		dhwrite,	/*12*/
+  	dhioctl,	dhstop,		dhreset,	dh11,
+! 	ttselect,	nodev,
+! 	upopen,		nulldev,	upread,		upwrite,	/*13*/
+  	nodev,		nodev,		upreset,	0,
+! 	seltrue,	nodev,
+  	tmopen,		tmclose,	tmread,		tmwrite,	/*14*/
+  	tmioctl,	nodev,		tmreset,	0,
+! 	seltrue,	nodev,
+  	lpopen,		lpclose,	nodev,		lpwrite,	/*15*/
+  	nodev,		nodev,		lpreset,	0,
+! 	seltrue,	nodev,
+  	tsopen,		tsclose,	tsread,		tswrite,	/*16*/
+  	tsioctl,	nodev,		tsreset,	0,
+! 	seltrue,	nodev,
+  	utopen,		utclose,	utread,		utwrite,	/*17*/
+  	utioctl,	nodev,		utreset,	0,
+! 	seltrue,	nodev,
+  	ctopen,		ctclose,	nodev,		ctwrite,	/*18*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+  	mtopen,		mtclose,	mtread,		mtwrite,	/*19*/
+  	mtioctl,	nodev,		nodev,		0,
+! 	seltrue,	nodev,
+  	ptsopen,	ptsclose,	ptsread,	ptswrite,	/*20*/
+  	ptyioctl,	ptsstop,	nulldev,	pt_tty,
+! 	ttselect,	nodev,
+  	ptcopen,	ptcclose,	ptcread,	ptcwrite,	/*21*/
+  	ptyioctl,	nulldev,	nulldev,	pt_tty,
+! 	ptcselect,	nodev,
+  	dmfopen,	dmfclose,	dmfread,	dmfwrite,	/*22*/
+  	dmfioctl,	dmfstop,	dmfreset,	dmf_tty,
+! 	ttselect,	nodev,
+! 	idcopen,	nulldev,	idcread,	idcwrite,	/*23*/
+  	nodev,		nodev,		idcreset,	0,
+! 	seltrue,	nodev,
+  	dnopen,		dnclose,	nodev,		dnwrite,	/*24*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+  /* 25-29 reserved to local sites */
+  	nodev,		nodev,		nodev,		nodev,		/*25*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  	lpaopen,	lpaclose,	lparead,	lpawrite,	/*26*/
+  	lpaioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,
+  	psopen,		psclose,	psread,		pswrite,	/*27*/
+  	psioctl,	nodev,		psreset,	0,
+! 	seltrue,	nodev,
+  	nodev,		nodev,		nodev,		nodev,		/*28*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  	adopen,		adclose,	nodev,		nodev,		/*29*/
+  	adioctl,	nodev,		adreset,	0,
+! 	seltrue,	nodev,
+  	rxopen,		rxclose,	rxread,		rxwrite,	/*30*/
+  	rxioctl,	nodev,		rxreset,	0,
+! 	seltrue,	nodev,
+  	ikopen,		ikclose,	ikread,		ikwrite,	/*31*/
+  	ikioctl,	nodev,		ikreset,	0,
+! 	seltrue,	nodev,
+! 	rlopen,		nodev,		rlread,		rlwrite,	/*32*/
+  	nodev,		nodev,		rlreset,	0,
+! 	seltrue,	nodev,
+  	logopen,	logclose,	logread,	nodev,		/*33*/
+  	logioctl,	nodev,		nulldev,	0,
+! 	logselect,	nodev,
+  	dhuopen,        dhuclose,       dhuread,        dhuwrite,       /*34*/
+  	dhuioctl,       dhustop,        dhureset,       dhu_tty,
+! 	ttselect,       nodev,
+   	crlopen,	crlclose,	crlread,	crlwrite,	/*35*/
+   	nodev,		nodev,		nulldev,	0,
+!  	seltrue,	nodev,
+  	vsopen,		vsclose,	nodev,		nodev,		/*36*/
+  	vsioctl,	nodev,		vsreset,	0,
+! 	vsselect,	nodev,
+  	dmzopen,        dmzclose,       dmzread,        dmzwrite,       /*37*/
+  	dmzioctl,       dmzstop,        dmzreset,       dmz_tty,
+! 	ttselect,       nodev,
+  	tmscpopen,	tmscpclose,	tmscpread,	tmscpwrite,	/*38*/
+  	tmscpioctl,	nodev,		tmscpreset,	0,
+! 	seltrue,	nodev,
+  	nodev,		nodev,		nodev,		nodev,		/*39*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  	nodev,		nodev,		nodev,		nodev,		/*40*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  	nodev,		nodev,		nodev,		nodev,		/*41*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  /* 42-50 reserved to local sites */
+  	nodev,		nodev,		nodev,		nodev,		/*42*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,
+  };
+  int	nchrdev = sizeof (cdevsw) / sizeof (cdevsw[0]);
+--- 493,625 ----
+  	cnopen,		cnclose,	cnread,		cnwrite,	/*0*/
+  	cnioctl,	nulldev,	nulldev,	&cons,
+! 	ttselect,	nodev,		0,
+  	dzopen,		dzclose,	dzread,		dzwrite,	/*1*/
+  	dzioctl,	dzstop,		dzreset,	dz_tty,
+! 	ttselect,	nodev,		0,
+  	syopen,		nulldev,	syread,		sywrite,	/*2*/
+  	syioctl,	nulldev,	nulldev,	0,
+! 	syselect,	nodev,		0,
+  	nulldev,	nulldev,	mmread,		mmwrite,	/*3*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	mmselect,	nodev,		0,
+! 	hpopen,		nulldev,	rawread,	rawwrite,	/*4*/
+  	hpioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,		hpstrategy,
+  	htopen,		htclose,	htread,		htwrite,	/*5*/
+  	htioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,		0,
+  	vpopen,		vpclose,	nodev,		vpwrite,	/*6*/
+  	vpioctl,	nulldev,	vpreset,	0,
+! 	vpselect,	nodev,		0,
+! 	nulldev,	nulldev,	rawread,	rawwrite,	/*7*/
+  	nodev,		nodev,		nulldev,	0,
+! 	nodev,		nodev,		swstrategy,
+  	flopen,		flclose,	flread,		flwrite,	/*8*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,		0,
+! 	udopen,		nulldev,	rawread,	rawwrite,	/*9*/
+  	nodev,		nodev,		udreset,	0,
+! 	seltrue,	nodev,		udstrategy,
+  	vaopen,		vaclose,	nodev,		vawrite,	/*10*/
+  	vaioctl,	nulldev,	vareset,	0,
+! 	vaselect,	nodev,		0,
+! 	rkopen,		nulldev,	rawread,	rawwrite,	/*11*/
+  	nodev,		nodev,		rkreset,	0,
+! 	seltrue,	nodev,		rkstrategy,
+  	dhopen,		dhclose,	dhread,		dhwrite,	/*12*/
+  	dhioctl,	dhstop,		dhreset,	dh11,
+! 	ttselect,	nodev,		0,
+! 	upopen,		nulldev,	rawread,	rawwrite,	/*13*/
+  	nodev,		nodev,		upreset,	0,
+! 	seltrue,	nodev,		upstrategy,
+  	tmopen,		tmclose,	tmread,		tmwrite,	/*14*/
+  	tmioctl,	nodev,		tmreset,	0,
+! 	seltrue,	nodev,		0,
+  	lpopen,		lpclose,	nodev,		lpwrite,	/*15*/
+  	nodev,		nodev,		lpreset,	0,
+! 	seltrue,	nodev,		0,
+  	tsopen,		tsclose,	tsread,		tswrite,	/*16*/
+  	tsioctl,	nodev,		tsreset,	0,
+! 	seltrue,	nodev,		0,
+  	utopen,		utclose,	utread,		utwrite,	/*17*/
+  	utioctl,	nodev,		utreset,	0,
+! 	seltrue,	nodev,		0,
+  	ctopen,		ctclose,	nodev,		ctwrite,	/*18*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,		0,
+  	mtopen,		mtclose,	mtread,		mtwrite,	/*19*/
+  	mtioctl,	nodev,		nodev,		0,
+! 	seltrue,	nodev,		0,
+  	ptsopen,	ptsclose,	ptsread,	ptswrite,	/*20*/
+  	ptyioctl,	ptsstop,	nulldev,	pt_tty,
+! 	ttselect,	nodev,		0,
+  	ptcopen,	ptcclose,	ptcread,	ptcwrite,	/*21*/
+  	ptyioctl,	nulldev,	nulldev,	pt_tty,
+! 	ptcselect,	nodev,		0,
+  	dmfopen,	dmfclose,	dmfread,	dmfwrite,	/*22*/
+  	dmfioctl,	dmfstop,	dmfreset,	dmf_tty,
+! 	ttselect,	nodev,		0,
+! 	idcopen,	nulldev,	rawread,	rawwrite,	/*23*/
+  	nodev,		nodev,		idcreset,	0,
+! 	seltrue,	nodev,		idcstrategy,
+  	dnopen,		dnclose,	nodev,		dnwrite,	/*24*/
+  	nodev,		nodev,		nulldev,	0,
+! 	seltrue,	nodev,		0,
+  /* 25-29 reserved to local sites */
+  	nodev,		nodev,		nodev,		nodev,		/*25*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  	lpaopen,	lpaclose,	lparead,	lpawrite,	/*26*/
+  	lpaioctl,	nodev,		nulldev,	0,
+! 	seltrue,	nodev,		0,
+  	psopen,		psclose,	psread,		pswrite,	/*27*/
+  	psioctl,	nodev,		psreset,	0,
+! 	seltrue,	nodev,		0,
+  	nodev,		nodev,		nodev,		nodev,		/*28*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  	adopen,		adclose,	nodev,		nodev,		/*29*/
+  	adioctl,	nodev,		adreset,	0,
+! 	seltrue,	nodev,		0,
+  	rxopen,		rxclose,	rxread,		rxwrite,	/*30*/
+  	rxioctl,	nodev,		rxreset,	0,
+! 	seltrue,	nodev,		0,
+  	ikopen,		ikclose,	ikread,		ikwrite,	/*31*/
+  	ikioctl,	nodev,		ikreset,	0,
+! 	seltrue,	nodev,		0,
+! 	rlopen,		nodev,		rawread,	rawwrite,	/*32*/
+  	nodev,		nodev,		rlreset,	0,
+! 	seltrue,	nodev,		rlstrategy,
+  	logopen,	logclose,	logread,	nodev,		/*33*/
+  	logioctl,	nodev,		nulldev,	0,
+! 	logselect,	nodev,		0,
+  	dhuopen,        dhuclose,       dhuread,        dhuwrite,       /*34*/
+  	dhuioctl,       dhustop,        dhureset,       dhu_tty,
+! 	ttselect,       nodev,		0,
+   	crlopen,	crlclose,	crlread,	crlwrite,	/*35*/
+   	nodev,		nodev,		nulldev,	0,
+!  	seltrue,	nodev,		0,
+  	vsopen,		vsclose,	nodev,		nodev,		/*36*/
+  	vsioctl,	nodev,		vsreset,	0,
+! 	vsselect,	nodev,		0,
+  	dmzopen,        dmzclose,       dmzread,        dmzwrite,       /*37*/
+  	dmzioctl,       dmzstop,        dmzreset,       dmz_tty,
+! 	ttselect,       nodev,		0,
+  	tmscpopen,	tmscpclose,	tmscpread,	tmscpwrite,	/*38*/
+  	tmscpioctl,	nodev,		tmscpreset,	0,
+! 	seltrue,	nodev,		0,
+  	nodev,		nodev,		nodev,		nodev,		/*39*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  	nodev,		nodev,		nodev,		nodev,		/*40*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  	nodev,		nodev,		nodev,		nodev,		/*41*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  /* 42-50 reserved to local sites */
+  	nodev,		nodev,		nodev,		nodev,		/*42*/
+  	nodev,		nulldev,	nulldev,	0,
+! 	nodev,		nodev,		0,
+  };
+  int	nchrdev = sizeof (cdevsw) / sizeof (cdevsw[0]);
+===================================================================
+[/sys/vaxmba]
+RCS file: RCS/hp.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 hp.c
+*** /tmp/,RCSt1007004	Thu Jun  4 12:52:23 1987
+--- hp.c	Tue Jun  2 03:38:31 1987
+***************
+*** 256,260 ****
+  };
+  
+- struct	buf	rhpbuf[NHP];
+  struct	buf	bhpbuf[NHP];
+  struct	dkbad	hpbad[NHP];
+--- 256,259 ----
+***************
+*** 777,802 ****
+  		printf("hp%d: intr, not ready\n", mi->mi_unit);
+  	return (i);
+- }
+- 
+- hpread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = hpunit(dev);
+- 
+- 	if (unit >= NHP)
+- 		return (ENXIO);
+- 	return (physio(hpstrategy, &rhpbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- hpwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = hpunit(dev);
+- 
+- 	if (unit >= NHP)
+- 		return (ENXIO);
+- 	return (physio(hpstrategy, &rhpbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+--- 776,779 ----
+===================================================================
+[/sys/vaxuba]
+RCS file: RCS/idc.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 idc.c
+*** /tmp/,RCSt1007009	Thu Jun  4 12:53:01 1987
+--- idc.c	Tue Jun  2 03:31:11 1987
+***************
+*** 117,122 ****
+  };
+  
+- struct	buf ridcbuf[NRB];
+- 
+  #define	b_cylin	b_resid
+  
+--- 117,120 ----
+***************
+*** 665,690 ****
+  			;
+  	return (n);
+- }
+- 
+- idcread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = idcunit(dev);
+- 
+- 	if (unit >= NRB)
+- 		return (ENXIO);
+- 	return (physio(idcstrategy, &ridcbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- idcwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = idcunit(dev);
+- 
+- 	if (unit >= NRB)
+- 		return (ENXIO);
+- 	return (physio(idcstrategy, &ridcbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+--- 663,666 ----
+===================================================================
+RCS file: RCS/rk.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 rk.c
+*** /tmp/,RCSt1007009	Thu Jun  4 12:53:24 1987
+--- rk.c	Tue Jun  2 03:31:31 1987
+***************
+*** 112,117 ****
+    };
+  
+- struct	buf rrkbuf[NRK];
+- 
+  #define	b_cylin	b_resid
+  
+--- 112,115 ----
+***************
+*** 530,555 ****
+  	while ((addr->rkcs1 & RK_CRDY) == 0)
+  		;
+- }
+- 
+- rkread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rkunit(dev);
+- 
+- 	if (unit >= NRK)
+- 		return (ENXIO);
+- 	return (physio(rkstrategy, &rrkbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- rkwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rkunit(dev);
+- 
+- 	if (unit >= NRK)
+- 		return (ENXIO);
+- 	return (physio(rkstrategy, &rrkbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+--- 528,531 ----
+===================================================================
+RCS file: RCS/uda.c,v
+retrieving revision 1.4
+diff -c2 -r1.4 uda.c
+*** /tmp/,RCSt1007009	Thu Jun  4 12:54:00 1987
+--- uda.c	Tue Jun  2 03:33:01 1987
+***************
+*** 1521,1548 ****
+  
+  
+- /*
+-  * Raw read request.
+-  */
+- udaread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 
+- 	return (physio(udastrategy, (struct buf *)NULL, dev, B_READ,
+- 		minphys, uio));
+- }
+- 
+- /*
+-  * Raw write request.
+-  */
+- udawrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 
+- 	return (physio(udastrategy, (struct buf *)NULL, dev, B_WRITE,
+- 		minphys, uio));
+- }
+- 
+  #ifdef notyet
+  /*
+--- 1521,1524 ----
+===================================================================
+RCS file: RCS/up.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 up.c
+*** /tmp/,RCSt1007009	Thu Jun  4 12:54:11 1987
+--- up.c	Tue Jun  2 03:34:07 1987
+***************
+*** 148,152 ****
+  };
+  
+- struct	buf	rupbuf[NUP];
+  struct 	buf	bupbuf[NUP];
+  struct	dkbad	upbad[NUP];
+--- 148,151 ----
+***************
+*** 739,764 ****
+  	if (needie)
+  		upaddr->upcs1 = UP_IE;
+- }
+- 
+- upread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = upunit(dev);
+- 
+- 	if (unit >= NUP)
+- 		return (ENXIO);
+- 	return (physio(upstrategy, &rupbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- upwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = upunit(dev);
+- 
+- 	if (unit >= NUP)
+- 		return (ENXIO);
+- 	return (physio(upstrategy, &rupbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+--- 738,741 ----

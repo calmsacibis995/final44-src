@@ -1,0 +1,46 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 10:08:25 1988
+Date: Mon, 18 Apr 88 12:51:32 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 tset command fails to set rows and columns (with fix)
+#Index: ucb/tset/tset.c MORE/bsd 4.3 Fix
+Index: ucb/tset/tset.c 4.3BSD Fix
+
+Description:
+	The tset command sometimes fails to change the system's notion of the
+	number of columns a terminal has.  This messes up subsequent commands
+	such as "more".
+
+Repeat-By:
+	Log on to the system on an 80-column vt100.  Then type the commands
+		set noglob
+		eval `/usr/ucb/tset -s vt100-w-nam`
+		/usr/ucb/reset
+	and note the terminal has been placed in 132-column mode.
+	Now use the command
+		more /etc/passwd
+	and note that output lines are still being wrapped at column 80.  Do a
+		stty all
+	and note that "columns 80" is part of the output--that's the clue as
+	to where the problem lies.
+
+Fix:
+	Make the indicated change to the window-size-setting code in the
+	function "main" of "tset.c":
+
+		columns = tgetnum("co");
+		lines = tgetnum("li");
+
+		/* Set window size */
+		(void) ioctl(FILEDES, TIOCGWINSZ, (char *)&win);
+#ifdef ASWAS
+		if (win.ws_row == 0 && win.ws_col == 0 &&
+		    lines > 0 && columns > 0) {
+#else /* ASWAS */
+		if (lines > 0 && lines != win.ws_row ||
+			columns > 0 && columns != win.ws_col) {
+#endif /* !ASWAS */
+			win.ws_row = lines;
+			win.ws_col = columns;
+			(void) ioctl(FILEDES, TIOCSWINSZ, (char *)&win);
+		}
+

@@ -1,0 +1,325 @@
+Subject: cron core dumps on lines 100 or more characters long
+Index: etc/cron.c 4.1BSD
+
+Note 12       Cron chokes on long lines           
+wtm@bunker.UUCP                                             9:50 am  Oct 22, 1986
+
+Description: 
+	When cron reads in the crontab table, it starts off with a 512
+byte buffer.  After each line is read and converted to cron's internal
+format, a check is made to ensure that there are at least 100 bytes left
+in the buffer for the next line to be read.  The problem occurs when the
+buffer has more than 100 bytes but the next line is too big to fit into
+the remainder of the buffer.
+
+Repeat-By:  
+	Although the problem can occur (and did occur here) if only 
+one line in crontab is over 100 bytes long, it is dependent upon the 
+exact layout of the crontab and consequently it is not that easy 
+to duplicate the problem.
+
+Fix:
+	Rather than just enlarging the buffer and then changing the
+line limit from 100 to 200 or more bytes, I changed the code to check
+for a buffer full condition as each byte is inserted into the buffer
+during the "init" routine. (Diff suitable for "patch" is at the
+end of this article.)
+
+				Bill McGarry
+				Bunker Ramo, Trumbull, CT
+
+	PATH:	{decvax, philabs, ittatc, fortune}!bunker!wtm
+
+Patch:
+
+*** cron.c	Wed Oct 22 10:31:57 1986
+--- cron.new.c	Wed Oct 22 09:57:02 1986
+***************
+*** 144,149
+  	register char *cp;
+  	register char *ocp;
+  	register int n;
+  
+  	freopen(crontab, "r", stdin);
+  	if (list) {
+
+--- 144,150 -----
+
+Oct 27 23:13 1986  (uiucdcs) net.bugs.4bsd Page 20
+
+  	register char *cp;
+  	register char *ocp;
+  	register int n;
++ 	char	*ins_chr();
+  
+  	freopen(crontab, "r", stdin);
+  	if (list) {
+***************
+*** 155,168
+  	cp = list;
+  
+  loop:
+- 	if(cp > list+listsize-100) {
+- 		char *olist;
+- 		listsize += LISTS;
+- 		olist = list;
+- 		free(list);
+- 		list = realloc(list, listsize);
+- 		cp = list + (cp - olist);
+- 	}
+  	ocp = cp;
+  	for(i=0;; i++) {
+  		do
+
+--- 156,161 -----
+  	cp = list;
+  
+
+  loop:
+  	ocp = cp;
+  	for(i=0;; i++) {
+  		do
+***************
+*** 174,180
+  		if(i == 5)
+  			break;
+  		if(c == '*') {
+! 			*cp++ = ANY;
+  			continue;
+  		}
+  		if ((n = number(c)) < 0)
+
+--- 167,173 -----
+  		if(i == 5)
+  			break;
+  		if(c == '*') {
+! 			cp = ins_chr(cp, ANY);
+  			continue;
+  		}
+  		if ((n = number(c)) < 0)
+***************
+*** 186,193
+  			goto mrange;
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+! 		*cp++ = EXACT;
+! 		*cp++ = n;
+
+Oct 27 23:13 1986  (uiucdcs) net.bugs.4bsd Page 21
+
+  		continue;
+  
+  	mlist:
+
+--- 179,186 -----
+  			goto mrange;
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+! 		cp = ins_chr(cp, EXACT);
+! 		cp = ins_chr(cp, n);
+  		continue;
+  
+  	mlist:
+***************
+*** 191,198
+  		continue;
+  
+
+  	mlist:
+! 		*cp++ = LIST;
+! 		*cp++ = n;
+  		do {
+  			if ((n = number(getchar())) < 0)
+  				goto ignore;
+
+--- 184,191 -----
+  		continue;
+  
+  	mlist:
+! 		cp = ins_chr(cp, LIST);
+! 		cp = ins_chr(cp, n);
+  		do {
+  			if ((n = number(getchar())) < 0)
+  				goto ignore;
+***************
+*** 196,202
+  		do {
+  			if ((n = number(getchar())) < 0)
+  				goto ignore;
+! 			*cp++ = n;
+  			c = getchar();
+  		} while (c==',');
+  		if(c != '\t' && c != ' ')
+
+--- 189,195 -----
+  		do {
+  			if ((n = number(getchar())) < 0)
+  				goto ignore;
+! 			cp = ins_chr(cp, n);
+  			c = getchar();
+  		} while (c==',');
+  		if(c != '\t' && c != ' ')
+***************
+*** 201,207
+  		} while (c==',');
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+
+Oct 27 23:13 1986  (uiucdcs) net.bugs.4bsd Page 22
+
+! 		*cp++ = LIST;
+  		continue;
+  
+  	mrange:
+
+--- 194,200 -----
+  		} while (c==',');
+
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+! 		cp = ins_chr(cp, LIST);
+  		continue;
+  
+  	mrange:
+***************
+*** 205,212
+  		continue;
+  
+  	mrange:
+! 		*cp++ = RANGE;
+! 		*cp++ = n;
+  		if ((n = number(getchar())) < 0)
+  			goto ignore;
+  		c = getchar();
+
+--- 198,205 -----
+  		continue;
+  
+  	mrange:
+! 		cp = ins_chr(cp, RANGE);
+! 		cp = ins_chr(cp, n);
+  		if ((n = number(getchar())) < 0)
+  			goto ignore;
+  		c = getchar();
+***************
+*** 212,218
+  		c = getchar();
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+! 		*cp++ = n;
+  	}
+  	while(c != '\n') {
+  		if(c == EOF)
+
+--- 205,211 -----
+  		c = getchar();
+  		if(c != '\t' && c != ' ')
+  			goto ignore;
+! 		cp = ins_chr(cp, n);
+  	}
+  	while(c != '\n') {
+  		if(c == EOF)
+***************
+*** 219,225
+  			goto ignore;
+  		if(c == '%')
+  			c = '\n';
+
+Oct 27 23:13 1986  (uiucdcs) net.bugs.4bsd Page 23
+
+! 		*cp++ = c;
+  		c = getchar();
+  	}
+  	*cp++ = '\n';
+
+--- 212,218 -----
+  			goto ignore;
+  		if(c == '%')
+  			c = '\n';
+! 		cp = ins_chr(cp, c);
+  		c = getchar();
+  	}
+  	cp = ins_chr(cp, '\n');
+***************
+*** 222,229
+  		*cp++ = c;
+  		c = getchar();
+  	}
+! 	*cp++ = '\n';
+! 	*cp++ = 0;
+  	goto loop;
+  
+  ignore:
+
+--- 215,222 -----
+  		cp = ins_chr(cp, c);
+  		c = getchar();
+  	}
+! 	cp = ins_chr(cp, '\n');
+! 	cp = ins_chr(cp, NULL);
+  	goto loop;
+  
+  ignore:
+***************
+*** 230,237
+  	cp = ocp;
+  	while(c != '\n') {
+  		if(c == EOF) {
+! 			*cp++ = EOS;
+! 			*cp++ = EOS;
+  			fclose(stdin);
+  			return;
+  		}
+
+--- 223,230 -----
+  	cp = ocp;
+  	while(c != '\n') {
+  		if(c == EOF) {
+! 			cp = ins_chr(cp, EOS);
+! 			cp = ins_chr(cp, EOS);
+  			fclose(stdin);
+  			return;
+  		}
+
+***************
+*** 254,256
+  		return(-1);
+
+Oct 27 23:13 1986  (uiucdcs) net.bugs.4bsd Page 24
+
+  	return(n);
+  }
+
+--- 247,275 -----
+  		return(-1);
+  	return(n);
+  }
++ 
++ 
++ /*
++  * ins_chr: This function will insert the character 'c' into the
++  * buffer at 'ptr'.  Before doing so, it will ensure that there is 
++  * enough room for the character.  If there is not, a realloc will
++  * be done to expand the buffer.  The updated buffer pointer is
++  * returned to the caller.
++  */
++ char *ins_chr(ptr, c)
++ register char *ptr, c;
++ {
++ register char	*olist;
++ 
++ if (ptr >= list + listsize - 1) {
++ 	listsize += LISTS;
++ 	olist = list;
++ 	free(list);
++ 	list = realloc(list, listsize);
++ 	ptr = list + (ptr - olist);
++ 	}
++ *ptr++ = c;
++ return(ptr);
++ }
++ 
++ 
+--
+End of patch
+

@@ -1,0 +1,71 @@
+From loverso@multimax.arpa  Fri Oct  9 09:17:14 1987
+Date: Fri, 9 Oct 87 11:00:45 edt
+From: John Robert LoVerso <loverso@multimax.arpa>
+Subject: mbuf shortage can cause NULL pointer dereference
+Index: sys/uipc_socket2 4.3BSD +FIX
+
+Description:
+	Someone is listen()ing on a TCP port.  An incoming connection
+	comes, tcp_input() accepts it and calls sonewconn() with the
+	listening socket.  A new socket is allocated (in an mbuf) and
+	linked in with the existing one.  tcp_usrreq() is called with
+	PRU_ATTACH to attach the new socket with TCP.  This calls
+	tcp_attach(), which in turn calls in_pcballoc() to allocate
+	an internet control block (in an mbuf).  tcp_attach() then
+	calls tcp_newtcpcb(), to allocate a TCP control block in an
+	mbuf.  This mget() fails because you're out of mbufs (possibly
+	short term).  Back in tcp_attach(), it does an in_pcbdetach()
+	which calls sofree() on your new socket, which calls soqremque()
+	on the new socket (zapping its so_head pointer), and then exits.
+	When we get all the way back to sonewconn(), it will again call
+	soqremque() on the new socket!  The so_head pointer is already 0
+	and if you're not on a VAX, dereferencing off it will cause bad
+	things to occur.
+
+	This problem is especially significant in the case of the Annex,
+	which allocates an mbuf pool at boot time that never grows.
+
+	Although I haven't verified the fact, most likely this bug
+	is also in 4.2BSD.
+
+Repeat-By:
+	Difficult to reproduce as it depends upon a specific mget failing.
+	Easy to way to cheat is to add a global variable tcp_input() thats
+	set just before the call to sonewconn().  tcp_newtcpcb will fake the
+	failing of the mget when this variable is set.  Just add the panic
+	from below.  Boot this on an idle machine and telnet into it.
+
+Fix:
+	Note: the additional panic() isn't really necessary.
+
+*** uipc_socket2.c_orig	Mon Oct  5 16:39:31 1987
+--- uipc_socket2.c	Mon Oct  5 17:26:31 1987
+***************
+*** 212,218 ****
+  	soqinsque(head, so, 0);
+  	if ((*so->so_proto->pr_usrreq)(so, PRU_ATTACH,
+  	    (struct mbuf *)0, (struct mbuf *)0, (struct mbuf *)0)) {
+! 		(void) soqremque(so, 0);
+  		(void) m_free(m);
+  		goto bad;
+  	}
+--- 212,219 ----
+  	soqinsque(head, so, 0);
+  	if ((*so->so_proto->pr_usrreq)(so, PRU_ATTACH,
+  	    (struct mbuf *)0, (struct mbuf *)0, (struct mbuf *)0)) {
+! 		if (so->so_head)		/* may already have happened */
+! 			(void) soqremque(so, 0);
+  		(void) m_free(m);
+  		goto bad;
+  	}
+***************
+*** 245,250 ****
+--- 246,253 ----
+  	register struct socket *head, *prev, *next;
+  
+  	head = so->so_head;
++ 	if (head == 0)
++ 		panic("soqremque");
+  	prev = head;
+  	for (;;) {
+  		next = q ? prev->so_q : prev->so_q0;

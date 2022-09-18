@@ -1,0 +1,85 @@
+Return-Path: <decvax!mcnc!rti-sel!trt>
+From: decvax!mcnc!rti-sel!trt
+Return-Path: <decvax!mcnc!rti-sel!trt>
+Date: Mon, 1 Oct 84 10:52:47 edt
+Original-From: rti-sel!trt@mcnc (Tom Truscott)
+Subject: Re:  uuxqt bug with a badly logjammed spool directory
+
+Index: bin 4.2BSD
+This uuxqt bug has been solved in different ways.
+Here is the (fixed) offending routine from my current version
+of uuxqt.c.  It tries to rename an apparently dead X. file
+but you can just unlink it instead.
+The 4.2 bsd sure could use a smart uuclean ala honey danber,
+which finds 'orphaned' files and takes care of them,
+including (re)submitting them to news or mailing them
+to the apparent destination (or returning them to sender if
+all else fails).
+
+I am going to send my version to ucbvax (Mike Karels)
+when I get Lou Salkinds uucp queue managing code (ala lpq/lprm).
+It isn't honey danber, but it has a zillion fixes since 4.2
+I suppose the UKUUCP should be merged in too,
+but with honey danber out there I just haven't the heart.
+-------
+/*******
+ *	gtxfile(file)	get a file to execute
+ *	char *file;
+ *
+ *	return codes:  0 - no file  |  1 - file to execute
+ * Mod to recheck for X-able files. Sept 1982, rti!trt.
+ * Suggested by utzoo.2458 (utzoo!henry)
+ * Uses iswrk/gtwrkf to keep files in sequence, May 1983.
+ * Check for clogged uuxqt, Feb 1984, vax4.1397, fluke!joe (Joe Kelsey).
+ */
+
+gtxfile(file)
+register char *file;
+{
+	char pre[3];
+	register int rechecked;
+	register int numtried;
+	struct stat stbuf;	/* for X file age */
+	extern time_t time();
+
+	pre[0] = XQTPRE;
+	pre[1] = '.';
+	pre[2] = '\0';
+	rechecked = 0;
+	numtried = 0;
+retry:
+	if (!gtwrkf(Spool, file)) {
+		if (rechecked)
+			return(0);
+		if (numtried)
+			rechecked = 1;
+		DEBUG(4, "iswrk\n", 0);
+		if (!iswrk(file, "get", Spool, pre))
+			return(0);
+	 	/* check for constipated uuxqt */
+		/* suggested by Tom Truscott. fluke!joe */
+		if (numtried >= LLEN/2) {
+			do {
+			if (!gotfiles(file)
+			 && stat(subfile(file), &stbuf) == 0
+			 && stbuf.st_mtime <= (time((time_t *)0)-SLCKTIME)) {
+				logent(file, "DEAD X. FILE");
+				if (xmv(file, BADFILES))
+					unlink(subfile(file));
+			}
+			} while (gtwrkf(Spool, file));
+			return(0);
+		}
+		numtried = 0;
+	}
+	DEBUG(4, "file - %s\n", file);
+#ifndef UUDIR
+	/* skip spurious subdirectories */
+	if (strcmp(pre, file) == SAME)
+		goto retry;
+#endif
+	if (gotfiles(file))
+		return(1);
+	numtried++;
+	goto retry;
+}

@@ -1,0 +1,63 @@
+Return-Path: <mckusick@ucbmonet>
+Date: Sat, 30 Jun 84 17:10:34 pdt
+From: mckusick@ucbmonet (Kirk Mckusick)
+Subject: Race condition causing "freeing free inode" panic
+Index: 	 sys/ufs_syscalls.c	4.2BSD
+
+Description:
+	There is a race condition between the `unlink' and `rename'
+	system calls that can cause the system to leave a reference
+	in a directory that points to an unallocated inode. The next
+	time the entry is accessed, the system panics with a "freeing
+	free inode panic".
+
+Repeat-By:
+	When the following two programs are run, the directory entry
+	for "AA" eventually points to an unallocated inode and the
+	`rename' system call panics when it tries to delete the previous
+	file associated with "AA" in preparation for renaming "A".
+
+	main()
+	{
+		while(1) {
+			close(creat("A",0666));
+			rename("A","AA");
+		}
+	}
+
+	main()
+	{
+		while(1) {
+			unlink("A");
+		}
+	}
+
+Fix:
+	*** ufs_syscalls.c	Wed Jun 27 16:54:26 1984
+	--- ufs_syscalls.c	Sat Jun 30 16:41:34 1984
+	***************
+	*** 942,954
+		 * Insure directory entry still exists and
+		 * has not changed since the start of all
+		 * this.  If either has occured, forget about
+	! 	 * about deleting the original entry and just
+	! 	 * adjust the link count in the inode.
+		 */
+	! 	if (dp == NULL || u.u_dent.d_ino != ip->i_number) {
+	! 		ip->i_nlink--;
+	! 		ip->i_flag |= ICHG;
+	! 	} else {
+			/*
+			 * If source is a directory, must adjust
+			 * link count of parent directory also.
+
+	--- 942,950 -----
+		 * Insure directory entry still exists and
+		 * has not changed since the start of all
+		 * this.  If either has occured, forget about
+	! 	 * about deleting the original entry.
+		 */
+	! 	if (dp != NULL && u.u_dent.d_ino == ip->i_number) {
+			/*
+			 * If source is a directory, must adjust
+			 * link count of parent directory also.

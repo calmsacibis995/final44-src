@@ -1,0 +1,136 @@
+From jerry@csd4.milw.wisc.edu  Wed Jan 20 17:26:48 1988
+Date: Wed, 20 Jan 88 19:25:57 CST
+From: Jerry Lieberthal <jerry@csd4.milw.wisc.edu>
+To: tahoe-bugs@okeeffe.berkeley.edu
+Subject: undefined case selector causes instruction fault in pccaseop
+Index: ucb/pascal/src/pccaseop.c tahoe
+
+Description:
+	A case statement containing a case selector identifier will cause
+	a bad value to be loaded into r0 when the _CASERNG label is being
+	generated.  
+Repeat-By:
+	Try to compile the following program.  The undefined identifier in
+	the case will cause an instruction fault.
+Fix:
+	The problem is caused by not allocating storage to the variable
+	"exprnlp" if the label is undefined.  This causes the instruction
+	fault because instead of doing a malloc, the value present in the
+	pointer is very low, usually 3 or some odd number.  This causes
+	an instruction fault when the instruction "pushl  -60(r0)" is
+	attempted.  The fix involves always allocating storage before
+	generating the case code.  Move the line at about line 122
+	(the tmpalloc call) to about line 96, before the major code gets
+	underway.  The diffs to pccaseop are:
+
+
+*** pccaseop.c	Wed Jan 20 19:16:40 1988
+--- pccaseop.or.c	Fri May 22 04:44:50 1987
+***************
+*** 5,18 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)pccaseop.c	5.2b (Berkeley/UWM)  01/20/88" ;
+  #endif not lint
+  
+- /* modification history
+-  * 
+-  * jnl001 - 870522  .align 2 fix to "J" tahoe coding
+-  * jnl002 - 880120  fix instruction fault when case selector undefined
+-  */
+  
+  #include "whoami.h"
+  #ifdef PC
+--- 5,13 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)pccaseop.c	5.2 (Berkeley) 11/12/86";
+  #endif not lint
+  
+  
+  #include "whoami.h"
+  #ifdef PC
+***************
+*** 93,101 ****
+  	 */
+      line = tcase->line_no;
+      codeoff();
+- # ifdef csd4
+      exprtype = rvalue( tcase->expr , NLNIL  , RREQ );
+- # endif csd4
+      codeon();
+      if ( exprtype != NLNIL ) {
+  	if ( isnta( exprtype , "bcsi" ) ) {
+--- 88,94 ----
+***************
+*** 115,121 ****
+  	    }
+  	}
+      }
+-     exprnlp = tmpalloc( (long) (sizeof (long)), nl + T4INT , NOREG );
+      if ( exprtype != NLNIL ) {
+  	    /*
+  	     *	compute and save the case expression.
+--- 108,113 ----
+***************
+*** 123,131 ****
+  	     *	save its c-type and jump to the code to do the switch.
+  	     */
+  	exprctype = p2type( exprtype );
+- # ifndef csd4
+  	exprnlp = tmpalloc( (long) (sizeof (long)), nl + T4INT , NOREG );
+- # endif
+  	putRV((char *) 0 , cbn , exprnlp -> value[ NL_OFFS ] ,
+  			exprnlp -> extra_flags , PCCT_INT );
+  	(void) rvalue( tcase->expr , NLNIL , RREQ );
+--- 115,121 ----
+***************
+*** 322,330 ****
+  	    putprintf("	shal	$2,%s,%s", 0, (int) FORCENAME, (int) FORCENAME);
+  	    putprintf("	jmp	*%s%d(%s)", 0,
+  		    (int) LABELPREFIX, fromlabel, (int) FORCENAME);
+- # ifdef csd4
+- 	    putprintf(" .align  2", 0) ;
+- # endif csd4
+  	} else {
+  	    /*
+  	     *	We can use the TAHOE casel instruction with a table
+--- 312,317 ----
+
+------------ The actual code in Pascal causing the problem:
+
+
+program Testcase (output) ;
+ { test bad case syntax }
+
+const
+	One			= 1 ;
+	Zero			= 0 ;
+
+	Deposit			= 'D' ;
+	Withdraw		= 'W' ;
+	Transfer		= 'T' ;
+
+var
+	CaseType		: char ;
+	Ok			: boolean ;
+
+begin
+	writeln ('beginning of case test.') ;
+	writeln ;
+	Ok := true ;
+
+	CaseType := Deposit ;
+	if Ok then case Action of
+		Deposit		: ;
+		Withdraw	: ;
+		Transfer	: ;
+		'Q'		: ;
+	end ;
+
+	writeln ('case test passed') ;
+	writeln
+end.
+

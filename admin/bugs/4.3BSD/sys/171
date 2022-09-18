@@ -1,0 +1,177 @@
+From mckusick@okeeffe.Berkeley.EDU  Thu Nov 12 15:57:25 1987
+Date: Thu, 12 Nov 87 15:56:25 PST
+From: mckusick@okeeffe.Berkeley.EDU (Kirk McKusick)
+Subject: Freeing free frag when using the cooked disk
+Index: sys/sys/ufs_bio.c 4.3BSD
+
+Description:
+	When a cooked disk device is used concurrently with an
+	active file system, it is possible to trash a file system
+	and eventually panic with `freeing free frag'.  The bug is
+	a cache consistency problem, due to overlapping (variable
+	sized) buffers. A small dirty buffer in the cache is not
+	getting written out, before a larger buffer that overlaps
+	it (with a common base address) is being overwritten by
+	out of date data.  The fix forces the write and then does
+	the read.  The file system carefully avoids growing dirty
+	buffers for each frag buffer at the end of a file so that
+	the fragments will not be forced synchronously out to disk.
+Repeat-By:
+	Run the following shell script. It is necessary to run
+	dumpfs on the cooked file system that holds /tmp. The
+	failure occurs because `sh' creates a temporary file in
+	/tmp whose creation is lost by the immediately following
+	read operations on the cooked device.
+
+	sh << EOF
+	/etc/dumpfs /dev/hpXX # substitute /tmp file system unit for XX
+	EOF
+
+Fix:
+	*** ufs_bio.c (4.3BSD)
+	--- ufs_bio.c (new)
+	***************
+	*** 3,9 ****
+	   * All rights reserved.  The Berkeley software License Agreement
+	   * specifies the terms and conditions for redistribution.
+	   *
+	!  *	@(#)ufs_bio.c	7.1 (Berkeley) 6/5/86
+	   */
+	  
+	  #include "../machine/pte.h"
+	--- 3,9 ----
+	   * All rights reserved.  The Berkeley software License Agreement
+	   * specifies the terms and conditions for redistribution.
+	   *
+	!  *	@(#)ufs_bio.c	7.3 (Berkeley) 11/12/87
+	   */
+	  
+	  #include "../machine/pte.h"
+	***************
+	*** 33,39 ****
+		if (size == 0)
+			panic("bread: size 0");
+		bp = getblk(dev, blkno, size);
+	! 	if (bp->b_flags&B_DONE) {
+			trace(TR_BREADHIT, pack(dev, size), blkno);
+			return (bp);
+		}
+	--- 33,39 ----
+		if (size == 0)
+			panic("bread: size 0");
+		bp = getblk(dev, blkno, size);
+	! 	if (bp->b_flags&(B_DONE|B_DELWRT)) {
+			trace(TR_BREADHIT, pack(dev, size), blkno);
+			return (bp);
+		}
+	***************
+	*** 67,73 ****
+		 */
+		if (!incore(dev, blkno)) {
+			bp = getblk(dev, blkno, size);
+	! 		if ((bp->b_flags&B_DONE) == 0) {
+				bp->b_flags |= B_READ;
+				if (bp->b_bcount > bp->b_bufsize)
+					panic("breada");
+	--- 67,73 ----
+		 */
+		if (!incore(dev, blkno)) {
+			bp = getblk(dev, blkno, size);
+	! 		if ((bp->b_flags&(B_DONE|B_DELWRT)) == 0) {
+				bp->b_flags |= B_READ;
+				if (bp->b_bcount > bp->b_bufsize)
+					panic("breada");
+	***************
+	*** 84,90 ****
+		 */
+		if (rablkno && !incore(dev, rablkno)) {
+			rabp = getblk(dev, rablkno, rabsize);
+	! 		if (rabp->b_flags & B_DONE) {
+				brelse(rabp);
+				trace(TR_BREADHITRA, pack(dev, rabsize), blkno);
+			} else {
+	--- 84,90 ----
+		 */
+		if (rablkno && !incore(dev, rablkno)) {
+			rabp = getblk(dev, rablkno, rabsize);
+	! 		if (rabp->b_flags & (B_DONE|B_DELWRT)) {
+				brelse(rabp);
+				trace(TR_BREADHITRA, pack(dev, rabsize), blkno);
+			} else {
+	***************
+	*** 149,160 ****
+	  bdwrite(bp)
+		register struct buf *bp;
+	  {
+	- 	register int flags;
+	  
+		if ((bp->b_flags&B_DELWRI) == 0)
+			u.u_ru.ru_oublock++;		/* noone paid yet */
+	! 	flags = bdevsw[major(bp->b_dev)].d_flags;
+	! 	if(flags & B_TAPE)
+			bawrite(bp);
+		else {
+			bp->b_flags |= B_DELWRI | B_DONE;
+	--- 149,158 ----
+	  bdwrite(bp)
+		register struct buf *bp;
+	  {
+	  
+		if ((bp->b_flags&B_DELWRI) == 0)
+			u.u_ru.ru_oublock++;		/* noone paid yet */
+	! 	if (bdevsw[major(bp->b_dev)].d_flags & B_TAPE)
+			bawrite(bp);
+		else {
+			bp->b_flags |= B_DELWRI | B_DONE;
+	***************
+	*** 260,265 ****
+	--- 258,270 ----
+	   * block is already associated, return it; otherwise search
+	   * for the oldest non-busy buffer and reassign it.
+	   *
+	+  * If we find the buffer, but it is dirty (marked DELWRT) and
+	+  * its size is changing, we must write it out first. When the
+	+  * buffer is shrinking, the write is done by brealloc to avoid
+	+  * losing the unwritten data. When the buffer is growing, the
+	+  * write is done by getblk, so that bread will not read stale
+	+  * disk data over the modified data in the buffer.
+	+  *
+	   * We use splx here because this routine may be called
+	   * on the interrupt stack during a dump, and we don't
+	   * want to lower the ipl back to 0.
+	***************
+	*** 305,310 ****
+	--- 310,324 ----
+			}
+			splx(s);
+			notavail(bp);
+	+ 		if (bp->b_bcount != size) {
+	+ 			if (bp->b_bcount < size && (bp->b_flags&B_DELWRI)) {
+	+ 				bp->b_flags &= ~B_ASYNC;
+	+ 				bwrite(bp);
+	+ 				goto loop;
+	+ 			}
+	+ 			if (brealloc(bp, size) == 0)
+	+ 				goto loop;
+	+ 		}
+			if (bp->b_bcount != size && brealloc(bp, size) == 0)
+				goto loop;
+			bp->b_flags |= B_CACHE;
+	***************
+	*** 364,370 ****
+		int s;
+	  
+		/*
+	! 	 * First need to make sure that all overlaping previous I/O
+		 * is dispatched with.
+		 */
+		if (size == bp->b_bcount)
+	--- 378,384 ----
+		int s;
+	  
+		/*
+	! 	 * First need to make sure that all overlapping previous I/O
+		 * is dispatched with.
+		 */
+		if (size == bp->b_bcount)
+

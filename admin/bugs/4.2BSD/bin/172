@@ -1,0 +1,48 @@
+Return-Path: <ibmpa!zittin@sculpin.arpa>
+Date: Wed, 24 Sep 86 18:19:46 pdt
+From: ibmpa!zittin@sculpin.arpa (dave zittin)
+Subject: awk can wait indefinitely on opened pipes.
+Index: bin/awk 4.2BSD
+
+Description:
+	Awk(1) does not set file descriptors opened via popen(3) to
+	close on exec. Awk calls popen() to open pipes when the "|"
+	operator is specified.  Later awk closes pipes by calling pclose(3)
+	which in turn calls wait(2) to synchronize its child. The wait() blocks
+	indefinitely if two or more pipes have been opened. This is because
+	there is more than one instance of a file descriptor
+	associated with the pipe, namely the proper one and those inherited by
+	subsequent pipes.
+Repeat-By:
+	echo anything | awk 'BEGIN{print "hi" | "cat"; print "world" | "tr"}'
+	will hang in wait.
+Fix: Set all opened file descriptors obtained via popen() and fopen()
+	to close on exec.  This will ensure that child processes will
+	not inherit unnecessary file descriptors associated with previously
+	connected pipes.
+
+*** run.c	Tue Sep  9 18:18:24 1986
+--- newrun.c	Tue Sep  9 18:20:23 1986
+***************
+*** 7,10 ****
+--- 7,11 ----
+  #include "awk.h"
+  #include "stdio.h"
++ #include "fcntl.h"
+  #define RECSIZE BUFSIZ
+  
+***************
+*** 874,877 ****
+--- 875,880 ----
+	if (files[i].fp == NULL)
+		error(FATAL, "can't open file %s", x.optr->sval);
++ 	if(fcntl(fileno(files[i].fp), F_SETFD, 1) < 0)
++ 		error(FATAL,"close on exec failure");
+	files[i].fname = tostring(x.optr->sval);
+	files[i].type = a;
+
+	-----
+	IBM makes no warranty or condition, either expressed or implied,
+	including but not limited to any implied warranties of merchantability
+	and fitness for a particular purpose, regarding this code and makes it
+	available on an "as is" basis.

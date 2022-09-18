@@ -1,0 +1,455 @@
+
+Received: from snow-white.ee.udel.edu by huey.udel.edu id aa22684;
+          29 Sep 94 20:55 EDT
+Received: from strauss.udel.edu by snow-white.ee.udel.edu id aa22139;
+          29 Sep 94 20:51 EDT
+Received: from halloran-eldar.lcs.mit.edu (halloran-eldar.lcs.mit.edu [18.26.0.159]) by strauss.udel.edu (8.6.8/8.6.6) with SMTP id UAA04403 for <Mills@udel.edu>; Thu, 29 Sep 1994 20:51:01 -0400
+Received: by halloran-eldar.lcs.mit.edu; id AA01229; Thu, 29 Sep 1994 20:50:59 -0400
+Date: Thu, 29 Sep 1994 20:50:59 -0400
+From: Garrett Wollman <wollman@halloran-eldar.lcs.mit.edu>
+Message-Id: <9409300050.AA01229@halloran-eldar.lcs.mit.edu>
+To: Dave Mills <Mills@udel.edu>
+Subject: xntpd changes for FreeBSD 2.0
+
+Here are the changes to xntpd 3.4e as it will appear in FreeBSD 2.0.
+Feed this to `patch -p2'.  Note that we distinguish between FreeBSD
+1.1 (defined(SYS_FREEBSD) && defined(SYS_386BSD)) and FreeBSD 2.0
+(defined(SYS_FREEBSD) && defined(SYS_44BSD)) in the code below.  As
+written, this code should work under both versions, although I have
+only tested it under 2.0.
+
+This also implements my proposed change to make the internal resolver
+use MD5 rather than DES authentication.  Additionally, we rename the
+`clockinfo' structure in refclock_parse.c to something which doesn't
+conflict with the `clockinfo' structure in 4.4.
+
+-GAWollman
+
+
+diff -c src/usr.sbin/xntpd/doc/ntpq.8:1.1.1.3 src/usr.sbin/xntpd/doc/ntpq.8:1.3
+*** src/usr.sbin/xntpd/doc/ntpq.8:1.1.1.3	Thu Sep 29 17:39:04 1994
+--- src/usr.sbin/xntpd/doc/ntpq.8	Thu Sep 29 17:39:04 1994
+***************
+*** 554,560 ****
+  The
+  .B peers
+  command is non\-atomic and may occasionally result in spurious error
+! messages about invalid associations occuring and terminating the
+  command.
+  .PP
+  The timeout time is a fixed constant, which means you wait a long time
+--- 554,560 ----
+  The
+  .B peers
+  command is non\-atomic and may occasionally result in spurious error
+! messages about invalid associations occurring and terminating the
+  command.
+  .PP
+  The timeout time is a fixed constant, which means you wait a long time
+diff -c src/usr.sbin/xntpd/include/ntp_machine.h:1.1.1.5 src/usr.sbin/xntpd/include/ntp_machine.h:1.5
+*** src/usr.sbin/xntpd/include/ntp_machine.h:1.1.1.5	Thu Sep 29 17:39:07 1994
+--- src/usr.sbin/xntpd/include/ntp_machine.h	Thu Sep 29 17:39:07 1994
+***************
+*** 84,89 ****
+--- 84,90 ----
+    NTP_SYSCALLS_STD  - use the "normal" ones
+    NTP_SYSCALL_GET   - SYS_ntp_gettime id
+    NTP_SYSCALL_ADJ   - SYS_ntp_adjtime id
++   NTP_SYSCALLS_LIBC - ntp_adjtime() and ntp_gettime() are in libc.
+  
+  HOW TO GET IP INTERFACE INFORMATION
+  
+***************
+*** 374,382 ****
+--- 375,392 ----
+  #define HAVE_LIBKVM
+  #define NTP_POSIX_SOURCE
+  #define HAVE_BSD_NICE
++ #define USE_PROTOTYPES
+  #ifndef STR_SYSTEM
+  #define STR_SYSTEM "UNIX/4.4BSD"
+  #endif
++ #ifdef SYS_FREEBSD
++ #define HAVE_TERMIOS
++ #define HAVE_UNAME
++ #define HAVE_SYS_TIMEX_H
++ #define HAVE_GETBOOTFILE
++ #define NTP_SYSCALLS_LIBC
++ #define KERNEL_PLL
++ #endif
+  #endif
+  
+  /*
+***************
+*** 401,413 ****
+   * 386BSD and any variants 8-) - should really have only ONE define
+   * for this bunch.
+   */
+! #if defined(SYS_386BSD) || defined(SYS_FREEBSD) || defined(SYS_NETBSD)
+  #define HAVE_SIGNALED_IO
+  #define HAVE_READKMEM
+  #define NTP_POSIX_SOURCE
+  #define HAVE_BSD_NICE
+  #ifndef STR_SYSTEM
+  #define STR_SYSTEM "UNIX/\052BSD"
+  #endif
+  #endif
+  
+--- 411,430 ----
+   * 386BSD and any variants 8-) - should really have only ONE define
+   * for this bunch.
+   */
+! #if defined(SYS_386BSD) || defined(SYS_NETBSD)
+  #define HAVE_SIGNALED_IO
+  #define HAVE_READKMEM
+  #define NTP_POSIX_SOURCE
+  #define HAVE_BSD_NICE
+  #ifndef STR_SYSTEM
+  #define STR_SYSTEM "UNIX/\052BSD"
++ #endif
++ #ifdef SYS_FREEBSD
++ #define HAVE_TERMIOS
++ #define HAVE_UNAME
++ #define HAVE_SYS_TIMEX_H
++ #define NTP_SYSCALLS_LIBC
++ #define KERNEL_PLL
+  #endif
+  #endif
+  
+diff -c src/usr.sbin/xntpd/lib/msyslog.c:1.1.1.3 src/usr.sbin/xntpd/lib/msyslog.c:1.4
+*** src/usr.sbin/xntpd/lib/msyslog.c:1.1.1.3	Thu Sep 29 17:39:10 1994
+--- src/usr.sbin/xntpd/lib/msyslog.c	Thu Sep 29 17:39:10 1994
+***************
+*** 43,53 ****
+  	char *fmt;
+  #endif
+  	va_list ap;
+! 	char buf[1025], nfmt[256], xerr[50], *err;
+  	register int c, l;
+  	register char *n, *f, *prog;
+  	extern int sys_nerr;
+  	extern char *sys_errlist[];
+  	int olderrno;
+  
+  #ifdef __STDC__
+--- 43,56 ----
+  	char *fmt;
+  #endif
+  	va_list ap;
+! 	char buf[1025], nfmt[256], xerr[50];
+! 	const char *err;
+  	register int c, l;
+  	register char *n, *f, *prog;
++ #ifndef SYS_44BSD
+  	extern int sys_nerr;
+  	extern char *sys_errlist[];
++ #endif
+  	int olderrno;
+  
+  #ifdef __STDC__
+***************
+*** 73,79 ****
+  			continue;
+  		}
+  		if ((unsigned)olderrno > sys_nerr)
+! 			sprintf((err = xerr), "error %d", olderrno);
+  		else
+  			err = sys_errlist[olderrno];
+  		if (n + (l = strlen(err)) < &nfmt[254]) {
+--- 76,82 ----
+  			continue;
+  		}
+  		if ((unsigned)olderrno > sys_nerr)
+! 			sprintf((char *)(err = xerr), "error %d", olderrno);
+  		else
+  			err = sys_errlist[olderrno];
+  		if (n + (l = strlen(err)) < &nfmt[254]) {
+diff -c src/usr.sbin/xntpd/util/tickadj.c:1.1.1.5 src/usr.sbin/xntpd/util/tickadj.c:1.9
+*** src/usr.sbin/xntpd/util/tickadj.c:1.1.1.5	Thu Sep 29 17:39:26 1994
+--- src/usr.sbin/xntpd/util/tickadj.c	Thu Sep 29 17:39:26 1994
+***************
+*** 426,439 ****
+  		{""},
+  	};
+  #endif
+! 	static char *kernels[] = {
+  		"/vmunix",
+  		"/unix",
+  		"/mach",
+  		"/kernel/unix",
+  		"/386bsd",
+  		"/netbsd",
+- 		"/hp-ux",
+  		NULL
+  	};
+  	struct stat stbuf;
+--- 426,441 ----
+  		{""},
+  	};
+  #endif
+! 	char *kernels[] = {
+! #if __FreeBSD__ > 1
+! 		(char *)getbootfile(),
+! #endif
+  		"/vmunix",
+  		"/unix",
+  		"/mach",
+  		"/kernel/unix",
+  		"/386bsd",
+  		"/netbsd",
+  		NULL
+  	};
+  	struct stat stbuf;
+diff -c src/usr.sbin/xntpd/xntpd/ntp_config.c:1.1.1.5 src/usr.sbin/xntpd/xntpd/ntp_config.c:1.2
+*** src/usr.sbin/xntpd/xntpd/ntp_config.c:1.1.1.5	Thu Sep 29 17:39:29 1994
+--- src/usr.sbin/xntpd/xntpd/ntp_config.c	Thu Sep 29 17:39:29 1994
+***************
+*** 1642,1648 ****
+  }
+  
+  
+! #define	KEY_TYPE_ASCII	3
+  
+  /*
+   * do_resolve_internal - start up the resolver function (not program)
+--- 1642,1648 ----
+  }
+  
+  
+! #define	KEY_TYPE_MD5	4
+  
+  /*
+   * do_resolve_internal - start up the resolver function (not program)
+***************
+*** 1684,1690 ****
+  		for (i = 0; i < 8; i++)
+  			rankey[i] = (rand() % 255) + 1;
+  		rankey[8] = 0;
+! 		authusekey(req_keyid, KEY_TYPE_ASCII, rankey);
+  	}
+  
+  	/* save keyid so we will accept config requests with it */
+--- 1684,1690 ----
+  		for (i = 0; i < 8; i++)
+  			rankey[i] = (rand() % 255) + 1;
+  		rankey[8] = 0;
+! 		authusekey(req_keyid, KEY_TYPE_MD5, rankey);
+  	}
+  
+  	/* save keyid so we will accept config requests with it */
+diff -c src/usr.sbin/xntpd/xntpd/ntp_loopfilter.c:1.1.1.5 src/usr.sbin/xntpd/xntpd/ntp_loopfilter.c:1.4
+*** src/usr.sbin/xntpd/xntpd/ntp_loopfilter.c:1.1.1.5	Thu Sep 29 17:39:33 1994
+--- src/usr.sbin/xntpd/xntpd/ntp_loopfilter.c	Thu Sep 29 17:39:33 1994
+***************
+*** 12,20 ****
+--- 12,27 ----
+  #include "ntp_stdlib.h"
+  
+  #ifdef KERNEL_PLL
++ #ifdef HAVE_SYS_TIMEX_H
++ #include <sys/timex.h>
++ #else
+  #include "sys/timex.h"
++ #endif /* not HAVE_SYS_TIMEX_H */
++ 
++ #ifndef NTP_SYSCALLS_LIBC
+  #define ntp_gettime(t)  syscall(SYS_ntp_gettime, (t))
+  #define ntp_adjtime(t)  syscall(SYS_ntp_adjtime, (t))
++ #endif /* not NTP_SYSCALLS_LIBC */
+  #endif /* KERNEL_PLL */
+  
+  /*
+***************
+*** 129,135 ****
+--- 136,144 ----
+  #define MOD_BITS (MOD_OFFSET | MOD_MAXERROR | MOD_ESTERROR | \
+      MOD_STATUS | MOD_TIMECONST)
+  extern int sigvec	P((int, struct sigvec *, struct sigvec *));
++ #ifndef NTP_SYSCALLS_LIBC
+  extern int syscall	P((int, void *, ...));
++ #endif /* no NTP syscalls in libc */
+  void pll_trap		P((void));
+  
+  static struct sigvec sigsys;	/* current sigvec status */
+diff -c src/usr.sbin/xntpd/xntpd/ntp_request.c:1.1.1.5 src/usr.sbin/xntpd/xntpd/ntp_request.c:1.4
+*** src/usr.sbin/xntpd/xntpd/ntp_request.c:1.1.1.5	Thu Sep 29 17:39:35 1994
+--- src/usr.sbin/xntpd/xntpd/ntp_request.c	Thu Sep 29 17:39:35 1994
+***************
+*** 16,24 ****
+--- 16,31 ----
+  #include "ntp_stdlib.h"
+  
+  #ifdef KERNEL_PLL
++ #ifdef HAVE_SYS_TIMEX_H
++ #include <sys/timex.h>
++ #else
+  #include "sys/timex.h"
++ #endif
++ 
++ #ifndef NTP_SYSCALLS_LIBC
+  #define ntp_gettime(t)	syscall(SYS_ntp_gettime, (t))
+  #define ntp_adjtime(t)	syscall(SYS_ntp_adjtime, (t))
++ #endif
+  #endif /* KERNEL_PLL */
+  
+  /*
+***************
+*** 171,177 ****
+  u_long errorcounter[INFO_ERR_AUTH+1];	/* lazy way to count errors, indexed */
+  					/* by the error code */
+  
+! #ifdef KERNEL_PLL
+  extern int syscall	P((int, void *, ...));
+  #endif /* KERNEL_PLL */
+  
+--- 178,184 ----
+  u_long errorcounter[INFO_ERR_AUTH+1];	/* lazy way to count errors, indexed */
+  					/* by the error code */
+  
+! #if defined(KERNEL_PLL) && !defined(NTP_SYSCALLS_LIBC)
+  extern int syscall	P((int, void *, ...));
+  #endif /* KERNEL_PLL */
+  
+diff -c src/usr.sbin/xntpd/xntpd/ntp_unixclock.c:1.1.1.5 src/usr.sbin/xntpd/xntpd/ntp_unixclock.c:1.3
+*** src/usr.sbin/xntpd/xntpd/ntp_unixclock.c:1.1.1.5	Thu Sep 29 17:39:36 1994
+--- src/usr.sbin/xntpd/xntpd/ntp_unixclock.c	Thu Sep 29 17:39:36 1994
+***************
+*** 14,19 ****
+--- 14,23 ----
+  #include <utmp.h>
+  #endif
+  
++ #if defined(HAVE_GETBOOTFILE)
++ #include <paths.h>
++ #endif
++ 
+  #include "ntpd.h"
+  #include "ntp_io.h"
+  #include "ntp_unixtime.h"
+***************
+*** 314,320 ****
+--- 318,328 ----
+  		{""},
+  	};
+  #endif
++ #ifdef HAVE_GETBOOTFILE
++ 	const char *kernelname;
++ #else
+  	static char *kernelnames[] = {
++ 		"/kernel",
+  		"/vmunix",
+  		"/unix",
+  		"/mach",
+***************
+*** 326,331 ****
+--- 334,340 ----
+  #endif
+  		NULL
+  	};
++ #endif
+  	struct stat stbuf;
+  	int vars[2];
+  
+***************
+*** 336,341 ****
+--- 345,355 ----
+  	 * Check to see what to use for the object file for names and get
+  	 * the locations of the necessary kernel variables.
+  	 */
++ #ifdef	HAVE_GETBOOTFILE
++ 	kernelname = getbootfile();
++ 	if (kernelname &&
++             ((stat(kernelname, &stbuf) == -1) || (nlist(kernelname, nl) < 0))) {
++ #else
+  	for (i = 0; kernelnames[i] != NULL; i++) {
+  		if (stat(kernelnames[i], &stbuf) == -1)
+  			continue;
+***************
+*** 343,348 ****
+--- 357,363 ----
+  			break;
+  	}
+  	if (kernelnames[i] == NULL) {
++ #endif
+  		syslog(LOG_ERR,
+  		  "Clock init couldn't find kernel object file");
+  		exit(3);
+diff -c src/usr.sbin/xntpd/xntpd/refclock_parse.c:1.1.1.5 src/usr.sbin/xntpd/xntpd/refclock_parse.c:1.2
+*** src/usr.sbin/xntpd/xntpd/refclock_parse.c:1.1.1.5	Thu Sep 29 17:39:37 1994
+--- src/usr.sbin/xntpd/xntpd/refclock_parse.c	Thu Sep 29 17:39:38 1994
+***************
+*** 242,248 ****
+    /*
+     * type specific parameters
+     */
+!   struct clockinfo   *parse_type;	        /* link to clock description */
+  
+    /*
+     * clock specific configuration
+--- 242,248 ----
+    /*
+     * type specific parameters
+     */
+!   struct my_clockinfo   *parse_type;	        /* link to clock description */
+  
+    /*
+     * clock specific configuration
+***************
+*** 536,542 ****
+  
+  #define TRIMBLETAIP_EOL		    '<'
+  
+! static struct clockinfo
+  {
+    U_LONG  cl_flags;		/* operation flags (io modes) */
+    void  (*cl_poll)();		/* active poll routine */
+--- 536,542 ----
+  
+  #define TRIMBLETAIP_EOL		    '<'
+  
+! static struct my_clockinfo
+  {
+    U_LONG  cl_flags;		/* operation flags (io modes) */
+    void  (*cl_poll)();		/* active poll routine */
+***************
+*** 749,755 ****
+    }
+  };
+  
+! static int ncltypes = sizeof(clockinfo) / sizeof(struct clockinfo);
+  
+  #define CL_REALTYPE(x) (((x) >> 2) & 0x1F)
+  #define CL_TYPE(x)  ((CL_REALTYPE(x) >= ncltypes) ? ~0 : CL_REALTYPE(x))
+--- 749,755 ----
+    }
+  };
+  
+! static int ncltypes = sizeof(clockinfo) / sizeof(struct my_clockinfo);
+  
+  #define CL_REALTYPE(x) (((x) >> 2) & 0x1F)
+  #define CL_TYPE(x)  ((CL_REALTYPE(x) >= ncltypes) ? ~0 : CL_REALTYPE(x))
+***************
+*** 1718,1724 ****
+  
+  	  while (i-- > 0)
+  	    {
+! 	      if (parse_ioread(&parse->parseio, *s++, ts))
+  		{
+  		  /*
+  		   * got something good to eat
+--- 1718,1724 ----
+  
+  	  while (i-- > 0)
+  	    {
+! 	      if (parse_ioread(&parse->parseio, *s++, &ts))
+  		{
+  		  /*
+  		   * got something good to eat
+[no save]
+
+--
+Garrett A. Wollman   | Shashish is simple, it's discreet, it's brief. ... 
+wollman@lcs.mit.edu  | Shashish is the bonding of hearts in spite of distance.
+Opinions not those of| It is a bond more powerful than absence.  We like people
+MIT, LCS, ANA, or NSA| who like Shashish.  - Claude McKenzie + Florent Vollant
+

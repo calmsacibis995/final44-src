@@ -1,0 +1,201 @@
+From jik@PIT-MANAGER.MIT.EDU  Wed Jun 20 07:34:44 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA26957; Wed, 20 Jun 90 07:34:44 -0700
+Received: from PIT-MANAGER.MIT.EDU by ucbvax.Berkeley.EDU (5.63/1.41)
+	id AA20631; Wed, 20 Jun 90 07:34:54 -0700
+Received:  by PIT-MANAGER.MIT.EDU (5.61/2.0JIK) id <AA23804@PIT-MANAGER.MIT.EDU>; Wed, 20 Jun 90 10:34:45 -0400
+Date: Wed, 20 Jun 90 10:34:45 -0400
+Message-Id: <9006201434.AA23804@PIT-MANAGER.MIT.EDU>
+From: "Jonathan I. Kamens" <jik@pit-manager.MIT.EDU>
+Sender: jik@PIT-MANAGER.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: Woops!  Context diff for ftpd fix
+Index: etc 4.3BSD-tahoe
+
+
+I accidentally sent you an ed diff, rather than a context diff, for
+the ftpd fixes.  Here's the context diff.
+
+*** /tmp/,RCSt1023791	Wed Jun 20 10:34:35 1990
+--- /tmp/,RCSt2023791	Wed Jun 20 10:34:35 1990
+***************
+*** 639,656 ****
+  	dologout(0);
+  }
+  
+! reply(n, s, p0, p1, p2, p3, p4)
+  	int n;
+  	char *s;
+  {
+  
+  	printf("%d ", n);
+! 	printf(s, p0, p1, p2, p3, p4);
+  	printf("\r\n");
+  	(void) fflush(stdout);
+  	if (debug) {
+  		syslog(LOG_DEBUG, "<--- %d ", n);
+! 		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+  	}
+  }
+  
+--- 639,656 ----
+  	dologout(0);
+  }
+  
+! reply(n, s, p0, p1, p2, p3, p4, p5)
+  	int n;
+  	char *s;
+  {
+  
+  	printf("%d ", n);
+! 	printf(s, p0, p1, p2, p3, p4, p5);
+  	printf("\r\n");
+  	(void) fflush(stdout);
+  	if (debug) {
+  		syslog(LOG_DEBUG, "<--- %d ", n);
+! 		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4, p5);
+  	}
+  }
+  
+***************
+*** 821,831 ****
+  	_exit(status);
+  }
+  
+  /*
+   * Check user requesting login priviledges.
+   * Disallow anyone who does not have a standard
+   * shell returned by getusershell() (/etc/shells).
+!  * Disallow anyone mentioned in the file FTPUSERS
+   * to allow people such as uucp to be avoided.
+   */
+  checkuser(name)
+--- 821,860 ----
+  	_exit(status);
+  }
+  
++ 
+  /*
++  * Check to see if the specified name is in
++  * the file FTPUSERS.  Return 1 if it is not (or
++  * if FTPUSERS cannot be opened), or 0 if it is.
++  */
++ checkftpusers(name)
++ 	char *name;
++ {
++ 	FILE *fd;
++ 	char line[BUFSIZ], *cp;
++ 	int found = 0;
++ 	
++ 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
++ 		return (1);
++ 	while (fgets(line, sizeof (line), fd) != NULL) {
++ 		if ((cp = index(line, '\n')) != NULL)
++ 			*cp = '\0';
++ 		if (strcmp(line, name) == 0) {
++ 			found++;
++ 			break;
++ 		}
++ 	}
++ 	(void) fclose(fd);
++ 	return (!found);
++ }
++ 
++ 
++ /*
+   * Check user requesting login priviledges.
+   * Disallow anyone who does not have a standard
+   * shell returned by getusershell() (/etc/shells).
+!  * Then, call checkftpusers() to disallow anyone
+!  * mentioned in the file FTPUSERS,
+   * to allow people such as uucp to be avoided.
+   */
+  checkuser(name)
+***************
+*** 832,842 ****
+  	register char *name;
+  {
+  	register char *cp;
+- 	FILE *fd;
+  	struct passwd *p;
+  	char *shell;
+! 	int found = 0;
+! 	char line[BUFSIZ], *index(), *getusershell();
+  
+  	if ((p = getpwnam(name)) == NULL)
+  		return (0);
+--- 861,869 ----
+  	register char *name;
+  {
+  	register char *cp;
+  	struct passwd *p;
+  	char *shell;
+! 	char *getusershell();
+  
+  	if ((p = getpwnam(name)) == NULL)
+  		return (0);
+***************
+*** 848,865 ****
+  	endusershell();
+  	if (cp == NULL)
+  		return (0);
+! 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+! 		return (1);
+! 	while (fgets(line, sizeof (line), fd) != NULL) {
+! 		if ((cp = index(line, '\n')) != NULL)
+! 			*cp = '\0';
+! 		if (strcmp(line, name) == 0) {
+! 			found++;
+! 			break;
+! 		}
+! 	}
+! 	(void) fclose(fd);
+! 	return (!found);
+  }
+  
+  myoob()
+--- 875,881 ----
+  	endusershell();
+  	if (cp == NULL)
+  		return (0);
+! 	return (checkftpusers(name));
+  }
+  
+  myoob()
+*** /tmp/,RCSt1023791	Wed Jun 20 10:34:38 1990
+--- /tmp/,RCSt2023791	Wed Jun 20 10:34:38 1990
+***************
+*** 104,117 ****
+  			logged_in = 0;
+  			if (strcmp((char *) $3, "ftp") == 0 ||
+  			  strcmp((char *) $3, "anonymous") == 0) {
+! 				if ((pw = sgetpwnam("ftp")) != NULL) {
+! 					guest = 1;
+! 					reply(331,
+! 				  "Guest login ok, send ident as password.");
+! 				}
+! 				else {
+! 					reply(530, "User %s unknown.", $3);
+! 				}
+  			} else if (checkuser((char *) $3)) {
+  				guest = 0;
+  				pw = sgetpwnam((char *) $3);
+--- 104,121 ----
+  			logged_in = 0;
+  			if (strcmp((char *) $3, "ftp") == 0 ||
+  			  strcmp((char *) $3, "anonymous") == 0) {
+! 			     if (checkuser("ftp") &&
+! 				 checkftpusers("anonymous")) {
+! 				  if ((pw = sgetpwnam("ftp")) != NULL) {
+! 				       guest = 1;
+! 				       reply(331,
+! 				    "Guest login ok, send ident as password.");
+! 				  } else {
+! 				       reply(530, "User %s unknown.",$3);
+! 				  }
+! 			     } else {
+! 				  reply(530, "Anonymous ftp not allowed.");
+! 			     }
+  			} else if (checkuser((char *) $3)) {
+  				guest = 0;
+  				pw = sgetpwnam((char *) $3);

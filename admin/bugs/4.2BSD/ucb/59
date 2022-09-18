@@ -1,0 +1,138 @@
+Return-Path: <guyton@rand-unix>
+Date: Thu, 10 Jan 85 23:27:16 pst
+From: Jim Guyton <guyton@rand-unix>
+Index:  ucb/telnet.c 4.2BSD
+Subject: 4.2BSD user telnet sometimes can't send Carriage-Return
+
+Description:
+	4.2BSD user telnet can't talk to some half-duplex hosts.
+	When telnet puts the user's terminal into local-echo mode, it
+	also turns on CRMOD.  This has the effect of turning CR into
+	LF on input, and LF into CRLF on output -- when talking to
+	the terminal.  Unfortunately, this also has the effect of
+	turning CR from the terminal into LF for the remote host,
+	making it impossible to send a real carriage-return when you
+	are in local-echo mode.  Some hosts will take either CR or
+	LF as end-of-line, but if a host requires CR to end a line,
+	you're out of luck.
+
+Repeat-By:
+	Connect to host "ucl" and wait for the "UCL: " prompt.  Then
+	type "help" return.  If you get a help menu, then all's ok
+	and you don't have this problem.  If it just sits there, then
+	you could use this fix.
+
+Fix:
+	Keep track of whether or not the input tty has the CRMOD
+	bit turned on.  If it does, then map input LF characters
+	to CRLF.  Also included in this diff is an older fix than
+	forced CRLF to be sent when the user types CR.
+
+*** old-telnet.c  Thu Jan 10 22:55:51 1985
+--- telnet.c        Thu Jan 10 22:51:28 1985
+***************
+*** 40,45
+  int	options;
+  int	debug = 0;
+  int	crmod = 0;
+  char	*prompt;
+  char	escape = CTRL(]);
+  
+
+--- 40,46 -----
+  int	options;
+  int	debug = 0;
+  int	crmod = 0;
++ int   in_crmod = 0;           /* input tty has crmod turned on */
+  char	*prompt;
+  char	escape = CTRL(]);
+  
+***************
+*** 112,117
+  	ioctl(0, TIOCGETP, (char *)&ottyb);
+  	ioctl(0, TIOCGETC, (char *)&otc);
+  	ioctl(0, TIOCGLTC, (char *)&oltc);
+  	setbuf(stdin, 0);
+  	setbuf(stdout, 0);
+  	prompt = argv[0];
+
+--- 113,119 -----
+  	ioctl(0, TIOCGETP, (char *)&ottyb);
+  	ioctl(0, TIOCGETC, (char *)&otc);
+  	ioctl(0, TIOCGLTC, (char *)&oltc);
++ 	in_crmod = ottyb.sg_flags & CRMOD;
+  	setbuf(stdin, 0);
+  	setbuf(stdout, 0);
+  	prompt = argv[0];
+***************
+*** 247,252
+  	ioctl(0, TIOCGETP, (char *)&ottyb);
+  	ioctl(0, TIOCGETC, (char *)&otc);
+  	ioctl(0, TIOCGLTC, (char *)&oltc);
+  	(void) mode(save);
+  }
+  
+
+--- 249,255 -----
+  	ioctl(0, TIOCGETP, (char *)&ottyb);
+  	ioctl(0, TIOCGETC, (char *)&otc);
+  	ioctl(0, TIOCGLTC, (char *)&oltc);
++ 	in_crmod = ottyb.sg_flags & CRMOD;
+  	(void) mode(save);
+  }
+  
+***************
+*** 364,369
+  	ioctl(fileno(stdin), TIOCSETP, (char *)&sb);
+  	ioctl(fileno(stdin), FIONBIO, &onoff);
+  	ioctl(fileno(stdout), FIONBIO, &onoff);
+  	return (old);
+  }
+  
+
+--- 367,373 -----
+  	ioctl(fileno(stdin), TIOCSETP, (char *)&sb);
+  	ioctl(fileno(stdin), FIONBIO, &onoff);
+  	ioctl(fileno(stdout), FIONBIO, &onoff);
++ 	in_crmod = sb.sg_flags & CRMOD;
+  	return (old);
+  }
+  
+***************
+*** 443,448
+  			}
+  			if (c == IAC)
+  				*nfrontp++ = c;
+  			*nfrontp++ = c;
+  		}
+  		if ((obits & (1 << s)) && (nfrontp - nbackp) > 0)
+
+--- 447,455 -----
+  			}
+  			if (c == IAC)
+  				*nfrontp++ = c;
++ 
++ 			if (c == '\n' && in_crmod) /* turn lf into crlf */
++ 			      c = '\r';            /* if tty has crmod on */
+  			*nfrontp++ = c;
+  /* bug: 23 Nov 1983, lwa@mit-csr (added next 2 lines) */
+  			if (c == '\r')
+***************
+*** 444,449
+  			if (c == IAC)
+  				*nfrontp++ = c;
+  			*nfrontp++ = c;
+  		}
+  		if ((obits & (1 << s)) && (nfrontp - nbackp) > 0)
+  			netflush(s);
+
+--- 451,459 -----
+  			if (c == '\n' && in_crmod) /* turn lf into crlf */
+  			      c = '\r';            /* if tty has crmod on */
+  			*nfrontp++ = c;
++ /* bug: 23 Nov 1983, lwa@mit-csr (added next 2 lines) */
++ 			if (c == '\r')
++ 				*nfrontp++ = '\n';
+  		}
+  		if ((obits & (1 << s)) && (nfrontp - nbackp) > 0)
+  			netflush(s);

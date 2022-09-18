@@ -1,0 +1,105 @@
+Return-Path: <ucsfcgl!tef>
+Date: Tue, 21 Aug 84 13:25:46 pdt
+From: ucsfcgl!tef (Thomas Ferrin)
+Subject: race condition in socket code crashes system
+Index: 	sys/uipc_usrreq.c 4.2BSD
+
+Description:
+	After many hours of bug hunting, we think it comes down
+to this:
+	1)  A process does a bind/listen/accept on a UNIX domain socket.
+	2)  Another process does a connect to this same socket.
+	3)  Both processes then exit without unlink()'ing the socket.
+	4)  A third process immediately tries to do a connect on the
+	    original socket.
+
+	Event #4 causes the kernel to die in sonewconn() with a segmentation
+violation.  It appears that the socket struct ptr handed to sonewconn() by
+unp_connect() points to garbage.  If you wait a few minutes between #3 and
+#4 above the system does not crash and the 3rd process instead gets back
+an error message.  We have tried to track things down futher than this, but
+without success (i.e. we don't know enough about what's going on here).  We
+are running 4.2bsd with most of the recent "monet changes" installed (i.e.
+I bet the enclosed test program will crash monet as well). 
+
+Repeat-By:
+	Fortunately we have a 1 page program that reproduces the problem
+quite reliably:
+
+# include	<stdio.h>
+# include	<sys/types.h>
+# include	<sys/socket.h>
+# include	<sys/un.h>
+
+char	*sock_name = "choke";
+
+main()
+{
+	(void) chdir("/tmp");		/* if this fails, doomed anyway */
+	if (fork())
+		driver();
+	sleep(1);
+	if (fork())
+		player();
+	wait(0);
+	wait(0);
+	/* sleep(5*60); */
+	player();
+	exit(0);
+}
+
+driver()
+{
+	int	s, len, t;
+	struct	sockaddr_un	addr;
+
+	s = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (s < 0) {
+		perror("socket");
+		exit(1);
+	}
+	addr.sun_family = AF_UNIX;
+	(void) strncpy(addr.sun_path, sock_name, sizeof(addr.sun_path));
+	fprintf(stderr, "driver: socket name '%.*s'\n",
+		sizeof(addr.sun_path) - 1, addr.sun_path);
+	if (bind(s, &addr, sizeof(addr) - 1) != 0) {
+		fputs("bind failed\n", stderr);
+		exit(1);
+	}
+	fputs("bind succeeded\n", stderr);
+
+	if (listen(s, 5) != 0) {
+		perror("driver: listen");
+		exit(1);
+	}
+	fputs("listen succeeded\n", stderr);
+
+	len = sizeof(addr) - 1;
+	if ((t = accept(s, &addr, &len)) < 0) {
+		perror("driver: accept");
+		exit(1);
+	}
+	fputs("accept succeeded\n", stderr);
+
+	exit(0);
+}
+
+player()
+{
+	struct	sockaddr_un	addr;
+	int	s;
+
+	s = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (s < 0) {
+		perror("player: socket");
+		exit(1);
+	}
+	addr.sun_family = AF_UNIX;
+	(void) strncpy(addr.sun_path, sock_name, sizeof addr.sun_path);
+	if (connect(s, &addr, sizeof addr - 1) != 0) {
+		perror("player: connect");
+		exit(1);
+	}
+	fputs("connect succeeded\n", stderr);
+	exit(0);
+}

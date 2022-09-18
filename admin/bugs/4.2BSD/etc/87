@@ -1,0 +1,82 @@
+Return-Path: <speck@csvax.caltech.edu>
+Date: Thu, 30 Jan 86 20:09:39 PST
+From: speck@csvax.caltech.edu (Don Speck)
+Subject: 4.2bsd /etc/rwhod 2X speedup
+
+Index:	etc/rwhod/rwhod.c  4.2BSD Fix
+Description:
+	The majority of rwhod's cpu use and I/O is in the line:
+
+		whod = creat(path, 0666);
+
+	where path = "/usr/spool/rwho/whod.%s" (%s = hostname).
+
+	Every minute, rwhod receives one packet from each rwhod
+	on the net (18 in our case), and does a creat for each
+	packet.  Each creat has to search at least 4 directories,
+	or more if /usr/spool is a symbolic link (as in our case).
+	This one line of code probably accounts for a majority of
+	all directory lookups on 4.2 systems on crowded networks.
+
+	When the /usr/spool symbolic link resides on a network
+	filesystem used by 14 Suns, together the rwhod's swamp
+	the NFS server with 504 pointless lookups per minute!
+
+	(The real fix in this case would be to suppress writing
+	the spool directory in all but one rwhod; the option to
+	do this can be implemented by inserting the statement
+		if (argc > 1) continue;
+	after the recvfrom() call, and modifying the man page).
+
+	Even after shortening the pathname, creat() still takes
+	30ms on a vax-750.  Almost every time, a 7ms open() will
+	suffice, so detecting and taking advantage of this case
+	speeds up rwhod noticeably, though it is kludgey.
+Repeat-by:
+	Observe how much CPU time rwhod uses, and how much I/O
+	it does; install the patches and watch it use half as
+	much.  Iostat on our NFS server "before", "after", and
+	with the "real fix" hinted at above:
+	      tty	   xy0		 xy1	      cpu
+	 tin tout bps tps msps	bps tps msps  us ni sy id
+	   0	1  33	7 21.7	 12   3 23.9   2  0 44 54   before
+	   0	0  15	5 25.0	  5   2 29.9   5  0 13 82   after
+	   0	0   7	2 20.7	  0   0 27.0   0  0  5 94   real fix
+Fix:
+	Chdir() to the rwho directory instead of specifying a
+	long pathname each time.  While we're at it, use open()
+	if we can, and creat() only when the file needs to get
+	shorter.
+
+	The diff's are from a VAX; your line numbers may vary.
+	Rwhod works on a Sun with the following differences:
+		param.h is substituted for types.h,
+		avenrun[3] is long instead of double,
+		avenrun[i] needs to be divided by FSCALE.
+
+diff old/rwhod.c rwhod.c
+93c93,96
+<	(void) chdir("/dev");
+---
+>	if (chdir(RWHODIR) < 0) {
+>		perror(RWHODIR);
+>		exit(1);
+>	}
+168,169c171,178
+<		(void) sprintf(path, "%s/whod.%s", RWHODIR, wd.wd_hostname);
+<		whod = creat(path, 0666);
+---
+>		(void) sprintf(path, "whod.%s", wd.wd_hostname);
+>		whod = open(path, O_WRONLY);	/* much faster than creat() */
+>		{	struct stat s;
+>			if (whod < 0 || fstat(whod, &s) < 0 || s.st_size > cc) {
+>				(void) close(whod);
+>				whod = creat(path, 0666);
+>			}
+>		}
+263c272,274
+<		if (stat(we->we_utmp.out_line, &stb) >= 0)
+---
+>		char path[64];
+>		(void) sprintf(path, "/dev/%s", we->we_utmp.out_line);
+>		if (stat(path, &stb) >= 0)

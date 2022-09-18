@@ -1,0 +1,144 @@
+From ucbvax!tut.cis.ohio-state.edu!snorkelwacker!mintaka!ogicse!bruce Thu Feb 15 11:42:19 PST 1990
+Article 1544 of comp.bugs.4bsd:
+Path: ucbvax!tut.cis.ohio-state.edu!snorkelwacker!mintaka!ogicse!bruce
+>From: bruce@ogicse.ogc.edu (Bruce Jerrick)
+Newsgroups: comp.bugs.4bsd
+Subject: Making UUCP TCP/IP work on Sequent Symmetry and other i386's
+Keywords: UUCP TCP/IP Sequent Symmetry i386 uucico
+Message-ID: <7245@ogicse.ogc.edu>
+Date: 10 Feb 90 06:14:17 GMT
+Organization: Oregon Graduate Institute (formerly OGC), Beaverton, OR
+Lines: 80
+Index:	usr.bin/uucp/tio.c 4.3BSD-tahoe
+
+Description:
+	On a Sequent Symmetry (and probably other i386-based machines),
+	the local uucico, when using TCP/IP, fails with:
+
+	    rmesg ... FAIL (BAD READ)
+
+	(incidentally with a bogus errno 25).
+
+	The problem is that ntohl and htonl (network/host byte order
+	conversion) isn't being done in twrdata() and trddata().
+
+Repeat-By:
+	Run Tahoe uucico using TCP/IP on a Sequent Symmetry, with moderate
+	Debug'ing (e.g., -x4 or -x7) turned on.  Observe the failure
+	message mentioned above.
+
+Fix:
+	In tio.c, where there are ntohl and htonl, add
+	" || defined(i386)" to the cpp #if statements enabling them:
+
+
+*** /tmp/,RCSt1019477	Fri Feb  9 22:06:04 1990
+--- tio.c	Fri Feb  9 22:06:05 1990
+***************
+*** 111,121 ****
+  #endif !USG
+  	while ((len = read(fileno(fp1), bufr.t_data, TBUFSIZE)) > 0) {
+  		bytes += len;
+! #if defined(vax) || defined(pdp11) || defined(ns32000)
+  		bufr.t_nbytes = htonl((long)len);
+! #else !vax and !pdp11 and !ns32000
+  		bufr.t_nbytes = len;
+! #endif !vax and !pdp11 and !ns32000
+  		DEBUG(8,"twrdata sending %d bytes\n",len);
+  		len += sizeof(long);
+  		alarm(MAXMSGTIME*5);
+--- 114,124 ----
+  #endif !USG
+  	while ((len = read(fileno(fp1), bufr.t_data, TBUFSIZE)) > 0) {
+  		bytes += len;
+! #if defined(vax) || defined(pdp11) || defined(ns32000) || defined(i386)
+  		bufr.t_nbytes = htonl((long)len);
+! #else !vax and !pdp11 and !ns32000 and !i386
+  		bufr.t_nbytes = len;
+! #endif !vax and !pdp11 and !ns32000 and !i386
+  		DEBUG(8,"twrdata sending %d bytes\n",len);
+  		len += sizeof(long);
+  		alarm(MAXMSGTIME*5);
+***************
+*** 182,190 ****
+  		alarm(0);
+  		if (len != sizeof Nbytes)
+  			return FAIL;
+! #if defined(vax) || defined(pdp11) || defined(ns32000)
+  		Nbytes = ntohl(Nbytes);
+! #endif vax or pdp11 or ns32000
+  		DEBUG(8,"trddata expecting %ld bytes\n",Nbytes);
+  		nread = Nbytes;
+  		if (nread == 0)
+--- 185,193 ----
+  		alarm(0);
+  		if (len != sizeof Nbytes)
+  			return FAIL;
+! #if defined(vax) || defined(pdp11) || defined(ns32000) || defined(i386)
+  		Nbytes = ntohl(Nbytes);
+! #endif vax or pdp11 or ns32000 or i386
+  		DEBUG(8,"trddata expecting %ld bytes\n",Nbytes);
+  		nread = Nbytes;
+  		if (nread == 0)
+
+========================================================================
+
+        Bruce Jerrick
+        Oregon Graduate Center, er, uh, Institute
+        InterNet:  bruce@cse.ogi.edu
+        UUCP:      ogicse!bruce
+        Voice:     (503) 690-1157
+
+========================================================================
+From ucbvax!bloom-beacon!eru!luth!sunic!sics.se!uplog.se!uplog.uplog.se!thomas Thu Feb 15 11:43:08 PST 1990
+Article 1547 of comp.bugs.4bsd:
+Path: ucbvax!bloom-beacon!eru!luth!sunic!sics.se!uplog.se!uplog.uplog.se!thomas
+>From: thomas@uplog.se (Thomas Tornblom)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: Making UUCP TCP/IP work on Sequent Symmetry and other i386's
+Message-ID: <THOMAS.90Feb14125551@uplog.uplog.se>
+Date: 14 Feb 90 11:55:51 GMT
+References: <7245@ogicse.ogc.edu>
+Sender: thomas@uplog.se (Thomas Tornblom)
+Organization: TeleLOGIC Uppsala AB
+Lines: 36
+In-Reply-To: bruce@ogicse.ogc.edu's message of 10 Feb 90 06:14:17 GMT
+
+
+   Index:	usr.bin/uucp/tio.c 4.3BSD TAHOE FIX
+
+   Description:
+	   On a Sequent Symmetry (and probably other i386-based machines),
+	   the local uucico, when using TCP/IP, fails with:
+
+<text deleted>
+	   The problem is that ntohl and htonl (network/host byte order
+	   conversion) isn't being done in twrdata() and trddata().
+
+   Fix:
+<some text deleted>
+
+	   In tio.c, where there are ntohl and htonl, add
+	   " || defined(i386)" to the cpp #if statements enabling them:
+   ! #if defined(vax) || defined(pdp11) || defined(ns32000) || defined(i386)
+		   bufr.t_nbytes = htonl((long)len);
+   ! #else !vax and !pdp11 and !ns32000 and !i386
+		   bufr.t_nbytes = len;
+   ! #endif !vax and !pdp11 and !ns32000 and !i386
+<text deleted>
+
+Why are the #ifdefs done at all? These macros are always safe to use.
+For machines that already uses network byte order (i.e. big endian) they expand
+to their argument. This is one thing that safely can be done machine 
+independent.
+
+I.e.
+#define ntohl(x)	(x)
+
+-- 
+Real life:	Thomas Tornblom		Email:	thomas@uplog.se
+Snail mail:	TeleLOGIC Uppsala AB		Phone:	+46 18 189406
+		Box 1218			Fax:	+46 18 132039
+		S - 751 42 Uppsala, Sweden
+
+

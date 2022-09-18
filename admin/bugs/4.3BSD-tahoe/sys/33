@@ -1,0 +1,85 @@
+From muller%sdcc10@ucsd.edu Wed Jan 18 09:38:25 1989
+Date: Wed, 18 Jan 89 09:35:59 PST
+From: muller%sdcc10@ucsd.edu (Keith Muller)
+Subject: mpcc's can ignore carrier while waiting in mpopen()
+Index: sys/tahoevba/mp.c 4.3BSD-tahoe
+
+Description:
+	When a connection is dropped with a background job running,
+	mpclose is not called. The result is that on a subsequent
+	call to mpopen() by getty can result in waiting for carrier
+	without having carrier detect enabled under certain timing
+	situations.
+Repeat-By:
+	Hang a background job on a mpcc port. Drop carrier and
+	wait for the new getty. If the background job completes
+	before the mpopen() completes, the firmware in the board
+	can end up in a state where carrier is ignored. The mpopen()
+	will never complete.
+Fix:
+	The problem is that mpopen() does not forces carrier detect
+	on before waiting for carrier under all conditions.
+	The context diff below fixes this situation. Also included
+	is a small fix to check ispeed instead of ospeed for 0
+	baud cases (using stty 0 to force a line disconnect). This
+	makes mp.c consistant with all other tty device drivers
+	who check ispeed for the 0 baud case.
+
+	Keith Muller
+	University of California, San Diego
+
+*** mp.c	Tue Oct 18 16:01:32 1988
+--- /sys/tahoevba/mp.c	Tue Dec  6 18:00:26 1988
+***************
+*** 212,217 ****
+--- 212,225 ----
+  		while (mp->mp_proto != MPPROTO_ASYNC)
+  			sleep((caddr_t)&tp->t_canq, TTIPRI);
+  		mp->mp_flags &= ~MP_PROGRESS;
++ 	} else {
++ 		ev = mpparam(unit);
++ 		if (ev == 0) {
++ 			error = ENOBUFS;
++ 			goto bad;
++ 		}
++ 		mpmodem(unit, MMOD_ON);
++ 		mpcmd(ev, EVCMD_IOCTL, A_CHGALL, ms->ms_mb, port);
+  	}
+  	while ((tp->t_state & TS_CARR_ON) == 0) {
+  		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+***************
+*** 440,455 ****
+  #endif
+  	asp->ap_loop = MPA_DIS;		/* disable loopback */
+  	asp->ap_rtimer = A_RCVTIM;	/* default receive timer */
+! 	if (tp->t_ospeed == B110)
+! 		asp->ap_stop = MPSTOP_2;
+! 	else
+! 		asp->ap_stop = MPSTOP_1;
+! 	if (tp->t_ospeed == 0) {
+  		tp->t_state |= TS_HUPCLS;
+  		setm(&asp->ap_modem, 0, DROP);
+  		seti(&asp->ap_intena, A_DCD);
+  		return (ev);
+  	} 
+  	if (tp->t_ospeed == EXTA || tp->t_ospeed == EXTB)
+  		asp->ap_baud = M19200;
+  	else
+--- 448,463 ----
+  #endif
+  	asp->ap_loop = MPA_DIS;		/* disable loopback */
+  	asp->ap_rtimer = A_RCVTIM;	/* default receive timer */
+! 	if (tp->t_ispeed == 0) {
+  		tp->t_state |= TS_HUPCLS;
+  		setm(&asp->ap_modem, 0, DROP);
+  		seti(&asp->ap_intena, A_DCD);
+  		return (ev);
+  	} 
++ 	if (tp->t_ospeed == B110)
++ 		asp->ap_stop = MPSTOP_2;
++ 	else
++ 		asp->ap_stop = MPSTOP_1;
+  	if (tp->t_ospeed == EXTA || tp->t_ospeed == EXTB)
+  		asp->ap_baud = M19200;
+  	else
+

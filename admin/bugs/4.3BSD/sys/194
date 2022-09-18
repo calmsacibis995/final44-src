@@ -1,0 +1,115 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:07:22 1988
+Date: Mon, 18 Apr 88 13:26:05 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) hp driver miscoded, puts CPU in loop (with fix)
+#Index: sys/vaxmba/hp.c MORE/bsd 4.3 (10/5/87)
+Index: sys/vaxmba/hp.c 4.3BSD
+
+Description:
+	Your friendly 750 enters a high-priority infinite loop.
+	Drive in (or take the bus as I do) and reboot it.
+	
+Repeat-By:
+	Doing a
+		sleep 1 < /dev/rhp??
+	command on each of the mounted partitions of a physical drive.
+	(including any swapping partitions that are "mounted").
+
+Analysis:
+	The proximate cause of the problem is an infinite loop in "disksort";
+	the infinite loop occurs after the "bad sector" buffer header for a
+	physical drive has been put on the drive queue twice, so that it points
+	to itself, making for problems when disksort tries to run through the
+	queue by following forward pointers.
+
+	The "bad sector" information is being read in because the drive has
+	been put into its OFFLINE state.  The simplest way to see why this
+	happens is to consider a physical drive with a single partition on it.
+	When the partition is mounted, the mount is done using a specially-
+	constructed (by bdevvp) node, and when the call to hpopen is made,
+	neither the FBLOCK nor the FCHAR bit is set in the flag word, which
+	means that the open request is taken to be on a raw (rather than block)
+	device by the existing hp code:
+
+		if (flags & FBLOCK)
+			hpopenblock[unit] |= part;
+		else
+			hpopenraw[unit] |= part;
+
+	If we now run a command such as
+		sleep 1 < /dev/rhp3c
+	we'll then call hpopen again and, *because the mount was done on a
+	specially-constructed node rather than on the node associated with
+	/dev/rhp3c*, will call hpclose when the command is done (since the
+	"open" count for /dev/rhp3c will drop to zero).  This will
+	cause the hpopenraw bit associated with the partition to be cleared;
+	since it's the only partition mounted (in this example), this will
+	in turn cause the hpopenpart bit to be cleared, driving the hpopenpart
+	entry for the drive to zero and causing it to go offline.
+
+	Note that changing the mount code to cause hpopen to be called with
+	the FBLOCK bit on in the flags word is *not* a fix; this would merely
+	change things so that a
+		sleep 1 < /dev/hp3c
+	command would now cause problems.
+
+Fix:
+	There's surely a better fix; what I've done for now is set up
+	an "hpopenmount" array for the hp driver, turning the relevant bits
+	on and off when hpopen or hpclose calls occur that have neither the
+	FBLOCK nor the FCHAR bit set (as is true when mount and unmount calls
+	are being handled).
+
+*** 3.8/hp.c	Sat Nov 14 21:30:57 1987
+--- 3.9/hp.c	Sat Nov 14 21:31:03 1987
+***************
+*** 112,117 ****
+--- 112,125 ----
+  extern	u_char	hpopenpart[];
+  extern	u_char	hpopenraw[];
+  extern	u_char	hpopenblock[];
++ #if !defined ASWAS
++ /*
++ ** Do this stuff here to minimize the number of files changed.
++ **
++ */
++ #include "hp.h"
++ u_char	hpopenmount[NHP];
++ #endif /* !defined ASWAS */
+  extern	int	nhp;
+  
+  /*
+***************
+*** 274,279 ****
+--- 282,292 ----
+  		if (flags & FBLOCK)
+  			hpopenblock[unit] |= part;
+  		else
++ #if !defined ASWAS
++ 		if ((flags & FCHAR) == 0)
++ 			hpopenmount[unit] |= part;
++ 		else
++ #endif /* !defined ASWAS */
+  			hpopenraw[unit] |= part;
+  		return (0);
+  	}
+***************
+*** 289,296 ****
+--- 302,317 ----
+  	if (flags & FBLOCK)
+  		hpopenblock[unit] &= ~part;
+  	else
++ #if !defined ASWAS
++ 	if ((flags & FCHAR) == 0)
++ 		hpopenmount[unit] &= ~part;
++ 	else
++ #endif /* !defined ASWAS */
+  		hpopenraw[unit] &= ~part;
+  	if ((hpopenblock[unit] & part) == 0 && (hpopenraw[unit] & part) == 0)
++ #if !defined ASWAS
++ 	    if ((hpopenmount[unit] & part) == 0)
++ #endif /* !defined ASWAS */
+  		hpopenpart[unit] &= ~part;
+  	if (hpopenpart[unit] == 0)
+  		hpsoftc[unit].sc_state = OFFLINE;
+

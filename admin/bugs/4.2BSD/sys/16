@@ -1,0 +1,116 @@
+Return-Path: <sun!rusty>
+Date: Mon, 2 Apr 84 15:47:37 pst
+From: sun!rusty (Russel Sandberg)
+Subject: send and sendto of zero length udp packet
+Index: sys/sys/uipc_socket.c 4.2BSD
+
+Description:
+	Send or sendto of zero length udp packet returns with no error but
+	doesn't send anything.
+Repeat-By:
+	Write a program to send zero length udp packets.
+Fix:
+	The bug is in sosend.  Because it is built upside-down, it
+	quits before sending the packet because it thinks it is done.
+	Sosend looks roughly like this:
+
+	again:
+		if we have allocated space
+			send data
+		
+		if resid == 0
+			return
+		
+		if (resid > 0)
+			allocate space and decrease resid
+
+	goto again
+
+	To allow zero length packets we just need to rearrange sosend to look
+	like this:
+
+	again:
+		if (resid > 0)
+			allocate space and decrease resid
+
+		send data
+		
+		if resid == 0
+			return
+		
+	goto again
+
+	Here is a diff -c of the changes needed.  Please ignore line numbers.
+
+
+	*** uipc_socket.c	Thu Sep 29 11:24:35 1983
+	--- uipc_socket.c.new	Mon Apr  2 15:29:10 1984
+	***************
+	*** 310,334
+			if (nam == 0)
+				snderr(EDESTADDRREQ);
+		}
+	- 	if (top) {
+	- 		if (dontroute)
+	- 			so->so_options |= SO_DONTROUTE;
+	- 		error = (*so->so_proto->pr_usrreq)(so,
+	- 		    (flags & MSG_OOB) ? PRU_SENDOOB : PRU_SEND,
+	- 		    top, (caddr_t)nam, rights);
+	- 		if (dontroute)
+	- 			so->so_options &= ~SO_DONTROUTE;
+	- 		top = 0;
+	- 		if (error) {
+	- 			splx(s);
+	- 			goto release;
+	- 		}
+	- 		mp = &top;
+	- 	}
+	- 	if (uio->uio_resid == 0) {
+	- 		splx(s);
+	- 		goto release;
+	- 	}
+		if (flags & MSG_OOB)
+			space = 1024;
+		else {
+
+	--- 314,319 -----
+			if (nam == 0)
+				snderr(EDESTADDRREQ);
+		}
+		if (flags & MSG_OOB)
+			space = 1024;
+		else {
+	***************
+	*** 388,393
+				sballoc(&sendtempbuf, m);
+				space = sbspace(&sendtempbuf);
+			}
+		}
+		goto again;
+	  
+
+	--- 370,394 -----
+				sballoc(&sendtempbuf, m);
+				space = sbspace(&sendtempbuf);
+			}
+	+ 	}
+	+ 
+	+ 	if (dontroute)
+	+ 		so->so_options |= SO_DONTROUTE;
+	+ 	error = (*so->so_proto->pr_usrreq)(so,
+	+ 	    (flags & MSG_OOB) ? PRU_SENDOOB : PRU_SEND,
+	+ 	    top, (caddr_t)nam, rights);
+	+ 	if (dontroute)
+	+ 		so->so_options &= ~SO_DONTROUTE;
+	+ 	top = 0;
+	+ 	if (error) {
+	+ 		splx(s);
+	+ 		goto release;
+	+ 	}
+	+ 	mp = &top;
+	+ 
+	+ 	if (uio->uio_resid == 0) {
+	+ 		splx(s);
+	+ 		goto release;
+		}
+		goto again;

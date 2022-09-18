@@ -1,0 +1,63 @@
+Return-Path: <dgg@ATHENA.MIT.EDU>
+Date: Wed, 11 Sep 85 23:34:54 edt
+From: dgg@ATHENA.MIT.EDU
+To: 4bsd-bugs@ucb-vax.BERKELEY
+Subject: ls -lR has a fencepost error
+
+Index:	bin/ls 4.2BSD Fix
+
+Description:
+
+	When the linked list of directories to chase down in recursive mode
+	('R') is created, the pointer to the last file description structure
+	is incremented at the END of the loop, making it point off into
+	an invalid table entry.
+
+	If that invalid table entry happens to have a 'd' code (indicating a
+	directory) left over from the last use of the table, when running
+	with both 'l' and 'R' switches on, and the file name pointer contained
+	in that particular structure in the linked list to a freed piece of
+	memory containing a valid filename, THEN it tries to interpret that
+	file name as a directory and chase down it.
+
+	If it happens to be a directory, it starts working on it.  If it is
+	a file, it says, "unreadable" even to the root, and continues.
+
+
+Repeat-By:
+	
+	This is REALLY difficult.  It seems to require a directory of 
+	directories which have fewer files in them than the top-level
+	directory.  And even then, the filenames have to vary in size
+	so that lots of malloc's and frees are done, so a bunch of
+	freed filenames are lying around.
+
+	The only place it seemed to occur was in the X distribution
+	directory.
+
+	Try "cd" to /src/new/X and do a "ls -lR".  Look at what happens after
+	the CLUlib listing.
+
+Fix:
+	Find the "formatd" routine in /src/bin/ls.c and move to the following
+	code (it is one of the very few references to "Rflg"):
+
+        if (Rflg)
+                for (fp = dfplast; fp >= dfp0; fp--) {
+                        if (fp->ftype != 'd' ||
+                            !strcmp(fp->fname, ".") ||
+                            !strcmp(fp->fname, ".."))
+                                continue;
+                        dp = (struct subdirs *)malloc(sizeof (struct subdirs));
+                        dp->sd_name = savestr(cat(name, fp->fname));
+                        dp->sd_next = subdirs; subdirs = dp;
+                }
+
+	Change the line:
+                for (fp = dfplast; fp >= dfp0; fp--) {
+
+	To:
+                for (fp = dfplast - 1; fp >= dfp0; fp--) {
+
+
+	I have done this and tested it.  It seems to work here at Athena.

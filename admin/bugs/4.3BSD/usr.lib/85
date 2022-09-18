@@ -1,0 +1,113 @@
+From chris@mimsy.umd.edu  Wed Mar  9 04:25:41 1988
+Date: Wed, 9 Mar 88 06:13:14 EST
+From: Chris Torek <chris@mimsy.umd.edu>
+Subject: sendmail crashes with longjmp botch
+
+Index: usr.lib/sendmail/src/usersmtp.c 4.3BSD Fix
+
+Description:
+	When processing long mailing lists, sendmail sometimes
+	aborts with a `longjmp botch'.
+
+Repeat-by:
+	Difficult.
+
+Fix:
+	The problem occurs when sendmail has a read timeout of more
+	than five minutes specified in the configuration file.  In
+	usersmtp.c, sendmail sets up a timeout event around the
+	`greeting' reply call; this timeout is scheduled to occur in
+	300 seconds (5 minutes).  It then calls reply(), which calls
+	sfgets(), which notes that ReadTimeout is (e.g.) 1 hour.
+	sfgets sets another timeout event for one hour, reads a line,
+	clears the timeout event, and returns to usersmtp, which clears
+	its own read timeout.
+
+	Suppose, however, that no reply is made within the first five
+	minutes.  Then the first event, usersmtp.c's timeout, fires
+	off.  This does a longjmp() all the way out of sfgets and reply
+	back to usersmtp.c, which then returns to its caller, leaving
+	in the event queue the event posted by sfgets.  In one hour, if
+	sendmail is still running by then, this event attempts to
+	longjmp back to the context set by the sfgets from reply.  This
+	context is long gone and, with any luck, longjmp notices and
+	aborts.
+
+	There are several ways to fix this.  The most general would be
+	for sendmail to have a `wrapper' around setjmp and longjmp that
+	would provide unwind protection.  That is beyond the scope of
+	this message.
+
+	The second way is simply to remove the 5 minute timeout from
+	usersmtp.c.  Commenting out the setevent() call should
+	suffice.  This is somewhat undesirable but is by far the
+	easiest fix.
+
+	The third way is to have usersmtp.c arrange for ReadTimeout to
+	be set to 300, preserving its old value and restoring it after
+	the first call to reply.  The following UNTESTED change does
+	this.
+
+Chris
+
+*** usersmtp.c.old	Wed Mar  9 06:08:59 1988
+--- usersmtp.c	Wed Mar  9 06:10:53 1988
+***************
+*** 67,72 ****
+  */
+  
+- jmp_buf	CtxGreeting;
+- 
+  smtpinit(m, pvp)
+  	struct mailer *m;
+--- 67,70 ----
+***************
+*** 76,80 ****
+  	EVENT *gte;
+  	char buf[MAXNAME];
+! 	extern greettimeout();
+  
+  	/*
+--- 74,78 ----
+  	EVENT *gte;
+  	char buf[MAXNAME];
+! 	int oldtimeout;
+  
+  	/*
+***************
+*** 129,138 ****
+  	*/
+  
+! 	if (setjmp(CtxGreeting) != 0)
+! 		goto tempfail;
+! 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+! 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+--- 127,135 ----
+  	*/
+  
+! 	oldtimeout = ReadTimeout;
+! 	ReadTimeout = 5 * 60;
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+! 	ReadTimeout = oldtimeout;
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+***************
+*** 213,223 ****
+  }
+  
+- 
+- static
+- greettimeout()
+- {
+- 	/* timeout reading the greeting message */
+- 	longjmp(CtxGreeting, 1);
+- }
+  /*
+  **  SMTPRCPT -- designate recipient.
+--- 210,213 ----
+

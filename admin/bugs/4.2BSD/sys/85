@@ -1,0 +1,35 @@
+Return-Path: <rws@mit-bold>
+Date: Thu, 1 Dec 83 12:57:42 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: icmp_input() doesn't pullup
+Index: 	sys/netinet/ip_icmp.c 4.2BSD
+
+Description:
+	icmp_input() assumes that both the IP and ICMP headers are
+	in the first mbuf, which they needn't be.
+Repeat-By:
+	Well, first you should give superuser access to raw ICMP.
+	All the code is there, but the protosw doesn't give access,
+	so change the ICMP protosw in in_proto.c to
+		{ SOCK_RAW,	PF_INET,	IPPROTO_ICMP,	PR_ATOMIC|PR_ADDR,
+		  icmp_input,	rip_output,	0,		0,
+		  raw_usrreq,
+		  0,		0,		0,		0,
+		},
+	Then write yourself a "ping" program to send ICMP ECHOs and look for
+	ICMP ECHOREPLYs.  Watch it work over a real network.  Watch it
+	fail over the loopback-net to yourself, with ECHO packets apparently
+	being zeroed out.
+Fix:
+	In icmp_input(), add the code
+		if ((m->m_off > MMAXOFF || m->m_len < (sizeof (struct icmp) + hlen)) &&
+		    (m = m_pullup(m, (sizeof(struct icmp) + hlen))) == 0) {
+			icmpstat.icps_tooshort++;
+			return;
+		}
+		ip = mtod(m, struct ip *);
+	before the lines
+		m->m_len -= hlen;
+		m->m_off += hlen;
+	and remove the comment
+		/* need routine to make sure header is in this mbuf here */

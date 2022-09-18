@@ -1,0 +1,106 @@
+From decvax!cincy!mech23!ray  Fri May  3 20:11:43 1985
+From: decvax!cincy!mech23!ray
+Date: Fri, 3 May 85 16:31:25 edt
+Subject: 2.9BSD init bug
+
+Subject: The signal handling in init is incomplete. This ommission
+         allows a tty to do a system shutdown via the init child.
+Index:	etc/init.c 2.9BSD
+
+Description:
+	The signal(SIGQUIT,idle) and signal(SIGINT,sp_ss) are
+	still active after init has forked to open a tty.
+	If during the time the tty is open and before the getty exec, 
+	one of these signals is received, the appropiate routine IN
+	THE INIT CHILD is executed. The most likely signal seems
+	to be SIGINT.
+
+	If a SIGINT is received, then the sp_ss() routine is executed
+	in the init child. This routine immediately calls shutdown() 
+	which kills all processes but 0 and 1. Thus, killing itself.
+	Init (process 1) will receive the signals that the children
+	have completed and reissue new inits for all ttys. 
+
+	The result is that all users have been blown off the system,
+	the system is still in multiuser, and ever thing appears to
+	be normal. (In fact, ever thing is normal and okay if the
+	SIGINT was a one time type of thing.) If the SIGINT is a
+	continuous thing (i.e. malfunctioning tty line or modem) the
+	the system will continue in this loop. The console will be
+	continously printing the login message and the only way to
+	get control of the system is to externally stop the offending
+	tty line. (There is no way you can login to the system.)
+
+	This problem can show up intermittently by a user logging
+	in on a modem and sending deletes (I think a break will also
+	do it.) before the system has a chance to exec getty. A
+	malfunctioning modem or tty line will usually cause this.
+
+	A Racal-Vadic modem caught in the wedge condition is a
+	perfect way to cause this. [ref. lauren@vortex.UUCP, Cure
+	for Vadic Triple Modem Problem, 1/30/84]
+
+Repeat-By:
+	Continuously sending deletes to a tty line immediately after
+	the carrier is established should cause this.
+
+	A sure way is to put a Racal-Vadic modem in the wedge
+	condition. This	problem was isolated this way and the
+	below fixes were tested using the wedge condition. 
+
+Fix:
+	The signal catching in init should be returned to the 
+	default condition after forking. The following changes should
+	be made to init.c
+
+	In dfork()
+
+		if ( pid == 0 ) {
+			signal( SIGQUIT, SIG_DFL );	<<< add
+			signal( SIGINT,  SIG_DFL );	<<< add
+			signal( SIGTERM, SIG_DFL );
+
+	This will correct the problem of the tty killing the system.
+
+	The following should also be added to init for completness.
+	(The signals should not be received, but if they are, then
+	some very strange results can occur.)
+
+
+	In single()
+
+			signal( SIGTERM, SIG_DFL);
+			signal( SIGHUP,  SIG_DFL);
+			signal( SIGALRM, SIG_DFL);
+			signal( SIGQUIT, SIG_DFL );	<<< add
+			signal( SIGINT,  SIG_DFL );	<<< add
+			/* open stdin, stdout, & stderr */
+
+	In runcom()
+
+		if ( pid == 0 ) {
+			signal( SIGQUIT, SIG_DFL );	<<< add
+			signal( SIGTERM, SIG_DFL );	<<< add
+			signal( SIGHUP,  SIG_DFL );	<<< add
+			signal( SIGINT,  SIG_DFL );	<<< add
+			open( "/", 0 );
+
+	In cmesg()
+
+		if ( pid == 0 ) {
+			int fd;				<<< add
+			signal( SIGQUIT, SIG_DFL );	<<< add
+			signal( SIGTERM, SIG_DFL );	<<< add
+			signal( SIGHUP,  SIG_DFL );	<<< add
+			signal( SIGINT,  SIG_DFL );	<<< add
+			int fd = open( ctty, 2 );	<<< change this to
+			fd = open( ctty, 2 );		<<< to this
+
+	In autoconfig()
+
+		if ( (pid = fork()) == 0 ) {
+			signal( SIGQUIT, SIG_DFL );	<<< add
+			signal( SIGTERM, SIG_DFL );	<<< add
+			signal( SIGHUP,  SIG_DFL );	<<< add
+			signal( SIGINT,  SIG_DFL );	<<< add
+			open( ctty, 2 );

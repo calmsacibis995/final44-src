@@ -1,0 +1,81 @@
+Return-Path: <watcgl!dmmartindale>
+Date: Wed, 28 Mar 84 23:58:39 est
+From: watcgl!dmmartindale (Dave Martindale)
+Subject: ttyslot() is very slow
+
+Subject: ttyslot() is very slow
+Index:	lib/libc/gen/ttyslot.c 4.2BSD
+
+Description:
+	The ttyslot() C library routine is called by many programs
+	(either directly or via getlogin()) because it reads through
+	/etc/ttys via sys reads of one byte.  On a large system, this
+	wastes an appreciable amount of time.
+Repeat-By:
+	On a completely unloaded system, type "su".  See how long it
+	takes to prompt for a password.  On watmath, su took 1.5 CPU
+	seconds to reach this point, when invoked from a pseudo-tty
+	line whose entry is near the end of /etc/ttys.  1.39 seconds
+	of this was spent in sys read called from getttys().
+	(Gprof is wonderful!)
+Fix:
+	Rewrite ttyslot.c to use stdio.  The time spent in getttys()
+	for the example above drops from 1.39 to 0.1 seconds.
+	Presumably the original version of ttyslot avoided stdio to
+	keep it small, but there seems little reason now.  All of the
+	other get* library routines (getpass, getpwent, etc) use stdio
+	and few user programs are without it.
+	The diffs below include a bit of code which skips over any
+	trailing info on the line in /etc/ttys (we have merged /etc/ttytype
+	into /etc/ttys here); you may omit it if you like, but it's harmless.
+
+
+	7a8
+	> #include <stdio.h>
+	19c20,21
+	< 	register s, tf;
+	---
+	> 	register s;
+	> 	register FILE *tf;
+	27c29
+	< 	if ((tf=open(ttys, 0)) < 0)
+	---
+	> 	if ((tf=fopen(ttys, "r")) == NULL)
+	33c35
+	< 			close(tf);
+	---
+	> 			fclose(tf);
+	37c39
+	< 	close(tf);
+	---
+	> 	fclose(tf);
+	42a45
+	> register FILE *f;
+	44c47
+	< 	static char line[32];
+	---
+	> 	static char line[33];
+	45a49
+	> 	register c;
+	49c53
+	< 		if (read(f, lp, 1) != 1)
+	---
+	> 		if ((c = getc(f)) == EOF)
+	51c55
+	< 		if (*lp =='\n') {
+	---
+	> 		if (c == '\n') {
+	55c59,63
+	< 		if (lp >= &line[32])
+	---
+	> 		if (lp >= &line[32] || c == ' ' || c == '\t') {
+	> 			do
+	> 				c = getc(f);
+	> 			while(c != EOF && c != '\n');
+	> 			*lp = 0;
+	57c65,66
+	< 		lp++;
+	---
+	> 		}
+	> 		*lp++ = c;
+

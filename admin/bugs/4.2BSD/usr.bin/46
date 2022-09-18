@@ -1,0 +1,58 @@
+Return-Path: <decwrl!qubix!msc>
+Date: Wed, 11 Jul 84 16:18:11 pdt
+From: decwrl!qubix!msc (Mark Callow)
+Subject: tip only tries the first dialer in a list
+Index: usr.bin/tip/hunt.c 4.2BSD Fix
+
+Description:
+	Even if your /etc/remote entry specifies a list of dialers to try
+	tip gives up if the open of the first one in the list fails.
+
+Repeat-By:
+	Get some autodialers.  I have 3.  Edit /etc/remote so that the
+	the dv entry shows multiple dialers.  For example my UNIX-1200
+	entry is
+
+	UNIX-1200:\
+		:dv=/dev/cul0,/dev/cul1,/dev/cul2:el=^D^U^C^S^Q^O@:du:at=hayes:\
+		:ie=#$%:oe=^D:br#1200:
+
+	Do something to make the first dialer busy.  The open of the dialer
+	will fail and tip exits saying "call failed".
+
+Fix:
+	There is a while loop in hunt() that loops through the available
+	dialers.  It first tries to get a lock on the device. This fails
+	if uucp is using the device.  In that case hunt() continues with
+	the loop and tries the next dialer.
+
+	Once it has the lock though, it fails to check for any error
+	return from the subsequent open(2) call on the dialer.  It
+	breaks out of the loop and returns.  If the open failed, any
+	subsequent operation on the file descriptor fails and tip exits.
+
+	How can the dialer open fail when it's not locked by uucp I hear you
+	ask?  I have modified my dh and dz drivers to handle dialin and dialout
+	on a single line.  If the line is busy with dialin then an ENXIO error
+	is returned to any process opening it for dialout.
+
+	Here is the change to hunt.c
+
+	2c2,3
+	< static char sccsid[] = "@(#)hunt.c	4.7 (Berkeley) 6/25/83";
+	---
+	> static char rcsid[] =
+	> "$Header: hunt.c,v 1.2 84/07/11 14:21:46 root Rel $ QGSI";
+	4a6,9
+	> /*
+	>  * From:"@(#)hunt.c	4.7 (Berkeley) 6/25/83";
+	>  */
+	> 
+	48c53,55
+	< 		if (!deadfl) {
+	---
+	> 		if (deadfl || FD < 0)
+	> 			delock(uucplock); /* Try another dialer */
+	> 		else {
+	54d60
+	< 		delock(uucplock);

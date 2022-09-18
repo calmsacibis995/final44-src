@@ -1,0 +1,48 @@
+From auspex!bootme.auspex.com!guy@uunet.UU.NET Thu Dec 22 11:11:07 1988
+Date: Thu, 22 Dec 88 11:03:16 PST
+From: guy@bootme.auspex.com (Guy Harris)
+To: bostic@okeeffe.Berkeley.EDU, minshall@violet.berkeley.edu, shannon@sun.com
+Subject: 4.3BSD "curses" bug
+Index: usr.lib/libcurses 4.3BSD-tahoe
+
+Greg Minshall found what turned out, I think, to be a bug in the 4.3BSD
+"curses" that causes it to output characters with their 8th bit set. 
+This isn't a problem with the 4.xBSD tty driver, since except in RAW or
+LITOUT mode it strips the characters to 7 bits; however, under the SunOS
+4.0 tty driver, those 8-bit characters come out, and if you're in a
+SunOS 4.0 "shelltool" without an 8-bit font, the tty subwindow code does
+all sorts of weird shit (puts characters at bizarre places on the screen
+not neatly aligned on character frame boundaries). 
+
+I *think* the problem is here - if (i&_STANDOUT) is true, the character
+has its 8th bit set (_STANDOUT is 0200), and if the tube is currently in
+standout mode ((curscr->_flags&_STANDOUT) is true), it pumps that 8-bit
+character out.
+
+If the bug is what and where I think it is, this is the fix to the
+4.3BSD version of "cr_put.c"; the same fix should apply to the SunOS
+4.0/4.1 and 4.3-tahoe versions, except for the line numbers (but you all
+have "patch", so that's not a problem, right?).  It should be fixed both
+in SunOS 4.x and 4.xBSD (especially given the new POSIX tty driver for
+4.x, which shouldn't strip output to 7 bits either). 
+
+*** cr_put.c	Tue Dec 20 08:52:50 1988
+--- /tmp/cr_put.c	Thu Dec 22 10:48:18 1988
+***************
+*** 348,354 ****
+  			else {
+  				i = curscr->_y[outline][outcol];
+  				if ((i&_STANDOUT) == (curscr->_flags&_STANDOUT))
+! 					_putchar(i);
+  				else
+  					goto nondes;
+  			}
+--- 348,354 ----
+  			else {
+  				i = curscr->_y[outline][outcol];
+  				if ((i&_STANDOUT) == (curscr->_flags&_STANDOUT))
+! 					_putchar(i & 0177);
+  				else
+  					goto nondes;
+  			}
+

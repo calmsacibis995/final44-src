@@ -1,0 +1,85 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Jul 21 21:23:31 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA27043; Fri, 21 Jul 89 21:23:31 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA12570; Fri, 21 Jul 89 21:22:16 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA04903; Fri, 21 Jul 89 21:21:29 -0700
+Date: Fri, 21 Jul 89 21:21:29 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8907220421.AA04903@WLV.IMSD.CONTEL.COM>
+Subject: Memory Leak In sendmail alias handling
+Index: 	usr.lib/sendmail/src/alias.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	There is a major memory leak in sendmail's building of
+	the dbm alias database from /usr/lib/aliases.  Large numbers
+	of aliases will cause sendmail to run out of memory, leaving
+	partially constructed dbm files.
+
+	sendmail is allocating memory for members of an address structure
+	but never freeing the memory.  after a certain point a malloc
+	failure occurs.
+
+	the same problem is present in 4.3BSD but less likely to be a source
+	of irritation there.
+
+Repeat-By:
+	Create a large /usr/lib/aliases file.  Depending on the length
+	of the right side of the aliases, the number of lines required
+	to show the memory leak can be as low as 900 or as high as 1400,
+	eventually the problem will be seen.
+
+Fix:
+	The earlier fix i posted for this problem was incomplete (and
+	partially incorrect), this patch corrects both problems.
+
+	Apply the following patch to src/sendmail/alias.c and recompile
+	sendmail.
+
+*** alias.c.old	Wed Mar  8 14:54:25 1989
+--- alias.c	Fri Jul 21 13:39:46 1989
+***************
+*** 453,459 ****
+  						break;
+  					if (parseaddr(p, &bl, -1, ',') == NULL)
+  						usrerr("%s... bad address", p);
+! 					free(bl);
+  					p = DelimChar;
+  				}
+  			}
+--- 453,460 ----
+  						break;
+  					if (parseaddr(p, &bl, -1, ',') == NULL)
+  						usrerr("%s... bad address", p);
+! 					if (bl.q_host && bl.q_host[0])
+! 						free(bl.q_host);
+  					p = DelimChar;
+  				}
+  			}
+***************
+*** 499,505 ****
+  			content.dsize = rhssize;
+  			content.dptr = rhs;
+  			store(key, content);
+! 			free(al);
+  		}
+  		else
+  # endif DBM
+--- 500,511 ----
+  			content.dsize = rhssize;
+  			content.dptr = rhs;
+  			store(key, content);
+! 			if (al.q_paddr)
+! 				free(al.q_paddr);
+! 			if (al.q_host)
+! 				free(al.q_host);
+! 			if (al.q_user)
+! 				free(al.q_user);
+  		}
+  		else
+  # endif DBM
+======================================================================
+
+

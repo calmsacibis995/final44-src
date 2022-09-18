@@ -1,0 +1,27 @@
+h31291
+s 00000/00000/00006
+d D 8.1 93/06/04 13:16:43 bostic 3 2
+c 4.4BSD snapshot (revision 8.1)
+e
+s 00001/00000/00005
+d D 5.2 93/05/31 09:57:37 bostic 2 1
+c add isinf.c to the CPU dependent Makefile
+e
+s 00005/00000/00000
+d D 5.1 92/06/26 06:54:24 bostic 1 0
+c date and time created 92/06/26 06:54:24 by bostic
+e
+u
+U
+t
+T
+I 1
+#	%W% (Berkeley) %G%
+
+CFLAGS+=-I/sys
+I 2
+SRCS+=	isinf.c
+E 2
+SRCS+=	_setjmp.s alloca.s fabs.s ldexp.s modf.s setjmp.s
+SRCS+=	udiv.s urem.s
+E 1

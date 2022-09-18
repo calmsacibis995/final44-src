@@ -1,0 +1,157 @@
+Date: Fri, 10 Mar 89 03:35:48 -0700
+From: forys@cs.utah.edu (Jeff Forys)
+Subject: Sendmail 5.61 bounces mail on transient errors
+Index: usr.lib/sendmail/src/{util,collect}.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+[ N.B.: Sendmail versions below 5.61 do not have these bugs ]
+
+Description:
+
+	UTIL.C:
+	=======
+
+	Between 5.59 and 5.61, a change was made in "util.c/sfgets()"
+	which results in bounced mail for what should be a transient
+	error.
+
+	The 5.59 version of sfgets() called syserr() on a read timeout
+	as follows:
+
+		errno = ETIMEDOUT;
+		syserr("net timeout");
+
+	syserr() checks `errno', and if non-zero, uses a transient error
+	reply code (451); otherwise a permanent error reply code is used.
+	What a novel idea.  However, the 5.61 version of sfgets() calls
+	usrerr() on a read timeout as follows:
+
+		errno = 0;
+		usrerr("timeout waiting for input");
+
+	The problem is, usrerr() guarantees that a permanent error reply
+	code (554) will always be used (unless the error string already
+	contains a reply code (!)).
+
+	The result is, a permanent error reply code is returned for
+	timeouts.  When a 5xx error message is printed in puterrmsg(),
+	the EF_FATALERRS bit is set for the envelope and the letter is
+	bounced back to the sender (although it still gets queued for
+	a retry).  Confusing, no?  I believe usrerr() should always use
+	a temporary error reply code for timeouts, as in:
+
+		errno = 0;
+		usrerr("451 timeout waiting for input");
+
+	COLLECT.C:
+	==========
+
+	A similar change was made in "collect.c/sfgets()" which results
+	in a permanent error reply code being used for all "unexpected
+	close" situations.  This condition can only arise when doing
+	SMTP on standard input.  In 5.59, the code read:
+
+		syserr("collect: unexpected close, from=%s", [...]);
+		CurEnv->e_to = NULL;
+		CurEnv->e_flags &= ~EF_FATALERRS;
+
+	Where `errno' would be set by a read() deep in sfgets/fgets(),
+	and syserr() would check `errno' and decide whether to use a
+	temporary error reply code (for system errors) or a permanent
+	error reply code (for EOF).  However, the new code reads:
+
+		usrerr("collect: unexpected close, from=%s", [...]);
+		CurEnv->e_to = NULL;
+		CurEnv->e_flags &= ~EF_FATALERRS;
+
+	Which always uses a permanent error reply code, even for system
+	errors.  In the case of a UNIX system error, I believe we want
+	to encourage the sender to try again, so this should be a 4xx
+	reply code.  If we get an EOF, we can assume the sender has done
+	something wrong, and should not try the same thing again.  To
+	make this more clear, I propose the code be changed to:
+
+		(feof(InChannel) ? usrerr: syserr)
+			("collect: unexpected close, from=%s", [...]);
+		CurEnv->e_to = NULL;
+		CurEnv->e_flags &= ~EF_FATALERRS;
+
+Repeat-By:
+
+	UTIL.C:
+	=======
+
+	Invoke 5.61 sendmail with a read timeout of, say `1m' (1 minute)
+	and send mail to something (e.g. a dummy receiver) that sleeps
+	for a couple minutes.  Your sendmail will time out and you will
+	get a bounced letter with something like:
+
+		   ----- Transcript of session follows -----
+		forys@snake... reply: read error
+		554 forys@snake... timeout waiting for input
+		451 forys@snake... reply: read error
+
+	Yet, it will still be in the queue!
+
+	COLLECT.C:
+	==========
+
+	You'll have to force a UNIX system error (or fake one) to show
+	this bug.  Fortunately, you can just look at the code to see how
+	this can happen.
+
+Fix:
+
+I described each fix in the "Description" section, here are the diffs.
+Your line numbers will almost certainly vary.
+
+*** /tmp/,RCSt1008730	Thu Mar  9 19:24:51 1989
+--- util.c	Thu Mar  9 19:24:34 1989
+***************
+*** 655,661 ****
+  			    RealHostName);
+  # endif
+  			errno = 0;
+! 			usrerr("timeout waiting for input");
+  			buf[0] = '\0';
+  			return (NULL);
+  		}
+--- 655,661 ----
+  			    RealHostName);
+  # endif
+  			errno = 0;
+! 			usrerr("451 timeout waiting for input");
+  			buf[0] = '\0';
+  			return (NULL);
+  		}
+
+*** /tmp/,RCSt1008707	Thu Mar  9 19:23:28 1989
+--- collect.c	Thu Mar  9 19:23:01 1989
+***************
+*** 227,232 ****
+--- 227,233 ----
+  	/* An EOF when running SMTP is an error */
+  	if ((feof(InChannel) || ferror(InChannel)) && OpMode == MD_SMTP)
+  	{
++ 		int usrerr(), syserr();
+  # ifdef LOG
+  		if (RealHostName != NULL && LogLevel > 0)
+  			syslog(LOG_NOTICE,
+***************
+*** 233,239 ****
+  			    "collect: unexpected close on connection from %s: %m\n",
+  			    CurEnv->e_from.q_paddr, RealHostName);
+  # endif
+! 		usrerr("collect: unexpected close, from=%s", CurEnv->e_from.q_paddr);
+  
+  		/* don't return an error indication */
+  		CurEnv->e_to = NULL;
+--- 234,241 ----
+  			    "collect: unexpected close on connection from %s: %m\n",
+  			    CurEnv->e_from.q_paddr, RealHostName);
+  # endif
+! 		(feof(InChannel) ? usrerr: syserr)
+! 			("collect: unexpected close, from=%s", CurEnv->e_from.q_paddr);
+  
+  		/* don't return an error indication */
+  		CurEnv->e_to = NULL;

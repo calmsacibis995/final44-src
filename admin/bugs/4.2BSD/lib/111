@@ -1,0 +1,118 @@
+Return-Path: <lepreau@utah-cs>
+Date: Wed, 9 Nov 83 22:45:39 MST
+From: lepreau@utah-cs (Jay Lepreau)
+Subject: Fix RCHECKing in malloc.c and other debug cleanup
+Index: lib/libc/gen/malloc.c 4.2BSD Fix
+
+Description:
+	1. When RCHECK is defined, realloc needs to move the trailing
+	RMAGIC and adjust the recorded ov_size when it uses the same
+	block.  Otherwise got false assertion failures.  Spencer Thomas
+	found this one.
+	2. botch() printout needs cleaning up: it used to print to
+	stdout and w/o an fflush (so never saw it), and it needs to bracket
+	the msg with \r\n's cause terminal state may be funny.
+	3. If one defined RCHECK but not debug you didn't get any checking.
+	4. minor lint in morecore().
+	(5. There seems to be some redundant code in morecore(), i.e.
+	"can't happen" stuff, but why mess with working code?)
+
+Repeat-By:
+	Inspection (these arose in Gosling's emacs for us).
+
+Fix:
+	The new one is monet:~lepreau/malloc.c.  Here's	the diff too.
+
+*** /tmp/,RCSt1006961	Wed Nov  9 21:45:03 1983
+--- malloc.c	Wed Nov  9 21:43:41 1983
+***************
+*** 2,3
+  static char sccsid[] = "@(#)malloc.c	4.3 (Berkeley) 9/16/83";
+  #endif
+
+--- 2,5 -----
+  static char sccsid[] = "@(#)malloc.c	4.3 (Berkeley) 9/16/83";
++ static char RCSid[] =
++ "$Header: malloc.c,v 1.3 83/11/09 21:42:24 lepreau Exp $";
+  #endif
+***************
+*** 71,73
+  
+! #ifdef debug
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
+
+--- 73,75 -----
+  
+! #if defined(debug) || defined(RCHECK)
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
+***************
+*** 73,74
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
+  static
+
+--- 75,77 -----
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
++ #include <stdio.h>
+  static
+***************
+*** 78,80
+  
+! 	printf("assertion botched: %s\n", s);
+  	abort();
+
+--- 81,84 -----
+  
+! 	fprintf(stderr, "\r\nassertion botched: %s\r\n", s);
+! 	(void) fflush(stderr);		/* just in case user buffered it */
+  	abort();
+***************
+*** 153,156
+    	op = (union overhead *)sbrk(0);
+!   	if ((int)op & 0x3ff)
+!   		sbrk(1024 - ((int)op & 0x3ff));
+  	/* take 2k unless the block is bigger than that */
+
+--- 157,160 -----
+    	op = (union overhead *)sbrk(0);
+!   	if ((int)op & 0x3ff)		/* if this sbrk fails next will too */
+!   		(void) sbrk(1024 - ((int)op & 0x3ff));
+  	/* take 2k unless the block is bigger than that */
+***************
+*** 262,264
+  	if (was_alloced &&
+! 	    nbytes <= onb && nbytes > (onb >> 1) - sizeof(*op) - RSLOP)
+  		return(cp);
+
+--- 266,273 -----
+  	if (was_alloced &&
+! 	    nbytes <= onb && nbytes > (onb >> 1) - sizeof(*op) - RSLOP) {
+! #ifdef RCHECK
+! 		if (nbytes <= 0x10000)
+! 			op->ov_size = nbytes - 1;
+! 		*((u_int *)((caddr_t)op + nbytes - RSLOP)) = RMAGIC;
+! #endif
+  		return(cp);
+***************
+*** 264,265
+  		return(cp);
+    	if ((res = malloc(nbytes)) == NULL)
+
+--- 273,275 -----
+  		return(cp);
++ 	}
+    	if ((res = malloc(nbytes)) == NULL)
+***************
+*** 268,269
+  		bcopy(cp, res, (nbytes < onb) ? nbytes : onb);
+    	if (was_alloced)
+
+--- 278,286 -----
+  		bcopy(cp, res, (nbytes < onb) ? nbytes : onb);
++ #ifdef RCHECK
++ 	else {
++ 		if (nbytes <= 0x10000)
++ 			op->ov_size = nbytes - 1;
++ 		*((u_int *)((caddr_t)op + nbytes - RSLOP)) = RMAGIC;
++ 	}
++ #endif
+  	if (was_alloced)

@@ -1,0 +1,73 @@
+From leres@helios.ee.lbl.gov  Mon Nov  7 21:44:12 1988
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: rcmd() can hang forever
+Index: lib/libc/net/rcmd.c 4.3BSD +FIX
+Date: Mon, 07 Nov 88 21:44:36 PST
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+Description:
+	Programs that use rcmd() can hang forever if rshd goes away
+	or isn't there.
+
+Repeat-By:
+	Assuming your rshd is started up by inetd, rename /etc/rshd to
+	something else on a host and then try to rsh in. Notice that
+	the connection hangs forever.
+
+Fix:
+	Don't do the accept() until we're sure the other side is really
+	there.
+
+*** rcmd.c	Mon Nov  7 20:51:09 1988
+--- rcmd.c.new	Mon Nov  7 20:51:54 1988
+***************
+*** 16,22 ****
+   */
+  
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char sccsid[] = "@(#)rcmd.c	5.18 (Berkeley) 10/11/88";
+  #endif /* LIBC_SCCS and not lint */
+  
+  #include <stdio.h>
+--- 16,22 ----
+   */
+  
+  #if defined(LIBC_SCCS) && !defined(lint)
+! static char sccsid[] = "@(#)rcmd.c	5.18++ (Berkeley) 10/11/88";
+  #endif /* LIBC_SCCS and not lint */
+  
+  #include <stdio.h>
+***************
+*** 48,53 ****
+--- 48,54 ----
+  	char c;
+  	int lport = IPPORT_RESERVED - 1;
+  	struct hostent *hp;
++ 	fd_set reads;
+  
+  	pid = getpid();
+  	hp = gethostbyname(*ahost);
+***************
+*** 118,123 ****
+--- 119,139 ----
+  			perror("write: setting up stderr");
+  			(void) close(s2);
+  			goto bad;
++ 		}
++ 		FD_ZERO(&reads);
++ 		FD_SET(s, &reads);
++ 		FD_SET(s2, &reads);
++ 		errno = 0;
++ 		if (select(32, &reads, 0, 0, 0) != 1 ||
++ 		    !FD_ISSET(s2, &reads)) {
++ 			if (errno != 0)
++ 				perror("select: setting up stderr");
++ 			else
++ 			    fprintf(stderr,
++ 				"select: protocol failure in circuit setup.\n");
++ 			(void) close(s2);
++ 			goto bad;
++ 				
+  		}
+  		s3 = accept(s2, &from, &len, 0);
+  		(void) close(s2);

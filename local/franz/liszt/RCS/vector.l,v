@@ -1,0 +1,1258 @@
+head     1.12;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.12
+date     87.12.15.17.10.04;  author sklower;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.11.22.10.13.48;  author jkf;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.11.11.22.34.55;  author jkf;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.09.01.12.06.02;  author sklower;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.08.28.21.04.15;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.08.22.22.59.34;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.08.14.01.49.52;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.08.12.02.49.15;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.08.04.01.39.41;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.08.03.02.14.33;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.07.30.15.34.29;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.07.30.04.23.29;  author layer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@vector access functions...
+@
+
+
+1.12
+log
+@*** empty log message ***
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file vector
+   "$Header: /b/users/housel/lisp/liszt/RCS/vector.l,v 1.5 86/12/14 14:47:22 housel Exp $")
+
+;;; ----	v e c t o r			vector referencing
+;;;
+;;;				-[Fri Nov 11 22:35:50 1983 by jkf]-
+
+
+(defun cc-vset ()
+   ;;  Set a vector created via 'vector'.
+   (d-vset 'lisp))
+
+(defun cc-vref ()
+   ;;  Reference a vector created via 'vector'.
+   (d-vref 'lisp))
+
+(defun cc-vseti-byte ()
+   ;;  Set a vector created via 'vectori-byte'.
+   (d-vset 'byte))
+
+(defun cc-vrefi-byte ()
+   ;;  Reference a vector created via 'vectori-byte'.
+   (d-vref 'byte))
+
+(defun cc-vseti-word ()
+   ;;  Set a vector created via 'vectori-word'.
+   (d-vset 'word))
+
+(defun cc-vrefi-word ()
+   ;;  Reference a vector created via 'vectori-word'.
+   (d-vref 'word))
+
+(defun cc-vseti-long ()
+   ;;  Set a vector created via 'vectori-long'.
+   (d-vset 'long))
+
+(defun cc-vrefi-long ()
+   ;;  Reference a vector created via 'vectori-long'.
+   (d-vref 'long))
+
+;--- d-vset :: handle all types of vset's
+(defun d-vset (type)
+   ;;  Generic vector store.  Type is either 'lisp', 'byte', 'word',
+   ;; or 'long'.
+   (let ((vect (cadr v-form))
+	 (index (caddr v-form))
+	 (val (cadddr v-form))
+	 (vect-addr) (index-addr)
+	 (vect-val) (fetchval)
+	 (temp) (size)
+	 (vec-reg #+(or for-vax for-tahoe) 'r0 #+for-68k 'a0)
+	 (val-reg #+(or for-vax for-tahoe) 'r1 #+for-68k 'd1)
+	 (index-reg '#.fixnum-reg)
+	 (temp-reg #+(or for-vax for-tahoe) 'r4 #+for-68k 'd0)
+	 (temp-areg #+(or for-vax for-tahoe) 'bogus! #+for-68k 'a1)
+	 (oklab (d-genlab))
+	 (needlowcheck t))		; t if must check lower index bounds
+
+       #+for-68k (d-regused '#.fixnum-reg)
+       (makecomment `(doing vec set type ,type))
+       (if (fixp index)
+	   then (if (<& index 0)
+		    then (comp-err "vector index less than 0 " v-form))
+		(setq needlowcheck nil))
+
+       ; Compute the value to be stored...
+       ;
+       ; If we are doing an immediate vector, then get the value
+       ; instead of the boxed fixnum (in the case of byte), or
+       ; word/long.
+       (if (null (eq 'lisp type)) then (setq val `(cdr ,val)))
+
+       (if (null (setq vect-val (d-simple val)))
+	   then (let ((g-loc val-reg) g-cc g-ret)
+		    (d-exp val))
+		(setq vect-val val-reg)
+	   else (setq vect-val (e-cvt vect-val)))
+
+       ; make sure that we are not going to clobber val-reg...
+       (if (not (and (d-simple vect) (d-simple index)))
+	   then ; val-reg could be clobbered when we do the
+		; fetching of the vector or index values
+		(setq fetchval t)
+		(e-move vect-val (e-cvt 'stack)))
+
+       ; Compute the index...
+       ;
+       (if (setq index-addr (d-simple index))
+	   then (let ((g-loc vec-reg) g-cc g-ret)
+		    (d-exp vect))
+		(setq vect-addr vec-reg)	; the vector op is in vec-reg
+		; we really want the cdr of index (the actual number).
+		; if we can do that simply, great.  otherwise we
+		; bring the index into index-reg and then do the cdr ourselves
+		(if (setq temp (d-simple `(cdr ,index)))
+		    then (d-move temp index-reg)
+		    else (d-move index-addr index-reg)
+			 #+(or for-vax for-tahoe)
+			 (e-move `(0 ,index-reg) index-reg)
+			 #+for-68k
+			 (progn
+			     (e-move index-reg 'a5)
+			     (e-move '(0 a5) index-reg)))
+		(setq index-addr index-reg)
+	   else ; the index isn't computable simply, so we must
+		; stack the vector location to keep it safe
+		(let ((g-loc 'stack) g-cc g-ret)
+		    (d-exp vect))
+		(push nil g-locs)
+		(incr g-loccnt)
+		; compute index's value into index-reg
+		(d-fixnumexp index)
+		; now put vector address into vec-reg
+		(d-move 'unstack vec-reg)
+		(decr g-loccnt)
+		(pop g-locs)
+		(setq vect-addr vec-reg
+		      index-addr index-reg)
+		; must be sure that the cc's reflect the value of index-reg
+		(e-tst index-reg))
+
+       ;   At this point, vect-addr (always vec-reg) contains the location of
+       ; the start of the vector,  index-addr (always index-reg) contains
+       ; the index value.
+       ;   The condition codes reflect the value of the index.
+       ; First we insure that the index is non negative
+       ; test must use a jmp in case the object file is large
+       ;
+       (if needlowcheck
+	   then (e-write2 #+(or for-vax for-tahoe) 'jgeq #+for-68k 'jpl oklab)
+		(e-write2 'jmp 'vecindexerr)
+		(e-label oklab)
+		(setq oklab (d-genlab)))
+       ;; now, we compare against the size of the vector
+       ;; the size of the vector is in bytes, we may want to shift this
+       ;; to reflect the size in words or longwords, depending on the
+       ;; type of reference
+       (if (eq type 'byte)
+	   then ; can compare right away
+		(e-cmp index-addr `(-8 ,vect-addr))
+	   else ; shift size into temp-reg
+		(setq size (if (eq type 'word) then 1 else 2))
+		#+for-vax
+		    (e-write4 'ashl (concat '$- size)
+			      `(-8 ,vect-addr) temp-reg)
+		#+for-tahoe
+		    (e-write4 'shar (concat '$ size)
+			      `(-8 ,vect-addr) temp-reg)
+		#+for-68k
+		(progn
+		    (e-move `(-8 ,vect-addr) temp-reg)
+		    (e-write3 'asrl `($ ,size) temp-reg))
+		(e-cmp index-addr temp-reg)
+		(d-clearreg temp-reg))
+       ;; size is the number of objects, the index is 0 based so
+       ;; it must be less than the vector size
+       (e-write2 #+(or for-vax for-tahoe) 'jlss #+for-68k 'jmi oklab)
+       (e-write2 'jmp 'vecindexerr)
+       (e-label oklab)
+
+       (if fetchval
+	   then ; unstack the value to store...
+		(e-move (e-cvt 'unstack) val-reg)
+		(setq vect-val val-reg))
+
+       ;; if we get here then the access is in bounds
+       (if (eq type 'lisp)
+	   then #+(or for-vax for-tahoe)
+		(e-move vect-val `(0 ,vect-addr ,index-addr))
+		#+for-68k
+		(progn
+		    (e-move index-addr temp-reg)
+		    (e-write3 'asll '($ 2) temp-reg)
+		    (e-add vect-addr temp-reg)
+		    (e-move temp-reg temp-areg)
+		    (e-move vect-val `(0 ,temp-areg)))
+		(if g-loc (e-move vect-val (e-cvt g-loc)))
+		(if g-cc then (d-handlecc))
+	   else (setq temp (cadr (assq type '((byte movb)
+					      (word movw)
+					      (long movl)))))
+		#+(or for-vax for-tahoe)
+		(e-write3 temp vect-val `(0 ,vect-addr ,index-addr))
+		#+for-68k
+		(progn
+		    (e-move index-addr temp-reg)
+		    (caseq type
+			(word (e-write3 'asll '($ 1) temp-reg))
+			(long (e-write3 'asll '($ 2) temp-reg)))
+		    (e-write3 'lea `(% 0 ,vec-reg ,temp-reg) temp-areg)
+		    (if (eq type 'long)
+			then (e-write3 temp vect-val `(0 ,temp-areg))
+			else (e-move vect-val 'd1)
+			     (e-write3 temp 'd1 `(0 ,temp-areg))))
+		(if g-loc
+		    then (if (eq type 'byte)
+			     then ; all bytes values are within the fixnum
+				  ; range, we convert them to immediate
+				  ; fixum with ease.
+				  #+for-vax
+				  (progn
+				      (e-write4 'ashl '($ 2)
+						index-reg index-reg)
+				      (e-write3 'movab
+						`(5120 ,index-reg)
+						(e-cvt g-loc)))
+				  #+for-tahoe
+				  (progn
+				      (e-write4 'shal '($ 2)
+						index-reg index-reg)
+				      (e-write3 'movab
+						`(5120 ,index-reg)
+						(e-cvt g-loc)))
+				  #+for-68k
+				  (progn
+				      (e-move index-reg temp-reg)
+				      (e-write3 'asll '($ 2) temp-reg)
+				      (e-move temp-reg temp-areg)
+				      (e-move
+						(e-cvt '(fixnum 0))
+						temp-reg)
+				      (e-write3 'lea
+						`(% 0 ,temp-areg ,temp-reg)
+						temp-areg)
+				      (e-move
+						temp-areg
+						(e-cvt g-loc)))
+			     else ; must convert the hard way
+				  (e-call-qnewint)
+				  (d-clearreg)
+				  (if (not (eq g-loc 'reg))
+				      then (d-move 'reg g-loc)))
+			 ; result is always non nil
+			 (if (car g-cc) then (e-goto (car g-cc)))
+		 elseif (car g-cc) then (e-goto (car g-cc))))
+       (d-vectorindexcode)))
+
+;--- d-vref :: handle all types of vref's
+(defun d-vref (type)
+   ;;  Generic vector reference.  Type is either 'lisp', 'byte', 'word',
+   ;; or 'long'.
+   (let ((vect (cadr v-form))
+	 (index (caddr v-form))
+	 (vect-addr) (index-addr) (temp) (size)
+	 (vec-reg #+(or for-vax for-tahoe) 'r0 #+for-68k 'a0)
+	 (index-reg '#.fixnum-reg)
+	 (temp-reg #+(or for-vax for-tahoe) 'r4 #+for-68k 'd0)
+	 (temp-areg #+(or for-vax for-tahoe) 'rX #+for-68k 'a1)
+	 (oklab (d-genlab))
+	 (needlowcheck t))  ; t if must check lower index bounds
+
+       #+for-68k (d-regused '#.fixnum-reg)
+       (makecomment `(doing vec ref type ,type))
+       (if (fixp index)
+	   then (if (<& index 0)
+		    then (comp-err "vector index less than 0 " v-form))
+		(setq needlowcheck nil))
+
+       (if (setq index-addr (d-simple index))
+	   then (let ((g-loc vec-reg) g-cc g-ret)
+		    (d-exp vect))
+		(setq vect-addr vec-reg)	; the vector op is in vec-reg
+		; we really want the cdr of index (the actual number).
+		; if we can do that simply, great.  otherwise we
+		; bring the index into index-reg and then do the cdr ourselves
+		(if (setq temp (d-simple `(cdr ,index)))
+		    then (d-move temp index-reg)
+		    else (d-move index-addr index-reg)
+			 #+(or for-vax for-tahoe)
+			 (e-move `(0 ,index-reg) index-reg)
+			 #+for-68k
+			 (progn
+			     (e-move index-reg 'a5)
+			     (e-move '(0 a5) index-reg)))
+		(setq index-addr index-reg)
+	   else ; the index isn't computable simply, so we must
+		; stack the vector location to keep it safe
+		(let ((g-loc 'stack) g-cc g-ret)
+		    (d-exp vect))
+		(push nil g-locs)
+		(incr g-loccnt)
+		; compute index's value into index-reg
+		(d-fixnumexp index)
+		; now put vector address into vec-reg
+		(d-move 'unstack vec-reg)
+		(decr g-loccnt)
+		(pop g-locs)
+		(setq vect-addr vec-reg
+		      index-addr index-reg)
+		; must be sure that the cc's reflect the value of index-reg
+		(e-tst index-reg))
+       
+       ; at this point, vect-addr (always vec-reg) contains the location of
+       ; the start of the vector,  index-addr (always index-reg) contains
+       ; the index value.  the condition codes reflect the value of
+       ; the index
+       ; First we insure that the index is non negative
+       ; test must use a jmp in case the object file is large
+       (if needlowcheck
+	   then (e-write2 #+(or for-vax for-tahoe) 'jgeq #+for-68k 'jpl oklab)
+		(e-write2 'jmp 'vecindexerr)
+		(e-label oklab)
+		(setq oklab (d-genlab)))
+
+       ; now, we compare against the size of the vector
+       ; the size of the vector is in bytes, we may want to shift this
+       ; to reflect the size in words or longwords, depending on the
+       ; type of reference
+       (if (eq type 'byte)
+	   then ; can compare right away
+		(e-cmp index-addr `(-8 ,vect-addr))
+	   else ; shift size into temp-reg
+		(setq size (if (eq type 'word) then 1 else 2))
+		#+for-vax
+		(e-write4 'ashl (concat '$- size) `(-8 ,vect-addr) temp-reg)
+		#+for-tahoe
+		(e-write4 'shar (concat '$ size) `(-8 ,vect-addr) temp-reg)
+		#+for-68k
+		(progn
+		    (e-move `(-8 ,vect-addr) temp-reg)
+		    (e-write3 'asrl `($ ,size) temp-reg))
+		(e-cmp index-addr temp-reg)
+		(d-clearreg temp-reg))
+       ; size is the number of objects, the index is 0 based so
+       ; it must be less than the vector size
+       (e-write2 #+(or for-vax for-tahoe) 'jlss #+for-68k 'jmi oklab)
+       (e-write2 'jmp 'vecindexerr)
+       (e-label oklab)
+
+       ;; if we get here then the access is in bounds
+       (if g-loc
+	   then ; we care about the value.
+		; if the value is one of the fixnum types, then we
+		; move the value to index-reg so it can be fixnum converted
+		(if (eq type 'lisp)
+		    then #+(or for-vax for-tahoe)
+			 (e-move `(0 ,vect-addr ,index-addr)
+				   (e-cvt g-loc))
+			 #+for-68k
+			 (progn
+			     (e-move index-addr temp-reg)
+			     (e-write3 'asll '($ 2) temp-reg)
+			     (e-add vect-addr temp-reg)
+			     (e-move temp-reg temp-areg)
+			     (e-move `(0 ,temp-areg) (e-cvt g-loc)))
+			 (if g-cc then (d-handlecc))
+		    else #+(or for-vax for-tahoe)
+			 (progn
+			     (setq temp (cadr (assq type '((byte cvtbl)
+							   (word cvtwl)
+							   (long movl)))))
+			     (e-write3 temp
+				       `(0 ,vect-addr ,index-addr)
+				       index-reg))
+			 #+for-68k
+			 (progn
+			     (setq temp
+				   (cadr (assq type '((byte movb)
+						      (word movw)
+						      (long movl)))))
+			     (caseq type
+				    (word (e-write3 'asll '($ 1) index-reg))
+				    (long (e-write3 'asll '($ 2) index-reg)))
+			     (e-write3 'lea `(% 0 ,vec-reg ,index-reg)
+				       temp-areg)
+			     (if (memq type '(byte word))
+				 then (e-write2 'clrl index-reg))
+			     (e-write3 temp `(0 ,temp-areg) index-reg))
+			 (if (eq type 'byte)
+			     then ; all bytes values are within the fixnum
+				  ; range, we convert them to immediate
+				  ; fixum with ease.
+				  #+for-vax
+				  (progn
+				      (e-write4 'ashl '($ 2)
+						index-reg index-reg)
+				      (e-write3 'movab
+						`(5120 ,index-reg)
+						(e-cvt g-loc)))
+				  #+for-tahoe
+				  (progn
+				      (e-write4 'shal '($ 2)
+						index-reg index-reg)
+				      (e-write3 'movab
+						`(5120 ,index-reg)
+						(e-cvt g-loc)))
+				  #+for-68k
+				  (progn
+				      (e-write3 'asll '($ 2) index-reg)
+				      (e-move index-reg temp-areg)
+				      (e-move
+						'($ _nilatom+0x1400)
+						temp-reg)
+				      (e-write3 'lea
+						`(% 0 ,temp-areg ,temp-reg)
+						temp-areg)
+				      (e-move
+						temp-areg
+						(e-cvt g-loc)))
+			     else ; must convert the hard way
+				  (e-call-qnewint)
+				  (d-clearreg)
+				  (if (not (eq g-loc 'reg))
+				      then (d-move 'reg g-loc)))
+			 ; result is always non nil
+			 (if (car g-cc) then (e-goto (car g-cc))))
+	elseif g-cc
+	     ; we dont care about the value, just whether it nil
+	   then (if (eq type 'lisp)
+		    then #+(or for-vax for-tahoe)
+			 (e-tst `(0 ,vect-addr ,index-addr))
+			 #+for-68k
+			 (progn
+			     (e-move index-addr temp-reg)
+			     (e-write3 'asll '($ 2) temp-reg)
+			     (e-add vect-addr temp-reg)
+			     (e-move temp-reg temp-areg)
+			     (e-cmpnil `(0 ,temp-areg)))
+			 (d-handlecc)
+		    else ; if fixnum, then it is always true
+			 (if (car g-cc) then (e-goto (car g-cc)))))
+       (d-vectorindexcode)))
+
+;--- d-vectorindexcode :: put out code to call the vector range error.
+; At this point the vector is in r0, the index an immediate fixnum in r5
+; we call the function int:vector-range-error with two arguments, the
+; vector and the index.
+;
+(defun d-vectorindexcode ()
+   (if (null g-didvectorcode)
+      then (let ((afterlab (d-genlab)))
+	      (e-goto afterlab)
+	      (e-label 'vecindexerr)
+	      (d-move #+(or for-vax for-tahoe) 'r0 #+for-68k 'a0 'stack)
+	      (e-call-qnewint)
+	      (d-move 'reg 'stack)
+	      (d-calltran 'int:vector-range-error 2)
+	      ; never returns
+	      (e-label afterlab))
+	   (setq g-didvectorcode t)))
+
+
+;------------------------ vector access functions
+
+;--- cc-vectorp :: check for vectorness
+;
+(defun cc-vectorp nil
+  (d-typesimp (cadr v-form) #.(immed-const 18)))
+
+;--- cc-vectorip :: check for vectoriness
+;
+(defun cc-vectorip nil
+  (d-typesimp (cadr v-form) #.(immed-const 19)))
+
+;--- c-vsize :: extract vsize
+;
+(defun c-vsize nil
+   (d-vectorsize (cadr v-form) '2))
+
+(defun c-vsize-byte nil
+   (d-vectorsize (cadr v-form) '0))
+
+(defun c-vsize-word nil
+   (d-vectorsize (cadr v-form) '1))
+
+(defun d-vectorsize (form shift)
+   (let ((g-loc #+(or for-vax for-tahoe) 'reg #+for-68k 'a0)
+	 g-cc
+	 g-ret)
+       (d-exp form))
+   ; get size into `fixnum-reg' for fixnum boxing
+   (if (zerop shift)
+       then (e-move '(-8 #+(or for-vax for-tahoe) r0 #+for-68k a0) '#.fixnum-reg)
+       else #+for-vax
+	    (e-write4 'ashl (concat '$- shift) '(-8 r0) '#.fixnum-reg)
+	    #+for-tahoe
+	    (e-write4 'shar (concat '$ shift) '(-8 r0) '#.fixnum-reg)
+	    #+for-68k
+	    (progn
+		(e-move '(-8 a0) '#.fixnum-reg)
+		(e-write3 'asrl `($ ,shift) '#.fixnum-reg)))
+   (e-call-qnewint))
+@
+
+
+1.11
+log
+@fixed 68k vsize bug
+@
+text
+@d3 1
+a3 1
+   "$Header: vector.l,v 1.10 83/11/11 22:34:55 jkf Exp $")
+d52 2
+a53 2
+	 (vec-reg #+for-vax 'r0 #+for-68k 'a0)
+	 (val-reg #+for-vax 'r1 #+for-68k 'd1)
+d55 2
+a56 2
+	 (temp-reg #+for-vax 'r4 #+for-68k 'd0)
+	 (temp-areg #+for-vax 'bogus! #+for-68k 'a1)
+d99 1
+a99 1
+			 #+for-vax
+d131 1
+a131 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jpl oklab)
+d147 3
+d158 1
+a158 1
+       (e-write2 #+for-vax 'jlss #+for-68k 'jmi oklab)
+d169 1
+a169 1
+	   then #+for-vax
+d183 1
+a183 1
+		#+for-vax
+d208 7
+d246 1
+a246 1
+	 (vec-reg #+for-vax 'r0 #+for-68k 'a0)
+d248 2
+a249 2
+	 (temp-reg #+for-vax 'r4 #+for-68k 'd0)
+	 (temp-areg #+for-vax 'rX #+for-68k 'a1)
+d270 1
+a270 1
+			 #+for-vax
+d301 1
+a301 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jpl oklab)
+d317 2
+d327 1
+a327 1
+       (e-write2 #+for-vax 'jlss #+for-68k 'jmi oklab)
+d337 1
+a337 1
+		    then #+for-vax
+d348 1
+a348 1
+		    else #+for-vax
+d381 7
+d411 1
+a411 1
+		    then #+for-vax
+d435 1
+a435 1
+	      (d-move #+for-vax 'r0 #+for-68k 'a0 'stack)
+d468 1
+a468 1
+   (let ((g-loc #+for-vax 'reg #+for-68k 'a0)
+d474 1
+a474 1
+       then (e-move '(-8 #+for-vax r0 #+for-68k a0) '#.fixnum-reg)
+d477 2
+@
+
+
+1.10
+log
+@layer's fixes
+@
+text
+@d3 1
+a3 1
+   "$Header: vector.l,v 1.9 83/09/01 12:06:02 sklower Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 18:29:32 1983 by layer]-
+d449 1
+a449 1
+   (let ((g-loc 'reg)
+@
+
+
+1.9
+log
+@old unix as for 68k doesn't understand 1f
+@
+text
+@d3 1
+a3 1
+   "$Header: vector.l,v 1.8 83/08/28 21:04:15 layer Exp $")
+d400 1
+a400 1
+			     (e-tst `(0 ,temp-areg)))
+@
+
+
+1.8
+log
+@branch operators for 68000 were wrong.
+@
+text
+@d3 1
+a3 1
+   "$Header: vector.l,v 1.7 83/08/22 22:59:34 layer Exp $")
+d57 1
+d131 1
+a131 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jpl '1f)
+d133 2
+a134 1
+		(e-label 1))
+d155 1
+a155 1
+       (e-write2 #+for-vax 'jlss #+for-68k 'jmi '1f)
+d157 1
+a157 1
+       (e-label 1)
+d240 1
+d291 1
+a291 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jpl '1f)
+d293 2
+a294 1
+		(e-label 1))
+d315 1
+a315 1
+       (e-write2 #+for-vax 'jlss #+for-68k 'jmi '1f)
+d317 1
+a317 1
+       (e-label 1)
+@
+
+
+1.7
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/vector.l,v 1.6 83/08/14 01:49:52 layer Exp $")
+d130 1
+a130 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jge '1f)
+d288 1
+a288 1
+	   then (e-write2 #+for-vax 'jgeq #+for-68k 'jge '1f)
+@
+
+
+1.6
+log
+@minor mods
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/vector.l,v 1.5 83/08/12 02:49:15 layer Exp $")
+d84 1
+a84 1
+		(e-write3 'movl vect-val (e-cvt 'stack)))
+d99 1
+a99 1
+			 (e-write3 'movl `(0 ,index-reg) index-reg)
+d102 2
+a103 2
+			     (e-write3 'movl index-reg 'a5)
+			     (e-write3 'movl '(0 a5) index-reg)))
+d120 1
+a120 1
+		(e-write2 'tstl index-reg))
+d139 1
+a139 4
+		#+for-vax
+		(e-write3 'cmpl index-addr `(-8 ,vect-addr))
+		#+for-68k
+		(e-write3 'cmpl `(-8 ,vect-addr) index-addr)
+a142 1
+		(progn
+a144 1
+		    (e-write3 'cmpl index-addr temp-reg))
+d147 3
+a149 3
+		    (e-write3 'movl `(-8 ,vect-addr) temp-reg)
+		    (e-write3 'asrl `($ ,size) temp-reg)
+		    (e-write3 'cmpl temp-reg index-addr))
+d159 1
+a159 1
+		(e-write3 'movl (e-cvt 'unstack) val-reg)
+d165 1
+a165 1
+		(e-write3 'movl vect-val `(0 ,vect-addr ,index-addr))
+d168 1
+a168 1
+		    (e-write3 'movl index-addr temp-reg)
+d170 4
+a173 4
+		    (e-write3 'addl vect-addr temp-reg)
+		    (e-write3 'movl temp-reg temp-areg)
+		    (e-write3 'movl vect-val `(0 ,temp-areg)))
+		(if g-loc (e-write3 'movl vect-val (e-cvt g-loc)))
+d182 1
+a182 1
+		    (e-write3 'movl index-addr temp-reg)
+d189 1
+a189 1
+			else (e-write3 'movl vect-val 'd1)
+d205 1
+a205 1
+				      (e-write3 'movl index-reg temp-reg)
+d207 2
+a208 2
+				      (e-write3 'movl temp-reg temp-areg)
+				      (e-write3 'movl
+d214 1
+a214 1
+				      (e-write3 'movl
+d258 1
+a258 1
+			 (e-write3 'movl `(0 ,index-reg) index-reg)
+d261 2
+a262 2
+			     (e-write3 'movl index-reg 'a5)
+			     (e-write3 'movl '(0 a5) index-reg)))
+d279 1
+a279 1
+		(e-write2 'tstl index-reg))
+d298 1
+a298 4
+		#+for-vax
+		(e-write3 'cmpl index-addr `(-8 ,vect-addr))
+		#+for-68k
+		(e-write3 'cmpl `(-8 ,vect-addr) index-addr)
+d302 1
+a302 4
+		(progn
+		    (e-write4 'ashl (concat '$- size)
+			      `(-8 ,vect-addr) temp-reg)
+		    (e-write3 'cmpl index-addr temp-reg))
+d305 3
+a307 3
+		    (e-write3 'movl `(-8 ,vect-addr) temp-reg)
+		    (e-write3 'asrl `($ ,size) temp-reg)
+		    (e-write3 'cmpl temp-reg index-addr))
+d322 1
+a322 1
+			 (e-write3 'movl `(0 ,vect-addr ,index-addr)
+d326 1
+a326 1
+			     (e-write3 'movl index-addr temp-reg)
+d328 3
+a330 3
+			     (e-write3 'addl vect-addr temp-reg)
+			     (e-write3 'movl temp-reg temp-areg)
+			     (e-write3 'movl `(0 ,temp-areg) (e-cvt g-loc)))
+d368 2
+a369 2
+				      (e-write3 'movl index-reg temp-areg)
+				      (e-write3 'movl
+d375 1
+a375 1
+				      (e-write3 'movl
+d389 1
+a389 1
+			 (e-write2 'tstl `(0 ,vect-addr ,index-addr))
+d392 1
+a392 1
+			     (e-write3 'movl index-addr temp-reg)
+d394 3
+a396 3
+			     (e-write3 'addl vect-addr temp-reg)
+			     (e-write3 'movl temp-reg temp-areg)
+			     (e-write2 'tstl `(0 ,temp-areg)))
+d451 1
+a451 1
+       then (e-write3 'movl '(-8 #+for-vax r0 #+for-68k a0) '#.fixnum-reg)
+d456 1
+a456 1
+		(e-write3 'movl '(-8 a0) '#.fixnum-reg)
+@
+
+
+1.5
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/vector.l,v 1.4 83/08/04 01:39:41 layer Exp $")
+d59 1
+a59 1
+       (d-regused '#.fixnum-reg)
+d68 5
+a78 8
+       (if (null (eq 'lisp type))
+	   then ; we are dealing with an immediate vector, so
+		; get the value...
+		(setq vect-val
+		      (if (symbolp vect-val)
+			  then `(* ,vect-val)
+			  else (cons '* vect-val))))
+       
+d214 1
+a214 1
+						'($ _nilatom+0x1400)
+d245 1
+a245 1
+       (d-regused '#.fixnum-reg)
+@
+
+
+1.4
+log
+@fixed bugs in vax part...
+@
+text
+@d3 1
+a3 1
+   "$Header: vector.l,v 1.3 83/08/03 02:14:33 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug  4 01:21:02 1983 by layer]-
+d101 6
+a106 1
+			 (e-write3 'movl `(0 ,index-reg) index-reg))
+d194 1
+a194 3
+		    (e-write3 'lea
+			      (concat vec-reg "@@(0," temp-reg ":L)")
+			      temp-areg)
+d220 1
+a220 2
+						(concat temp-areg
+							"@@(0," temp-reg ":L)")
+d226 1
+a226 3
+				  (e-write2 #+for-vax 'jsb
+					    #+for-68k 'jbsr
+					    "_qnewint")
+d265 6
+a270 1
+			 (e-write3 'movl `(0 ,index-reg) index-reg))
+d363 1
+a363 3
+			     (e-write3 'lea
+				       (concat vec-reg "@@(0,"
+					       index-reg ":L)")
+d387 1
+a387 2
+						(concat temp-areg
+							"@@(0," temp-reg ":L)")
+d393 1
+a393 2
+				  (e-write2 #+for-vax 'jsb #+for-68k 'jbsr
+					    "_qnewint")
+d427 1
+a427 2
+	      (e-write2 #+for-vax 'jsb #+for-68k 'jbsr
+			'_qnewint)
+d463 1
+a463 1
+   ; get size into r5 (d2 for 68k) for fixnum boxing
+d465 1
+a465 1
+       then (e-write3 'movl `(-8 r0) #+for-vax 'r5 #+for-68k 'd2)
+d467 1
+a467 1
+	    (e-write4 'ashl (concat '$- shift) '(-8 r0) 'r5)
+d470 3
+a472 3
+		(e-write3 'movl '(-8 a0) 'd2)
+		(e-write3 'asrl `($ ,shift) 'd2)))
+   (e-write2 #+for-vax 'jsb #+for-68k 'jbsr '_qnewint))
+@
+
+
+1.3
+log
+@finished debugging 68k parts...
+@
+text
+@d2 2
+a3 1
+(Liszt-file vector "$Header: vector.l 1.2 83/07/30 15:34:29 layer Exp $")
+d7 1
+a7 1
+;;;				-[Wed Aug  3 02:04:29 1983 by layer]-
+d50 1
+a50 1
+	 (vect-val)
+d56 1
+a56 1
+	 (temp-areg #+for-vax 'rX #+for-68k 'a1)
+d59 1
+d73 1
+d81 7
+d160 5
+d182 1
+a182 1
+		(e-write3 (car temp) vect-val `(0 ,vect-addr ,index-addr))
+d248 1
+@
+
+
+1.2
+log
+@open code vset, and move things around
+@
+text
+@d2 1
+a2 1
+(Liszt-file vector "$Header: vector.l 1.1 83/07/30 04:23:29 layer Exp $")
+d6 1
+a6 1
+;;;				-[ Fri Jul 29 11:49:06 PDT 1983 by layer ]-
+d51 5
+d58 5
+a62 19
+      ; if the index is simple then we can just compute the vector
+      ; location into r0
+      (makecomment `(doing vec set type ,type))
+      (if (fixp index)
+	 then (if (<& index 0)
+		 then (comp-err "vector index less than 0 " v-form))
+	      (setq needlowcheck nil))
+      
+      ; Compute the value to be stored...
+      ;
+      (if (null (setq vect-val (d-simple val)))
+	 then (let ((g-loc 'r1) g-cc g-ret)
+		 (d-exp val))
+	      (setq vect-val 'r1)
+	  else (setq vect-val (e-cvt vect-val)))
+      (if (null (eq 'lisp type))
+	  then ; we are dealing with an immediate vector, so
+	       ; get the value...
+	       (setq vect-val (cons '* vect-val)))
+d64 14
+a77 29
+      ; Compute the index...
+      ;
+      (if (setq index-addr (d-simple index))
+	 then (let ((g-loc 'reg) g-cc g-ret)
+		 (d-exp vect))
+	      (setq vect-addr 'r0)	; the vector op is in r0
+	      ; we really want the cdr of index (the actual number).
+	      ; if we can do that simply, great.  otherwise we
+	      ; bring the index into r5 and then do the cdr ourselves
+	      (if (setq temp (d-simple `(cdr ,index)))
+		 then (d-move temp 'r5)
+		 else (d-move index-addr 'r5)
+		      (e-write3 'movl '"(r5)" 'r5))
+	      (setq index-addr 'r5)
+	 else ; the index isn't computable simply, so we must
+	      ; stack the vector location to keep it safe
+	      (let ((g-loc 'stack) g-cc g-ret)
+		 (d-exp vect))
+	      (push nil g-locs)
+	      (incr g-loccnt)
+	      ; compute index's value into r5
+	      (d-fixnumexp index)
+	      ; now put vector address into r0
+	      (d-move 'unstack 'r0)
+	      (decr g-loccnt)
+	      (pop g-locs)
+	      (setq vect-addr 'r0  index-addr 'r5)
+	      ; must be sure that the cc's reflect the value of r5
+	      (e-write2 'tstl 'r5))
+d79 30
+a108 31
+      ;   At this point, vect-addr (always r0) contains the location of
+      ; the start of the vector,  index-addr (always r5) contains
+      ; the index value.
+      ;   The condition codes reflect the value of the index.
+      ; First we insure that the index is non negative
+      ; test must use a jmp in case the object file is large
+      ;
+      (if needlowcheck
+	 then (e-write2 'jgeq "1f")
+	      (e-write2 'jmp 'vecindexerr)
+	      (e-label 1))
+      ;; now, we compare against the size of the vector
+      ;; the size of the vector is in bytes, we may want to shift this
+      ;; to reflect the size in words or longwords, depending on the
+      ;; type of reference
+      (if (eq type 'byte)
+	 then ; can compare right away
+	      (e-write3 'cmpl index-addr (concat "-8(" vect-addr ")"))
+	 else ; shift size into r4
+	      (setq size (if (eq type 'word) then 1 else 2))
+	      (e-write4 'ashl
+			(concat '$- size)
+			(concat "-8(" vect-addr ")")
+			'r4)
+	      (d-clearreg 'r4)
+	      (e-write3 'cmpl index-addr 'r4))
+      ;; size is the number of objects, the index is 0 based so
+      ;; it must be less than the vector size
+      (e-write2 'jlss "1f")
+      (e-write2 'jmp 'vecindexerr)
+      (e-label 1)
+d110 39
+a148 29
+      ;; if we get here then the access is in bounds
+      (if (eq type 'lisp)
+	  then (e-write3 'movl
+			 vect-val
+			 (concat "(" vect-addr ")" "[" index-addr "]"))
+	       (if g-loc (e-write3 'movl vect-val (e-cvt g-loc)))
+	       (if g-cc then (d-handlecc))
+	  else (setq temp (cadr (assq type '((byte movb)
+					     (word movw)
+					     (long movl)))))
+	       (e-write3 temp
+			 vect-val
+			 (concat "(" vect-addr ")" "[" index-addr "]"))
+	       (if g-loc
+		   then (if (eq type 'byte)
+			    then ; all bytes values are within the fixnum
+				 ; range, we convert them to immediate
+				 ; fixum with ease.
+				 (e-write4 'ashl '$2 'r5 'r5)
+				 (e-write3 'movab "5120(r5)" (e-cvt g-loc))
+			    else ; must convert the hard way
+				 (e-write2 'jsb "_qnewint")
+				 (d-clearreg)
+				 (if (not (eq g-loc 'reg))
+				     then (d-move 'reg g-loc)))
+			; result is always non nil
+			(if (car g-cc) then (e-goto (car g-cc)))
+		elseif (car g-cc) then (e-goto (car g-cc))))
+      (d-vectorindexcode)))
+d150 70
+d227 4
+d232 162
+a393 102
+      ; if the index is simple then we can just compute the vector
+      ; location into r0
+      (makecomment `(doing vec ref type ,type))
+      (if (fixp index)
+	 then (if (<& index 0)
+		 then (comp-err "vector index less than 0 " v-form))
+	      (setq needlowcheck nil))
+      
+      (if (setq index-addr (d-simple index))
+	 then (let ((g-loc 'reg) g-cc g-ret)
+		 (d-exp vect))
+	      (setq vect-addr 'r0)	; the vector op is in r0
+	      ; we really want the cdr of index (the actual number).
+	      ; if we can do that simply, great.  otherwise we
+	      ; bring the index into r5 and then do the cdr ourselves
+	      (if (setq temp (d-simple `(cdr ,index)))
+		 then (d-move temp 'r5)
+		 else (d-move index-addr 'r5)
+		      (e-write3 'movl '"(r5)" 'r5))
+	      (setq index-addr 'r5)
+	 else ; the index isn't computable simply, so we must
+	      ; stack the vector location to keep it safe
+	      (let ((g-loc 'stack) g-cc g-ret)
+		 (d-exp vect))
+	      (push nil g-locs)
+	      (incr g-loccnt)
+	      ; compute index's value into r5
+	      (d-fixnumexp index)
+	      ; now put vector address into r0
+	      (d-move 'unstack 'r0)
+	      (decr g-loccnt)
+	      (pop g-locs)
+	      (setq vect-addr 'r0  index-addr 'r5)
+	      ; must be sure that the cc's reflect the value of r5
+	      (e-write2 'tstl 'r5))
+      ;; at this point, vect-addr (always r0) contains the location of
+      ;; the start of the vector,  index-addr (always r5) contains
+      ;; the index value.  the condition codes reflect the value of
+      ;; the index
+      ;; First we insure that the index is non negative
+      ;; test must use a jmp in case the object file is large
+      (if needlowcheck
+	 then (e-write2 'jgeq "1f")
+	      (e-write2 'jmp 'vecindexerr)
+	      (e-label 1))
+      ;; now, we compare against the size of the vector
+      ;; the size of the vector is in bytes, we may want to shift this
+      ;; to reflect the size in words or longwords, depending on the
+      ;; type of reference
+      (if (eq type 'byte)
+	 then ; can compare right away
+	      (e-write3 'cmpl index-addr (concat "-8(" vect-addr ")"))
+	 else ; shift size into r4
+	      (setq size (if (eq type 'word) then 1 else 2))
+	      (e-write4 'ashl
+			(concat '$- size)
+			(concat "-8(" vect-addr ")")
+			'r4)
+	      (d-clearreg 'r4)
+	      (e-write3 'cmpl index-addr 'r4))
+      ;; size is the number of objects, the index is 0 based so
+      ;; it must be less than the vector size
+      (e-write2 'jlss "1f")
+      (e-write2 'jmp 'vecindexerr)
+      (e-label 1)
+      ;; if we get here then the access is in bounds
+      (if g-loc
+	 then ; we care about the value.
+	      ; if the value is one of the fixnum types, then we
+	      ; move the value to r5 so it can be fixnum converted
+	      (if (eq type 'lisp)
+		 then (e-write3 'movl
+				(concat "(" vect-addr ")"
+					"[" index-addr "]")
+				(e-cvt g-loc))
+		      (if g-cc then (d-handlecc))
+		 else (setq temp (cadr (assq type '((byte cvtbl)
+						    (word cvtwl)
+						    (long movl)))))
+		      (e-write3 temp
+				(concat "(" vect-addr ")"
+					"[" index-addr "]")
+			        'r5)
+		      (if (eq type 'byte)
+			 then ; all bytes values are within the fixnum
+			      ; range, we convert them to immediate
+			      ; fixum with ease.
+			      (e-write4 'ashl '$2 'r5 'r5)
+			      (e-write3 'movab "5120(r5)" (e-cvt g-loc))
+			 else ; must convert the hard way
+			      (e-write2 'jsb "_qnewint")
+			      (d-clearreg)
+			      (if (not (eq g-loc 'reg))
+				 then (d-move 'reg g-loc)))
+		      ; result is always non nil
+		      (if (car g-cc) then (e-goto (car g-cc))))
+       elseif g-cc
+	    ; we dont care about the value, just whether it nil
+	    then (if (eq type 'lisp)
+		    then (e-write2 'tstl
+				   (concat "(" vect-addr ")"
+					   "[" index-addr "]"))
+d397 1
+a397 1
+      (d-vectorindexcode)))
+d399 2
+a400 3
+
+;--- d-vectorindexcode :: put out code to call the vector of range error
+; at this point the vector is in r0, the index an immediate fixnum in r5
+d409 3
+a412 2
+	      (e-write2 'jsb '_qnewint)
+	      (d-move 'reg 'stack)
+d446 2
+a447 2
+      (d-exp form))
+   ; get size into r5 for fixnum boxing
+d449 8
+a456 3
+      then (e-write3 'movl "-8(r0)" "r5")
+      else (e-write4 'ashl (concat '$- shift) "-8(r0)" "r5"))
+   (e-write2 'jsb '_qnewint))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+(Liszt-file vector "$Header: $")
+d68 4
+d105 1
+a105 2
+      ; the index value, and vect-val (r1) contains the location of the
+      ; value to store.
+d142 2
+a143 2
+	  else (setq temp (cadr (assq type '((byte cvtbl)
+					     (word cvtwl)
+d146 2
+a147 3
+			 (concat "(" vect-addr ")" "[" index-addr "]")
+			 'r5)
+	       (e-write3 'movl vect-val 'r5)
+@

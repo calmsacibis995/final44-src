@@ -1,0 +1,94 @@
+Return-Path: <chris@maryland>
+Date: Mon, 30 Jul 84 16:15:44 edt
+From: chris@maryland (Chris Torek)
+Subject: kernel bug involving sigpause and signals that are ignored by default
+Index: sys/kern_sig.c 4.2BSD Fix
+
+Description:
+	sigpause never returns from signals that are ignored by
+	default when they are left at their default actions.
+
+Repeat-By:
+	#include <signal.h>
+	main () {
+		sigblock (1 << (SIGTSTP - 1));
+		kill (0, SIGTSTP);	/* pending ^Z now */
+		sigpause (0);		/* take the ^Z *
+		printf ("it worked!\n");/* should get here after the
+					   ^Z takes effect, but doesn't
+					   happen that way */
+		exit (0);
+	}
+
+Fix:
+	I *think* that simply changing issig() and psig() to
+	cooperatively ignore SIGCONT, SIGCHLD, SIGURG, and SIGIO,
+	such that sleep() in kern_synch.c will do the longjmp()
+	exit, will work.  I suppose for efficiency, something like
+
+/* deep in the heart of issig(), after a case SIG_DFL */
+			case SIGCONT:
+			case SIGCHLD:
+			case SIGURG:
+			case SIGIO:
+				if (p->p_flags & SOMASK)
+					goto send;
+				/*
+				 * These signals are normally not
+				 * sent if the action is the default.
+				 */
+				continue;		/* == ignore */
+
+/*---*/
+
+/* in psig(), if action == SIG_DFL, before doing the switch (sig) (or
+   inside the switch) check for SIGCONT et al., and... */
+		if (!(p->p_flag & SOMASK))
+			panic("psig SOMASK");
+		p->p_cursig = 0;
+		p->p_sigmask = u.u_oldmask;
+		p->p_cursig = 0;
+		return;
+
+/*---*/
+	the above should work.  It might be cleaner, however, to have
+	psig handle ALL cases of SIGCONT et al.  But who cares anyway.
+
+Chris
+
+========================================================================
+From casey@vangogh.Berkeley.EDU Wed Apr 29 22:28:08 1987
+Date: Wed, 29 Apr 87 22:28:05 PDT
+From: casey@vangogh.berkeley.edu (Casey Leedom)
+Subject: Re:  another sig bug (~bugs/4.2BSD/sys/124)
+
+> From: Chris Torek
+> Description:
+>	sigpause never returns from signals that are ignored by default when
+>	they are left at their default actions.
+
+> SIGPAUSE(2)
+>     Sigpause assigns sigmask to the set of masked signals and
+>     then waits for a signal to arrive ...
+
+> SIGVEC(2)
+>     Signals marked with @ (see manual page) are discarded if
+>     the action is SIG_DFL ...
+
+  I think it's a question of interpreting the manual pages.  I would say that
+4.3's current behavior is consistent with the manual pages.  The sigpause page
+states that sigpause will return after a signal has been delivered.  The
+sigvec page states that the signals Chris is concerned with aren't delivered
+...
+
+  Now, as to whether this is what is handiest to have happen, that's another
+point enirely.  If you would, why don't you send my letter here back to Chris
+and ask him to come up with an example justifying changing this behavior as he
+suggests.  One of my biggest concerns is that SIGIO, for example, which is
+normally totally transparent if an application ignores it would suddenly start
+affecting such applications.  My feeling is that it would muddy the current
+semantics, but I'm willing to be convinced.  You might also send a copy of
+this to Mike for his comment.
+
+Casey.
+

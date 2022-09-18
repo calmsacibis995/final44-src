@@ -1,0 +1,108 @@
+From donn@cs.utah.edu  Tue Nov 17 19:32:59 1987
+Date: Tue, 17 Nov 87 20:28:34 MST
+From: donn@cs.utah.edu (Donn Seeley)
+Subject: published arp entries can misrepresent trailer preference +fix
+Index: sys/netinet/if_ether.c 4.3BSD
+
+Description:
+	When replying for a published ARP table entry, 4.3 BSD will
+	send a reply advertising trailers if the local machine's
+	interface is set up for trailers, regardless of the preferences
+	of the machine described by the ARP table entry.  (It's also
+	the case that 4.3 BSD ignores trailer preference when
+	installing published ARP table entries but I see Keith has
+	beaten me and fixed this one already...)
+
+Repeat-By:
+	We have a Cisco 68000 box that gateways between our local net
+	and the ARPAnet.  Since it's not a VAX and doesn't even run
+	Unix, it doesn't grok trailers.  Someone thought it would be a
+	good idea to publish the gateway's address on a VAX (I'm not
+	sure why, since the gateway can answer ARP requests perfectly
+	well itself).  The VAX of course likes trailers.  The result
+	was that all of the VAXen except the one that had the published
+	entry were effectively cut off from the gateway and the hosts
+	beyond it.  Examination of the other VAXen showed that they had
+	ARP table entries for the Cisco box that indicated that it
+	liked trailers.
+
+	To play this game yourself, find a host that doesn't understand
+	trailer packets and is on the same network as a VAX running
+	4.3.  Enable trailers on the VAX's interface with ifconfig, if
+	you haven't done so already, and publish the nonVAX's Ethernet
+	address with 'arp -s'.  Telnet from the nonVAX to the VAX and
+	cat /etc/termcap.  Your session will hang promptly...
+
+Fix:
+	This diff is based on the 7.1.1.1 sccs-id of if_ether.c (no, we
+	don't run the straight code either).  I tested the fix in our
+	hacked if_ether.c and it worked.  As a freebie I will toss in
+	the fix for letting 'arp -s' set trailers, in case someone
+	outside Berkeley wants it.
+
+	*** /tmp/,RCSt1009308	Tue Nov 17 19:52:21 1987
+	--- if_ether.c	Tue Nov 17 19:52:14 1987
+	***************
+	*** 271,276 ****
+	--- 271,277 ----
+		struct sockaddr sa;
+		struct in_addr isaddr, itaddr, myaddr;
+		int proto, op, s;
+	+ 	int usetrailers;
+	  
+		myaddr = ac->ac_ipaddr;
+		ea = mtod(m, struct ether_arp *);
+	***************
+	*** 347,352 ****
+	--- 348,354 ----
+			    sizeof(ea->arp_sha));
+			bcopy((caddr_t)ac->ac_enaddr, (caddr_t)ea->arp_sha,
+			    sizeof(ea->arp_sha));
+	+ 		usetrailers = (ac->ac_if.if_flags & IFF_NOTRAILERS) == 0;
+		} else {
+			ARPTAB_LOOK(at, itaddr.s_addr);
+			if (at == NULL || (at->at_flags & ATF_PUBL) == 0)
+	***************
+	*** 355,360 ****
+	--- 357,363 ----
+			    sizeof(ea->arp_sha));
+			bcopy((caddr_t)at->at_enaddr, (caddr_t)ea->arp_sha,
+			    sizeof(ea->arp_sha));
+	+ 		usetrailers = at->at_flags & ATF_USETRAILERS;
+		}
+	  
+		bcopy((caddr_t)ea->arp_spa, (caddr_t)ea->arp_tpa,
+	***************
+	*** 371,378 ****
+		 */
+		if (op == ARPOP_REPLY)
+			ea->arp_pro = htons(ETHERTYPE_IPTRAILERS);
+	! 	else if (proto == ETHERTYPE_IP &&
+	! 	    (ac->ac_if.if_flags & IFF_NOTRAILERS) == 0)
+			mcopy = m_copy(m, 0, (int)M_COPYALL);
+		eh = (struct ether_header *)sa.sa_data;
+		bcopy((caddr_t)ea->arp_tha, (caddr_t)eh->ether_dhost,
+	--- 374,380 ----
+		 */
+		if (op == ARPOP_REPLY)
+			ea->arp_pro = htons(ETHERTYPE_IPTRAILERS);
+	! 	else if (proto == ETHERTYPE_IP && usetrailers)
+			mcopy = m_copy(m, 0, (int)M_COPYALL);
+		eh = (struct ether_header *)sa.sa_data;
+		bcopy((caddr_t)ea->arp_tha, (caddr_t)eh->ether_dhost,
+	***************
+	*** 495,501 ****
+			bcopy((caddr_t)ar->arp_ha.sa_data, (caddr_t)at->at_enaddr,
+			    sizeof(at->at_enaddr));
+			at->at_flags = ATF_COM | ATF_INUSE |
+	! 			(ar->arp_flags & (ATF_PERM|ATF_PUBL));
+			at->at_timer = 0;
+			break;
+	  
+	--- 497,503 ----
+			bcopy((caddr_t)ar->arp_ha.sa_data, (caddr_t)at->at_enaddr,
+			    sizeof(at->at_enaddr));
+			at->at_flags = ATF_COM | ATF_INUSE |
+	! 			(ar->arp_flags & (ATF_PERM|ATF_PUBL|ATF_USETRAILERS));
+			at->at_timer = 0;
+			break;

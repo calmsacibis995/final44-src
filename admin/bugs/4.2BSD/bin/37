@@ -1,0 +1,106 @@
+Return-Path: <sutton@daemon>
+From: Carl Sutton <sutton%daemon%tektronix.csnet@csnet-relay.arpa>
+Date: Tuesday, 22 Jan 85 14:10:36 PST
+Subject: ld sometimes produces a bad symbol table
+Index:	bin/ld.c 4.2BSD
+
+Description:
+
+If the loader (ld) is given an object file as argument with zero length
+data *and* text sections, then the symbol table and the string table
+will be written out incorrectly.
+ 
+The loader, in the name of efficiency, detects input files without data
+and text regions early in the first pass.  A file name symbol is added
+by the loader on the second pass.  Since the symbol table allocation
+necessary for local symbols is calculated on the first pass, the file
+name symbol did not have space allocated for it in the symbol table.
+Thus, the symbol table overruns its area in the output file and screws
+up a couple of the string table entries.  The string table size (stored
+at the beginning of the string table) and the first string table entry
+are typically over written.  
+
+Repeat-By:
+
+	#
+	# Create a file that produces no text and no data
+	#
+	# Example:
+	#
+	[1]% cat test.c
+	#define yes 1
+	struct nobody {
+		char however;
+		};
+	#
+	# Create a second file with data and/or text
+	# (just to make the problem easier to see)
+	#
+	# Example:
+	#
+	[2]% cat test1.c
+	static char *RCSid = "$Header";
+	#
+	# Compile the files without loading
+	#
+	[3]% cc -c -O test.c test1.c
+	test.c:
+	test1.c:
+	[4]% nm test.o
+	nm: test.o: no name list
+	[5]% nm test1.o
+	00000000 d _RCSid
+	#
+	# With the old loader
+	#
+	[6]% ld -r -M -o tout.o test.o test1.o
+	test.o
+	test1.o
+	[7]% nm tout.o
+	00000000 t 
+	00000000 t 
+	#
+	# Now, with the fixed loader
+	#
+	[8]% /bin/ld -r -M -o tout1.o test.o test1.o
+	test.o
+	test1.o
+	[9]% nm tout1.o
+	00000000 d _RCSid
+	00000000 t test.o
+	00000000 t test1.o
+
+
+Fix:
+      Simply increment the symbol table allocation size when zero length data
+      and text sections are detected.  See routine load1().
+
+RCS file: RCS/ld.c,v
+retrieving revision 1.2
+retrieving revision 1.3
+diff  -r1.2 -r1.3
+2c2
+< static char *RCSid = "$Header: ld.c,v 1.2 84/12/11 17:03:26 sutton Exp $";
+---
+> static char *RCSid = "$Header: ld.c,v 1.3 85/01/21 14:22:14 sutton Exp $";
+10a11,15
+>  * Revision 1.3  85/01/21  14:22:14  sutton
+>  * Fixed bug in load1() that did not allocate space
+>  * for a file name symbol if filhdr.a_text and filhdr.a_data
+>  * both equaled zero.
+>  * 
+796c801,810
+< 		if (filhdr.a_text+filhdr.a_data == 0)
+---
+> 		if (filhdr.a_text+filhdr.a_data == 0) {
+> 			/*
+> 			 * ssize must be incremented here.
+> 			 * On the second pass, the loader
+> 			 * inserts a symbol in the symbol
+> 			 * table for each object file whether
+> 			 * the file contributes to the final
+> 			 * object or not.
+> 			 */
+> 			ssize += sizeof(cursym);
+797a812
+> 			}

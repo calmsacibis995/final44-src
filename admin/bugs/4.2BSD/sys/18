@@ -1,0 +1,133 @@
+Return-Path: <sdcsvax!sdccsu3!madden@Nosc>
+Date: 7 Nov 1983 10:57:43-PST
+From: sdcsvax!sdccsu3!madden@Nosc
+Date: Mon, 7 Nov 83 00:06:34 pst
+Subject: 4.2 UNIX domain IPC machine hang
+
+Index:	sys/uipc_socket.c 4.2BSD
+
+Description: Under 4.2 BSD, termination of a program which has
+invoked a listen on a UNIX domain socket will cause an interminable
+loop at net interrupt level if there are pending connections which
+have not yet been accepted.
+	
+Repeat-By: Run program A below in the background.  Run program B
+twice.  Kill program A.  The result should be a system hang at
+net interrupt level.
+	
+Fix: In soclose of sys/uipc_socket.c, a pair of while loops assume
+that the procedure soabort will clean up the pending connection
+data structures in such a way that the while loop will step through
+all the pending cases.  In point of fact, soabort contains no code to
+do this, so the while loop repeatedly tries to abort the same pending
+connection.  A straight forward solution is to call sofree within the for
+loops themselves after calling soabort.  A context diff of this change
+follows:
+
+*** /tmp/,RCSt1026683	Mon Nov  7 00:02:38 1983
+--- uipc_socket.c	Sun Nov  6 23:36:28 1983
+***************
+*** 142,148
+  	int error;
+  
+  	if (so->so_options & SO_ACCEPTCONN) {
+! 		while (so->so_q0 != so)
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+  			(void) soabort(so->so_q);
+
+--- 151,157 -----
+  	int error;
+  
+  	if (so->so_options & SO_ACCEPTCONN) {
+! 		while (so->so_q0 != so) {
+  			(void) soabort(so->so_q0);
+  			/*
+  			 * Somebody has to delink and free pending
+***************
+*** 144,150
+  	if (so->so_options & SO_ACCEPTCONN) {
+  		while (so->so_q0 != so)
+  			(void) soabort(so->so_q0);
+! 		while (so->so_q != so)
+  			(void) soabort(so->so_q);
+  	}
+  	if (so->so_pcb == 0)
+
+--- 153,166 -----
+  	if (so->so_options & SO_ACCEPTCONN) {
+  		while (so->so_q0 != so) {
+  			(void) soabort(so->so_q0);
+! 			/*
+! 			 * Somebody has to delink and free pending
+! 			 * connections.  This may not be the right place
+! 			 * but it works.
+! 			 */
+! 			sofree(so->so_q0);
+! 		}
+! 		while (so->so_q != so) {
+  			(void) soabort(so->so_q);
+  			sofree(so->so_q);
+  		}
+***************
+*** 146,151
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+  			(void) soabort(so->so_q);
+  	}
+  	if (so->so_pcb == 0)
+  		goto discard;
+
+--- 162,169 -----
+  		}
+  		while (so->so_q != so) {
+  			(void) soabort(so->so_q);
++ 			sofree(so->so_q);
++ 		}
+  	}
+  	if (so->so_pcb == 0)
+  		goto discard;
+
+
+
+
+Program A:
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+struct	sockaddr_un sun;
+
+main(argc, argv)
+	char *argv[];
+{
+	int s;
+
+	s = socket(AF_UNIX, SOCK_STREAM, 0);
+	sun.sun_family = AF_UNIX;
+	strcpy(sun.sun_path, "SOCK");
+	bind(s, &sun, 6);
+	listen(s, 2);
+	sleep(10000);
+}
+
+Progam B:
+
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+struct	sockaddr_un sun;
+
+main(argc, argv)
+	char *argv[];
+{
+	int s;
+
+	s = socket(AF_UNIX, SOCK_STREAM, 0);
+	sun.sun_family = AF_UNIX;
+	strcpy(sun.sun_path, "SOCK");
+	connect(s, &sun, 6);
+}

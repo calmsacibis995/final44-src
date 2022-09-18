@@ -1,0 +1,65 @@
+Return-Path: <jason@ucbopal.BERKELEY>
+Date: Thu, 17 Oct 85 14:17:20 pdt
+From: jason@ucbopal.BERKELEY (Jason Venner)
+Subject: login -p option
+Index: 	bin/<login.c> 4.3BSD Beta Fix
+
+Description:
+	With the login -p option,  on check is made to see if any of
+	HOME, SHELL, TERM, USER, PATH is already set in the environment.
+	They are just reset to the defaults
+	Detailed description of the problem, suggestion, or complaint.
+Repeat-By:
+	login useing a 'standard supdup server that expects to pass the TERM
+	and TERMCAP exvironment variables through login
+Fix:
+	change the lines (in login.c)
+----
+	setenv("HOME=", pwd->pw_dir);
+	setenv("SHELL=", pwd->pw_shell);
+	if (term[0] == '\0')
+		strncpy(term, stypeof(tty), sizeof(term));
+	setenv("TERM=", term);
+	setenv("USER=", pwd->pw_name);
+	setenv("PATH=", ":/usr/ucb:/bin:/usr/bin");
+---- to ----
+	setenv("HOME=", pwd->pw_dir, pflag);
+	setenv("SHELL=", pwd->pw_shell, pflag);
+	if (term[0] == '\0')
+		strncpy(term, stypeof(tty), sizeof(term));
+	setenv("TERM=", term, pflag);
+	setenv("USER=", pwd->pw_name, pflag);
+	setenv("PATH=", ":/usr/ucb:/bin:/usr/bin", pflag);
+-----
+
+Also change the routine setenv to 
+----
+setenv(var, value, pflag)
+	char *var, *value;
+{
+	extern char **environ;
+	int index = 0;
+	int varlen = strlen(var);
+	int vallen = strlen(value);
+
+	for (index = 0; environ[index] != NULL; index++) {
+		if (strncmp(environ[index], var, varlen) == 0) {
+			/* found it */
+		  if( !pflag ) {
+			 environ[index] = malloc(varlen + vallen + 1);
+			 strcpy(environ[index], var);
+			 strcat(environ[index], value);
+			 return;
+		  }
+		}
+	}
+	environ = (char **) realloc(environ, sizeof (char *) * (index + 2));
+	if (environ == NULL) {
+		fprintf(stderr, "login: malloc out of memory\n");
+		exit(1);
+	}
+	environ[index] = malloc(varlen + vallen + 1);
+	strcpy(environ[index], var);
+	strcat(environ[index], value);
+	environ[++index] = NULL;
+}

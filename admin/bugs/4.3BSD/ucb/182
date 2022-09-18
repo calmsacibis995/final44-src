@@ -1,0 +1,70 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:01:33 1988
+Date: Mon, 18 Apr 88 13:14:54 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 ucb/mail's "Status" additions cause bogus mail notices
+#Index: ucb/sysline/sysline.c MORE/bsd 4.3
+Index: ucb/sysline/sysline.c 4.3BSD
+
+Description:
+	The /usr/ucb/mail command's habit of adding "Status: XX" lines to
+	mail mesages confuses poor /bin/sh and /usr/ucb/sysline in their
+	determinations of whether a user has new mail.  Csh is immune to
+	mail's machinations.
+
+Repeat-By:
+	Script started on Tue Mar 10 22:56:46 1987
+	$ /bin/sh
+	$ MAIL=/usr/spool/mail/ado
+	$ /usr/ucb/mail ado < /dev/null
+	No message, no subject; hope that's ok
+	$ sleep 10
+	You have new mail.
+	$ ls -l /usr/spool/mail/ado
+	-rw-------  1 ado         80965 Mar 10 22:57 /usr/spool/mail/ado
+	$ echo q | /usr/ucb/mail > /dev/null
+	You have new mail.
+	$ ls -l /usr/spool/mail/ado
+	-rw-------  1 ado         80975 Mar 10 22:57 /usr/spool/mail/ado
+	$ exit
+
+	script done on Tue Mar 10 22:58:04 1987
+
+
+	Even though the mail file grew only because /usr/ucb/mail dropped a
+	"Status" line in it, "sh" thinks there's "new" mail.
+
+	Sysline has similar problems; they're hard to show here given
+	sysline's screen-oriented nature.
+
+	(Heck, /bin/sh.4bsd and the Korn shell have problems too. . .but we
+	won't go into that here.)
+
+Fix:
+	Well. . .we do have source for sysline, so we'll rip off the (working)
+	algorithm from /bin/csh and adapt it to sysline's purposes:
+
+mailseen()
+{
+	FILE *mfd;
+	register n;
+	register char *cp;
+	char lbuf[100], sendbuf[100], *bufend;
+	char seenspace;
+	int retval = 0;
+
+	if (stat(username, &mstbuf) < 0) {
+		mailsize = 0;
+		return 0;
+	}
+#ifdef ASWAS
+	if (mstbuf.st_size <= mailsize || (mfd = fopen(username,"r")) == NULL) {
+#else /* !ASWAS */
+	if (mstbuf.st_size <= mailsize ||
+	    mstbuf.st_atime > mstbuf.st_ctime ||
+	    (mfd = fopen(username, "r")) == NULL) {
+#endif /* !ASWAS */
+		mailsize = mstbuf.st_size;
+		return 0;
+	}
+...
+

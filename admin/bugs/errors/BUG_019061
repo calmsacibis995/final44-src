@@ -1,0 +1,77 @@
+From @yonge.csri.toronto.edu:mark@dino.alias.com  Wed Nov  4 09:46:08 1992
+Received: from hofmann.CS.Berkeley.EDU by vangogh.CS.Berkeley.EDU (5.113/2.7) id AA19057; Wed, 4 Nov 92 09:46:08 -0800
+Received: from yonge.csri.toronto.edu by hofmann.CS.Berkeley.EDU (5.115/2.8) id AA15134; Wed, 4 Nov 1992 09:46:12 -0800
+Received: from alias by yonge.csri.toronto.edu with UUCP id <14417>; Wed, 4 Nov 1992 12:45:57 -0500
+Received: from dino.alias.com by barney.alias.com with SMTP id AA19981
+	(5.65a/IDA-1.4.2 for cs.berkeley.edu!4bsd-bugs); Wed, 4 Nov 92 12:41:47 -0500
+Received: by dino.alias.com id AA23751
+	(5.65a/IDA-1.4.2 for cs.berkeley.edu!4bsd-bugs@utcsri.UUCP); Wed, 4 Nov 92 12:42:33 -0500
+Date: 	Wed, 4 Nov 1992 12:42:33 -0500
+From: mandrews@alias.com (Mark Andrews)
+Message-Id: <9211041742.AA23751@dino.alias.com>
+To: 4bsd-bugs@cs.berkeley.edu
+Subject: Fixes to sys/netinet/raw_ip.c
+Cc: mandrews@alias.com
+
+This problem appears in both the 4.3reno and Net/2 releases. Chances are it
+was fixed eons ago.
+
+There seems to be a parameter mismatch with the function rip_usrreq()
+in sys/netinet/raw_ip.c. All protocol dependent usrreq routines are
+called with 5 parameters. For example, from sys/net/if.c:
+
+	return ((*so->so_proto->pr_usrreq)(so, PRU_CONTROL, cmd, data, ifp));
+
+but rip_usrreq() expects 6 parameters:
+
+	rip_usrreq(so, req, m, nam, rights, control)
+
+As pointed out by Julian Elischer (julian@tfs.com) in message
+<1992Nov3.071934.25466@tfs.com> in comp.unix.bsd, the rights parameter seems
+to be extraneous. Julian's patch fixed this problem but missed the line
+where raw_usrreq() is called with one too many parameters (the extra paramter
+is `rights') from within rip_usrreq(). Here is the patch that fixes both
+problems and matches the parameters correctly:
+
+*** /tmp/,RCSt1a23496	Wed Nov  4 12:25:45 1992
+--- raw_ip.c	Wed Nov  4 12:21:45 1992
+***************
+*** 189,198 ****
+  }
+  
+  /*ARGSUSED*/
+! rip_usrreq(so, req, m, nam, rights, control)
+  	register struct socket *so;
+  	int req;
+! 	struct mbuf *m, *nam, *rights, *control;
+  {
+  	register int error = 0;
+  	register struct raw_inpcb *rp = sotorawinpcb(so);
+--- 189,198 ----
+  }
+  
+  /*ARGSUSED*/
+! rip_usrreq(so, req, m, nam, control)
+  	register struct socket *so;
+  	int req;
+! 	struct mbuf *m, *nam, *control;
+  {
+  	register int error = 0;
+  	register struct raw_inpcb *rp = sotorawinpcb(so);
+***************
+*** 253,259 ****
+  		return (0);
+  	    }
+  	}
+! 	error =  raw_usrreq(so, req, m, nam, rights, control);
+  
+  	if (error && (req == PRU_ATTACH) && so->so_pcb)
+  		free(so->so_pcb, M_PCB);
+--- 253,259 ----
+  		return (0);
+  	    }
+  	}
+! 	error =  raw_usrreq(so, req, m, nam, control);
+  
+  	if (error && (req == PRU_ATTACH) && so->so_pcb)
+  		free(so->so_pcb, M_PCB);

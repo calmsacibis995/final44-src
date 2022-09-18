@@ -1,0 +1,484 @@
+From jam@radc-lonex.arpa  Fri Jan 22 06:57:24 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.58/1.26)
+	id AA19674; Fri, 22 Jan 88 06:57:24 PST
+Received: from RADC-LONEX.ARPA by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA01637; Fri, 22 Jan 88 06:56:54 PST
+Received: by radc-lonex.arpa (5.54/1.14)
+	id AA10749; Fri, 22 Jan 88 09:55:42 EST
+Date: Fri, 22 Jan 88 09:55:42 EST
+From: jam@radc-lonex.arpa
+Message-Id: <8801221455.AA10749@radc-lonex.arpa>
+Subject: Make and archived modules
+Index: 	bin/make/{doname.c,files.c} 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Although 'make' advertises support for finding modules and entry
+	point symbols in archives, it doesn't function.  A look at the source
+	reveals that it can't possibly work as is.  The problem is twofold,
+	there is improper handling of the ar_name field in the ar_hdr
+	structure (#include <ar.h>) so that file name comparisons would
+	never work, and the handling of the symbol table (#include <a.out.h>)
+	is inconsistent with the structure of executables under 4.2/4.3BSD.
+
+Repeat-By:
+	try to have 'make' perform something along the lines of
+
+		"all:	libx.a(test.o)"
+	
+	where you have 'test.c' in the directory.
+
+Fix:
+	Since this portion of the program is obviously showing its age,
+	some modification is necessary.  Primarly the 'files.c' module
+	has been modified to search archives correctly and store the
+	archive name and module name in global character arrays.  The
+	code which scans for entry point symbols has been moved out of
+	'lookarch()' and into 'getobj()' where it is more appropriate.
+	Additionally a rule has been added (.c.a) which describes how
+	to remake a .o in an archive.
+
+	The current release seems to demand that the archive exists,
+	and that the module is found in it.  This is questionable as
+	something must create the archive in the first place.  The 
+	change to files.c does not demand that the archive or the
+	modlue exist, if it doesn't a 0L value is returned as if a
+	.o file wasn't in place.  The new rule will see to the creation
+	of the archive, and the placement of the file.
+
+	The 'doname.c' module has been adjusted to handle the implicit
+	search against archived modules.  The search takes place with
+	the module name, and then the .c.a rule is applied.
+
+	Some of the technique was borrowed from a version of make released
+	under 2.9BSD, though the modules are sufficiently different to make
+	a direct borrow insufficient.
+
+	No previous action of make is affected by this change.
+
+	The following two sections contain the diffs to doname.c and
+	files.c respectivly.
+
+
+*** diff -c of doname.c ***
+
+*** /usr/src/bin/make/doname.c	Wed Sep 18 22:21:10 1985
+--- doname.c	Fri Jan 22 09:13:07 1988
+***************
+*** 12,18 ****
+  p->done = 3   file make failed
+  */
+  
+! extern char *sys_siglist[];
+  
+  doname(p, reclevel, tval)
+  register struct nameblock *p;
+--- 12,18 ----
+  p->done = 3   file make failed
+  */
+  
+! extern char *sys_siglist[], arfile[], arfname[];
+  
+  doname(p, reclevel, tval)
+  register struct nameblock *p;
+***************
+*** 30,36 ****
+  register struct lineblock *lp;
+  struct lineblock *lp1, *lp2;
+  char sourcename[BUFSIZ], prefix[BUFSIZ], temp[BUFSIZ], concsuff[20];
+! char *pnamep, *p1namep, *cp;
+  char *mkqlist();
+  struct chain *qchain, *appendq();
+  
+--- 30,36 ----
+  register struct lineblock *lp;
+  struct lineblock *lp1, *lp2;
+  char sourcename[BUFSIZ], prefix[BUFSIZ], temp[BUFSIZ], concsuff[20];
+! char *pnamep, *p1namep, *cp, *savenamep = NULL;
+  char *mkqlist();
+  struct chain *qchain, *appendq();
+  
+***************
+*** 120,125 ****
+--- 120,130 ----
+  
+  /* Look for implicit dependents, using suffix rules */
+  
++ if (index(p->namep, '(')) {
++ 	savenamep = p->namep;
++ 	p->namep = arfname;
++ }
++ 
+  for(lp = sufflist ; lp ; lp = lp->nxtlineblock)
+      for(suffp = lp->depp ; suffp ; suffp = suffp->nxtdepblock)
+  	{
+***************
+*** 126,132 ****
+  	pnamep = suffp->depname->namep;
+  	if(suffix(p->namep , pnamep , prefix))
+  		{
+! 
+  		srchdir( concat(prefix,"*",temp) , NO, (struct depblock *) NULL);
+  		for(lp1 = sufflist ; lp1 ; lp1 = lp1->nxtlineblock)
+  		    for(suffp1=lp1->depp ; suffp1 ; suffp1 = suffp1->nxtdepblock)
+--- 131,138 ----
+  	pnamep = suffp->depname->namep;
+  	if(suffix(p->namep , pnamep , prefix))
+  		{
+! 		if (savenamep)
+! 			pnamep = ".a";
+  		srchdir( concat(prefix,"*",temp) , NO, (struct depblock *) NULL);
+  		for(lp1 = sufflist ; lp1 ; lp1 = lp1->nxtlineblock)
+  		    for(suffp1=lp1->depp ; suffp1 ; suffp1 = suffp1->nxtdepblock)
+***************
+*** 156,167 ****
+  	}
+  
+  endloop:
+  
+  
+  if(errstat==0 && (ptime<tdep || (ptime==0 && tdep==0) ) )
+  	{
+  	ptime = (tdep>0 ? tdep : prestime() );
+! 	setvar("@", p->namep);
+  	setvar("?", mkqlist(qchain) );
+  	if(explcom)
+  		errstat += docom(explcom);
+--- 162,175 ----
+  	}
+  
+  endloop:
++ 	if (savenamep)
++ 		p->namep = savenamep;
+  
+  
+  if(errstat==0 && (ptime<tdep || (ptime==0 && tdep==0) ) )
+  	{
+  	ptime = (tdep>0 ? tdep : prestime() );
+! 	setvar("@", savenamep ? arfile : p->namep);
+  	setvar("?", mkqlist(qchain) );
+  	if(explcom)
+  		errstat += docom(explcom);
+
+
+*** diff -c of files.c ***
+
+*** /usr/src/bin/make/files.c	Sat Jan 11 14:46:47 1986
+--- files.c	Fri Jan 22 09:07:56 1988
+***************
+*** 9,17 ****
+  char *builtin[] =
+  	{
+  #ifdef pwb
+! 	".SUFFIXES : .L .out .o .c .f .e .r .y .yr .ye .l .s .z .x .t .h .cl",
+  #else
+! 	".SUFFIXES : .out .o .c .F .f .e .r .y .yr .ye .l .s .cl .p",
+  #endif
+  	"YACC=yacc",
+  	"YACCR=yacc -r",
+--- 9,17 ----
+  char *builtin[] =
+  	{
+  #ifdef pwb
+! 	".SUFFIXES : .L .out .a .o .c .f .e .r .y .yr .ye .l .s .z .x .t .h .cl",
+  #else
+! 	".SUFFIXES : .out .a .o .c .F .f .e .r .y .yr .ye .l .s .cl .p",
+  #endif
+  	"YACC=yacc",
+  	"YACCR=yacc -r",
+***************
+*** 41,46 ****
+--- 41,51 ----
+  	"CMFLAGS=",
+  #endif
+  
++ 	".c.a :",
++ 	"\t$(CC) $(CFLAGS) -c $<",
++ 	"\tar r $@ $*.o",
++ 	"\trm -f $*.o", 
++ 
+  	".c.o :",
+  	"\t$(CC) $(CFLAGS) -c $<",
+  
+***************
+*** 404,425 ****
+  #endif
+  #include <a.out.h>
+  
+  static long arflen;
+  static long arfdate;
+! static char arfname[16];
+  FILE *arfd;
+  long int arpos, arlen;
+  
+- static struct exec objhead;
+  
+- static struct nlist objentry;
+- 
+- 
+  TIMETYPE lookarch(filename)
+  char *filename;
+  {
+  char *p, *q, *send, s[MAXNAMLEN + 1];
+! int i, nc, nsym, objarch;
+  
+  for(p = filename; *p!= '(' ; ++p)
+  	;
+--- 409,428 ----
+  #endif
+  #include <a.out.h>
+  
++ struct ar_hdr arhead;
+  static long arflen;
+  static long arfdate;
+! char arfile[MAXPATHLEN];
+! char arfname[sizeof(arhead.ar_name)];
+  FILE *arfd;
+  long int arpos, arlen;
+  
+  
+  TIMETYPE lookarch(filename)
+  char *filename;
+  {
+  char *p, *q, *send, s[MAXNAMLEN + 1];
+! int nc, objarch;
+  
+  for(p = filename; *p!= '(' ; ++p)
+  	;
+***************
+*** 430,469 ****
+  if(*p == '(')
+  	{
+  	objarch = YES;
+- 	nc = 8;
+  	++p;
+  	}
+  else
+  	{
+  	objarch = NO;
+! 	nc = MAXNAMLEN;
+  	}
+  send = s + nc;
+  
+  for( q = s ; q<send && *p!='\0' && *p!=')' ; *q++ = *p++ )
+  	;
+! while(q < send)
+! 	*q++ = '\0';
+  while(getarch())
+  	{
+  	if(objarch)
+  		{
+! 		getobj();
+! 		nsym = objhead.a_syms / sizeof(objentry);
+! 		for(i = 0; i<nsym ; ++i)
+  			{
+! 			fread( (char *) &objentry, sizeof(objentry),1,arfd);
+! 			if( (objentry.n_type & N_EXT)
+! 			   && ((objentry.n_type & ~N_EXT) || objentry.n_value)
+! 			   && eqstr(objentry.n_un.n_name,s,nc))
+! 				{
+! 				clarch();
+! 				return(arfdate);
+! 				}
+  			}
+  		}
+  
+! 	else if( eqstr(arfname, s, nc))
+  		{
+  		clarch();
+  		return(arfdate);
+--- 433,467 ----
+  if(*p == '(')
+  	{
+  	objarch = YES;
+  	++p;
++ #ifdef pdp
++ 	nc = 8;
++ #else
++ 	nc = (int)index(p, ')') - (int)p;
++ #endif
+  	}
+  else
+  	{
+  	objarch = NO;
+! 	nc = sizeof(arfname);
+  	}
+  send = s + nc;
+  
+  for( q = s ; q<send && *p!='\0' && *p!=')' ; *q++ = *p++ )
+  	;
+! *q++ = '\0';
+  while(getarch())
+  	{
+  	if(objarch)
+  		{
+! 		if(getobj(s))
+  			{
+! 			clarch();
+! 			return(arfdate);
+  			}
+  		}
+  
+! 	else if(!strcmp(arfname, s))
+  		{
+  		clarch();
+  		return(arfdate);
+***************
+*** 470,476 ****
+--- 468,477 ----
+  		}
+  	}
+  
++ 	if (objarch)
++ 	    fatal1("entry point %s not found in archive", s);
+  clarch();
++ strcpy(arfname, s);
+  return( 0L);
+  }
+  
+***************
+*** 477,483 ****
+  
+  clarch()
+  {
+! fclose( arfd );
+  }
+  
+  
+--- 478,485 ----
+  
+  clarch()
+  {
+! if(arfd)
+! 	fclose( arfd );
+  }
+  
+  
+***************
+*** 494,502 ****
+  stat(f, &buf);
+  arlen = buf.st_size;
+  
+  arfd = fopen(f, "r");
+  if(arfd == NULL)
+! 	fatal1("cannot open %s", f);
+  
+  	fread( (char *) &word, sizeof(word), 1, arfd);
+  #ifdef ASCARCH
+--- 496,505 ----
+  stat(f, &buf);
+  arlen = buf.st_size;
+  
++ strcpy(arfile, f);
+  arfd = fopen(f, "r");
+  if(arfd == NULL)
+! 	return;
+  
+  	fread( (char *) &word, sizeof(word), 1, arfd);
+  #ifdef ASCARCH
+***************
+*** 517,525 ****
+  
+  getarch()
+  {
+- 	struct ar_hdr arhead;
+  	long atol();
+  
+  arpos += (arflen + 1) & ~1L;	/* round archived file length up to even */
+  if(arpos >= arlen)
+  	return(0);
+--- 520,530 ----
+  
+  getarch()
+  {
+  	long atol();
++ 	char *cc;
+  
++ if(!arfd)
++ 	return(0);
+  arpos += (arflen + 1) & ~1L;	/* round archived file length up to even */
+  if(arpos >= arlen)
+  	return(0);
+***************
+*** 535,559 ****
+  	arfdate = arhead.ar_date;
+  #endif
+  	strncpy(arfname, arhead.ar_name, sizeof(arhead.ar_name));
+  return(1);
+  }
+  
+  
+! getobj()
+  {
+! long int skip;
+  
+  fread( (char *) &objhead, sizeof(objhead), 1, arfd);
+  if (N_BADMAG(objhead))
+! 	fatal1("%s is not an object module", arfname);
+! skip = objhead.a_text + objhead.a_data;
+! #if defined(vax) || defined(sun)
+! skip += objhead.a_trsize + objhead.a_drsize;
+! #else
+! if(! objhead.a_flag )
+! 	skip *= 2;
+! #endif
+! fseek(arfd, skip, 1);
+  }
+  
+  
+--- 540,594 ----
+  	arfdate = arhead.ar_date;
+  #endif
+  	strncpy(arfname, arhead.ar_name, sizeof(arhead.ar_name));
++ 	for (cc = arfname + sizeof(arfname) - 1; cc > arfname; --cc)
++ 		if (*cc == '\0' || *cc == ' ')
++ 			*cc = '\0';
++ 		else
++ 			break;
+  return(1);
+  }
+  
+  
+! getobj(s)
+! 	char *s;
+  {
+! char *calloc();
+! struct exec objhead;
+! struct nlist *zz;
+! long int off, ret = 0, strsize;
+! char *ss = 0;
+! int i, nsym;
+  
++ off = ftell(arfd);
+  fread( (char *) &objhead, sizeof(objhead), 1, arfd);
+  if (N_BADMAG(objhead))
+! 	return (0);
+! nsym = objhead.a_syms / sizeof(struct nlist);
+! if (nsym <= 0) return (0);
+! zz = (struct nlist *)calloc(nsym, sizeof(struct nlist));
+! if (!zz) return (0);
+! fseek(arfd, off + N_SYMOFF(objhead), 0);
+! if(fread( (char *) zz, sizeof(struct nlist), nsym, arfd) != nsym)
+! 	goto freeall;
+! fseek(arfd, off + N_STROFF(objhead), 0);
+! if (fread((char *)&strsize, sizeof(strsize), 1, arfd) != 1)
+! 	goto freeall;
+! ss = calloc(1, strsize - 4);
+! if (!ss) goto freeall;
+! if (fread(ss, strsize - 4, 1, arfd) != 1)
+! 	goto freeall;
+! for (i = 0; i < nsym; ++i)
+! 	if( (zz[i].n_type == N_EXT | N_TEXT &&
+! 		!strcmp(ss + zz[i].n_un.n_strx - 4, s)))
+! 		    {
+! 		    ret = 1;
+! 		    goto freeall;
+! 		    }
+! freeall:
+! 	if (zz) free(zz);
+! 	if (ss) free(ss);
+! 	fseek(arfd, off, 0);
+! 	return (ret);
+  }
+  
+  

@@ -1,0 +1,135 @@
+/*
+ *  $Id: krt_ifread_kinfo.c,v 1.1 1993/03/22 02:39:28 jch Exp $
+ */
+
+/* %(Copyright.header) */
+
+
+#define	INCLUDE_KINFO
+#define	INCLUDE_ROUTE
+#include "include.h"
+#ifdef	PROTO_INET
+#include "inet.h"
+#endif	/* PROTO_INET */
+#ifdef	PROTO_ISO
+#include "iso.h"
+#endif	/* PROTO_ISO */
+#include "krt.h"
+#include "krt_var.h"
+
+
+int
+krt_ifread __PF1(save_task_state, flag_t)
+{
+    size_t size;
+    int mib[6];
+    caddr_t kbuf, cp, limit;
+    struct if_msghdr *ifap;
+    if_link *ifl = (if_link *) 0;
+
+    mib[0] = CTL_NET;		/* subsystem */
+    mib[1] = PF_ROUTE;		/* protocol family */
+    mib[2] = 0;			/* protocol number */
+    mib[3] = 0;			/* routing family, zero is wildcard */
+    mib[4] = NET_RT_IFLIST;		/* routing info request type */
+    mib[5] = 0;			/* flags */
+    while (TRUE) {
+	if (sysctl(mib, 6, NULL, &size, NULL, 0) < 0) {
+	    trace(TR_ALL, LOG_ERR, "krt_ifread: route-sysctl-estimate %m");
+	    return errno;
+	}
+	if (size > task_send_buffer_len) {
+	    /* Need more memory */
+	    if (BIT_TEST(trace_flags, TR_PROTOCOL))
+		trace(TR_KRT, 0, "krt_ifread: %s estimates %d bytes needed",
+		    "sysctl(NET_RT_IFLIST)", size);
+	    task_alloc_send_now(krt_task, size);
+	}
+	if (sysctl(mib, 6, task_send_buffer, &size, NULL, 0) < 0)
+	    trace(TR_ALL, LOG_ERR,
+		"krt_ifread: interface table retrieval %m");
+	else
+	    break;
+    }
+
+    limit = kbuf + size;
+
+    /* Tell the IF code that we are passing complete knowledge */
+    if_conf_open(krt_task, TRUE);
+    
+    for (cp = kbuf; cp < limit; cp += ifap->ifm_msglen) {
+	krt_addrinfo *adip;
+	
+	ifap = (struct if_msghdr *) cp;
+
+	/* Pick out the addresses */
+	adip = krt_xaddrs((struct rt_msghdr *) ifap, ifap->ifm_msglen);
+	if (!adip) {
+	    /* Try the next message */
+	    continue;
+	}
+
+	/* Trace the message */
+	TRACE_ON(TR_KRT) {
+	    krt_trace(krt_task,
+		      "IFINFO",
+		      (struct rt_msghdr *) ifap,
+		      ifap->ifm_msglen,
+		      adip,
+		      0);
+	}
+
+	switch (ifap->ifm_type) {
+	    sockaddr_un *ap;
+
+	case RTM_IFINFO:
+	    {
+		/* New interface */
+
+		ifl = (if_link *) 0;
+
+		if (ap = adip->rti_info[RTAX_IFP]) {
+		    /* Link level info */
+		    sockaddr_un *lladdr;
+
+		    if (ap->dl.sdl_alen) {
+			lladdr = sockbuild_ll(krt_type_to_ll(ap->dl.sdl_type),
+					      (byte *) ap->dl.sdl_data + ap->dl.sdl_nlen,
+					      (size_t) ap->dl.sdl_alen);
+		    } else {
+			lladdr = (sockaddr_un *) 0;
+		    }
+
+		    ifl = ifl_addup(krt_task,
+				    ap->dl.sdl_index,
+				    krt_if_flags(ifap->ifm_flags),
+				    ifap->ifm_data.ifi_metric,
+				    ifap->ifm_data.ifi_mtu,
+				    ap->dl.sdl_data,
+				    ap->dl.sdl_nlen,
+				    lladdr);
+		}
+	    }
+	    break;
+
+	case RTM_NEWADDR:
+	    krt_ifaddr(krt_task,
+		       (struct ifa_msghdr *) ifap,
+		       adip,
+		       ifl);
+	    break;
+
+	default:
+	    trace(TR_ALL, LOG_ERR, "krt_ifread: ignoring unknown message type: %s (%d)",
+		  trace_state(rtm_type_bits, ifap->ifm_type),
+		  ifap->ifm_type);
+	    continue;
+	}
+
+	trace(TR_KRT, 0, NULL);
+    }
+
+    if_conf_close(krt_task);
+
+    return 0;
+}

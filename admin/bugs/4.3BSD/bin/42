@@ -1,0 +1,63 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Thu Dec 18 12:15:35 1986
+Date: Thu, 18 Dec 86 12:12:54 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Subject: non-interactive csh may mishandle children +FIX
+Index: bin/csh/sh.proc.c 4.3BSD
+
+Description:
+	This report is a follow-up to an earlier report wherein I stated
+	that csh could mishandle signals.  In fact, the real problem is
+	that a non-interactive csh will awaken when a child process stops
+	(e.g. because of SIGTTIN), then quickly realize it doesn't know
+	what to do next and exit.
+Repeat-By:
+	Put the following shell script into the file 'snile' and make it
+	mode 755.
+
+		#! /bin/csh -f
+		cat
+
+	Then do the following:
+
+		% snile
+		^Z
+		Stopped
+		% bg
+		[1]    snile &
+
+		[1]  + Stopped (tty input)  snile
+		% fg
+		snile
+
+		Stopped (tty input)
+		% jobs
+		% 
+
+Fix:
+	The problem is that csh waits for stopped children even when it
+	is running non-interactive.  The following simple patch cures the
+	problem.
+
+RCS file: RCS/sh.proc.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1009068	Thu Dec 18 12:12:09 1986
+--- /tmp/,RCSt2009068	Thu Dec 18 12:12:10 1986
+***************
+*** 37,43 ****
+  	struct rusage ru;
+  
+  loop:
+! 	pid = wait3(&w, (setintr ? WNOHANG|WUNTRACED:WNOHANG), &ru);
+  	if (pid <= 0) {
+  		if (errno == EINTR) {
+  			errno = 0;
+--- 37,43 ----
+  	struct rusage ru;
+  
+  loop:
+! 	pid = wait3(&w, ((setintr && intty) ? WNOHANG|WUNTRACED:WNOHANG), &ru);
+  	if (pid <= 0) {
+  		if (errno == EINTR) {
+  			errno = 0;

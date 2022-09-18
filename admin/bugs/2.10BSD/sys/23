@@ -1,0 +1,93 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Aug  4 14:55:01 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA04668; Fri, 4 Aug 89 14:55:01 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA11492; Fri, 4 Aug 89 14:54:19 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA16046; Fri, 4 Aug 89 14:54:05 -0700
+Date: Fri, 4 Aug 89 14:54:05 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8908042154.AA16046@WLV.IMSD.CONTEL.COM>
+Subject: saving more state on network crash
+Index: 	sys/pdp/mch_dump.s 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	When a network crash occurs several key pieces of information
+	(such as memory management registers) are not saved.
+
+Repeat-By:
+	You really don't want to, but if you must, then find a way
+	to force the network to crash.  A good way is to (w/o installing
+	a previous fix) do a "shutdown()" on a file descriptor that
+	is not open.
+
+Fix:
+	Apply these patches to /sys/pdp/mch_dump.s and /sys/pdp/trap.c:
+
+*** mch_dump.s.old	Mon Aug 10 21:48:26 1987
+--- mch_dump.s	Tue Aug  1 21:09:25 1989
+***************
+*** 28,33 ****
+--- 28,73 ----
+  	mov	KDSA5,(r0)+
+  	rts	pc
+  
++ #ifdef	UCB_NET
++ 
++ SPACE(GLOBAL, suprsav, 32)
++ 
++ /*
++  * Save ALL registers, KDSA[5,6], SDSA[5,6], SSR3.  Expressly for
++  * network crashes where the state at the time of initial trap is
++  * desired rather than after thrashing about on the way to a 'panic'.
++  * Also, this is extensible so that as much volatile information as
++  * required may be saved.  Currently 14 of the 16 words allocated are used.
++  * Multiple entries into this routine should be blocked by making the
++  * call to this routine conditional on 'netoff' being set and 
++  * setting 'netoff' on the first call.  Must be at splhigh upon entry.
++ */
++ 
++ ENTRY(savestate)
++ 	mov	r0,suprsav
++ 	mov	$suprsav+2,r0
++ 	mov	r1,(r0)+
++ 	mov	r2,(r0)+
++ 	mov	r3,(r0)+
++ 	mov	r4,(r0)+
++ 	mov	r5,(r0)+
++ 	mov	sp,(r0)+
++ 	mov	PS,-(sp)
++ 	mov	$010340,PS	/previous super, spl7
++ 	mfpd	sp		/fetch supervisor stack pointer
++ 	mov	(sp)+,(r0)+
++ 	mov	$030340,PS	/previous user, spl7
++ 	mfpd	sp		/fetch user stack pointer
++ 	mov	(sp)+,(r0)+
++ 	mov	(sp)+,PS
++ 	mov	KDSA5,(r0)+
++ 	mov	KDSA6,(r0)+
++ 	mov	SDSA5,(r0)+
++ 	mov	SDSA6,(r0)+
++ 	mov	SSR3,(r0)+
++ 	rts	pc
++ #endif
++ 
+  #include "ht.h"
+  #include "tm.h"
+  #include "ts.h"
+*** trap.c.old	Tue Jul  5 14:24:11 1988
+--- trap.c	Tue Aug  1 20:41:41 1989
+***************
+*** 282,287 ****
+--- 282,291 ----
+  	case T_ZEROTRAP+SUPV:
+  	case T_RANDOMTRAP+SUPV:
+  		i = splhigh();
++ 		if (!netoff) {
++ 			netoff = 1;
++ 			savestate();
++ 		}
+  		printf("Unexpected net code trap (%o)\n", dev-SUPV);
+  		printf("ka6 = %o\n", *ka6);
+  		printf("aps = %o\n", &ps);

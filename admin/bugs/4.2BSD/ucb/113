@@ -1,0 +1,156 @@
+Return-Path: <bukys@rochester.arpa>
+Date: Tue, 17 Jul 84 18:23:04 edt
+From: Liudvikas Bukys  <bukys@rochester.arpa>
+Subject: 4.2 telnet and XON/XOFF flow control
+Index: 	ucb/telnet.c 4.2 Fix
+
+Description:
+	Some terminals require local XON/XOFF flow control to work
+	right, e.g., VT125s at >2400 baud, or just about anything at
+	19.2Kbaud without hardware flow control.
+
+	Telnet should leave this enabled, at least as an option.
+
+Repeat-By:
+	Find such a terminal, telnet to something, and watch your
+	terminal lose characters when the remote system doesn't
+	respond quickly enough.
+
+Fix:
+	The following diffs add a "flow" command for toggling the
+	presence of flow control.  It defaults to "on", but the default
+	can be changed by changing the 1 in line 43 to a 0.
+
+	It really should be an argument line flag, but at least this
+	implementation is consistent with the rest of the telnet option
+	setting code.
+
+Diffs (-c):
+-------
+
+*** /tmp/,RCSt1026121	(old)
+--- telnet.c		(new)
+***************
+*** 40,45
+  int	options;
+  int	debug = 0;
+  int	crmod = 0;
+  char	*prompt;
+  char	escape = CTRL(]);
+  
+
+--- 40,46 -----
+  int	options;
+  int	debug = 0;
+  int	crmod = 0;
++ int	flow = 1;
+  char	*prompt;
+  char	escape = CTRL(]);
+  
+***************
+*** 54,60
+  
+  int	tn(), quit(), suspend(), bye(), help();
+  int	setescape(), status(), toggle(), setoptions();
+! int	setcrmod(), setdebug();
+  
+  #define HELPINDENT (sizeof ("connect"))
+  
+
+--- 55,61 -----
+  
+  int	tn(), quit(), suspend(), bye(), help();
+  int	setescape(), status(), toggle(), setoptions();
+! int	setcrmod(), setflow(), setdebug();
+  
+  #define HELPINDENT (sizeof ("connect"))
+  
+***************
+*** 74,79
+  char	helphelp[] =	"print help information";
+  char	optionshelp[] =	"toggle viewing of options processing";
+  char	crmodhelp[] =	"toggle mapping of received carriage returns";
+  
+  struct cmd cmdtab[] = {
+  	{ "open",	openhelp,	tn },
+
+--- 75,81 -----
+  char	helphelp[] =	"print help information";
+  char	optionshelp[] =	"toggle viewing of options processing";
+  char	crmodhelp[] =	"toggle mapping of received carriage returns";
++ char	flowhelp[] =	"toggle flow control (usually XON/XOFF)";
+  
+  struct cmd cmdtab[] = {
+  	{ "open",	openhelp,	tn },
+***************
+*** 84,89
+  	{ "status",	statushelp,	status },
+  	{ "options",	optionshelp,	setoptions },
+  	{ "crmod",	crmodhelp,	setcrmod },
+  	{ "debug",	debughelp,	setdebug },
+  	{ "?",		helphelp,	help },
+  	0
+
+--- 86,92 -----
+  	{ "status",	statushelp,	status },
+  	{ "options",	optionshelp,	setoptions },
+  	{ "crmod",	crmodhelp,	setcrmod },
++ 	{ "flow",	flowhelp,	setflow },
+  	{ "debug",	debughelp,	setdebug },
+  	{ "?",		helphelp,	help },
+  	0
+***************
+*** 354,359
+  		tc = &notc;
+  		ltc = &noltc;
+  		onoff = 1;
+  		break;
+  
+  	default:
+
+--- 357,367 -----
+  		tc = &notc;
+  		ltc = &noltc;
+  		onoff = 1;
++ 		if (flow) {
++ 			notc.t_startc = otc.t_startc;
++ 			notc.t_stopc = otc.t_stopc;
++ 		} else
++ 			notc.t_startc = notc.t_stopc = -1;
+  		break;
+  
+  	default:
+***************
+*** 721,726
+  
+  	crmod = !crmod;
+  	printf("%s map carriage return on output.\n", crmod ? "Will" : "Wont");
+  	fflush(stdout);
+  }
+  
+
+--- 729,747 -----
+  
+  	crmod = !crmod;
+  	printf("%s map carriage return on output.\n", crmod ? "Will" : "Wont");
++ 	fflush(stdout);
++ }
++ 
++ /*VARARGS*/
++ setflow()
++ {
++ 
++ 	flow = !flow;
++ 	printf("%s use local flow control.\n", flow ? "Will" : "Wont");
++ 	if (flow) {
++ 		printf("(%s to stop,", control(otc.t_stopc));
++ 		printf(" %s to start)\n", control(otc.t_startc));
++ 	}
+  	fflush(stdout);
+  }
+
+-------
+Brought-to-you-by:
+	Liudvikas Bukys
+	bukys@rochester (arpa)
+	rochester!bukys (uucp) via allegra, cmcl2, decvax, seismo

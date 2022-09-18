@@ -1,0 +1,117 @@
+.TH MAITRD l "4 July 1985"
+.\" @(#)Maitrd
+.SH NAME
+\fImaitrd\fP \- local load balancing daemon
+.br
+\fImatfront\fP \- simple interface to the load balancing software
+.SH SYNOPSIS
+.B maitrd
+[
+.B \-p -d -T -t -l[load] 
+]
+.br
+.B matfront
+[
+.B \-v \-m [hostname]
+]
+.br
+.SH DESCRIPTION
+.I Maitrd 
+is the local daemon that should be called when a client
+wishes to connect to a remote server in order to perform
+some form of load distribution.  Upon invocation, \fImaitrd\fP will 
+attempt to detach itself from the terminal unless the
+\-d option is given.  It then reads a configuration file
+(see garcon(l) for format) for a list 
+of machines that are expected to be acting as remote
+processors (meaning, they are running \fIgarcon\fP).  For
+each machine in the list, maitrd attempts to establish
+an internet socket connection with the remote \fIgarcon\fP.  The purpose
+of this connection is to provide a communication channel
+through which the remote machine's 'state of readiness'
+can be determined.  At this point, \fImaitrd\fP then
+waits for local clients to request an appropriate service and
+manages the list of available machines, updating it
+as remote servers announce changes in their status.
+.br
+.LP
+When a client wishes to process their job on a foreign host,
+they will connect up to the local \fImaitrd\fP server and indicate
+that they desire an available machine.  \fIMaitrd\fP
+will then write back  to the client the internet address of
+the first available host's \fIgarcon\fP server.  'Available'
+means that a \fIgarcon\fP connection has been achieved, and that the 
+local load is high enough, and the remote's low enough to warrant 
+a job migration.   Machine requests are handled in a round-robin
+fashion to avoid overloading any single remote machine.  If
+there is no available machine, \fImaitrd\fP  returns NULL to
+the client, indicating that the request should be handled locally.
+.br
+.LP
+\fIMatfront\fP is provided as a very rudimentary front end
+to the maitrd/garcon pair.  It takes a command line as
+its arguments and then tries to execute that command
+line on an available remote machine.  Input to the command
+must be stdin and output goes to stdout.  The \-v option
+runs \fImatfront\fP in verbose mode.  Examples would be:
+.br
+.ce 2
+matfront -v nroff -ms < file.ms > file.out
+/lib/cpp prog.c | matfront ccom > prog.asm
+.br
+Note that 
+.ce 1
+matfront nroff -ms file.ms > file.out
+.br
+would try to find the file 'file.ms' on the remote
+machine (and probably fail).
+.SH OPTIONS
+.TP
+.B \-l[\fIload\fP]
+Clients will be instructed to perform their jobs
+locally whenever the local load is less than \fIload\fP.
+The default value is zero (all jobs should be exported).
+.TP
+.B \-p
+The \fImaitrd\fP socket is marked as reusable.
+.TP
+.B \-d
+The debug flag prevents \fImaitrd\fP from detaching itself
+from the terminal.
+.TP
+.B \-t
+This causes \fImaitrd\fP to send tracing information to stderr.
+.TP
+.B \-T
+This causes tracing information to be time stamped.
+.TP
+.B \-m hostname
+Normally, matfront will consult the maitrd daemon
+running at the machine indicated in the configuration
+file to find a server host.  The \-m option overrides
+the default host (usually localhost) and consults
+a daemon running at the host indicated.  With this option,
+the compile will always be performed remotely,
+regardless of the local load (unless no remote host
+is available, in which case the compile is done locally).
+.br
+.SH FILES
+/usr/local/maitrd.conf to get possible server machines.
+stderr for output of tracing information.
+.br
+.SH SEE ALSO
+garcon(l), mdc(l), Rpi(l), Spi(l), socket(2)
+.br
+.SH BUGS
+.LP
+A server's willingness to process should not be
+a binary value.  \fIMaitrd\fP should choose the best machine
+for the job, based on remote load, processing power and 
+estimated job size (simple to figure in some cases, 
+others are more difficult).
+.LP
+If a \fImaitrd\fP daemon is killed and then immediately
+restarted, it will not be able to bind to its socket
+due to the fact that closed sockets hang around in the kernel
+for a little while.  The \-p option will cause the new daemon
+to force the reuse of the socket.

@@ -1,0 +1,87 @@
+Return-Path: <kiely%lownlab.UUCP@harvard.harvard.edu>
+Received: by harvard.HARVARD.EDU; Fri, 19 Sep 86 17:28:20 EDT
+Date: Fri, 19 Sep 86 17:28:20 EDT
+From: kiely%lownlab.UUCP@harvard.harvard.edu
+Subject: multiple NULLs read on BREAK if RAW/COOKED is toggled
+
+
+Subject: multiple NULLs read on BREAK if RAW/COOKED is toggled
+Index:	sys/sys/tty.c or sys/{vaxuba,is68kdev}/dh.c
+Index:	sys 4.3BSD
+
+Type:	bug
+Priority:	high
+
+Description:
+	When reading in RAW mode, multiple '\0' characters are read from
+	the standard input when the line is toggled between RAW and COOKED
+	in the loop that does the read if a BREAK is typed at the terminal
+	(under certain conditions).  One '\0' is expected.
+
+	NOTE: This problem is hardware dependent.  It has been
+	reproduced on a VAX 8200 running Ultrix with a DEC DH/U board
+	but does not occur on the same VAX 8200 with Emulex or Able
+	boards running in DH emulation mode.
+	The bug also occurs on an Integrated Solutions Optimum 5/10
+	(QBus - 68010 CPU) running 4.2BSD (ISI3.05 distribution) with
+	an Emulex DH board (CS02).
+
+Repeat-By:
+	Run the following program.
+	(This test program demonstrates a problem with /etc/getty).
+--------------------------CUT HERE-----------------------------------
+/*
+ *	just type your input and it will be echoed (parity bits and all)
+ *	type EOT to exit
+ */
+
+#define	EOT	'\004'
+
+#include <stdio.h>
+#include <sys/ioctl.h>
+
+main()
+{
+	char c;
+	int ldisc = OTTYDISC;
+	struct sgttyb ttybuf;
+
+/*	ioctl(0, TIOCSETD, 0);		/* not really necessary - does
+					   it for both old & new tty drivers */
+	ioctl(0, TIOCGETP, &ttybuf);
+	ttybuf.sg_flags |= RAW;				/* stty raw -echo */
+	ttybuf.sg_flags &= ~ECHO;
+	ioctl(0, TIOCSETP, &ttybuf);
+
+	/* the read loop */
+	do {
+		ttybuf.sg_flags &= ~RAW;		/* stty -raw */
+		ioctl(0, TIOCSETP, &ttybuf);
+		ttybuf.sg_flags |= RAW;			/* stty raw */
+		ioctl(0, TIOCSETP, &ttybuf);
+		read(0, &c, 1);
+		fprintf(stderr, "%c (== %#o)\r\n", c, c);
+	} while ((c&0177) != EOT);
+
+	ttybuf.sg_flags |= ECHO;			/* stty -raw echo */
+	ttybuf.sg_flags &= ~RAW;
+	ioctl(0, TIOCSETP, &ttybuf);
+}
+--------------------CUT HERE-------------------------------------------------
+
+	If the problem exists with your hardware configuration, you will
+	get multiple lines like
+(== 0)
+(== 0)
+(== 0)
+(== 0)
+	when you type <BREAK> on your terminal.
+
+Discussion:
+	TIOCSETP should cause the interface to delay until the output
+	is quiescent, then throw away any unread characters, before
+	changing the modes.  It would appear that this is not happening.
+	
+	While it could be argued that this is a hard/firmware problem since
+	it occurs with some hardware but not with other hardware, I believe
+	that the problem is either in the tty driver or the dh driver.

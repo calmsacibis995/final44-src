@@ -1,0 +1,215 @@
+From wescott@sauron.Columbia.NCR.COM Wed Sep 14 00:02:23 1988
+Path: seismo!uunet!husc6!bloom-beacon!gatech!ncsuvx!ece-csc!ncrcae!sauron!wescott
+From: wescott@sauron.Columbia.NCR.COM (Mike Wescott)
+Newsgroups: comp.bugs.sys5,comp.bugs.4bsd
+Subject: Re: division bug in dc(1) - FIX
+Summary: fix and test script included
+Index: usr.bin/dc 4.3BSD
+
+In article <1153@sauron.Columbia.NCR.COM> I wrote:
+> dc(1) returns some bogus values.  Try feeding this to dc.
+> 10 k 3041280 d * 3041280.0000000001 / p
+> The vanilla 4.3BSD and 5.3.x dc return something like
+> 3041280.0-4008922557  (note the bogus minus sign).
+
+The problem is in the div() routine.  As stated in "DC - An Interactive
+Desk Calculator" by R. Morris and L. L. Cherry, "It [the next digit of
+the trial quotient] may turn out to be one unit too low, but if it is,
+the next trial quotient will be larger than 99 and this will be adjusted ..."
+It turns out that the vanilla 4.3BSD and SVR3 (SVR4 is rumored to be fixed)
+versions of dc do not alway adjust quite right, moreover there are occasions
+when the trial quotient is too large.
+
+The following patch contains a fix to a problem with scale computation
+previously posted by woetzel@gmdzi.UUCP (Gerd Woetzel) with a fix by
+Heinrich Schueth (schue%gmdzi@unido.UUCP).  That posting also had a fix
+in the div() code that I have modified further to produce this fix. This
+patch may be applied to either 4.3BSD or S5R3 sources.  A shar of a test
+script follows the patch.
+
+*** dc.c.orig	Mon Sep 12 10:39:57 1988
+--- dc.c	Mon Sep 12 09:37:15 1988
+***************
+*** 72,83 ****
+  			binop('*');
+  			p = pop();
+  			sunputc(p);
+! 			savk = sk1+sk2;
+! 			if(savk>k && savk>sk1 && savk>sk2){
+  				sk = sk1;
+  				if(sk<sk2)sk = sk2;
+  				if(sk<k)sk = k;
+! 				p = removc(p,savk-sk);
+  				savk = sk;
+  			}
+  			sputc(p,savk);
+--- 72,83 ----
+  			binop('*');
+  			p = pop();
+  			sunputc(p);
+! 			savk = n = sk1+sk2;
+! 			if(n>k && n>sk1 && n>sk2){
+  				sk = sk1;
+  				if(sk<sk2)sk = sk2;
+  				if(sk<k)sk = k;
+! 				p = removc(p,n-sk);
+  				savk = sk;
+  			}
+  			sputc(p,savk);
+***************
+*** 643,650 ****
+--- 643,652 ----
+  		else cc += 1;
+  		if(magic != 0)td = td<<3;
+  		dig = td/cc;
++ retrydiv:
+  		rewind(divr);
+  		rewind(divxyz);
++ 		ps = copy(divd, length(divd));
+  		carry = 0;
+  		while(sfeof(divr) == 0){
+  			d = sgetc(divr)*dig+carry;
+***************
+*** 653,662 ****
+  		}
+  		salterc(divxyz,carry);
+  		rewind(divxyz);
+! 		seekc(divd,offset);
+  		carry = 0;
+! 		while(sfeof(divd) == 0){
+! 			d = slookc(divd);
+  			d = d-(sfeof(divxyz)?0:sgetc(divxyz))-carry;
+  			carry = 0;
+  			if(d < 0){
+--- 655,664 ----
+  		}
+  		salterc(divxyz,carry);
+  		rewind(divxyz);
+! 		seekc(ps,offset);
+  		carry = 0;
+! 		while(sfeof(ps) == 0){
+! 			d = slookc(ps);
+  			d = d-(sfeof(divxyz)?0:sgetc(divxyz))-carry;
+  			carry = 0;
+  			if(d < 0){
+***************
+*** 663,682 ****
+  				d += 100;
+  				carry = 1;
+  			}
+! 			salterc(divd,d);
+  		}
+  		divcarry = carry;
+  		sbackc(p);
+  		salterc(p,dig);
+  		sbackc(p);
+! 		if(--offset >= 0)divd->wt--;
+! 	}
+! 	if(divcarry != 0){
+! 		salterc(p,dig-1);
+! 		salterc(divd,-1);
+! 		ps = add(divr,divd);
+! 		release(divd);
+! 		divd = ps;
+  	}
+  	rewind(p);
+--- 665,688 ----
+  				d += 100;
+  				carry = 1;
+  			}
+! 			salterc(ps,d);
+  		}
+  		divcarry = carry;
++ 		if(divcarry != 0){
++ 			dig--;
++ 			release(ps);
++ 			goto retrydiv;
++ 		} else if (d > 0) {
++ 			dig++;
++ 			release(ps);
++ 			goto retrydiv;
++ 		}
++ 		release(divd);
++ 		divd = ps;
+  		sbackc(p);
+  		salterc(p,dig);
+  		sbackc(p);
+! 		if(--offset >= 0) divd->wt--;
+  	}
+  	rewind(p);
+
+# This is a shell archive.  Remove anything before this line, then
+# unpack it by saving it in a file and typing "sh file".  (Files
+# unpacked will be owned by you and have default permissions.)
+# This archive contains:
+# dctest
+
+echo x - dctest
+cat > "dctest" << '//E*O*F dctest//'
+# dctest takes an optional argument of the program to be tested
+# if no arg is present then ./dc is used
+
+# Error in division. Found by schue%gmdzi@unido.UUCP (Heinrich Schueth)
+if [ $# = 1 ]
+then
+dc=$1
+else
+dc=./dc
+fi
+echo "Test 1 (division): Result of expression is"
+(bc -c | ${dc}) <<ENDSCRIPT1
+    scale=0
+    a=2799912455811601
+    b=99990001
+    (a/b)*b + (a%b) - a
+ENDSCRIPT1
+echo "Result should be"
+echo "0"
+echo ""
+
+# Errors found by ronald@kulcs.UUCP (Ronald Cools)
+# Same fix
+echo "Test 2 (division): Results of divisions are"
+(bc -c | ${dc} ) <<ENDSCRIPT2
+    scale=45
+    a=999.999000000000000000000167001
+    1/a
+    10/a
+    100/a
+    1000/a
+    10000/a
+ENDSCRIPT2
+echo "Results should be"
+echo ".001000001000001000001000000832999665998498997"
+echo ".010000010000010000010000008329996659984989973"
+echo "0.100000100000100000100000083299966599849899733"
+echo "1.000001000001000001000000832999665998498997331"
+echo "10.000010000010000010000008329996659984989973319"
+echo ""
+
+# Error at computation of scale. Found by Heinrich Schueth"
+echo "Test 3 (scale): Result of multiplication is"
+(bc -c | ${dc} ) <<ENDSCRIPT3
+    scale=64
+    a=1/9
+    a*a
+ENDSCRIPT3
+echo "Result should be"
+echo ".0123456790123456790123456790123456790123456790123456790123456790"
+
+echo
+echo "Test 4 additional division dctest"
+echo "Result is"
+${dc} << XXXxxxXXX
+10k
+3041280d*3041280.0000000001/p
+XXXxxxXXX
+echo "Result should be"
+echo 3041279.9999999999
+//E*O*F dctest//
+
+exit 0
+-- 
+	-Mike Wescott
+	 mike.wescott@ncrcae.Columbia.NCR.COM
+

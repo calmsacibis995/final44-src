@@ -1,0 +1,277 @@
+From jik@pit-manager.MIT.EDU  Mon Feb 12 11:35:47 1990
+Date: Mon, 12 Feb 90 14:07:49 -0500
+From: Jonathan I. Kamens <jik@pit-manager.MIT.EDU>
+Sender: jik@pit-manager.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: deroff core dumps on lines > 512 chars
+Index: usr.bin/deroff 4.3BSD-tahoe
+
+
+FYI
+
+----- Forwarded message
+From: geer@ATHENA.MIT.EDU
+Date: Thu, 8 Feb 90 23:01:13 -0500
+To: bugs@ATHENA.MIT.EDU
+Subject: deroff  not resistant to long lines  rtpc 6.4r
+
+deroff dumps core on long lines (>512)
+
+--dan
+
+----- End of forwarded message
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+From jik@pit-manager.MIT.EDU  Mon Feb 12 12:32:13 1990
+Date: Mon, 12 Feb 90 15:32:07 -0500
+From: Jonathan I. Kamens <jik@pit-manager.MIT.EDU>
+Sender: jik@pit-manager.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: deroff core dumps on lines > 512 chars
+Index: usr.bin/deroff 4.3BSD-tahoe
+
+  Here is a patch to the 4.3Tahoe sources to deroff.c which should fix
+the bug I reported earlier today.  I think the fix I've made is
+complete, but the complexity of the program prevents me from being
+sure of it, so I'd like to hear from you if you decide to install
+what's below (it'll give me a boost of added confidence to install it
+at my site :-)
+
+  Perhaps the original author of the program is still there, in which
+case he can do a far better job of auditing (and perhaps suggesting
+alternatives to) my changes than I can.
+
+Jonathan Kamens			              USnail:
+MIT Project Athena				11 Ashford Terrace
+jik@Athena.MIT.EDU				Allston, MA  02134
+Office: 617-253-8495			      Home: 617-782-0710
+
+		      *************************
+
+*** /tmp/,RCSt1008170	Mon Feb 12 15:26:08 1990
+--- deroff.c	Mon Feb 12 15:23:42 1990
+***************
+*** 4,9 ****
+--- 4,11 ----
+  
+  #include <stdio.h>
+  
++ extern char *malloc(), *realloc();
++ 
+  /*
+   *	Deroff command -- strip troff, eqn, and Tbl sequences from
+   *	a file.  Has two flags argument, -w, to cause output one word per line
+***************
+*** 24,29 ****
+--- 26,71 ----
+  #define Cget ( (c=getc(infile)) == EOF ? eof() : ((c==ldelim)&&(filesp==files) ? skeqn() : c) )
+  #define C1get ( (c=getc(infile)) == EOF ? eof() :  c)
+  
++ /*
++  * The purpose of this is to prevent a core dump on lines that are
++  * longer than 512 characters.  It is important to note that the user
++  * of this macro assumes that there is only relevant one pointer (i.e.
++  * "ptr") pointing into "line" at any them that input is being read
++  * into "line".  If this assumption is rendered invalid, then it is
++  * possible for other pointers pointing into "line" to become valid
++  * when the memory block is reallocated.
++  *
++  * For example, the function inpic() below uses a local pointer "p1"
++  * to point into "line" while the line is being processed.  Therefore,
++  * it has to manually recalculate the offset of "lp" (the global line
++  * pointer) into the (possibly changed) "line" buffer after each call
++  * to Carray.
++  *
++  * I have examined the source code relatively thoroughly, and can find
++  * no instance besides that one of any pointer besides "lp" being used
++  * to index into "line", so I don't think any other functions have to
++  * adjust pointers as inpic() does.
++  *
++  * 	Jonathan Kamens
++  * 	MIT-Project Athena
++  * 	jik@Athena.MIT.EDU
++  */
++ #define Carray(ptr, chr)\
++ {\
++ 	int ln = *ptr - line;\
++ \
++ 	if (ln > array_size) {\
++ 		array_size += 512;\
++ 		line = realloc(line, array_size);\
++ 		if (! line) {\
++ 			perror("deroff");\
++ 			exit(1);\
++ 		}\
++ 	}\
++ 	*ptr = line + ln;\
++ 	**ptr = chr;\
++ }
++ 	  
+  #ifdef DEBUG
+  #  define C	_C()
+  #  define C1	_C1()
+***************
+*** 65,73 ****
+  int	intable;
+  int	keepblock;	/* keep blocks of text; normally false when msflag */
+  
+  char chars[128];  /* SPECIAL, PUNCT, APOS, DIGIT, or LETTER */
+  
+! char line[512];
+  char *lp;
+  
+  int c;
+--- 107,117 ----
+  int	intable;
+  int	keepblock;	/* keep blocks of text; normally false when msflag */
+  
++ unsigned int	array_size;	/* current size of line buffer */
++ 
+  char chars[128];  /* SPECIAL, PUNCT, APOS, DIGIT, or LETTER */
+  
+! char *line;
+  char *lp;
+  
+  int c;
+***************
+*** 125,130 ****
+--- 169,181 ----
+  	rdelim	= NOCHAR;
+  	keepblock = YES;
+  
++ 	array_size = 512;
++ 	line = malloc(array_size);
++ 	if (! line) {
++ 	     perror("deroff");
++ 	     exit(1);
++ 	}
++ 	
+  	for(argc = ac - 1, argv = av + 1;
+  	    (   (argc > 0)
+  	     && (argv[0][0] == '-')
+***************
+*** 323,345 ****
+  	for( ; ; )
+  	{
+  		if(c == '\\') {
+! 			*lp = ' ';
+  			backsl();
+  		}
+  		if(c == '\n')
+  			break;
+  		if(intable && c=='T') {
+! 			*++lp = C;
+  			if(c=='{' || c=='}') {
+  				lp[-1] = ' ';
+! 				*lp = C;
+  			}
+  		} else {
+! 			*++lp = C;
+  		}
+  	}
+  
+! 	*lp = '\0';
+  
+  	if(line[0] != '\0')
+  		(*pfunc)(line, constant);
+--- 374,398 ----
+  	for( ; ; )
+  	{
+  		if(c == '\\') {
+! 			Carray(&lp, ' ');
+  			backsl();
+  		}
+  		if(c == '\n')
+  			break;
+  		if(intable && c=='T') {
+! 			lp++;
+! 			Carray(&lp, C);
+  			if(c=='{' || c=='}') {
+  				lp[-1] = ' ';
+! 				Carray(&lp, C);
+  			}
+  		} else {
+! 			lp++;
+! 			Carray(&lp, C);
+  		}
+  	}
+  
+! 	Carray(&lp, '\0');
+  
+  	if(line[0] != '\0')
+  		(*pfunc)(line, constant);
+***************
+*** 462,468 ****
+  		if(msflag){
+  			if(C == 'e'){
+  				if(C == 'm'){
+! 					*lp = '-';
+  					return;
+  				}
+  			}
+--- 515,521 ----
+  		if(msflag){
+  			if(C == 'e'){
+  				if(C == 'm'){
+! 					Carray(&lp, '-');
+  					return;
+  				}
+  			}
+***************
+*** 575,582 ****
+  
+  inpic()
+  {
+  	register int c1;
+! 	register char *p1;
+  	SKIP;
+  	p1 = line;
+  	c = '\n';
+--- 628,636 ----
+  
+  inpic()
+  {
++ 	unsigned ln;
+  	register int c1;
+! 	char *p1;
+  	SKIP;
+  	p1 = line;
+  	c = '\n';
+***************
+*** 601,612 ****
+  					ungetc(c,infile);
+  					backsl();
+  				}
+! 				else *p1++ = c;
+  			}
+! 			*p1++ = ' ';
+  		}
+  		else if(c == '\n' && p1 != line){
+! 			*p1 = '\0';
+  			if(wordflag)msputwords(NO);
+  			else {
+  				puts(line);
+--- 655,676 ----
+  					ungetc(c,infile);
+  					backsl();
+  				}
+! 				else {
+! 					ln = lp - line;
+! 					Carray(&p1, c);
+! 					lp = line + ln;
+! 					p1++;
+! 				}
+  			}
+! 			ln = lp - line;
+! 			Carray(&p1, ' ');
+! 			lp = line + ln;
+! 			p1++;
+  		}
+  		else if(c == '\n' && p1 != line){
+! 			ln = lp - line;
+! 			Carray(&p1, '\0');
+! 			lp = line + ln;
+  			if(wordflag)msputwords(NO);
+  			else {
+  				puts(line);

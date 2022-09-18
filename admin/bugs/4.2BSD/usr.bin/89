@@ -1,0 +1,234 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Wed, 23 Nov 83 22:38:05 pst
+To: sdcsvax!ucbvax!4bsd-bugs
+Subject: f77 optimizer misses redundant register moves
+Index: usr.bin/f77/src/f77pass1/regalloc.c 4.2BSD
+
+Description:
+	This problem occurs in the f77 compiler supplied on a tape
+	made on 8/23/83.
+
+	The f77 compiler generates code which contains instructions
+	like 'movl r10,r10' when optimizing embedded loops.  Since
+	these instructions are easy to find, it seems strange that they
+	are missed; and in fact the reason for this appears to be that
+	the register optimization code in alreg() is buggy.
+
+Repeat-By:
+	Copy out the following f77 program and call it 'bug3.f':
+
+	----------------------------------------------------------------------
+		program bug3
+
+		integer i, j, k, l, m, n
+
+		i = 1
+		j = 2
+		k = 3
+		l = 4
+		m = 5
+		n = 6
+
+		do 20 i = 1, 10
+
+			do 10 j = 1, 10
+
+				k = m * j
+				l = n * i
+				m = i * k
+				n = j * l
+
+	10		continue
+	20	continue
+
+		stop
+		end
+	----------------------------------------------------------------------
+
+	Compile the program with 'f77 -O -S -c bug3.f'.  This program will
+	have code in it that looks like this:
+
+	----------------------------------------------------------------------
+		movl	$1,v.2-v.1(r11)
+		movl	$2,v.3-v.1(r11)
+		movl	$3,v.4-v.1(r11)
+		movl	$4,v.5-v.1(r11)
+		movl	$5,v.6-v.1(r11)
+		movl	$6,v.7-v.1(r11)
+		movl	v.3-v.1(r11),r10
+		movl	v.2-v.1(r11),r9
+		movl	v.4-v.1(r11),r8
+		movl	v.5-v.1(r11),r7
+		movl	v.6-v.1(r11),r6
+		movl	$1,r9
+	L17:
+		movl	r10,r10			/*** Redundant ***/
+		movl	$1,r10
+	L22:
+		mull3	r10,r6,r8
+		mull3	r9,v.7-v.1(r11),r7
+		mull3	r8,r9,r6
+		mull3	r7,r10,v.7-v.1(r11)
+		aobleq	$10,r10,L22
+		movl	r6,r6			/*** Redundant ***/
+		movl	r7,r7			/*** Redundant ***/
+		movl	r8,r8			/*** Redundant ***/
+		movl	r10,r10			/*** Redundant ***/
+		acbl	$10,$1,r9,L17
+		movl	r6,v.6-v.1(r11)
+		movl	r7,v.5-v.1(r11)
+		movl	r8,v.4-v.1(r11)
+		movl	r9,v.2-v.1(r11)
+		movl	r10,v.3-v.1(r11)
+		pushl	$0
+		pushal	L25
+		calls	$2,_s_stop
+		ret
+	----------------------------------------------------------------------
+
+	(I have prettied up the output considerably here...)  The
+	redundant moves are marked by comments.
+
+Fix:
+	The second pass through the slots in alreg() (in regalloc.c)
+	has code to look at the slots just before and just after
+	embedded DO loops for redundant moves.  It appears not to work
+	correctly -- one obvious problem is that it will fail to delete
+	redundant moves which are 'protected' by some other statement.
+	It seems to me that the 'brute force' approach is much simpler
+	-- since the loop over slots must look at all assignment slots
+	in the current DO loop anyway, why not check for redundant
+	assigments there?  My solution was to move the slot deletion
+	code down to the assignment case:
+
+	***************
+	*** 782,803
+		    case SKDOHEAD:
+		      docount++;
+		      globalbranch = YES;
+	- 	      sp1 = sp->prev;
+	- 	      while (sp1)
+	- 		if (regtoreg(sp1))
+	- 		  {
+	- 		    ap = (Addrp) sp1->expr->exprblock.leftp;
+	- 		    sp2 = sp1->prev;
+	- 		    for (i = toplcv + 2; i <= toptrack; i++)
+	- 		      if (regtab[i] && (regnum[i] == ap->memno))
+	- 			{
+	- 			  deleteslot(sp1);
+	- 			  break;
+	- 			}
+	- 		    sp1 = sp2;
+	- 		  }
+	- 		else
+	- 		  sp1 = NULL;
+		      break;
+	  
+		    case SKEQ:
+
+	--- 808,813 -----
+		    case SKDOHEAD:
+		      docount++;
+		      globalbranch = YES;
+		      break;
+	  
+		    case SKEQ:
+	***************
+	*** 816,821
+			    regdefined[i] = YES;
+			  }
+		      linearcode = NO;
+		      break;
+	  
+		    case SKARIF:
+
+	--- 826,847 -----
+			    regdefined[i] = YES;
+			  }
+		      linearcode = NO;
+	+ 
+	+ 	      /*
+	+ 	       * Eliminate redundant register moves.
+	+ 	       */
+	+ 	      if (regtoreg(sp))
+	+ 		{
+	+ 		  ap = (Addrp) sp->expr->exprblock.leftp;
+	+ 	          sp1 = sp->prev;
+	+ 		  for (i = toplcv + 1; i <= toptrack; i++)
+	+ 		    if (regtab[i] && (regnum[i] == ap->memno))
+	+ 		      {
+	+ 			deleteslot(sp);
+	+ 			sp = sp1;
+	+ 			break;
+	+ 		      }
+	+ 		}
+		      break;
+	  
+		    case SKARIF:
+	***************
+	*** 1792,1800
+	    if ((r->tag == TADDR) &&
+		(r->addrblock.vstg == STGREG) &&
+		(r->addrblock.memno == l->addrblock.memno))
+	-     return YES;
+	-   if ((r->tag == TEXPR) &&
+	-       (r->exprblock.opcode == OPADDR))
+	      return YES;
+	  
+	    return NO;
+
+	--- 1818,1823 -----
+	    if ((r->tag == TADDR) &&
+		(r->addrblock.vstg == STGREG) &&
+		(r->addrblock.memno == l->addrblock.memno))
+	      return YES;
+	  
+	    return NO;
+
+	Notice the last diff -- this eliminates some odd code in
+	regtoreg(), the routine which detects redundant moves, whose
+	purpose seemed unclear but definitely wrong for what I am
+	doing.  The new compiler emits the following code for the same
+	program:
+
+	----------------------------------------------------------------------
+		movl	$1,v.2-v.1(r11)
+		movl	$2,v.3-v.1(r11)
+		movl	$3,v.4-v.1(r11)
+		movl	$4,v.5-v.1(r11)
+		movl	$5,v.6-v.1(r11)
+		movl	$6,v.7-v.1(r11)
+		movl	v.3-v.1(r11),r10
+		movl	v.2-v.1(r11),r9
+		movl	v.4-v.1(r11),r8
+		movl	v.5-v.1(r11),r7
+		movl	v.6-v.1(r11),r6
+		movl	$1,r9
+	L17:
+		movl	$1,r10
+	L22:
+		mull3	r10,r6,r8
+		mull3	r9,v.7-v.1(r11),r7
+		mull3	r8,r9,r6
+		mull3	r7,r10,v.7-v.1(r11)
+		aobleq	$10,r10,L22
+		acbl	$10,$1,r9,L17
+		movl	r6,v.6-v.1(r11)
+		movl	r7,v.5-v.1(r11)
+		movl	r8,v.4-v.1(r11)
+		movl	r9,v.2-v.1(r11)
+		movl	r10,v.3-v.1(r11)
+		pushl	$0
+		pushal	L25
+		calls	$2,_s_stop
+		ret
+	----------------------------------------------------------------------
+
+	The new version of the compiler omits precisely the redundant
+	instructions.  It sometimes simplifies more complicated
+	expressions in DO loop headers by causing the compiler to
+	realize that it can eliminate a stack variable, too.
+	Sometimes, though, it seems to miss the fact that it has the
+	same element in register twice.  I'm open to suggestions about
+	how to fix this.

@@ -1,0 +1,454 @@
+Return-Path: <cak@Purdue.ARPA>
+From: Christopher A Kent <cak@Purdue.ARPA>
+Date: 21 Mar 1984 1512-EST (Wednesday)
+Subject: TCP max seg size option handling badly broken
+Index: sys/netinet/tcp_{input,output,subr}.c 4.2BSD Fix
+
+Description:
+	Handling of the TCP maximum segment size option is broken in 
+	many respects. Since they are all related, this is submitted 
+	as just one fix.
+
+	On output, the max seg size is always offered as 1024. This
+	causes IP fragmentation overhead for networks that do not
+	support this large a packet; it is a particularly bad 
+	value for the Arpanet.
+	
+	On input, if a connection is in the LISTEN state (e.g., a
+	server), an incoming maximum segment size option is ignored. The
+	maximum segment size option is accepted on all packets, contrary
+	to the spec which says it is only acceptable on packets with SYN.
+
+	Both of these values should be tuned to the mtu of the interface
+	being used for the connection; if the mtu is larger, use
+	the offered value; otherwise set it to the mtu minus headers.
+
+Repeat-By:
+	Connect to various sites with different mtu or max seg options,
+	and look at the tcpcb's with adb. Of particular interest are
+	sites which have very small mtu networks attached.
+	
+Fix:
+	The fix consists of several pieces. A new routine, tcp_getif(),
+	is introduced, which returns a pointer to the interface being
+	used for this connection. When initiating an outgoing TCP
+	connection, tcp_getif() is called, and the proferred max
+	seg size is tuned to the mtu of the device.
+
+	When a LISTENing connection is probed by a SYN packet, we can't
+	process the incoming options until a tcpcb has been allocated,
+	or the process of allocation will overwrite the processed
+	options with the default values.
+
+	Whenever a connection finally enters the ESTABLISHED state, 
+	compare the current value of t_maxseg to the mtu of the 
+	interface being used and adjust it if necessary.
+
+	(This set of fixes draws inspiration from an earlier fix
+	from gilligan@sri-spam; unfortunately his called tcp_getif()
+	at the time socket() was called, before bind(), so there
+	was never an interface/route registered, and default values
+	were always used; he also missed several of the above cases.)
+
+	The following context diffs (from the original files) show the 
+	necessary changes (don't trust the line numbers):
+
+*** tcp_input.c.v0
+--- tcp_input.c	
+***************
+*** 49,54
+  	short ostate;
+  	struct in_addr laddr;
+  	int dropsocket = 0;
+  
+  	/*
+  	 * Get IP and TCP header together in first mbuf.
+
+--- 50,58 -----
+  	short ostate;
+  	struct in_addr laddr;
+  	int dropsocket = 0;
++ 	struct ifnet *ifp;
++ 	struct ifnet *tcp_getif();
++ 	u_short ifmss;
+  
+  	/*
+  	 * Get IP and TCP header together in first mbuf.
+***************
+*** 185,194
+  	/*
+  	 * Process options.
+  	 */
+! 	if (om) {
+! 		tcp_dooptions(tp, om);
+! 		om = 0;
+! 	}
+  
+  	/*
+  	 * Calculate amount of space in receive window,
+
+--- 189,200 -----
+  	/*
+  	 * Process options.
+  	 */
+! 	if (om) 
+! 		/* if in LISTEN, template hasn't been filled in yet */
+! 		if (tp->t_state != TCPS_LISTEN){
+! 			tcp_dooptions(tp, ti, om);
+! 			om = 0;
+! 		}
+  
+  	/*
+  	 * Calculate amount of space in receive window,
+***************
+*** 246,251
+  			tp = 0;
+  			goto drop;
+  		}
+  		tp->iss = tcp_iss; tcp_iss += TCP_ISSINCR/2;
+  		tp->irs = ti->ti_seq;
+  		tcp_sendseqinit(tp);
+
+--- 252,262 -----
+  			tp = 0;
+  			goto drop;
+  		}
++ 		/* finally, we can do the options */
++ 		if (om){
++ 			tcp_dooptions(tp, ti, om);
++ 			om = 0;
++ 		}
+  		tp->iss = tcp_iss; tcp_iss += TCP_ISSINCR/2;
+  		tp->irs = ti->ti_seq;
+  		tcp_sendseqinit(tp);
+***************
+*** 292,297
+  			soisconnected(so);
+  			tp->t_state = TCPS_ESTABLISHED;
+  			(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		} else
+  			tp->t_state = TCPS_SYN_RECEIVED;
+  		goto trimthenstep6;
+
+--- 303,321 -----
+  			soisconnected(so);
+  			tp->t_state = TCPS_ESTABLISHED;
+  			(void) tcp_reass(tp, (struct tcpiphdr *)0);
++ 			/* 
++ 			 * Tune maximum TCP segment size to i/f mtu
++ 			 */
++ 			ifp = (struct ifnet *) tcp_getif(tp);
++ 			if (ifp != (struct ifnet *)0){
++ 				ifmss = ifp->if_mtu - sizeof(struct tcpiphdr);
++ 				if (tcpprintfs)
++ 					printf("tcp trim1 (mtu,ms)==(%d,%d) -> ",
++ 						ifmss, tp->t_maxseg);
++ 				tp->t_maxseg = MIN(ifmss, tp->t_maxseg);
++ 				if (tcpprintfs)
++ 					printf("%d\n", tp->t_maxseg);
++ 			}
+  		} else
+  			tp->t_state = TCPS_SYN_RECEIVED;
+  		goto trimthenstep6;
+***************
+*** 452,457
+  		soisconnected(so);
+  		tp->t_state = TCPS_ESTABLISHED;
+  		(void) tcp_reass(tp, (struct tcpiphdr *)0);
+  		tp->snd_wl1 = ti->ti_seq - 1;
+  		/* fall into ... */
+  
+
+--- 476,494 -----
+  		soisconnected(so);
+  		tp->t_state = TCPS_ESTABLISHED;
+  		(void) tcp_reass(tp, (struct tcpiphdr *)0);
++ 		/* 
++ 		 * Tune maximum TCP segment size to i/f mtu
++ 		 */
++ 		ifp = (struct ifnet *) tcp_getif(tp);
++ 		if (ifp != (struct ifnet *)0){
++ 			ifmss = ifp->if_mtu - sizeof(struct tcpiphdr);
++ 			if (tcpprintfs)
++ 				printf("tcp trim2 (mtu,ms)==(%d,%d) -> ",
++ 					ifmss, tp->t_maxseg);
++ 			tp->t_maxseg = MIN(ifmss, tp->t_maxseg);
++ 			if (tcpprintfs)
++ 				printf("%d\n", tp->t_maxseg);
++ 		}
+  		tp->snd_wl1 = ti->ti_seq - 1;
+  		/* fall into ... */
+  
+***************
+*** 759,765
+  	return;
+  }
+  
+! tcp_dooptions(tp, om)
+  	struct tcpcb *tp;
+  	struct mbuf *om;
+  {
+
+--- 796,802 -----
+  	return;
+  }
+  
+! tcp_dooptions(tp, ti, om)
+  	struct tcpcb *tp;
+  	struct tcpiphdr *ti;
+  	struct mbuf *om;
+***************
+*** 761,766
+  
+  tcp_dooptions(tp, om)
+  	struct tcpcb *tp;
+  	struct mbuf *om;
+  {
+  	register u_char *cp;
+
+--- 798,804 -----
+  
+  tcp_dooptions(tp, ti, om)
+  	struct tcpcb *tp;
++ 	struct tcpiphdr *ti;
+  	struct mbuf *om;
+  {
+  	register u_char *cp;
+***************
+*** 787,792
+  		case TCPOPT_MAXSEG:
+  			if (optlen != 4)
+  				continue;
+  			tp->t_maxseg = *(u_short *)(cp + 2);
+  			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
+  			break;
+
+--- 825,832 -----
+  		case TCPOPT_MAXSEG:
+  			if (optlen != 4)
+  				continue;
++ 			if ((ti->ti_flags & TH_SYN) != TH_SYN)
++ 				continue;
+  			tp->t_maxseg = *(u_short *)(cp + 2);
+  			tp->t_maxseg = ntohs((u_short)tp->t_maxseg);
+  			break;
+***************
+*** tcp_output.c.v0
+--- tcp_output.c	
+***************
+*** 8,13
+  #include "../h/socketvar.h"
+  #include "../h/errno.h"
+  
+  #include "../net/route.h"
+  
+  #include "../netinet/in.h"
+
+--- 9,15 -----
+  #include "../h/socketvar.h"
+  #include "../h/errno.h"
+  
++ #include "../net/if.h"
+  #include "../net/route.h"
+  
+  #include "../netinet/in.h"
+***************
+*** 37,42
+  {
+  	register struct socket *so = tp->t_inpcb->inp_socket;
+  	register int len;
+  	struct mbuf *m0;
+  	int off, flags, win, error;
+  	register struct mbuf *m;
+
+--- 39,45 -----
+  {
+  	register struct socket *so = tp->t_inpcb->inp_socket;
+  	register int len;
++ 	register struct ifnet *ifp;
+  	struct mbuf *m0;
+  	int off, flags, win, error;
+  	register struct mbuf *m;
+***************
+*** 44,49
+  	u_char *opt;
+  	unsigned optlen = 0;
+  	int sendalot;
+  
+  	/*
+  	 * Determine length of data that should be transmitted,
+
+--- 47,54 -----
+  	u_char *opt;
+  	unsigned optlen = 0;
+  	int sendalot;
++ 	struct ifnet *tcp_getif();
++ 	u_short ifmss;
+  
+  	/*
+  	 * Determine length of data that should be transmitted,
+***************
+*** 172,178
+  			goto noopt;
+  		opt = tcp_initopt;
+  		optlen = sizeof (tcp_initopt);
+! 		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, 1024);
+  		*(u_short *)(opt + 2) = htons(*(u_short *)(opt + 2));
+  	} else {
+  		if (tp->t_tcpopt == 0)
+
+--- 177,194 -----
+  			goto noopt;
+  		opt = tcp_initopt;
+  		optlen = sizeof (tcp_initopt);
+! 
+! 		/* 
+! 		 * Tune max seg size to mtu of device this connection
+! 		 * will run on, in order to avoid IP fragmentation
+! 		 * as much as possible. Subtract off standard TCP/IP header.
+! 		 */
+! 
+! 		ifp = tcp_getif(tp);
+! 		if (ifp == (struct ifnet *) 0)
+! 			goto noopt;
+! 		ifmss = ifp->if_mtu - sizeof(struct tcpiphdr);
+!  		*(u_short *)(opt + 2) = MIN(so->so_rcv.sb_hiwat / 2, ifmss);
+  		*(u_short *)(opt + 2) = htons(*(u_short *)(opt + 2));
+  	} else {
+  		if (tp->t_tcpopt == 0)
+***************
+
+*** tcp_subr.c.v0
+--- tcp_subr.c
+***************
+*** 151,156
+  {
+  	struct mbuf *m = m_getclr(M_DONTWAIT, MT_PCB);
+  	register struct tcpcb *tp;
+  
+  	if (m == NULL)
+  		return ((struct tcpcb *)0);
+
+--- 151,159 -----
+  {
+  	struct mbuf *m = m_getclr(M_DONTWAIT, MT_PCB);
+  	register struct tcpcb *tp;
++ 	struct ifnet *ifp;
++ 	struct ifnet *tcp_getif();
++ 	u_short ifmss;
+  
+  	if (m == NULL)
+  		return ((struct tcpcb *)0);
+***************
+*** 156,161
+  		return ((struct tcpcb *)0);
+  	tp = mtod(m, struct tcpcb *);
+  	tp->seg_next = tp->seg_prev = (struct tcpiphdr *)tp;
+  	/*
+  	 * If the default maximum IP packet size is 576 bytes
+  	 * and a standard IP header is 20 bytes, with a TCP
+
+--- 159,165 -----
+  		return ((struct tcpcb *)0);
+  	tp = mtod(m, struct tcpcb *);
+  	tp->seg_next = tp->seg_prev = (struct tcpiphdr *)tp;
++ 
+  	/*
+  	 * If the default maximum IP packet size is 576 bytes
+  	 * and a standard IP header is 20 bytes, with a TCP
+***************
+*** 162,167
+  	 * header of 20 bytes plus the options necessary to
+  	 * upgrade it to something higher, then initialize the
+  	 * maximum segment size to 576 - (20 + 20 + 8 + slop).
+  	 */
+  	tp->t_maxseg = 512;		/* satisfy the rest of the world */
+  	tp->t_flags = 0;		/* sends options! */
+
+--- 166,173 -----
+  	 * header of 20 bytes plus the options necessary to
+  	 * upgrade it to something higher, then initialize the
+  	 * maximum segment size to 576 - (20 + 20 + 8 + slop).
++ 	 * But Postel says make it 536; see <INC-PROJECT, MAX-SEG-SIZ.NLS.14>
++ 	 * and letter of 7 Nov 1983.
+  	 */
+  
+  	tp->t_flags = 0;		/* sends options! */
+***************
+*** 163,169
+  	 * upgrade it to something higher, then initialize the
+  	 * maximum segment size to 576 - (20 + 20 + 8 + slop).
+  	 */
+! 	tp->t_maxseg = 512;		/* satisfy the rest of the world */
+  	tp->t_flags = 0;		/* sends options! */
+  	tp->t_inpcb = inp;
+  	inp->inp_ppcb = (caddr_t)tp;
+
+--- 169,175 -----
+  	 * But Postel says make it 536; see <INC-PROJECT, MAX-SEG-SIZ.NLS.14>
+  	 * and letter of 7 Nov 1983.
+  	 */
+! 
+  	tp->t_flags = 0;		/* sends options! */
+  	tp->t_maxseg = 536;		/* satisfy the rest of the world */
+  	tp->t_inpcb = inp;
+***************
+*** 165,170
+  	 */
+  	tp->t_maxseg = 512;		/* satisfy the rest of the world */
+  	tp->t_flags = 0;		/* sends options! */
+  	tp->t_inpcb = inp;
+  	inp->inp_ppcb = (caddr_t)tp;
+  	return (tp);
+
+--- 171,177 -----
+  	 */
+  
+  	tp->t_flags = 0;		/* sends options! */
++ 	tp->t_maxseg = 536;		/* satisfy the rest of the world */
+  	tp->t_inpcb = inp;
+  	inp->inp_ppcb = (caddr_t)tp;
+  	return (tp);
+***************
+*** 264,267
+  		sin = &((struct icmp *)arg)->icmp_ip.ip_dst;
+  		in_pcbnotify(&tcb, sin, (int)inetctlerrmap[cmd], tcp_abort);
+  	}
+  }
+
+--- 271,313 -----
+  		sin = &((struct icmp *)arg)->icmp_ip.ip_dst;
+  		in_pcbnotify(&tcb, sin, (int)inetctlerrmap[cmd], tcp_abort);
+  	}
++ }
++ 
++ /* 
++  * Given a tcpcb, discover route and determine interface to send
++  * packets over.
++  */
++ 
++ struct ifnet *
++ tcp_getif(tp)
++ struct tcpcb *tp;
++ {
++ 	struct route iproute;
++ 	register struct route *ro;
++ 	struct in_addr faddr;
++ 	register struct ifnet *ifp;
++ 
++ 	ro = &iproute;
++ 	bzero((caddr_t)ro, sizeof(*ro));
++ 	ro->ro_dst.sa_family = AF_INET;
++ 	faddr = tp->t_inpcb->inp_faddr;
++ 		if (faddr.s_addr == 0)
++ 			return (struct ifnet *)0;
++ 
++ 	((struct sockaddr_in *) &iproute.ro_dst)->sin_addr = faddr;
++ 	rtalloc(ro);
++ 	if ((ro->ro_rt == 0) || (ifp = ro->ro_rt->rt_ifp) == 0)
++ 		return (struct ifnet *)0;
++ 	rtfree(ro->ro_rt);
++ 	return ifp;
+  }
+
+----------

@@ -1,0 +1,81 @@
+From alex@cca.cca.com  Mon Mar 30 11:39:41 1987
+Date: Mon, 30 Mar 87 14:36:03 EST
+From: alex@cca.cca.com (Alexis Layton)
+Subject: lpd does not handle filter error messages as advertised
+Index: usr.lib/lpr/printjob.c 4.3BSD
+
+Description:
+	According to the documentation, lpd now mails back filter error
+	messages to the user when the filter exits with FILTERERR (2).
+	The log file as specified in /etc/printcap (lf entry) is ignored.
+	The fix below fixes the mail-back problem and also writes the
+	errors to the log file.
+
+Repeat-By:
+	Create a C program which writes a message to the standard error
+	and then does an exit(2).  Install this as a filter (I used tf).
+	Print a job that will use this filter.  Observe that the mail
+	does not arrive.  Print it again with the -m flag and the mail
+	indicates that the job had errors but not what they were (the
+	message in the C program was not given).  Note the log file
+	has not been modified.
+
+Fix:
+	Diffs follow:
+
+*** printjob.c.dist	Sun Mar 29 18:58:50 1987
+--- printjob.c	Sun Mar 29 19:23:13 1987
+***************
+*** 222,227 ****
+--- 222,229 ----
+  	char *file;
+  {
+  	register int i;
++ 	struct stat stb;
++ 	FILE *tfp;
+  	char *cp;
+  	int bombed = OK;
+  
+***************
+*** 359,364 ****
+--- 361,382 ----
+  				(void) fclose(cfp);
+  				return(REPRINT);
+  			case FILTERERR:
++ 			    	tfp = NULL;
++ 			    	if (stat(tmpfile, &stb) == 0 && stb.st_size > 0)
++ 				    	tfp = fopen(tmpfile, "r");
++ 				fprintf(stderr, "user %s", logname);
++ 				if (*jobname)
++ 				    	fprintf(stderr, " job %s", jobname);
++ 				fprintf(stderr, " failed%c\n", tfp ? ':' : '.');
++ 				if (tfp) {
++ 				    	int c;
++ 
++ 				    	while ((c = getc(tfp)) != EOF) {
++ 					    putc(c, stderr);
++ 					}
++ 					fclose(tfp);
++ 				}
++ 				/* FALLS THROUGH */
+  			case ACCESS:
+  				bombed = i;
+  				sendmail(logname, bombed);
+***************
+*** 608,614 ****
+  		syslog(LOG_WARNING, "%s: Daemon filter '%c' exited (%d)",
+  			printer, format, status.w_retcode);
+  	case 2:
+! 		return(ERROR);
+  	}
+  }
+  
+--- 626,633 ----
+  		syslog(LOG_WARNING, "%s: Daemon filter '%c' exited (%d)",
+  			printer, format, status.w_retcode);
++ 		return(ERROR);
+  	case 2:
+! 		return(FILTERERR);
+  	}
+  }
+  

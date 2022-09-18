@@ -1,0 +1,376 @@
+Return-Path: <kiely%lownlab.UUCP@harvard.harvard.edu>
+Date: Tue, 17 Jun 86 17:46:09 EDT
+From: kiely%lownlab.UUCP@harvard.harvard.edu
+Subject: restore cannot run unattended
+Index: etc/restore 4.2BSD
+
+Type:	enhancement
+Priority:	low
+
+Description:
+	/etc/restore cannot run completely unattended because it tends
+	to ask questions (e.g. set owner/mode? [y,n]) which must be
+	answered for the program to continue.
+Repeat-By:
+
+Script started on Tue Jun 17 16:54:40 1986
+<1> is% restore xy ./kiely/.login &
+[1] 5323
+<2> is% You have not read any tapes yet.
+Unless you know which volume your file(s) are on you should start
+with the last volume and work towards towards the first.
+Specify next volume #: 
+[1]  + Stopped (tty input)  restore xy ./kiely/.login
+<2> is% fg
+restore xy ./kiely/.login
+1
+^Z
+Stopped
+<3> is% bg
+[1]    restore xy ./kiely/.login &
+<4> is% set owner/mode for '.'? [yn] 
+[1]  + Stopped (tty input)  restore xy ./kiely/.login
+<4> is% fg
+restore xy ./kiely/.login
+y
+<5> is% ^D
+script done on Tue Jun 17 16:57:10 1986
+
+Fix:
+	The solution is to create a new key such that when restore is
+	invoked with this key it will assume a (hopefully) logical
+	answer to any question.
+	I have implemented such a scheme with the 'Y' key.
+	Diff's of the entire src/etc/restore directory follow including
+	diff's for the manual page.
+	If you can provide me with positive proof of a 4.2BSD source license
+	I would be willing to mail you a shar'd version of the code.
+
+
+Script started on Tue Jun 17 13:16:46 1986
+<1> is% rcsdiff -c -rBSD4_2 -rlownlab RCS/*
+RCS file: RCS/Makefile,v
+retrieving revision 4.10.1.1
+retrieving revision 4.10.1.1
+diff -c -r4.10.1.1 -r4.10.1.1
+No differences encountered
+===================================================================
+RCS file: RCS/dirs.c,v
+retrieving revision 3.17.2.1
+retrieving revision 3.17.2.2
+diff -c -r3.17.2.1 -r3.17.2.2
+*** /tmp/,RCSt1003996   Tue Jun 17 13:17:27 1986
+--- /tmp/,RCSt2003996   Tue Jun 17 13:17:33 1986
+***************
+*** 471,479
+                if (command == 'i' || command == 'x') {
+                        if (ep == NIL)
+                                continue;
+!                       if (node.ino == ROOTINO &&
+!                           reply("set owner/mode for '.'") == FAIL)
+!                               continue;
+                }
+                if (ep == NIL)
+                        panic("cannot find directory inode %d\n", node.ino);
+
+--- 476,488 -----
+                if (command == 'i' || command == 'x') {
+                        if (ep == NIL)
+                                continue;
+!                       if (Yflag) {
+!                               fprintf(stderr, "set owner/mode for '.'? [yn] y\t(assumed)\n");
+!                       } else {
+!                               if (node.ino == ROOTINO &&
+!                                 reply("set owner/mode for '.'") == FAIL)
+!                                       continue;
+!                       }
+                }
+                if (ep == NIL)
+                        panic("cannot find directory inode %d\n", node.ino);
+===================================================================
+RCS file: RCS/main.c,v
+retrieving revision 3.13.2.1
+retrieving revision 3.13.2.2
+diff -c -r3.13.2.1 -r3.13.2.2
+*** /tmp/,RCSt1003996   Tue Jun 17 13:18:01 1986
+--- /tmp/,RCSt2003996   Tue Jun 17 13:18:06 1986
+***************
+*** 39,45
+  #include "restore.h"
+  #include <signal.h>
+  
+! int   cvtflag = 0, dflag = 0, vflag = 0, yflag = 0;
+  int   hflag = 1, mflag = 1;
+  char  command = '\0';
+  long  dumpnum = 1;
+
+--- 44,50 -----
+  #include "restore.h"
+  #include <signal.h>
+  
+! int   cvtflag = 0, dflag = 0, vflag = 0, yflag = 0, Yflag = 0;
+  int   hflag = 1, mflag = 1;
+  char  command = '\0';
+  long  dumpnum = 1;
+***************
+*** 102,107
+                        break;
+                case 'y':
+                        yflag++;
+                        break;
+                case 'f':
+                        if (argc < 1) {
+
+--- 107,116 -----
+                        break;
+                case 'y':
+                        yflag++;
++                       break;
++               case 'Y':               /* assume answers to ALL questions */
++                       yflag++;
++                       Yflag++;
+                        break;
+                case 'f':
+                        if (argc < 1) {
+===================================================================
+RCS file: RCS/restore.c,v
+retrieving revision 3.19.1.1
+retrieving revision 3.19.1.1
+diff -c -r3.19.1.1 -r3.19.1.1
+No differences encountered
+===================================================================
+RCS file: RCS/restore.h,v
+retrieving revision 3.8.2.1
+retrieving revision 3.8.2.2
+diff -c -r3.8.2.1 -r3.8.2.2
+*** /tmp/,RCSt1003996   Tue Jun 17 13:18:39 1986
+--- /tmp/,RCSt2003996   Tue Jun 17 13:18:41 1986
+***************
+*** 28,33
+  extern int    mflag;          /* restore by name instead of inode number */
+  extern int    vflag;          /* print out actions taken */
+  extern int    yflag;          /* always try to recover from tape errors */
+  /*
+   * Global variables
+   */
+
+--- 33,39 -----
+  extern int    mflag;          /* restore by name instead of inode number */
+  extern int    vflag;          /* print out actions taken */
+  extern int    yflag;          /* always try to recover from tape errors */
++ extern int    Yflag;  /* yflag + assume reasonable answers to all questions */
+  /*
+   * Global variables
+   */
+===================================================================
+RCS file: RCS/symtab.c,v
+retrieving revision 3.15.1.1
+retrieving revision 3.15.1.1
+diff -c -r3.15.1.1 -r3.15.1.1
+No differences encountered
+===================================================================
+RCS file: RCS/tape.c,v
+retrieving revision 3.22.2.1
+retrieving revision 3.22.2.2
+diff -c -r3.22.2.1 -r3.22.2.2
+*** /tmp/,RCSt1003996   Tue Jun 17 13:19:40 1986
+--- /tmp/,RCSt2003996   Tue Jun 17 13:19:48 1986
+***************
+*** 91,97
+  {
+        int i, j, *ip;
+        struct stat stbuf;
+!       extern char *ctime();
+        extern int xtrmap(), xtrmapskip();
+  
+        vprintf(stdout, "Verify tape and initialize maps\n");
+
+--- 94,100 -----
+  {
+        int i, j, *ip;
+        struct stat stbuf;
+!       extern char *ctime(), *strcpy();
+        extern int xtrmap(), xtrmapskip();
+  
+        vprintf(stdout, "Verify tape and initialize maps\n");
+***************
+*** 131,137
+        }
+        if (vflag || command == 't') {
+                fprintf(stdout, "Dump   date: %s", ctime(&spcl.c_date));
+!               fprintf(stdout, "Dumped from: %s", ctime(&spcl.c_ddate));
+        }
+        dumptime = spcl.c_ddate;
+        dumpdate = spcl.c_date;
+
+--- 134,140 -----
+        }
+        if (vflag || command == 't') {
+                fprintf(stdout, "Dump   date: %s", ctime(&spcl.c_date));
+!               fprintf(stdout, "Dumped from: %s", (spcl.c_ddate ? ctime(&spcl.c_ddate) : "the epoch\n") );
+        }
+        dumptime = spcl.c_ddate;
+        dumpdate = spcl.c_date;
+***************
+*** 229,235
+                do      {
+                        fprintf(stderr, "Specify next volume #: ");
+                        (void) fflush(stderr);
+!                       (void) fgets(tbf, BUFSIZ, terminal);
+                } while (!feof(terminal) && tbf[0] == '\n');
+                if (feof(terminal))
+                        done(1);
+
+--- 232,243 -----
+                do      {
+                        fprintf(stderr, "Specify next volume #: ");
+                        (void) fflush(stderr);
+!                       if (Yflag) {
+!                               strcpy(tbf, "1");
+!                               fprintf(stderr, "1\t(assumed)\n");
+!                       } else {
+!                               (void) fgets(tbf, BUFSIZ, terminal);
+!                       }
+                } while (!feof(terminal) && tbf[0] == '\n');
+                if (feof(terminal))
+                        done(1);
+***************
+*** 246,252
+        closemt();
+        fprintf(stderr, "Mount tape volume %d then type return ", newvol);
+        (void) fflush(stderr);
+!       while (getc(terminal) != '\n')
+                ;
+  #ifdef RRESTORE
+        if ((mt = rmtopen(magtape, 0)) == -1)
+
+--- 254,263 -----
+        closemt();
+        fprintf(stderr, "Mount tape volume %d then type return ", newvol);
+        (void) fflush(stderr);
+!       if (Yflag)
+!               fprintf(stderr, "<RETURN>\t(assumed)\n");
+!       else
+!               while (getc(terminal) != '\n')
+                ;
+  #ifdef RRESTORE
+        if ((mt = rmtopen(magtape, 0)) == -1)
+===================================================================
+RCS file: RCS/utilities.c,v
+retrieving revision 3.16.1.1
+retrieving revision 3.16.1.2
+diff -c -r3.16.1.1 -r3.16.1.2
+*** /tmp/,RCSt1004800	Tue Jun 17 15:33:52 1986
+--- /tmp/,RCSt2004800	Tue Jun 17 15:33:56 1986
+***************
+*** 350,355
+  {
+  	char c;
+  
+  	fprintf(stderr, "%s? ", question);
+  	do	{
+  		fprintf(stderr, "[yn] ");
+
+--- 353,365 -----
+  {
+  	char c;
+  
++ 	if (Yflag) {
++ 		/* impossible */
++ 		fprintf(stderr, "PANIC:\treply(question) = reply(%s) called with Yflag\n", question);
++ 		fprintf(stderr, "\tdumping core and exiting\n");
++ 		fflush(stdout);
++ 		abort();
++ 	}
+  	fprintf(stderr, "%s? ", question);
+  	do	{
+  		fprintf(stderr, "[yn] ");
+***************
+*** 496,501
+   */
+  onintr()
+  {
+  	if (reply("restore interrupted, continue") == FAIL)
+  		done(1);
+  	if (signal(SIGINT, onintr) == SIG_IGN)
+
+--- 506,515 -----
+   */
+  onintr()
+  {
++ 	if (Yflag) {
++ 		fprintf(stderr, "restore interrupted, continue? [yn] n\t(assumed)\n");
++ 		done(1);
++ 	}
+  	if (reply("restore interrupted, continue") == FAIL)
+  		done(1);
+  	if (signal(SIGINT, onintr) == SIG_IGN)
+***************
+*** 514,519
+  {
+  
+  	fprintf(stderr, msg, d1, d2);
+  	if (reply("abort") == GOOD) {
+  		if (reply("dump core") == GOOD)
+  			abort();
+
+--- 528,538 -----
+  {
+  
+  	fprintf(stderr, msg, d1, d2);
++ 	if (Yflag) {
++ 		fprintf(stderr, "abort? [y,n] y\t(assumed)");
++ 		fprintf(stderr, "dump core? [y,n] n\t(assumed)");
++ 		done(1);
++ 	}
+  	if (reply("abort") == GOOD) {
+  		if (reply("dump core") == GOOD)
+  			abort();
+===================================================================
+RCS file: RCS/restore.8,v
+retrieving revision 3.4.1.2
+retrieving revision 3.4.1.3
+diff -c -r3.4.1.2 -r3.4.1.3
+*** /tmp/,RCSt1004219	Tue Jun 17 13:34:41 1986
+--- /tmp/,RCSt2004219	Tue Jun 17 13:34:45 1986
+***************
+*** 1,4
+! .\" $Header: restore.8,v 3.4.1.2 86/06/17 11:25:31 kiely Exp $
+  .TH RESTORE 8 "1 August 1985"
+  .UC 4
+  .SH NAME
+
+--- 1,4 -----
+! .\" $Header: restore.8,v 3.4.1.3 86/06/17 13:33:20 kiely Exp $
+  .TH RESTORE 8 "1 August 1985"
+  .UC 4
+  .SH NAME
+***************
+*** 251,256
+  will not ask whether it should abort
+  if it gets a tape error.  It will always try to skip over the bad tape 
+  block(s) and continue as best it can.
+  .SH DIAGNOSTICS
+  Messages are issued regarding bad key characters. 
+  .PP
+
+--- 251,267 -----
+  will not ask whether it should abort
+  if it gets a tape error.  It will always try to skip over the bad tape 
+  block(s) and continue as best it can.
++ .TP 8
++ .B Y
++ .B Restore
++ will assume a (hopefully) reasonable answer to all questions
++ and continue automatically.
++ The
++ .B Y
++ key implies the
++ .B y
++ key.
++ (local modification)
+  .SH DIAGNOSTICS
+  Messages are issued regarding bad key characters. 
+  .PP
+<2> is% ^D
+script done on Tue Jun 17 13:21:04 1986

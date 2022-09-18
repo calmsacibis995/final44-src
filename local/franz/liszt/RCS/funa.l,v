@@ -1,0 +1,2249 @@
+head     1.12;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.12
+date     87.12.15.17.02.01;  author sklower;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     83.08.28.17.14.35;  author layer;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     83.08.22.22.58.46;  author layer;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     83.08.15.19.23.28;  author layer;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     83.08.14.19.32.07;  author layer;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     83.08.14.01.47.45;  author layer;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     83.08.12.02.47.18;  author layer;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.08.04.01.40.38;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.04.08.18.44.39;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.04.06.16.45.11;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.23.20.48.51;  author layer;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.14.46;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@random function opencoding
+@
+
+
+1.12
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file funa
+   "$Header: /b/users/housel/lisp/liszt/RCS/funa.l,v 1.6 86/12/16 09:06:29 housel Exp $")
+
+;;; ----	f u n a				function compilation
+;;;
+;;;				-[Mon Aug 22 22:01:01 1983 by layer]-
+
+
+;--- cc-and :: compile an and expression
+; We evaluate forms from left to right as long as they evaluate to
+; a non nil value.  We only have to worry about storing the value of
+; the last expression in g-loc.
+;
+(defun cc-and nil
+  (let ((finlab (d-genlab))
+	(finlab2)
+	(exps (if (cdr v-form) thenret else '(t))))	; (and) ==> t
+       (if (null (cdr g-cc))
+	   then (d-exp (do ((g-cc (cons nil finlab))
+			    (g-loc)
+			    (g-ret)
+			    (ll exps (cdr ll)))
+			   ((null (cdr ll)) (car ll))
+			   (d-exp (car ll))))
+		(if g-loc
+		    then (setq finlab2 (d-genlab))
+			 (e-goto finlab2)
+			 (e-label finlab)
+			 (d-move 'Nil g-loc)
+			 (e-label finlab2)
+		    else (e-label finlab))
+	   else ;--- cdr g-cc is non nil, thus there is
+		; a quick escape possible if one of the
+		; expressions evals to nil
+
+		(if (null g-loc) then (setq finlab (cdr g-cc)))
+	        (d-exp (do ((g-cc (cons nil finlab))
+			    (g-loc)
+			    (g-ret)
+			    (ll exps (cdr ll)))
+			   ((null (cdr ll)) (car ll))
+			   (d-exp (car ll))))
+		; if g-loc is non nil, then we have evaled the and
+		; expression to yield nil, which we must store in
+		; g-loc and then jump to where the cdr of g-cc takes us
+		(if g-loc
+		    then (setq finlab2 (d-genlab))
+			 (e-goto finlab2)
+			 (e-label finlab)
+			 (d-move 'Nil g-loc)
+			 (e-goto (cdr g-cc))
+			 (e-label finlab2))))
+  (d-clearreg))	 ; we cannot predict the state of the registers
+
+;--- cc-arg  :: get the nth arg from the current lexpr
+;
+; the syntax for Franz lisp is (arg i)
+; for interlisp the syntax is (arg x i) where x is not evaluated and is
+; the name of the variable bound to the number of args.  We can only handle
+; the case of x being the variable for the current lexpr we are compiling
+;
+(defun cc-arg nil
+   (prog (nillab finlab)
+       (setq nillab (d-genlab)
+	     finlab (d-genlab))
+       (if (not (eq 'lexpr g-ftype)) 
+	   then (comp-err " arg only allowed in lexprs"))
+       (if (and (eq (length (cdr v-form)) 2) fl-inter)
+	   then (if (not (eq (car g-args) (cadr v-form)))
+		    then (comp-err " arg expression is for non local lexpr "
+				   v-form)
+		    else (setq v-form (cdr v-form))))
+       (if (and (null g-loc) (null g-cc))
+	   then ;bye bye, wouldn't do anything
+		(return nil))
+       (if (and (fixp (cadr v-form)) (>& (cadr v-form) 0))
+	   then ; simple case (arg n) for positive n
+		(d-move `(fixnum ,(cadr v-form)) 'reg)
+		#+for-68k
+		(progn
+		    (e-sub `(-4 #.olbot-reg) 'd0)
+		    (if g-loc
+			then (e-move '(% -8 #.olbot-reg d0) (e-cvt g-loc)))
+		    (if g-cc then (e-cmpnil '(% -8 #.olbot-reg d0))))
+		#+(or for-vax for-tahoe)
+		(progn
+		    (e-sub3 '(* -4 #.olbot-reg) '(0 r0) 'r0)
+		    (if g-loc
+			then (e-move '(-8 #.olbot-reg r0) (e-cvt g-loc))
+		     elseif g-cc
+			then (e-tst '(-8 #.olbot-reg r0))))
+		(d-handlecc)
+	elseif (or (null (cadr v-form))
+		   (and (fixp (cadr v-form)) (=& 0 (cadr v-form))))
+	   then ;---the form is: (arg nil) or (arg) or (arg 0).
+		;   We have a private copy of the number of args right
+		; above the arguments on the name stack, so that
+		; the user can't clobber it... (0 olbot) points
+		; to the user setable copy, and (-4 olbot) to our
+		; copy.
+		(if g-loc then (e-move '(-4 #.olbot-reg) (e-cvt g-loc)))
+		;   Will always return a non nil value, so
+		; don't even test it.
+		(if (car g-cc) then (e-goto (car g-cc)))
+	   else ; general (arg <form>)
+		(let ((g-loc 'reg)
+		      (g-cc (cons nil nillab))
+		      (g-ret))
+		    (d-exp (cadr v-form)))  ;boxed fixnum or nil
+		; (arg 0) returns nargs (compiler only!)
+		(d-cmp 'reg '(fixnum 0))
+		(e-gotonil nillab)
+		
+		; ... here we are doing (arg <number>), <number> != 0
+		#+for-68k
+		(progn
+		    (e-sub '(-4 #.olbot-reg) 'd0)
+		    (if g-loc
+			then (e-move '(% -8 #.olbot-reg d0) (e-cvt g-loc)))
+		    (if g-cc then (e-cmpnil '(% -8 #.olbot-reg d0))))
+		#+(or for-vax for-tahoe)
+		(progn
+		    (e-sub3 `(* -4 #.olbot-reg) '(0 r0) 'r0)
+		    (if g-loc
+			then (e-move '(-8 #.olbot-reg r0) (e-cvt g-loc))
+		     elseif g-cc
+			then (e-tst '(-8 #.olbot-reg r0))))
+		(d-handlecc)
+		(e-goto finlab)
+		(e-label nillab)
+		; here we are doing (arg nil) which
+		; returns the number of args
+		; which is always true if anyone is testing
+		(if g-loc
+		    then (e-move '(-4 #.olbot-reg) (e-cvt g-loc))
+			 #+for-68k (if g-cc then (e-cmpnil '(-4 #.olbot-reg)))
+			 (d-handlecc)
+		 elseif (car g-cc)
+		    then (e-goto (car g-cc))) ;always true
+		(e-label finlab))))
+
+;--- c-assembler-code
+; the args to assembler-code are a list of assembler language 
+; statements.  This statements are put directly in the code
+; stream produced by the compiler.  Beware: The interpreter cannot
+; interpret the assembler-code function.
+;
+(defun c-assembler-code nil
+  (setq g-skipcode nil)		; turn off code skipping
+  (makecomment '(assembler code start))
+  (do ((xx (cdr v-form) (cdr xx)))
+      ((null xx))
+      (e-write1 (car xx)))
+  (makecomment '(assembler code end)))
+
+;--- cm-assq :: assoc with eq for testing
+;
+; form: (assq val list)
+;
+(defun cm-assq nil
+  `(do ((xx-val ,(cadr v-form))
+	(xx-lis ,(caddr v-form) (cdr xx-lis)))
+       ((null xx-lis))
+       (cond ((eq xx-val (caar xx-lis)) (return (car xx-lis))))))
+
+;--- cc-atom :: test for atomness
+;
+(defun cc-atom nil
+  (d-typecmplx (cadr v-form)
+	       #.(immed-const (plus 1_0 1_1 1_2 1_4 1_5 1_6 1_7 1_9 1_10))))
+
+;--- c-bcdcall :: do a bcd call
+;
+; a bcdcall is the franz equivalent of the maclisp subrcall.
+; it is called with
+; (bcdcall 'b_obj 'arg1 ...)
+;  where b_obj must be a binary object. no type checking is done.
+;
+(defun c-bcdcall nil
+  (d-callbig 1 (cdr v-form) t))
+
+;--- cc-bcdp :: check for bcdpness
+;
+(defun cc-bcdp nil
+  (d-typesimp (cadr v-form) #.(immed-const 5)))
+
+;--- cc-bigp :: check for bignumness
+;
+(defun cc-bigp nil
+  (d-typesimp (cadr v-form) #.(immed-const 9)))
+
+;--- c-boole :: compile
+;
+#+(or for-vax for-tahoe)
+(progn 'compile
+(defun c-boole nil
+   (cond ((fixp (cadr v-form))
+	  (setq v-form (d-boolexlate (d-booleexpand v-form)))))
+   (cond ((eq 'boole (car v-form)) 	;; avoid recursive calls to d-exp
+	  (d-callbig 'boole (cdr v-form) nil))
+	 (t (let ((g-loc 'reg) (g-cc nil) (g-ret nil))  ; eval answer
+	       (d-exp v-form)))))
+
+;--- d-booleexpand :: make sure boole only has three args
+;  we use the identity (boole k x y z) == (boole k (boole k x y) z)
+; to make sure that there are exactly three args to a call to boole
+;
+(defun d-booleexpand (form)
+   (if (and (dtpr form) (eq 'boole (car form)))
+       then (if (< (length form) 4)
+		then (comp-err "Too few args to boole : " form)
+	     elseif (= (length form) 4)
+		then form
+		else (d-booleexpand
+			 `(boole ,(cadr form)
+				  (boole ,(cadr form)
+					  ,(caddr form)
+					  ,(cadddr form))
+				  ,@@(cddddr form))))
+       else form))
+
+(declare (special x y))
+(defun d-boolexlate (form)
+   (if (atom form)
+       then form
+    elseif (and (eq 'boole (car form))
+		(fixp (cadr form)))
+       then (let ((key (cadr form))
+		  (x (d-boolexlate (caddr form)))
+		  (y (d-boolexlate (cadddr form)))
+		  (res))
+		(makecomment `(boole key = ,key))
+		(if (eq key 0) 		;; 0
+		    then `(progn ,x ,y 0)
+		 elseif (eq key 1) 	;; x * y
+		    then #+for-vax `(fixnum-BitAndNot ,x (fixnum-BitXor ,y -1))
+		         #+for-tahoe `(fixnum-BitAnd ,x ,y)
+		 elseif (eq key 2) 	;; !x * y
+		    then #+for-vax `(fixnum-BitAndNot (fixnum-BitXor ,x -1)
+					    (fixnum-BitXor ,y -1))
+		         #+for-tahoe `(fixnum-BitAnd (fixnum-BitXor ,x -1) ,y)
+		 elseif (eq key 3) 	;; y
+		    then `(progn ,x ,y)
+		 elseif (eq key 4)	;; x * !y
+		    then #+for-vax `(fixnum-BitAndNot ,x ,y)
+			 #+for-tahoe `(fixnum-BitAnd ,x (fixnum-BitXor ,y -1))
+		 elseif (eq key 5) 	;; x
+		    then `(prog1 ,x ,y)
+		 elseif (eq key 6)        ;; x xor y
+		    then `(fixnum-BitXor ,x ,y)
+		 elseif (eq key 7) 	;; x + y
+		    then `(fixnum-BitOr ,x ,y)
+		 elseif (eq key 8)	;; !(x xor y)
+		    then `(fixnum-BitXor (fixnum-BitOr ,x ,y) -1)
+		 elseif (eq key 9) 	;; !(x xor y)
+		    then `(fixnum-BitXor (fixnum-BitXor ,x ,y) -1)
+		 elseif (eq key 10) 	;; !x
+		    then `(prog1 (fixnum-BitXor ,x -1) ,y)
+		 elseif (eq key 11) 	;; !x + y
+		    then `(fixnum-BitOr (fixnum-BitXor ,x -1) ,y)
+		 elseif (eq key 12) 	;; !y
+		    then `(progn ,x (fixnum-BitXor ,y -1))
+		 elseif (eq key 13) 	;; x + !y
+		    then `(fixnum-BitOr ,x (fixnum-BitXor ,y -1))
+		 elseif (eq key 14) 	;; !x + !y
+		    then `(fixnum-BitOr (fixnum-BitXor ,x -1)
+					(fixnum-BitXor ,y -1))
+		 elseif (eq key 15) 	;; -1
+		    then `(progn ,x ,y -1)
+		    else form))
+       else form))
+
+(declare (unspecial x y))
+) ;; end for-vax
+
+
+;--- c-*catch :: compile a *catch expression
+;
+; the form of *catch is (*catch 'tag 'val)
+; we evaluate 'tag and set up a catch frame, and then eval 'val
+;
+(defun c-*catch nil
+   (let ((g-loc 'reg)
+	 (g-cc nil)
+	 (g-ret nil)
+	 (finlab (d-genlab))
+	 (beglab (d-genlab)))
+       (d-exp (cadr v-form))		; calculate tag into 'reg
+       (d-pushframe #.F_CATCH 'reg 'Nil) ; the Nil is a don't care
+       (push nil g-labs)		; disallow labels
+       ; retval will be non 0 if we were thrown to, in which case the value
+       ; thrown is in _lispretval.
+       ; If we weren't thrown-to the value should be calculated in r0.
+       (e-tst '_retval)
+       (e-write2 #+(or for-vax for-tahoe) 'jeql #+for-68k 'jeq beglab)
+       (e-move '_lispretval (e-cvt 'reg))
+       (e-write2 #+(or for-vax for-tahoe) 'jbr #+for-68k 'jra finlab)
+       (e-label beglab)
+       (d-exp (caddr v-form))
+       (e-label finlab)
+       (d-popframe)	; remove catch frame from stack
+       (unpush g-locs)	; remove (catcherrset . 0)
+       (unpush g-labs)  ; allow labels again
+       (d-clearreg)))
+
+;--- d-pushframe :: put an evaluation frame on the stack
+;
+; This is equivalant in the C system to 'errp = Pushframe(class,arg1,arg2);'
+; We stack a frame which describes the class (will always be F_CATCH)
+; and the other option args.
+; 2/10/82 - it is a bad idea to stack a variable number of arguments, since
+; this makes it more complicated to unstack frames.  Thus we will always
+; stack the maximum --jkf
+(defun d-pushframe (class arg1 arg2)
+  (C-push (e-cvt arg2))
+  (C-push (e-cvt arg1))
+  (C-push `($ ,class))
+  (if (null $global-reg$)
+      then (e-move '#.np-reg '#.np-sym)
+	   (e-move '#.np-reg '#.lbot-sym))
+  (e-quick-call '_qpushframe)
+  (e-move (e-cvt 'reg) '_errp)
+  (push '(catcherrset . 0) g-locs))
+
+;--- d-popframe :: remove an evaluation frame from the stack
+;
+; This is equivalent in the C system to 'errp = Popframe();'
+;  n is the number of arguments given to the pushframe which
+; created this frame.  We have to totally remove this frame from
+; the stack only if we are in a local function, but for now, we just
+; do it all the time.
+;
+(defun d-popframe ()
+   (let ((treg #+(or for-vax for-tahoe) 'r1 #+for-68k 'a5))
+       (e-move '_errp treg)
+       (e-move `(#.OF_olderrp ,treg) '_errp)
+       ; there are always 3 arguments pushed, and the frame contains 5
+       ; longwords.  We should make these parameters into manifest
+       ; constants --jkf
+       (e-add3 `($ ,(+ (* 3 4) (* 5 4))) treg 'sp)))
+
+;--- c-cond :: compile a "cond" expression
+;
+; not that this version of cond is a 'c' rather than a 'cc' . 
+; this was done to make coding this routine easier and because
+; it is believed that it wont harm things much if at all
+;
+(defun c-cond nil
+  (makecomment '(beginning cond))
+  (do ((clau (cdr v-form) (cdr clau))
+       (finlab (d-genlab))
+       (nxtlab)
+       (save-reguse)
+       (seent))
+      ((or (null clau) seent)
+       ; end of cond
+       ; if haven't seen a t must store a nil in `reg'
+       (if (null seent)  then (d-move 'Nil 'reg))
+       (e-label finlab))
+
+      ; case 1 - expr
+      (if (atom (car clau))
+	  then (comp-err "bad cond clause " (car clau))
+      ; case 2 - (expr)
+       elseif (null (cdar clau))
+	  then (let ((g-loc (if (or g-cc g-loc) then 'reg))
+		     (g-cc (cons finlab nil))
+		     (g-ret (and g-ret (null (cdr clau)))))
+		    (d-exp (caar clau)))
+      ; case 3 - (t expr1 expr2 ...)
+       elseif (or (eq t (caar clau))
+		  (equal ''t (caar clau)))
+	  then (let ((g-loc (if (or g-cc g-loc) then 'reg))
+		     g-cc)
+		    (d-exps (cdar clau)))
+	       (setq seent t)
+      ; case 4 - (expr1 expr2 ...)
+       else (let ((g-loc nil)
+		  (g-cc (cons nil (setq nxtlab (d-genlab))))
+		  (g-ret nil))
+		 (d-exp (caar clau)))
+	    (setq save-reguse (copy g-reguse))
+	    (let ((g-loc (if (or g-cc g-loc) then 'reg))
+		  g-cc)
+		 (d-exps (cdar clau)))
+	    (if (or (cdr clau) (null seent)) then (e-goto finlab))
+	    (e-label nxtlab)
+	    (setq g-reguse save-reguse)))
+  
+  (d-clearreg))
+	      
+;--- c-cons :: do a cons instruction quickly
+;
+(defun c-cons nil
+  (d-pushargs (cdr v-form))		; there better be 2 args
+  (e-quick-call '_qcons)
+  (setq g-locs (cddr g-locs))
+  (setq g-loccnt (- g-loccnt 2))
+  (d-clearreg))
+
+;--- c-cxr :: compile a cxr instruction
+; 
+;
+(defun cc-cxr nil
+  (d-supercxr t nil))
+
+;--- d-supercxr :: do a general struture reference
+;  	type - one of fixnum-block,flonum-block,<other-symbol>
+; the type is that of an array, so <other-symbol> could be t, nil
+; or anything else, since anything except *-block is treated the same
+;
+; the form of a cxr is (cxr index hunk) but supercxr will handle
+; arrays too, so hunk could be (getdata (getd 'arrayname))
+;
+; offsetonly is t if we only care about the offset of this element from
+; the beginning of the data structure.  If offsetonly is t then type
+; will be nil.
+;
+; Note: this takes care of g-loc and g-cc 
+
+#+(or for-vax for-tahoe)
+(defun d-supercxr (type offsetonly)
+  (let ((arg1 (cadr v-form))
+	(arg2 (caddr v-form))
+	lop rop semisimple)
+
+       (if (fixp arg1) then (setq lop `(immed ,arg1))
+	   else (d-fixnumexp arg1)	; calculate index into r5
+		(setq lop 'r5))		; and remember that it is there
+
+       ; before we calculate the second expression, we may have to save
+       ; the value just calculated into r5.  To be safe we stack away
+       ; r5 if the expression is not simple or semisimple.
+       (if (not (setq rop (d-simple arg2)))	
+	   then (if (and (eq lop 'r5) 
+			 (not (setq semisimple (d-semisimple arg2))))
+		    then (C-push (e-cvt lop)))
+	        (let ((g-loc 'reg) g-cc)
+		     (d-exp arg2))
+	        (setq rop 'r0)
+
+		(if (and (eq lop 'r5) (not semisimple))
+		    then (C-pop (e-cvt lop))))
+
+       (if (eq type 'flonum-block)
+	  then (setq lop (d-structgen lop rop 8))
+	       (e-write3 'movq lop 'r4)
+	       (e-quick-call '_qnewdoub)	; box number
+	       (d-clearreg)			; clobbers all regs
+	       (if (and g-loc (not (eq g-loc 'reg)))
+		  then (d-move 'reg g-loc))
+	       (if (car g-cc) then (e-goto (car g-cc)))
+	  else (setq lop (d-structgen lop rop 4)
+		     rop (if g-loc then
+			     (if (eq type 'fixnum-block) then 'r5 
+				else (e-cvt g-loc))))
+	       (if rop 
+		  then (if offsetonly
+			  then (e-write3 'moval lop rop)
+			  else (e-move lop rop))
+		       (if (eq type 'fixnum-block) 
+			   then (e-call-qnewint)
+				(d-clearreg)
+				(if (not (eq g-loc 'reg))
+				    then (d-move 'reg g-loc))
+				; result is always non nil.
+				(if (car g-cc) then (e-goto (car g-cc)))
+			   else (d-handlecc))
+		elseif g-cc 
+		  then (if (eq type 'fixnum-block)
+			  then (if (car g-cc) 
+				  then (e-goto (car g-cc)))
+			  else (e-tst lop)
+				(d-handlecc))))))
+
+#+for-68k
+(defun d-supercxr (type offsetonly)
+   (let ((arg1 (cadr v-form))
+	 (arg2 (caddr v-form))
+	 lop rop semisimple)
+       (makecomment `(Starting d-supercxr: vform: ,v-form))
+       (if (fixp arg1) then (setq lop `(immed ,arg1))
+	   else (d-fixnumexp arg1)	  ; calculate index into fixnum-reg
+		(d-regused '#.fixnum-reg)
+		(setq lop '#.fixnum-reg)) ; and remember that it is there
+       ;
+       ; before we calculate the second expression, we may have to save
+       ; the value just calculated into fixnum-reg. To be safe we stack away
+       ; fixnum-reg if the expression is not simple or semisimple.
+       (if (not (setq rop (d-simple arg2)))	
+	   then (if (and (eq lop '#.fixnum-reg)
+			 (not (setq semisimple (d-semisimple arg2))))
+		    then (C-push (e-cvt lop)))
+		(let ((g-loc 'areg) g-cc)
+		    (d-exp arg2))
+		(setq rop 'a0)
+		;
+		(if (and (eq lop '#.fixnum-reg) (not semisimple))
+		    then (C-pop (e-cvt lop))))
+       ;
+       (if (eq type 'flonum-block)
+	   then (setq lop (d-structgen lop rop 8))
+		(break " d-supercxr : flonum stuff not done.")
+		(e-write3 'movq lop 'r4)
+		(e-quick-call '_qnewdoub)	; box number
+		(d-clearreg)			; clobbers all regs
+		(if (and g-loc (not (eq g-loc 'areg)))
+		    then (d-move 'areg g-loc))
+		(if (car g-cc) then (e-goto (car g-cc)))
+	   else (if (and (dtpr rop) (eq 'stack (car rop)))
+		    then (e-move (e-cvt rop) 'a1)
+			 (setq rop 'a1))
+		(setq lop (d-structgen lop rop 4)
+		      rop (if g-loc then
+			      (if (eq type 'fixnum-block)
+				  then '#.fixnum-reg 
+				  else (e-cvt g-loc))))
+		(if rop 
+		    then (if offsetonly
+			     then (e-write3 'lea lop 'a5)
+				  (e-move 'a5 rop)
+			     else (e-move lop rop))
+			 (if (eq type 'fixnum-block) 
+			     then (e-call-qnewint)
+				  (d-clearreg)
+				  (if (not (eq g-loc 'areg))
+				      then (d-move 'areg g-loc))
+				  ; result is always non nil.
+				  (if (car g-cc) then (e-goto (car g-cc)))
+			     else (e-cmpnil lop)
+				  (d-handlecc))
+		 elseif g-cc 
+		    then (if (eq type 'fixnum-block)
+			     then (if (car g-cc) 
+				      then (e-goto (car g-cc)))
+			     else (if g-cc
+				      then (e-cmpnil lop)
+					   (d-handlecc)))))
+       (makecomment "Done with d-supercxr")))
+
+;--- d-semisimple :: check if result is simple enough not to clobber r5
+; currently we look for the case of (getdata (getd 'foo))
+; since we know that this will only be references to r0.
+; More knowledge can be added to this routine.
+;
+(defun d-semisimple (form)
+  (or (d-simple form)
+      (and (dtpr form) 
+	   (eq 'getdata (car form))
+	   (dtpr (cadr form))
+	   (eq 'getd (caadr form))
+	   (dtpr (cadadr form))
+	   (eq 'quote (caadadr form)))))
+
+;--- d-structgen :: generate appropriate address for indexed access
+;	index - index address, must be (immed n) or r5 (which contains int)
+;	base  - address of base
+;	width - width of data element
+; want to calculate appropriate address for base[index]
+; may require emitting instructions to set up registers
+; returns the address of the base[index] suitable for setting or reading
+;
+; the code sees the base as a stack value as a special case since it
+; can generate (perhaps) better code for that case.
+
+#+(or for-vax for-tahoe)
+(defun d-structgen (index base width)
+  (if (and (dtpr base) (eq (car base) 'stack))
+      then (if (dtpr index)	; i.e if index = (immed n)
+	       then (d-move index 'r5))	; get immed in register
+	   ;  the result is always *n(r6)[r5]
+	   (append (e-cvt `(vstack ,(cadr base))) '(r5))
+      else (if (not (atom base))	; i.e if base is not register
+	       then (d-move base 'r0)	; (if nil gets here we will fail)
+		    (d-clearreg 'r0)
+		    (setq base 'r0))
+	   (if (dtpr index) then `(,(* width (cadr index)) ;immed index
+				    ,base)
+			    else `(0 ,base r5))))
+
+#+for-68k
+(defun d-structgen (index base width)
+   (if (and (dtpr base) (eq (car base) 'stack))
+       then (break "d-structgen: bad args(1)")
+       else (if (not (atom base))	; i.e if base is not register
+		then (d-move base 'a0)	; (if nil gets here we will fail)
+		     (d-clearreg 'a0)
+		     (setq base 'a0))
+	    (if (dtpr index)
+		then `(,(* width (cadr index)) ,base)
+		else (d-regused 'd6)
+		     (e-move index 'd6)
+		     (e-write3 'asll '($ 2) 'd6)
+		     `(% 0 ,base d6))))
+
+;--- c-rplacx :: complile a rplacx expression
+;
+;  This simple calls the general structure hacking function, d-superrplacx
+;  The argument, hunk, means that the elements stored in the hunk are not
+;  fixum-block or flonum-block arrays.
+(defun c-rplacx nil
+  (d-superrplacx 'hunk))
+
+;--- d-superrplacx :: handle general setting of things in structures
+;	type - one of fixnum-block, flonum-block, hunk
+; see d-supercxr for comments
+; form of rplacx is (rplacx index hunk valuetostore)
+#+(or for-vax for-tahoe)
+(defun d-superrplacx (type)
+	 (let ((arg1 (cadr v-form))
+	       (arg2 (caddr v-form))
+	       (arg3 (cadddr v-form))
+	       lop rop semisimple)
+	      
+	      ; calulate index and put it in r5 if it is not an immediate
+	      ; set lop to the location of the index
+	      (if (fixp arg1) then (setq lop `(immed ,arg1))
+		  else (d-fixnumexp arg1)
+		       (setq lop 'r5))	
+	      
+	      ; set rop to the location of the hunk.  If we have to 
+	      ; calculate the hunk, we may have to save r5.
+	      ; If we are doing a rplacx (type equals hunk) then we must
+	      ; return the hunk in r0.
+	      (if (or (eq type 'hunk) (not (setq rop (d-simple arg2))))
+		  then (if (and (eq lop 'r5) 
+				(not (setq semisimple (d-semisimple arg2))))
+			   then (d-move lop '#.Cstack))
+		       (let ((g-loc 'r0) g-cc)
+			    (d-exp arg2))
+		       (setq rop 'r0)
+		  
+		       (if (and (eq lop 'r5) (not semisimple))
+			   then (d-move '#.unCstack lop)))
+
+	      ; now that the index and data block locations are known, we 
+	      ; caclulate the location of the index'th element of hunk
+	      (setq rop
+		    (d-structgen lop rop
+				 (if (eq type 'flonum-block) then 8 else 4)))
+
+	      ; the code to calculate the value to store and the actual
+	      ; storing depends on the type of data block we are storing in.
+	      (if (eq type 'flonum-block) 
+		  then (if (setq lop (d-simple `(cdr ,arg3)))
+			   then (e-write3 'movq (e-cvt lop) rop)
+			   else ; preserve rop since it may be destroyed
+				; when arg3 is calculated
+				(e-write3 'movaq rop '#.Cstack)
+				(let ((g-loc 'r0) g-cc)
+				     (d-exp arg3))
+				(d-clearreg 'r0)
+				(e-write3 'movq '(0 r0) "*(sp)+"))
+	       elseif (and (eq type 'fixnum-block)
+			   (setq arg3 `(cdr ,arg3))
+			   nil)
+		      ; fixnum-block is like hunk except we must grab the
+		      ; fixnum value out of its box, hence the (cdr arg3)
+		   thenret
+	       else (if (setq lop (d-simple arg3))
+			then (e-move (e-cvt lop) rop)
+			else ; if we are dealing with hunks, we must save
+			     ; r0 since that contains the value we want to
+			     ; return.
+			     (if (eq type 'hunk) then (d-move 'reg 'stack)
+						      (Push g-locs nil)
+						      (incr g-loccnt))
+			     (e-write3 'moval rop '#.Cstack)
+			     (let ((g-loc "*(sp)+") g-cc)
+				  (d-exp arg3))
+			     (if (eq type 'hunk) then (d-move 'unstack 'reg)
+						      (unpush g-locs)
+						      (decr g-loccnt))
+			     (d-clearreg 'r0)))))
+
+#+for-68k
+(defun d-superrplacx (type)
+   (let ((arg1 (cadr v-form))
+	 (arg2 (caddr v-form))
+	 (arg3 (cadddr v-form))
+	 lop rop semisimple)
+       (makecomment `(starting d-superrplacx ,type :: v-form = ,v-form))
+       ;
+       ; calulate index and put it in '#.fixnum-reg if it is not an immediate
+       ; set lop to the location of the index
+       (if (fixp arg1) then (setq lop `(immed ,arg1))
+	   else (d-fixnumexp arg1)
+		(d-regused '#.fixnum-reg)
+		(setq lop '#.fixnum-reg))
+       ;
+       ; set rop to the location of the hunk.  If we have to
+       ; calculate the hunk, we may have to save '#.fixnum-reg.
+       ; If we are doing a rplacx (type equals hunk) then we must
+       ; return the hunk in d0.
+       (if (or (eq type 'hunk) (not (setq rop (d-simple arg2))))
+	   then (if (and (eq lop '#.fixnum-reg)
+			 (not (setq semisimple (d-semisimple arg2))))
+		    then (d-move lop '#.Cstack))
+		(let ((g-loc 'a0) g-cc)
+		    (d-exp arg2))
+		(setq rop 'a0)
+		(if (and (eq lop '#.fixnum-reg) (not semisimple))
+		    then (d-move '#.unCstack lop)))
+       ;
+       ; now that the index and data block locations are known, we
+       ; caclulate the location of the index'th element of hunk
+       (setq rop
+	     (d-structgen lop rop
+			  (if (eq type 'flonum-block) then 8 else 4)))
+       ;
+       ; the code to calculate the value to store and the actual
+       ; storing depends on the type of data block we are storing in.
+       (if (eq type 'flonum-block) 
+	   then (break "flonum stuff not in yet")
+		(if (setq lop (d-simple `(cdr ,arg3)))
+		    then (e-write3 'movq (e-cvt lop) rop)
+		    else ; preserve rop since it may be destroyed
+			 ; when arg3 is calculated
+			 (e-write3 'movaq rop '#.Cstack)
+			 (let ((g-loc 'd0) g-cc)
+			     (d-exp arg3))
+			 (d-clearreg 'd0)
+			 (e-write3 'movq '(0 d0) "*(sp)+"))
+	elseif (and (eq type 'fixnum-block)
+		    (setq arg3 `(cdr ,arg3))
+		    nil)
+	     ; fixnum-block is like hunk except we must grab the
+	     ; fixnum value out of its box, hence the (cdr arg3)
+	   thenret
+	   else (if (setq lop (d-simple arg3))
+		    then (e-move (e-cvt lop) rop)
+		    else ; if we are dealing with hunks, we must save
+			 ; d0 since that contains the value we want to
+			 ; return.
+			 (if (eq type 'hunk)
+			     then (L-push 'a0)
+				  (push nil g-locs)
+				  (incr g-loccnt))
+			 (e-write3 'lea rop 'a5)
+			 (C-push 'a5)
+			 (let ((g-loc '(racc * 0 sp)) g-cc)
+			     (d-exp arg3))
+			 (if (eq type 'hunk)
+			     then (L-pop 'd0)
+				  (unpush g-locs)
+				  (decr g-loccnt))))
+       (makecomment '(d-superrplacx done))))
+			    
+;--- cc-cxxr :: compile a "c*r" instr where *
+;		is any sequence of a's and d's
+;	- arg : argument of the cxxr function
+;	- pat : a list of a's and d's in the reverse order of that
+;			which appeared between the c and r
+;
+#+(or for-vax for-tahoe)
+(defun cc-cxxr (arg pat)
+  (prog (resloc loc qloc sofar togo keeptrack)
+	; check for the special case of nil, since car's and cdr's
+	; are nil anyway
+	(if (null arg)
+	    then (if g-loc then (d-move 'Nil g-loc)
+		     (d-handlecc)
+		  elseif (cdr g-cc) then (e-goto (cdr g-cc)))
+		 (return))
+				      
+	(if (and (symbolp arg) (setq qloc (d-bestreg arg pat)))
+	    then (setq resloc (car qloc)
+		       loc   resloc
+		       sofar  (cadr qloc)
+		       togo   (caddr qloc))
+	    else (setq resloc
+		       (if (d-simple arg)
+			   thenret
+			   else (let ((g-loc 'reg)
+				      (g-cc nil)
+				      (g-ret nil))
+				    (d-exp arg))
+				'r0))
+	       (setq sofar nil togo pat))
+
+	(if (and arg (symbolp arg)) then (setq keeptrack t))
+
+       ; if resloc is a global variable, we must move it into a register
+       ; right away to be able to do car's and cdr's
+       (if (and (dtpr resloc) (or (eq (car resloc) 'bind)
+				  (eq (car resloc) 'vstack)))
+	   then (d-move resloc 'reg)
+		(setq resloc 'r0))
+
+       ; now do car's and cdr's .  Values are placed in r0. We stop when
+       ; we can get the result in one machine instruction.  At that point
+       ; we see whether we want the value or just want to set the cc's.
+       ; If the intermediate value is in a register, 
+       ; we can do : car cdr cddr cdar
+       ; If the intermediate value is on the local vrbl stack or lbind
+       ; we can do : cdr
+       (do ((curp togo newp)
+	    (newp))
+	   ((null curp) (if g-loc then (d-movespec loc g-loc)
+			    elseif g-cc then (e-tst loc))
+	                (d-handlecc))
+	   (if (symbolp resloc)
+	       then (if (eq 'd (car curp))
+			then (if (or (null (cdr curp))
+				     (eq 'a (cadr curp)))
+				 then (setq newp (cdr curp)   ; cdr
+					    loc `(0 ,resloc)
+					    sofar (append sofar (list 'd)))
+				 else (setq newp (cddr curp)  ; cddr
+					    loc `(* 0 ,resloc)
+					    sofar (append sofar
+							  (list 'd 'd))))
+			else (if (or (null (cdr curp))
+				     (eq 'a (cadr curp)))
+				 then (setq newp (cdr curp)   ; car
+					    loc `(4 ,resloc)
+					    sofar (append sofar (list 'a)))
+				 else (setq newp (cddr curp)  ; cdar
+					    loc `(* 4 ,resloc)
+					    sofar (append sofar
+							  (list 'a 'd)))))
+	       elseif (and (eq 'd (car curp))
+			   (not (eq '* (car (setq loc (e-cvt resloc))))))
+		 then (setq newp (cdr curp)	; (cdr <local>)
+			    loc (cons '* loc)
+			    sofar (append sofar (list 'd)))
+	       else  (setq loc (e-cvt resloc)
+			   newp curp))
+	   (if newp			; if this is not the last move
+	       then (setq resloc
+			  (d-allocreg (if keeptrack then nil else 'r0)))
+		    (d-movespec loc resloc)
+		    (if keeptrack then (d-inreg resloc (cons arg sofar)))))))
+
+#+for-68k
+(defun cc-cxxr (arg pat)
+   (prog (resloc loc qloc sofar togo keeptrack)
+       (makecomment '(starting cc-cxxr))
+       ; check for the special case of nil, since car's and cdr's
+       ; are nil anyway
+       (if (null arg)
+	   then (if g-loc then (d-move 'Nil g-loc))
+		(if (cdr g-cc) then (e-goto (cdr g-cc)))
+		(return))
+       (if (and (symbolp arg) (setq qloc (d-bestreg arg pat)))
+	   then (setq resloc (car qloc)
+		      loc   resloc
+		      sofar  (cadr qloc)
+		      togo   (caddr qloc))
+	   else (setq resloc
+		      (if (d-simple arg) thenret
+			  else (d-clearreg 'a0)
+			       (let ((g-loc 'areg)
+				     (g-cc nil)
+				     (g-ret nil))
+				   (d-exp arg))
+			       'a0))
+		(setq sofar nil togo  pat))
+       (if (and arg (symbolp arg)) then (setq keeptrack t))
+       ;
+       ; if resloc is a global variable, we must move it into a register
+       ; right away to be able to do car's and cdr's
+       (if (and (dtpr resloc) (or (eq (car resloc) 'bind)
+				  (eq (car resloc) 'vstack)))
+	   then (d-move resloc 'areg)
+		(setq resloc 'a0))
+       ; now do car's and cdr's .  Values are placed in a0. We stop when
+       ; we can get the result in one machine instruction.  At that point
+       ; we see whether we want the value or just want to set the cc's.
+       ; If the intermediate value is in a register,
+       ; we can do : car cdr cddr cdar
+       ; If the intermediate value is on the local vrbl stack or lbind
+       ; we can do : cdr
+       (do ((curp togo newp)
+	    (newp))
+	   ((null curp)
+	    (if g-loc then (d-movespec loc g-loc))
+	    ;
+	    ;;;important: the below kludge is needed!!
+	    ;;;consider the compilation of the following:
+	    ;
+	    ;;; (cond ((setq c (cdr c)) ...))
+	    ;;; the following instructions are generated:
+	    ;;; movl  a4@@(N),a5    ; the setq
+	    ;;; movl  a5@@,a4@@(N)
+	    ;;; movl  a4@@,a5	   ; the last two are generated if g-cc
+	    ;;; cmpl  a5@@,d7       ; is non-nil
+	    ;
+	    ;;; observe that the original value the is supposed to set
+	    ;;; the cc's is clobered in the operation!!
+	    ;(msg "g-loc: " (e-cvt g-loc) N "loc: " loc N)
+	    (if g-cc
+		then (if (and (eq '* (car loc))
+			      (equal (caddr loc) (cadr (e-cvt g-loc))))
+			 then (e-cmpnil '(0 a5))
+			 else (e-cmpnil loc)))
+	    (d-handlecc))
+	   (if (symbolp resloc)
+	       then (if (eq 'd (car curp))
+			then (if (or (null (cdr curp))
+				     (eq 'a (cadr curp)))
+				 then (setq newp (cdr curp)   ; cdr
+					    loc `(0 ,resloc)
+					    sofar (append sofar (list 'd)))
+				 else (setq newp (cddr curp)  ; cddr
+					    loc `(* 0 ,resloc)
+					    sofar (append sofar
+							  (list 'd 'd))))
+			else (if (or (null (cdr curp))
+				     (eq 'a (cadr curp)))
+				 then (setq newp (cdr curp)   ; car
+					    loc `(4 ,resloc)
+					    sofar (append sofar (list 'a)))
+				 else (setq newp (cddr curp)  ; cdar
+					    loc `(* 4 ,resloc)
+					    sofar (append sofar
+							  (list 'a 'd)))))
+	    elseif (and (eq 'd (car curp))
+			(not (eq '* (car (setq loc (e-cvt resloc))))))
+	       then (setq newp (cdr curp)	; (cdr <local>)
+			  loc (cons '* loc)
+			  sofar (append sofar (list 'd)))
+	       else  (setq loc (e-cvt resloc)
+			   newp curp))
+	   (if newp			; if this is not the last move
+	       then (setq resloc
+			  (d-alloc-register 'a
+					    (if keeptrack then nil else 'a1)))
+		    (d-movespec loc resloc)
+		    ;(if keeptrack then (d-inreg resloc (cons arg sofar)))
+		    ))
+       (makecomment '(done with cc-cxxr))))
+@
+
+
+1.11
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.10 83/08/22 22:58:46 layer Exp $")
+d86 1
+a86 1
+		#+for-vax
+d122 1
+a122 1
+		#+for-vax
+d195 1
+a195 1
+#+for-vax
+d237 2
+a238 1
+		    then `(fixnum-BitAndNot ,x (fixnum-BitXor ,y -1))
+d240 1
+a240 1
+		    then `(fixnum-BitAndNot (fixnum-BitXor ,x -1)
+d242 1
+d246 2
+a247 1
+		    then `(fixnum-BitAndNot ,x ,y)
+d296 1
+a296 1
+       (e-write2 #+for-vax 'jeql #+for-68k 'jeq beglab)
+d298 1
+a298 1
+       (e-write2 #+for-vax 'jbr #+for-68k 'jra finlab)
+d335 1
+a335 1
+   (let ((treg #+for-vax 'r1 #+for-68k 'a5))
+d422 1
+a422 1
+#+for-vax
+d567 1
+a567 1
+#+for-vax
+d609 1
+a609 1
+#+for-vax
+d756 1
+a756 1
+#+for-vax
+@
+
+
+1.10
+log
+@clean up the code a bit...
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.9 83/08/15 19:23:28 layer Exp $")
+a208 1
+;.. c-boole, d-booleexpand
+a223 1
+;.. c-boole, d-boolexlate
+a311 1
+;.. c-*catch, c-errset
+a330 1
+;.. c-*catch, c-errset, c-go, c-return
+a418 1
+;.. cc-cxr, cc-offset-cxr, d-handlearrayref
+a543 1
+;.. d-supercxr, d-superrplacx
+a563 1
+;.. d-supercxr, d-superrplacx
+a605 1
+;.. c-rplacx, d-dostore
+a752 1
+;.. d-exp
+@
+
+
+1.9
+log
+@args to d-cmp were switched around so that an illegal
+instruction was generated
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.8 83/08/14 19:32:07 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug 14 19:56:23 1983 by layer]-
+d82 1
+a82 1
+		    (e-write3 'subl `(-4 #.olbot-reg) 'd0)
+d88 1
+a88 1
+		    (e-write4 'subl3 '(* -4 #.olbot-reg) '(0 r0) 'r0)
+d118 1
+a118 1
+		    (e-write3 'subl '(-4 #.olbot-reg) 'd0)
+d124 1
+a124 1
+		    (e-write4 'subl3 `(* -4 #.olbot-reg) '(0 r0) 'r0)
+d316 3
+a318 3
+  (e-Cstack (e-cvt arg2))
+  (e-Cstack (e-cvt arg1))
+  (e-Cstack `($ ,class))
+d440 1
+a440 1
+		    then (d-move lop '#.Cstack))
+d446 1
+a446 1
+		    then (d-move '#.unCstack lop)))
+d496 1
+a496 1
+		    then (d-move lop '#.Cstack))
+d502 1
+a502 1
+		    then (d-move '#.unCstack lop)))
+d742 2
+a743 2
+			     then (d-move 'areg 'stack)
+				  (Push g-locs nil)
+d746 1
+a746 1
+			 (e-move 'a5 '#.Cstack)
+d750 1
+a750 1
+			     then (d-move 'unstack 'reg)
+@
+
+
+1.8
+log
+@cmp's were screwed up for the 68000
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.7 83/08/14 01:47:45 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug 14 19:26:26 1983 by layer]-
+d112 1
+a112 1
+		(d-cmp '(fixnum 0) 'reg)
+@
+
+
+1.7
+log
+@minor bug in d-popframe, and other minor
+stuff
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.6 83/08/12 02:47:18 layer Exp $")
+d7 1
+a7 1
+;;;				-[Sun Aug 14 01:28:09 1983 by layer]-
+d112 1
+a112 1
+		(d-cmp 'reg '(fixnum 0))
+@
+
+
+1.6
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.5 83/08/04 01:40:38 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Aug 11 23:51:45 1983 by layer]-
+d26 7
+a32 6
+		(if g-loc then (setq finlab2 (d-genlab))
+			       (e-goto finlab2)
+			       (e-label finlab)
+			       (d-move 'Nil g-loc)
+			       (e-label finlab2)
+			  else (e-label finlab))
+d47 7
+a53 6
+		(if g-loc then (setq finlab2 (d-genlab))
+			       (e-goto finlab2)
+			       (e-label finlab)
+			       (d-move 'Nil g-loc)
+			       (e-goto (cdr g-cc))
+			       (e-label finlab2))))
+d77 1
+a77 1
+       (if (and (fixp (cadr v-form)) (greaterp (cadr v-form) 0))
+d84 1
+a84 2
+			then (e-write3 'movl '(% -8 #.olbot-reg d0)
+				       (e-cvt g-loc)))
+d90 3
+a92 2
+			then (e-write3 'movl '(-8 #.olbot-reg r0)
+				       (e-cvt g-loc))))
+d120 1
+a120 2
+			then (e-write3 'movl '(% -8 #.olbot-reg d0)
+				       (e-cvt g-loc)))
+d126 3
+a128 2
+			then (e-write3 'movl '(-8 #.olbot-reg r0)
+				       (e-cvt g-loc))))
+a166 1
+
+a187 1
+
+d212 11
+a222 10
+      then (if (< (length form) 4)
+	      then (comp-err "Too few args to boole : " form)
+	    elseif (= (length form) 4)
+	      then form
+	      else (d-booleexpand `(boole ,(cadr form)
+					   (boole ,(cadr form)
+						   ,(caddr form)
+						   ,(cadddr form))
+					   ,@@(cddddr form))))
+	   else form))
+d231 41
+a271 41
+      then (let ((key (cadr form))
+		 (x (d-boolexlate (caddr form)))
+		 (y (d-boolexlate (cadddr form)))
+		 (res))
+	      (makecomment `(boole key = ,key))
+	      (if (eq key 0) 		;; 0
+		 then `(progn ,x ,y 0)
+	       elseif (eq key 1) 	;; x * y
+		 then `(fixnum-BitAndNot ,x (fixnum-BitXor ,y -1))
+	       elseif (eq key 2) 	;; !x * y
+		 then `(fixnum-BitAndNot (fixnum-BitXor ,x -1)
+					 (fixnum-BitXor ,y -1))
+	       elseif (eq key 3) 	;; y
+		 then `(progn ,x ,y)
+	       elseif (eq key 4)	;; x * !y
+		 then `(fixnum-BitAndNot ,x ,y)
+	       elseif (eq key 5) 	;; x
+		 then `(prog1 ,x ,y)
+	       elseif (eq key 6)        ;; x xor y
+		 then `(fixnum-BitXor ,x ,y)
+	       elseif (eq key 7) 	;; x + y
+		 then `(fixnum-BitOr ,x ,y)
+	       elseif (eq key 8)	;; !(x xor y)
+		 then `(fixnum-BitXor (fixnum-BitOr ,x ,y) -1)
+	       elseif (eq key 9) 	;; !(x xor y)
+		 then `(fixnum-BitXor (fixnum-BitXor ,x ,y) -1)
+	       elseif (eq key 10) 	;; !x
+		 then `(prog1 (fixnum-BitXor ,x -1) ,y)
+	       elseif (eq key 11) 	;; !x + y
+		 then `(fixnum-BitOr (fixnum-BitXor ,x -1) ,y)
+	       elseif (eq key 12) 	;; !y
+		 then `(progn ,x (fixnum-BitXor ,y -1))
+	       elseif (eq key 13) 	;; x + !y
+		 then `(fixnum-BitOr ,x (fixnum-BitXor ,y -1))
+	       elseif (eq key 14) 	;; !x + !y
+		 then `(fixnum-BitOr (fixnum-BitXor ,x -1)
+				     (fixnum-BitXor ,y -1))
+	       elseif (eq key 15) 	;; -1
+		 then `(progn ,x ,y -1)
+		 else form))
+      else form))
+a281 1
+#+for-vax
+d283 6
+a288 6
+  (let ((g-loc 'reg)
+	(g-cc nil)
+	(g-ret nil)
+	(finlab (d-genlab))
+	(beglab (d-genlab)))
+       (d-exp (cadr v-form))		; calculate tag into r0
+d290 1
+a290 1
+       (Push g-labs nil)		; disallow labels
+d294 4
+a297 4
+       (e-write2 'tstl '_retval)
+       (e-write2 'jeql beglab)
+       (e-write3 'movl '_lispretval 'r0)
+       (e-write2 'jbr finlab)
+a305 25
+#+for-68k
+(defun c-*catch nil
+  (let ((g-loc 'reg)
+	(g-cc nil)
+	(g-ret nil)
+	(finlab (d-genlab))
+	(beglab (d-genlab)))
+       (d-exp (cadr v-form))		; calculate tag into r0
+       (d-pushframe #.F_CATCH 'reg 'Nil) ; the Nil is a don't care
+       (Push g-labs nil)		; disallow labels
+       ; retval will be non 0 if we were thrown to, in which case the value
+       ; thrown is in _lispretval.
+       ; If we weren't thrown-to the value should be calculated in d0.
+       (e-write2 'tstl '_retval)
+       (e-write2 'jeq beglab)
+       (e-write3 'movl '_lispretval 'd0)
+       (e-write2 'jra finlab)
+       (e-label beglab)
+       (d-exp (caddr v-form))
+       (e-label finlab)
+       (d-popframe)	; remove catch frame from stack
+       (unpush g-locs)	; remove (catcherrset . 0)
+       (unpush g-labs)  ; allow labels again
+       (d-clearreg)))
+
+a314 1
+#+for-vax
+d316 3
+a318 12
+  (e-write2 'pushl (e-cvt arg2))
+  (e-write2 'pushl (e-cvt arg1))
+  (e-write2 'pushl `($ ,class))
+  (e-quick-call '_qpushframe)
+  (e-write3 'movl 'r0 '_errp)
+  (Push g-locs '(catcherrset . 0)))
+
+#+for-68k
+(defun d-pushframe (class arg1 arg2)
+  (e-write3 'movl (e-cvt arg2) '#.Cstack)
+  (e-write3 'movl (e-cvt arg1) '#.Cstack)
+  (e-write3 'movl `($ ,class) '#.Cstack)
+d320 2
+a321 2
+      then (e-write3 'movl '#.np-reg '#.np-sym)
+	   (e-write3 'movl '#.np-reg '#.lbot-sym))
+d323 2
+a324 3
+  ;_lbot to _errp
+  (e-write3 'movl 'd0 '_errp)
+  (Push g-locs '(catcherrset . 0)))
+a334 1
+#+for-vax
+d336 7
+a342 6
+  (e-write3 'movl '_errp 'r1)
+  (e-write3 'movl `(,OF_olderrp r1) '_errp)
+  ; there are always 3 arguments pushed, and the frame contains 5
+  ; longwords.  We should make these parameters into manifest
+  ; constants --jkf
+  (e-write4 'addl3 `($ ,(+ (* 3 4) (* 5 4))) 'r1 'sp))
+a343 7
+#+for-68k
+(defun d-popframe ()
+  (e-write3 'movl '_errp 'a5)
+  (e-write3 'movl `(,OF_olderrp a5) '_errp)
+  (e-add `($ ,(+ (* 3 4) (* 5 4))) 'a5)
+  (e-write3 'movl 'a5 'sp))
+
+d359 1
+a359 1
+       ; if haven't seen a t must store a nil in r0
+d463 1
+a463 1
+			  else (e-write3 'movl lop rop))
+d476 1
+a476 1
+			  else (e-write2 'tstl lop)
+d514 1
+a514 1
+		    then (e-write3 'movl (e-cvt rop) 'a1)
+d518 2
+a519 1
+			      (if (eq type 'fixnum-block) then '#.fixnum-reg 
+d524 2
+a525 2
+				  (e-write3 'movl 'a5 rop)
+			     else (e-write3 'movl lop rop))
+d597 1
+a597 1
+		     (e-write3 'movl index 'd6)
+d644 3
+a646 3
+	      (setq rop (d-structgen lop rop (if (eq type 'flonum-block)
+						 then 8
+						 else 4)))
+d667 1
+a667 1
+			then (e-write3 'movl (e-cvt lop) rop)
+d713 3
+a715 3
+       (setq rop (d-structgen lop rop (if (eq type 'flonum-block)
+					  then 8
+					  else 4)))
+d737 1
+a737 1
+		    then (e-write3 'movl (e-cvt lop) rop)
+d746 1
+a746 1
+			 (e-write3 'movl 'a5 '#.Cstack)
+d767 5
+a771 4
+	(if (null arg) then (if g-loc then (d-move 'Nil g-loc)
+					   (d-handlecc)
+			     elseif (cdr g-cc) then (e-goto (cdr g-cc)))
+			    (return))
+d778 7
+a784 5
+        else (setq resloc (if (d-simple arg) thenret
+				else (let ((g-loc 'reg)
+					   (g-cc nil)
+					   (g-ret nil))
+					  (d-exp arg))
+d786 1
+a786 2
+	       (setq sofar nil
+		     togo  pat))
+@
+
+
+1.5
+log
+@cleanup time
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.4 83/04/08 18:44:39 layer Exp $")
+d7 1
+a7 1
+;;;				-[Wed Aug  3 17:29:54 1983 by layer]-
+d18 2
+a19 2
+	(exps (If (cdr v-form) thenret else '(t))))	; (and) ==> t
+       (If (null (cdr g-cc))
+d26 1
+a26 1
+		(If g-loc then (setq finlab2 (d-genlab))
+d36 1
+a36 1
+		(If (null g-loc) then (setq finlab (cdr g-cc)))
+d46 1
+a46 1
+		(If g-loc then (setq finlab2 (d-genlab))
+a60 1
+#+for-vax
+d62 4
+a65 2
+   (let ((nillab (d-genlab)) (finlab (d-genlab)))
+       (If (not (eq 'lexpr g-ftype)) 
+d67 2
+a68 2
+       (If (and (eq (length (cdr v-form)) 2)  fl-inter)
+	   then (If (not (eq (car g-args) (cadr v-form)))
+d72 64
+a135 7
+       (If (or g-loc g-cc)
+	   then (If (and (fixp (cadr v-form)) (greaterp (cadr v-form) 0))
+		    then ; simple case (arg n) for positive n
+			 (d-move `(immed ,(cadr v-form)) 'reg)
+			 (d-clearreg 'r0)
+			 (If g-loc then (d-move '"*-4(fp)[r0]" g-loc)
+			     else (e-tst '"*-4(fp)[r0]"))
+d137 3
+a139 27
+		 elseif (or (null (cadr v-form))
+			    (and (fixp (cadr v-form)) (= 0 (cadr v-form))))
+		    then ; get number of arguments (arg nil)
+			 ; or (arg) or (arg 0)
+			 (If g-loc then (d-move "-8(fp)" g-loc))
+			 ; (arg) will always return a non nil value, we
+			 ; don't even have to test it.
+			 (If (car g-cc) then (e-goto (car g-cc)))
+		    else ; general (arg <form>)
+			 (let ((g-loc 'reg)
+			       (g-cc (cons nil nillab))
+			       (g-ret))
+			     ;calc the numeric arg
+			     (d-exp `(cdr ,(cadr v-form))))
+			 (If g-loc then (d-move '"*-4(fp)[r0]" g-loc)
+			     else (e-tst '"*-4(fp)[r0]"))
+			 (d-handlecc)
+			 (e-goto finlab)
+			 (e-label nillab)
+			 ; here we are doing (arg nil) which
+			 ; returns the number of args
+			 ; which is always true if anyone is testing
+			 (If g-loc then (d-move '"-8(fp)" g-loc)
+			     (d-handlecc)
+			  elseif (car g-cc)
+			       then (e-goto (car g-cc))) ;always true
+			 (e-label finlab)))))
+a140 72
+#+for-68k
+(defun cc-arg nil
+   (let ((nillab (d-genlab)) (finlab (d-genlab)))
+       (If (not (eq 'lexpr g-ftype)) 
+	   then (comp-err " arg only allowed in lexprs"))
+       (If (and (eq (length (cdr v-form)) 2)  fl-inter)
+	   then (If (not (eq (car g-args) (cadr v-form)))
+		    then (comp-err " arg expression is for non local lexpr "
+				   v-form)
+		    else (setq v-form (cdr v-form))))
+       (If (or g-loc g-cc)
+	   then (If (and (fixp (cadr v-form)) (greaterp (cadr v-form) 0))
+		    then ; simple case (arg n) for positive n
+			 (d-move `(fixnum ,(cadr v-form)) 'd0)
+			 (e-write3 'subl `(-4 #.olbot-reg) 'd0)
+			 (If g-loc
+			     then (e-write3 'movl
+					    (concat '#.olbot-reg "@@(-8,d0:L)")
+					    (e-cvt g-loc))
+				  (If g-cc
+				      then (e-cmpnil (concat '#.olbot-reg
+							     "@@(-8,d0:L)")))
+			     else (If g-cc
+				      then (e-cmpnil (concat '#.olbot-reg
+							     "@@(-8,d0:L)"))))
+			 (d-handlecc)
+		 elseif (or (null (cadr v-form))
+			    (and (fixp (cadr v-form)) (= 0 (cadr v-form))))
+		    then ; get # of arguments (arg nil) or (arg) or (arg 0)
+			 ;nargs was stacked at beginning function
+			 (If g-loc
+			     then (d-move (concat '#.olbot-reg "@@(-4)")
+					  g-loc))
+			 ; (arg) will always return a non nil value, we
+			 ; don't even have to test it.
+			 (If (car g-cc) then (e-goto (car g-cc)))
+		    else ; general (arg <form>)
+			 (let ((g-loc 'reg)
+			       (g-cc (cons nil nillab))
+			       (g-ret))
+			     (d-exp (cadr v-form)))  ;calc the numeric arg
+			 (e-write3 'cmpl (e-cvt '(fixnum 0)) 'd0)
+			 (e-gotonil nillab)
+			 (e-write3 'subl `(-4 #.olbot-reg) 'd0)
+			 (If g-loc
+			     then (e-write3 'movl
+					    (concat '#.olbot-reg
+						    "@@(-8,d0:L)")
+					    (e-cvt g-loc))
+				  (If g-cc
+				      then (e-cmpnil (concat '#.olbot-reg
+							     "@@(-8,d0:L)")))
+			     else (If g-cc
+				      then (e-cmpnil (concat '#.olbot-reg
+							     "@@(-8,d0:L)"))))
+			 (d-handlecc)
+			 (e-goto finlab)
+			 (e-label nillab)
+			 ; here we are doing (arg nil) which
+			 ; returns the number of args
+			 ; which is always true if anyone is testing
+			 (If g-loc
+			     then (d-move (concat '#.olbot-reg "@@(-4)") g-loc)
+				  (If g-cc
+				      then (e-cmpnil (concat '#.olbot-reg
+							     "@@(-4)"))
+					   (d-handlecc))
+			  elseif (car g-cc)
+			     then (e-goto (car g-cc))) ;always true
+			 (e-label finlab)))))
+
+
+d211 2
+a212 2
+   (If (and (dtpr form) (eq 'boole (car form)))
+      then (If (< (length form) 4)
+d226 1
+a226 1
+   (If (atom form)
+d235 1
+a235 1
+	      (If (eq key 0) 		;; 0
+d344 2
+a345 2
+  (e-write2 'pushl (concat '$ class))
+  (e-write2 'jsb '_qpushframe)
+d351 9
+a359 7
+  (e-write3 'movl (e-cvt arg2) '"sp@@-")
+  (e-write3 'movl (e-cvt arg1) '"sp@@-")
+  (e-write3 'movl (concat "#" class) '"sp@@-")
+  (e-write3 'movl '#.np-reg '#.np-sym)
+  (e-write3 'movl '#.np-reg '#.lbot-sym)
+  (e-write2 'jbsr '_qpushframe)
+  (e-write3 'movl 'd0 '_errp)		;_lbot to _errp
+d384 1
+a384 1
+  (d-add `($ ,(+ (* 3 4) (* 5 4))) 'a5)
+d403 1
+a403 1
+       (If (null seent)  then (d-move 'Nil 'reg))
+d407 1
+a407 1
+      (If (atom (car clau))
+d411 1
+a411 1
+	  then (let ((g-loc (If (or g-cc g-loc) then 'reg))
+d418 1
+a418 1
+	  then (let ((g-loc (If (or g-cc g-loc) then 'reg))
+d428 1
+a428 1
+	    (let ((g-loc (If (or g-cc g-loc) then 'reg))
+d431 1
+a431 1
+	    (If (or (cdr clau) (null seent)) then (e-goto finlab))
+d473 1
+a473 1
+       (If (fixp arg1) then (setq lop `(immed ,arg1))
+d480 2
+a481 2
+       (If (not (setq rop (d-simple arg2)))	
+	   then (If (and (eq lop 'r5) 
+d488 1
+a488 1
+		(If (and (eq lop 'r5) (not semisimple))
+d491 1
+a491 1
+       (If (eq type 'flonum-block)
+d494 1
+a494 1
+	       (e-write2 'jsb '"_qnewdoub")	; box number
+d496 1
+a496 1
+	       (If (and g-loc (not (eq g-loc 'reg)))
+d498 1
+a498 1
+	       (If (car g-cc) then (e-goto (car g-cc)))
+d500 2
+a501 2
+		     rop (If g-loc then
+			     (If (eq type 'fixnum-block) then 'r5 
+d503 2
+a504 2
+	       (If rop 
+		  then (If offsetonly
+d507 2
+a508 2
+		       (If (eq type 'fixnum-block) 
+			   then (e-write2 'jsb '"_qnewint")
+d510 1
+a510 1
+				(If (not (eq g-loc 'reg))
+d513 1
+a513 1
+				(If (car g-cc) then (e-goto (car g-cc)))
+d516 2
+a517 2
+		  then (If (eq type 'fixnum-block)
+			  then (If (car g-cc) 
+d528 1
+a528 1
+       (If (fixp arg1) then (setq lop `(immed ,arg1))
+d536 2
+a537 2
+       (If (not (setq rop (d-simple arg2)))	
+	   then (If (and (eq lop '#.fixnum-reg)
+d544 1
+a544 1
+		(If (and (eq lop '#.fixnum-reg) (not semisimple))
+d547 1
+a547 1
+       (If (eq type 'flonum-block)
+d551 1
+a551 1
+		(e-write2 'jbsr '"_qnewdoub")	; box number
+d553 1
+a553 1
+		(If (and g-loc (not (eq g-loc 'areg)))
+d555 2
+a556 2
+		(If (car g-cc) then (e-goto (car g-cc)))
+	   else (If (and (dtpr rop) (eq 'stack (car rop)))
+d560 2
+a561 2
+		      rop (If g-loc then
+			      (If (eq type 'fixnum-block) then '#.fixnum-reg 
+d563 2
+a564 2
+		(If rop 
+		    then (If offsetonly
+d568 2
+a569 2
+			 (If (eq type 'fixnum-block) 
+			     then (e-write2 'jbsr '"_qnewint")
+d571 1
+a571 1
+				  (If (not (eq g-loc 'areg))
+d574 1
+a574 1
+				  (If (car g-cc) then (e-goto (car g-cc)))
+d578 2
+a579 2
+		    then (If (eq type 'fixnum-block)
+			     then (If (car g-cc) 
+d581 1
+a581 1
+			     else (If g-cc
+d615 2
+a616 2
+  (If (and (dtpr base) (eq (car base) 'stack))
+      then (If (dtpr index)	; i.e if index = (immed n)
+d620 1
+a620 1
+      else (If (not (atom base))	; i.e if base is not register
+d624 1
+a624 1
+	   (If (dtpr index) then `(,(* width (cadr index)) ;immed index
+d630 1
+a630 1
+   (If (and (dtpr base) (eq (car base) 'stack))
+d632 1
+a632 1
+       else (If (not (atom base))	; i.e if base is not register
+d636 1
+a636 1
+	    (If (dtpr index)
+d638 4
+a641 3
+		else (e-write3 'movl index 'd6)
+		     (e-write3 'asll "#2" 'd6)
+		     (concat base "@@(0,d6:L)"))))
+d665 1
+a665 1
+	      (If (fixp arg1) then (setq lop `(immed ,arg1))
+d673 2
+a674 2
+	      (If (or (eq type 'hunk) (not (setq rop (d-simple arg2))))
+		  then (If (and (eq lop 'r5) 
+d681 1
+a681 1
+		       (If (and (eq lop 'r5) (not semisimple))
+d686 1
+a686 1
+	      (setq rop (d-structgen lop rop (If (eq type 'flonum-block)
+d692 2
+a693 2
+	      (If (eq type 'flonum-block) 
+		  then (If (setq lop (d-simple `(cdr ,arg3)))
+d697 1
+a697 1
+				(e-write3 'movaq rop "-(sp)")
+d708 1
+a708 1
+	       else (If (setq lop (d-simple arg3))
+d713 1
+a713 1
+			     (If (eq type 'hunk) then (d-move 'reg 'stack)
+d716 1
+a716 1
+			     (e-write3 'moval rop "-(sp)")
+d719 1
+a719 1
+			     (If (eq type 'hunk) then (d-move 'unstack 'reg)
+d734 1
+a734 1
+       (If (fixp arg1) then (setq lop `(immed ,arg1))
+d743 2
+a744 2
+       (If (or (eq type 'hunk) (not (setq rop (d-simple arg2))))
+	   then (If (and (eq lop '#.fixnum-reg)
+d750 1
+a750 1
+		(If (and (eq lop '#.fixnum-reg) (not semisimple))
+d755 1
+a755 1
+       (setq rop (d-structgen lop rop (If (eq type 'flonum-block)
+d761 1
+a761 1
+       (If (eq type 'flonum-block) 
+d763 1
+a763 1
+		(If (setq lop (d-simple `(cdr ,arg3)))
+d767 1
+a767 1
+			 (e-write3 'movaq rop "-(sp)")
+d778 1
+a778 1
+	   else (If (setq lop (d-simple arg3))
+d783 1
+a783 1
+			 (If (eq type 'hunk)
+d788 1
+a788 1
+			 (e-write3 'movl 'a5 "sp@@-")
+d791 1
+a791 1
+			 (If (eq type 'hunk)
+d809 1
+a809 1
+	(If (null arg) then (If g-loc then (d-move 'Nil g-loc)
+d814 1
+a814 1
+	(If (and (symbolp arg) (setq qloc (d-bestreg arg pat)))
+d819 1
+a819 1
+        else (setq resloc (If (d-simple arg) thenret
+d828 1
+a828 1
+	(If (and arg (symbolp arg)) then (setq keeptrack t))
+d832 1
+a832 1
+       (If (and (dtpr resloc) (or (eq (car resloc) 'bind)
+d846 1
+a846 1
+	   ((null curp) (If g-loc then (d-movespec loc g-loc)
+d849 3
+a851 3
+	   (If (symbolp resloc)
+	       then (If (eq 'd (car curp))
+			then (If (or (null (cdr curp))
+d860 1
+a860 1
+			else (If (or (null (cdr curp))
+d876 1
+a876 1
+	   (If newp			; if this is not the last move
+d878 1
+a878 1
+			  (d-allocreg (If keeptrack then nil else 'r0)))
+d880 1
+a880 1
+		    (If keeptrack then (d-inreg resloc (cons arg sofar)))))))
+d888 3
+a890 3
+       (If (null arg)
+	   then (If g-loc then (d-move 'Nil g-loc))
+		(If (cdr g-cc) then (e-goto (cdr g-cc)))
+d892 1
+a892 1
+       (If (and (symbolp arg) (setq qloc (d-bestreg arg pat)))
+d898 1
+a898 1
+		      (If (d-simple arg) thenret
+d906 1
+a906 1
+       (If (and arg (symbolp arg)) then (setq keeptrack t))
+d910 1
+a910 1
+       (If (and (dtpr resloc) (or (eq (car resloc) 'bind)
+d924 1
+a924 1
+	    (If g-loc then (d-movespec loc g-loc))
+d939 2
+a940 2
+	    (If g-cc
+		then (If (and (eq '* (car loc))
+d945 3
+a947 3
+	   (If (symbolp resloc)
+	       then (If (eq 'd (car curp))
+			then (If (or (null (cdr curp))
+d956 1
+a956 1
+			else (If (or (null (cdr curp))
+d972 1
+a972 1
+	   (If newp			; if this is not the last move
+d975 1
+a975 1
+					    (If keeptrack then nil else 'a1)))
+d977 1
+a977 1
+		    ;(If keeptrack then (d-inreg resloc (cons arg sofar)))
+@
+
+
+1.4
+log
+@problems with cmp on the 68k (reverse of vax)
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.3 83/04/06 16:45:11 layer Exp $")
+d7 1
+a7 1
+;;;				-[Thu Apr  7 23:58:43 1983 by layer]-
+a52 2
+	    
+			  
+a53 1
+
+d98 2
+a99 2
+			 ; here we are doing (arg nil) which returns the number
+			 ; of args
+d121 1
+a121 1
+			 (e-write3 'subl `(-4 #.oLbot-reg) 'd0)
+d124 1
+a124 1
+					    (concat '#.oLbot-reg "@@(-8,d0:L)")
+d127 1
+a127 1
+				      then (e-cmpnil (concat '#.oLbot-reg
+d130 1
+a130 1
+				      then (e-cmpnil (concat '#.oLbot-reg
+d138 1
+a138 1
+			     then (d-move (concat '#.oLbot-reg "@@(-4)")
+d150 1
+a150 1
+			 (e-write3 'subl `(-4 #.oLbot-reg) 'd0)
+d153 1
+a153 1
+					    (concat '#.oLbot-reg
+d157 1
+a157 1
+				      then (e-cmpnil (concat '#.oLbot-reg
+d160 1
+a160 1
+				      then (e-cmpnil (concat '#.oLbot-reg
+d165 2
+a166 2
+			 ; here we are doing (arg nil) which returns the number
+			 ; of args
+d169 1
+a169 1
+			     then (d-move (concat '#.oLbot-reg "@@(-4)") g-loc)
+d171 1
+a171 1
+				      then (e-cmpnil (concat '#.oLbot-reg
+d193 1
+a193 3
+
+
+;--- cm-assq :: assoc with eq for testing			= cm-assq  =
+a209 1
+
+d220 1
+a220 1
+;--- cc-bcdp :: check for bcdpness			   	= cc-bcdp  =
+d226 1
+a226 1
+;--- cc-bigp :: check for bignumness				= cc-bigp =
+d314 1
+a314 1
+;--- c-*catch :: compile a *catch expression 			= c-*catch =
+d368 1
+d392 2
+a393 2
+  (e-write3 'movl '#.Np-reg '#.Np-sym)
+  (e-write3 'movl '#.Np-reg '#.Lbot-sym)
+a472 2
+
+
+d482 1
+a482 2
+
+;--- c-cxr :: compile a cxr instruction				= c-cxr =
+a484 2
+			
+
+a487 1
+
+d566 1
+d771 1
+d832 1
+a832 1
+;--- cc-cxxr :: compile a "c*r" instr where * 			= c-cxxr =
+d893 2
+a894 1
+					    sofar (append sofar (list 'd 'd))))
+d902 2
+a903 1
+					    sofar (append sofar (list 'a 'd)))))
+d912 2
+a913 1
+	       then (setq resloc (d-allocreg (If keeptrack then nil else 'r0)))
+@
+
+
+1.3
+log
+@change some compiler constants to syms instead of strings
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.2 83/03/23 20:48:51 layer Exp $")
+d7 1
+a7 1
+;;;				-[Wed Apr  6 16:38:59 1983 by layer]-
+d57 1
+a57 1
+;--- cc-arg  :: get the nth arg from the current lexpr		= cc-arg =
+d65 2
+a66 2
+(defun cc-arg nil 
+  (let ((nillab (d-genlab)) (finlab (d-genlab)))
+d77 5
+a81 5
+			(d-move `(immed ,(cadr v-form)) 'reg)
+			(d-clearreg 'r0)
+			(If g-loc then (d-move '"*-4(fp)[r0]" g-loc)
+			    else (e-tst '"*-4(fp)[r0]"))
+			(d-handlecc)
+d84 25
+a108 22
+		    then ; get number of arguments (arg nil) or (arg) or (arg 0)
+			(If g-loc then (d-move "-8(fp)" g-loc))
+			; (arg) will always return a non nil value, we
+			; don't even have to test it.
+			(If (car g-cc) then (e-goto (car g-cc)))
+		 else	; general (arg <form>)
+		      (let ((g-loc 'reg) 
+			    (g-cc (cons nil nillab))
+			    (g-ret))
+			   (d-exp `(cdr ,(cadr v-form)))) ; calc the numeric arg
+		    (If g-loc then (d-move '"*-4(fp)[r0]" g-loc)
+			else (e-tst '"*-4(fp)[r0]"))
+		    (d-handlecc)
+		    (e-goto finlab)
+		    (e-label nillab)
+		    ; here we are doing (arg nil) which returns the number 
+		    ; of args
+		    ; which is always true if anyone is testing 
+		    (If g-loc then (d-move '"-8(fp)" g-loc)
+				   (d-handlecc)
+		     elseif (car g-cc) then (e-goto (car g-cc))) ;always true
+		    (e-label finlab)))))
+d111 2
+a112 2
+(defun cc-arg nil 
+  (let ((nillab (d-genlab)) (finlab (d-genlab)))
+d123 13
+a135 13
+			(d-move `(fixnum ,(cadr v-form)) 'd0)
+			(e-write3 'subl `(-4 #.oLbot-reg) 'd0)
+			(If g-loc
+			    then (e-write3 'movl (concat '#.oLbot-reg
+					   "@@(-8,d0:L)") (e-cvt g-loc))
+				 (If g-cc
+				     then (d-cmp (concat '#.oLbot-reg
+							 "@@(-8,d0:L)")
+						 'Nil))
+			    else (If g-cc
+				     then (d-cmp (concat '#.oLbot-reg
+							 "@@(-8,d0:L)") 'Nil)))
+			(d-handlecc)
+d140 3
+a142 2
+			 (If g-loc then (d-move (concat '#.oLbot-reg "@@(-4)")
+						g-loc))
+d146 34
+a179 32
+		 else ; general (arg <form>)
+		      (let ((g-loc 'reg) 
+			    (g-cc (cons nil nillab))
+			    (g-ret))
+			   (d-exp (cadr v-form)))  ;calc the numeric arg
+		      (e-write3 'cmpl (concat #.Nilatom "+0x1400") 'd0)
+		      (e-gotonil nillab)
+		      (e-write3 'subl `(-4 #.oLbot-reg) 'd0)
+		      (If g-loc
+			  then (e-write3 'movl
+					 (concat '#.oLbot-reg
+						 "@@(-8,d0:L)") (e-cvt g-loc))
+			       (If g-cc
+				   then (d-cmp (concat '#.oLbot-reg
+						       "@@(-8,d0:L)") 'Nil))
+			  else (If g-cc then
+				   (d-cmp (concat '#.oLbot-reg
+						  "@@(-8,d0:L)") 'Nil)))
+		     (d-handlecc)
+		     (e-goto finlab)
+		     (e-label nillab)
+		     ; here we are doing (arg nil) which returns the number 
+		     ; of args
+		     ; which is always true if anyone is testing
+		     (If g-loc
+			 then (d-move (concat '#.oLbot-reg "@@(-4)") g-loc)
+			      (If g-cc
+				  then (d-cmp (concat '#.oLbot-reg
+						      "@@(-4)") 'Nil)
+			               (d-handlecc))
+		      elseif (car g-cc) then (e-goto (car g-cc))) ;always true
+		     (e-label finlab)))))
+d209 1
+a209 1
+;--- cc-atom :: test for atomness				= cc-atom  =
+d216 1
+a216 1
+;--- c-bcdcall :: do a bcd call					= c-bcdcall =
+d621 1
+a621 1
+			     else (e-write3 'cmpl lop (e-cvt 'Nil))
+d628 1
+a628 1
+				      then (e-write3 'cmpl lop (e-cvt 'Nil))
+d983 2
+a984 2
+			 then (e-write3 'cmpl '(0 a5) (e-cvt 'Nil))
+			 else (e-write3 'cmpl loc (e-cvt 'Nil))))
+@
+
+
+1.2
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/funa.l,v 1.1 83/01/26 12:14:46 jkf Exp $")
+d7 1
+a7 1
+;;;				-[Tue Mar 22 15:31:21 1983 by layer]-
+d391 2
+a392 2
+  (e-write3 'movl '#.Np-reg #.Np-sym)
+  (e-write3 'movl '#.Np-reg #.Lbot-sym)
+d524 1
+a524 1
+		    then (d-move lop #.Cstack))
+d530 1
+a530 1
+		    then (d-move #.unCstack lop)))
+d579 1
+a579 1
+		    then (d-move lop #.Cstack))
+d585 1
+a585 1
+		    then (d-move #.unCstack lop)))
+d715 1
+a715 1
+			   then (d-move lop #.Cstack))
+d721 1
+a721 1
+			   then (d-move #.unCstack lop)))
+d771 1
+a771 1
+       ; calulate index and put it in #.fixnum-reg if it is not an immediate
+d778 1
+a778 1
+       ; calculate the hunk, we may have to save #.fixnum-reg.
+d784 1
+a784 1
+		    then (d-move lop #.Cstack))
+d789 1
+a789 1
+		    then (d-move #.unCstack lop)))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header$")
+d7 1
+a7 1
+;;;				-[Wed Jan 26 12:08:13 1983 by jkf]-
+d64 1
+d107 67
+d175 1
+d206 2
+a207 2
+  (d-typecmplx (cadr v-form) 
+	       '#.(concat '$ (plus 1_0 1_1 1_2 1_4 1_5 1_6 1_7 1_9 1_10))))
+d223 1
+a223 1
+  (d-typesimp (cadr v-form) '$5))
+d229 1
+a229 1
+  (d-typesimp (cadr v-form) '$9))
+d233 2
+d311 1
+a313 1
+
+d319 1
+d344 24
+a367 2
+
+
+d377 1
+d386 11
+d406 1
+d415 6
+d422 1
+a422 2
+
+;--- c-cond :: compile a "cond" expression			= c-cond =
+d474 1
+a474 1
+;--- c-cons :: do a cons instruction quickly			= c-cons =
+d478 1
+a478 1
+  (e-write2 'jsb '_qcons)
+d508 1
+d524 1
+a524 1
+		    then (d-move lop Cstack))
+d530 1
+a530 1
+		    then (d-move unCstack lop)))
+d549 7
+a555 7
+			  then (e-write2 'jsb '"_qnewint")
+			       (d-clearreg)
+			       (If (not (eq g-loc 'reg))
+				  then (d-move 'reg g-loc))
+			       ; result is always non nil.
+			       (If (car g-cc) then (e-goto (car g-cc)))
+			  else (d-handlecc))
+d563 62
+d653 1
+d668 15
+a682 1
+;--- c-rplacx :: complile a rplacx expression			= c-rplacx =
+d695 1
+d715 1
+a715 1
+			   then (d-move lop Cstack))
+d721 1
+a721 1
+			   then (d-move unCstack lop)))
+d763 71
+d842 1
+d916 99
+@

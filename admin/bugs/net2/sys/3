@@ -1,0 +1,52 @@
+From balsup@tfs.COM  Tue Feb 18 15:36:12 1992
+Date: Tue, 18 Feb 92 15:36:44 PST
+From: balsup@tfs.COM (Billie Alsup)
+Subject: tp_inputprep() corrupts iso packet in i386 version  
+Index: sys net2
+Apparently-To: net2-bugs@BERKELEY.EDU
+
+Description:
+	in sys/netiso/tp_input.c, the function tp_inputprep() 
+	attempts to align packet data on a longword boundary.
+	it does this by truncating an mbuf data pointer to
+	a multiple of 4, and then copying the mbuf data
+	to the new location.  in this case, we're copying from 
+	one memory address to a LOWER memory address.  the
+	copy is effected using ovbcopy, which, on the i386
+	implementation, copies data in reverse order.  by
+	copying in reverse order, you corrupt the packet.  for
+	example, if you have six bytes (0-5) aligned on
+	a word boundary, and you want to align them on the 
+	preceeding longword boundary (where ?? are the two
+	preceeding bytes we don't care about):
+
+	        ??012345
+
+	then a copy from back to front would give you:
+
+	        45454545
+
+	instead of the desired  01234545.
+
+Repeat-By:
+	debug trying to receive an iso packet on an i386 :-)
+	or follow the above logic. 
+
+Fix:
+	In this instance, the correct procedure is to
+	copy from front to back.  simply change the ovbcopy()
+	function call to bcopy().  It appears that the hp300
+	implementation would not experience this problem because
+	bcopy and ovbcopy are equivalent functions in that
+	implementation, and the hp300 specifically checks
+	the starting/ending addresses and decides for itself
+	whether to copy forwards or backwards.  so, this
+	fix should be transparent to an hp300 implementation.
+
+	diff tp_input.c tp_input.c.released
+	152c152
+	<               bcopy(ocp, m->m_data, (unsigned)m->m_len);
+	---
+	>               ovbcopy(ocp, m->m_data, (unsigned)m->m_len);
+
+	

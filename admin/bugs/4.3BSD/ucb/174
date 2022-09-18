@@ -1,0 +1,226 @@
+From rsalz@pineapple.bbn.com Thu Mar 17 12:56:35 1988
+Date: Thu, 17 Mar 88 15:49:10 EST
+From: rsalz@pineapple.bbn.com
+To: comp-bugs-4bsd-ucb-fixes@uunet.UU.NET
+Subject: There's no easy way to exclude executables from rdist +FIX
+Index: ucb/rdist 4.3BSD
+
+[ Sorry, this isn't in the right format... ]
+
+The following set of context diffs add the "-x" flag to the 4.3BSD rdist
+program.
+
+The "-x" flag means that a file in a.out-format is treated as if it were
+on the exclusion list.  This basically means that executables aren't
+shipped around.
+
+It's easiest to apply these diffs with the "patch" program.
+
+	/r$
+
+ ------------------------------------------------------------------------------
+
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:42:39 1988
+--- defs.h	Mon Jan 25 12:36:59 1988
+***************
+*** 57,62 ****
+--- 57,63 ----
+  #define REMOVE	0x10
+  #define FOLLOW	0x20
+  #define IGNLNKS	0x40
++ #define NOA_OUT	0x80
+  
+  	/* expand type definitions */
+  #define E_VARS	0x1
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:42:41 1988
+--- docmd.c	Mon Jan 25 12:37:00 1988
+***************
+*** 363,369 ****
+  	if (debug)
+  		printf("cmptime(%s)\n", name);
+  
+! 	if (except(name))
+  		return;
+  
+  	if (nflag) {
+--- 363,369 ----
+  	if (debug)
+  		printf("cmptime(%s)\n", name);
+  
+! 	if (except(name, 0))
+  		return;
+  
+  	if (nflag) {
+***************
+*** 535,544 ****
+  }
+  
+  /*
+   * Return TRUE if file is in the exception list.
+   */
+! except(file)
+  	char *file;
+  {
+  	register struct	subcmd *sc;
+  	register struct	namelist *nl;
+--- 535,579 ----
+  }
+  
+  /*
++  * Return TRUE if this is an a.out file
++  */
++ #include <a.out.h>
++ isanaoutfile(p)
++ 	char	*p;
++ {
++ 	register FILE *f;
++ 	struct exec hdr;
++ 
++ 	if ((f = fopen(p, "r")) == NULL)
++ 		return(0);
++ 	if (fread((char *)&hdr, sizeof hdr, 1, f) != 1) {
++ 		(void)fclose(f);
++ 		return(0);
++ 	}
++ 	(void)fclose(f);
++ 	switch (hdr.a_magic) {
++ #ifdef	OMAGIC
++ 	case OMAGIC:
++ #endif	/* OMAGIC */
++ #ifdef	NMAGIC
++ 	case NMAGIC:
++ #endif	/* NMAGIC */
++ #ifdef	ZMAGIC
++ 	case ZMAGIC:
++ #endif	/* ZMAGIC */
++ 		if (debug)
++ 			printf("isanoutfile(%s) == TRUE\n", p);
++ 		return(1);
++ 	}
++ 
++ 	return(0);
++ }
++ /*
+   * Return TRUE if file is in the exception list.
+   */
+! except(file, checkaout)
+  	char *file;
++ 	int checkaout;
+  {
+  	register struct	subcmd *sc;
+  	register struct	namelist *nl;
+***************
+*** 560,565 ****
+--- 595,604 ----
+  				return(1);
+  		}
+  	}
++ 
++ 	if (checkaout && isanaoutfile(target))
++ 		return(1);
++ 
+  	return(0);
+  }
+  
+
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:42:49 1988
+--- gram.y	Mon Jan 25 12:37:02 1988
+***************
+*** 271,276 ****
+--- 271,279 ----
+  	*cp1 = '\0';
+  	if (yytext[0] == '-' && yytext[2] == '\0') {
+  		switch (yytext[1]) {
++ 		case 'x':
++ 			yylval.intval = NOA_OUT;
++ 			return(OPTION);
+  		case 'b':
+  			yylval.intval = COMPARE;
+  			return(OPTION);
+
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:42:56 1988
+--- main.c	Mon Jan 25 12:37:04 1988
+***************
+*** 133,138 ****
+--- 133,142 ----
+  				options |= WHOLE;
+  				break;
+  
++ 			case 'x':
++ 				options |= NOA_OUT;
++ 				break;
++ 
+  			case 'y':
+  				options |= YOUNGER;
+  				break;
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:42:59 1988
+--- rdist.1	Mon Jan 25 12:37:05 1988
+***************
+*** 126,131 ****
+--- 126,136 ----
+  renaming a list of files such as ( dir1/f1 dir2/f2 ) to dir3 would create
+  files dir3/dir1/f1 and dir3/dir2/f2 instead of dir3/f1 and dir3/f2.
+  .TP
++ .B \-x
++ Exclude a.out files mode.
++ If the source file starts with one of the standard ``a.out'' magic
++ numbers, the file is not sent.
++ .TP
+  .B \-y
+  Younger mode.
+  Files are normally updated if their
+
+*** /tmp/,RCSt1a17080	Mon Jan 25 12:43:05 1988
+--- server.c	Mon Jan 25 12:37:06 1988
+***************
+*** 269,275 ****
+  	if (debug)
+  		printf("sendf(%s, %x)\n", rname, opts);
+  
+! 	if (except(target))
+  		return;
+  	if ((opts & FOLLOW ? stat(target, &stb) : lstat(target, &stb)) < 0) {
+  		error("%s: %s\n", target, sys_errlist[errno]);
+--- 269,275 ----
+  	if (debug)
+  		printf("sendf(%s, %x)\n", rname, opts);
+  
+! 	if (except(target, opts & NOA_OUT))
+  		return;
+  	if ((opts & FOLLOW ? stat(target, &stb) : lstat(target, &stb)) < 0) {
+  		error("%s: %s\n", target, sys_errlist[errno]);
+***************
+*** 289,295 ****
+  		}
+  	if (gr == NULL || gr->gr_gid != stb.st_gid)
+  		if ((gr = getgrgid(stb.st_gid)) == NULL) {
+! 			log(lfp, "%s: no name for group %d\n", target);
+  			gr = NULL;
+  			sprintf(group, ":%d", stb.st_gid);
+  		}
+--- 289,295 ----
+  		}
+  	if (gr == NULL || gr->gr_gid != stb.st_gid)
+  		if ((gr = getgrgid(stb.st_gid)) == NULL) {
+! 			log(lfp, "%s: no name for group %s\n", target);
+  			gr = NULL;
+  			sprintf(group, ":%d", stb.st_gid);
+  		}
+***************
+*** 1084,1090 ****
+  			(void) sprintf(tp, "/%s", s);
+  			if (debug)
+  				printf("check %s\n", target);
+! 			if (except(target))
+  				(void) write(rem, "N\n", 2);
+  			else if (lstat(target, &stb) < 0)
+  				(void) write(rem, "Y\n", 2);
+--- 1084,1090 ----
+  			(void) sprintf(tp, "/%s", s);
+  			if (debug)
+  				printf("check %s\n", target);
+! 			if (except(target, 0))
+  				(void) write(rem, "N\n", 2);
+  			else if (lstat(target, &stb) < 0)
+  				(void) write(rem, "Y\n", 2);
+

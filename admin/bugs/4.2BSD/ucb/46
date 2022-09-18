@@ -1,0 +1,315 @@
+Return-Path: <mogul@Gregorio>
+Date: Thu, 18 Oct 84 13:36:12 pdt
+From: Jeff Mogul <mogul@Gregorio>
+Subject: tftp screws up if packets are lost
+Index: 	ucb/tftp/tftp.c 4.2BSD Fix
+
+Description:
+	The TFTP protocol is supposed to handle lost packets by
+	having the sender of the packet time out and retransmit if
+	it doesn't get the proper acknowledgement from its peer.
+	However, the tftp program starts sending bogus packets
+	if its retransmit timer goes off, and the connection dies.
+Repeat-By:
+	It's helpful to have a lossy path to try this out over, since
+	if no packets are lost the bug doesn't show up.  One can help
+	things along by setting the retransmit timer to 1 second.
+
+	Here's an (edited) transcript of what happens:
+	% tftp host-name
+	tftp> mode binary
+	tftp> rexmt 1
+	tftp> trace
+	Packet tracing on.
+	tftp> get /tmp/23xgg.ddt
+	sent RRQ <file=/tmp/23xgg.ddt, mode=octet>
+	sent RRQ <file=/tmp/23xgg.ddt, mode=octet>
+	received DATA <block=1, 512 bytes>
+	sent ACK <block=1>
+	received DATA <block=1, 512 bytes>	;; the server missed the ACK
+	sent opcode=300 sent opcode=300 sent opcode=300 ;; we send garbage
+	received DATA <block=1, 512 bytes>
+	sent opcode=300 sent opcode=300 sent opcode=300 sent opcode=300 sent opcode=300 sent opcode=300 sent opcode=300
+	received DATA <block=1, 512 bytes>
+	
+	... and so on until the transfer times out completely.  Note that
+	the packet trace routine is having trouble printing the garbage
+	packets.
+
+Fix:
+	The code uses the same buffer for input and output.  If the
+	retransmit timer goes off, it tries to resend the old output buffer,
+	but it's been overwritten with the last input buffer.  Not only
+	is this not what we should be sending, but the header fields have
+	been byte-swapped and so it's total garbage.
+	
+	The packet trace routine is missing a default case in its switch
+	statement, causing the trace of garbage packets to come out without
+	newlines.
+	
+	The fix here is to separate input and output into two distinct
+	buffers; this should hardly be a problem even for small computers
+	since tftp is quite compact.  One wonders why the original programmer
+	tried to get away with only one buffer.
+
+	Line numbers are approximate.
+
+*** tftp.c.old	Mon Jan 23 11:53:29 1984
+--- tftp.c	Thu Oct 18 12:58:29 1984
+***************
+*** 26,28
+  int	connected;
+! char	buf[BUFSIZ];
+  int	rexmtval;
+
+--- 35,38 -----
+  int	connected;
+! char	sbuf[BUFSIZ];
+! char	rbuf[BUFSIZ];
+  int	rexmtval;
+***************
+*** 51,53
+  {
+! 	register struct tftphdr *tp = (struct tftphdr *)buf;
+  	register int block = 0, size, n, amount = 0;
+
+--- 61,65 -----
+  {
+! 	register struct tftphdr *stp = (struct tftphdr *)sbuf;
+! 	register struct tftphdr *rtp = (struct tftphdr *)rbuf;
+! 		/* stp is outgoing buffer, rtp is incoming buffer */
+  	register int block = 0, size, n, amount = 0;
+***************
+*** 62,64
+  		else {
+! 			size = read(fd, tp->th_data, SEGSIZE);
+  			if (size < 0) {
+
+--- 74,76 -----
+  		else {
+! 			size = read(fd, stp->th_data, SEGSIZE);
+  			if (size < 0) {
+***************
+*** 67,70
+  			}
+! 			tp->th_opcode = htons((u_short)DATA);
+! 			tp->th_block = htons((u_short)block);
+  		}
+
+--- 79,82 -----
+  			}
+! 			stp->th_opcode = htons((u_short)DATA);
+! 			stp->th_block = htons((u_short)block);
+  		}
+***************
+*** 73,76
+  		if (trace)
+! 			tpacket("sent", tp, size + 4);
+! 		n = sendto(f, buf, size + 4, 0, (caddr_t)&sin, sizeof (sin));
+  		if (n != size + 4) {
+
+--- 85,88 -----
+  		if (trace)
+! 			tpacket("sent", stp, size + 4);
+! 		n = sendto(f, sbuf, size + 4, 0, (caddr_t)&sin, sizeof (sin));
+  		if (n != size + 4) {
+***************
+*** 83,85
+  				fromlen = sizeof (from);
+! 				n = recvfrom(f, buf, sizeof (buf), 0,
+  				    (caddr_t)&from, &fromlen);
+
+--- 95,97 -----
+  				fromlen = sizeof (from);
+! 				n = recvfrom(f, rbuf, sizeof (rbuf), 0,
+  				    (caddr_t)&from, &fromlen);
+***************
+*** 93,95
+  			if (trace)
+! 				tpacket("received", tp, n);
+  			/* should verify packet came from server */
+
+--- 105,107 -----
+  			if (trace)
+! 				tpacket("received", rtp, n);
+  			/* should verify packet came from server */
+***************
+*** 95,101
+  			/* should verify packet came from server */
+! 			tp->th_opcode = ntohs(tp->th_opcode);
+! 			tp->th_block = ntohs(tp->th_block);
+! 			if (tp->th_opcode == ERROR) {
+! 				printf("Error code %d: %s\n", tp->th_code,
+! 					tp->th_msg);
+  				goto abort;
+
+--- 107,113 -----
+  			/* should verify packet came from server */
+! 			rtp->th_opcode = ntohs(rtp->th_opcode);
+! 			rtp->th_block = ntohs(rtp->th_block);
+! 			if (rtp->th_opcode == ERROR) {
+! 				printf("Error code %d: %s\n", rtp->th_code,
+! 					rtp->th_msg);
+  				goto abort;
+***************
+*** 102,104
+  			}
+! 		} while (tp->th_opcode != ACK || block != tp->th_block);
+  		if (block > 0)
+
+--- 114,116 -----
+  			}
+! 		} while (rtp->th_opcode != ACK || block != rtp->th_block);
+  		if (block > 0)
+***************
+*** 122,124
+  {
+! 	register struct tftphdr *tp = (struct tftphdr *)buf;
+  	register int block = 1, n, size, amount = 0;
+
+--- 134,138 -----
+  {
+! 	register struct tftphdr *stp = (struct tftphdr *)sbuf;
+! 	register struct tftphdr *rtp = (struct tftphdr *)rbuf;
+! 		/* stp is outgoing buffer, rtp is incoming buffer */
+  	register int block = 1, n, size, amount = 0;
+***************
+*** 134,137
+  		} else {
+! 			tp->th_opcode = htons((u_short)ACK);
+! 			tp->th_block = htons((u_short)(block));
+  			size = 4;
+
+--- 148,151 -----
+  		} else {
+! 			stp->th_opcode = htons((u_short)ACK);
+! 			stp->th_block = htons((u_short)(block));
+  			size = 4;
+***************
+*** 142,145
+  		if (trace)
+! 			tpacket("sent", tp, size);
+! 		if (sendto(f, buf, size, 0, (caddr_t)&sin,
+  		    sizeof (sin)) != size) {
+
+--- 156,159 -----
+  		if (trace)
+! 			tpacket("sent", stp, size);
+! 		if (sendto(f, sbuf, size, 0, (caddr_t)&sin,
+  		    sizeof (sin)) != size) {
+***************
+*** 152,154
+  			do
+! 				n = recvfrom(f, buf, sizeof (buf), 0,
+  				    (caddr_t)&from, &fromlen);
+
+--- 166,168 -----
+  			do
+! 				n = recvfrom(f, rbuf, sizeof (rbuf), 0,
+  				    (caddr_t)&from, &fromlen);
+***************
+*** 162,164
+  			if (trace)
+! 				tpacket("received", tp, n);
+  			/* should verify client address */
+
+--- 176,178 -----
+  			if (trace)
+! 				tpacket("received", rtp, n);
+  			/* should verify client address */
+***************
+*** 164,170
+  			/* should verify client address */
+! 			tp->th_opcode = ntohs(tp->th_opcode);
+! 			tp->th_block = ntohs(tp->th_block);
+! 			if (tp->th_opcode == ERROR) {
+! 				printf("Error code %d: %s\n", tp->th_code,
+! 					tp->th_msg);
+  				goto abort;
+
+--- 178,184 -----
+  			/* should verify client address */
+! 			rtp->th_opcode = ntohs(rtp->th_opcode);
+! 			rtp->th_block = ntohs(rtp->th_block);
+! 			if (rtp->th_opcode == ERROR) {
+! 				printf("Error code %d: %s\n", rtp->th_code,
+! 					rtp->th_msg);
+  				goto abort;
+***************
+*** 171,174
+  			}
+! 		} while (tp->th_opcode != DATA || block != tp->th_block);
+! 		size = write(fd, tp->th_data, n - 4);
+  		if (size < 0) {
+
+--- 185,188 -----
+  			}
+! 		} while (rtp->th_opcode != DATA || block != rtp->th_block);
+! 		size = write(fd, rtp->th_data, n - 4);
+  		if (size < 0) {
+***************
+*** 180,184
+  abort:
+! 	tp->th_opcode = htons((u_short)ACK);
+! 	tp->th_block = htons((u_short)block);
+! 	(void) sendto(f, buf, 4, 0, &sin, sizeof (sin));
+  	(void) close(fd);
+
+--- 194,198 -----
+  abort:
+! 	stp->th_opcode = htons((u_short)ACK);
+! 	stp->th_block = htons((u_short)block);
+! 	(void) sendto(f, sbuf, 4, 0, &sin, sizeof (sin));
+  	(void) close(fd);
+***************
+*** 198,200
+  
+! 	tp = (struct tftphdr *)buf;
+  	tp->th_opcode = htons((u_short)request);
+
+--- 212,214 -----
+  
+! 	tp = (struct tftphdr *)sbuf;
+  	tp->th_opcode = htons((u_short)request);
+***************
+*** 211,213
+  	*cp++ = '\0';
+! 	return (cp - buf);
+  }
+
+--- 225,227 -----
+  	*cp++ = '\0';
+! 	return (cp - sbuf);
+  }
+***************
+*** 243,245
+  
+! 	tp = (struct tftphdr *)buf;
+  	tp->th_opcode = htons((u_short)ERROR);
+
+--- 257,259 -----
+  
+! 	tp = (struct tftphdr *)sbuf;
+  	tp->th_opcode = htons((u_short)ERROR);
+***************
+*** 255,257
+  		tpacket("sent", tp, length);
+! 	if (send(f, &sin, buf, length) != length)
+  		perror("nak");
+
+--- 269,271 -----
+  		tpacket("sent", tp, length);
+! 	if (send(f, &sin, sbuf, length) != length)
+  		perror("nak");
+***************
+*** 293,294
+  		printf("<code=%d, msg=%s>\n", ntohs(tp->th_code), tp->th_msg);
+  		break;
+
+--- 307,312 -----
+  		printf("<code=%d, msg=%s>\n", ntohs(tp->th_code), tp->th_msg);
++ 		break;
++ 
++ 	default:
++ 		printf("[this should not happen]\n");
+  		break;

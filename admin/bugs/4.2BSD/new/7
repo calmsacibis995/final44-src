@@ -1,0 +1,70 @@
+Return-Path: <fred@gyre>
+Date: Wed, 19 Sep 84 17:20:06 edt
+From: fred@gyre (Fred Blonder)
+Subject: uninitialized pointer in replsubs.c in MH source
+Index: new/mh/cmds/replsubs.c 4.2BSD
+
+Description:
+	In this section of code:
+
+		char *addr(text)
+		char *text;
+		{
+			static char buf[128];
+			register char *cp, *bufp;
+			int textseen, blankseen;
+			char *copyaddr();
+		
+				.
+				.
+				.
+					bufp = copy(" at ", buf);
+					copyaddr(cp+3, bufp);
+					return(buf);
+				case '@':
+					if(!textseen)
+						return(0);
+					bufp = copy(" @ ", buf);
+					copyaddr(cp+1, bufp);
+				.
+				.
+				.
+		}
+		
+		char *copyaddr(from, to)
+		char *from, *to;
+		{
+			/* Copies left-trimmed "from" to "to".
+			 * Copy terminates on any delimiter.
+			 * Returns pointer to NUL terminator . . .
+			 */
+		
+			register char *fp, *tp;
+		
+			for(fp = from; (*fp == ' ') && (*fp == '\t'); fp++) ;
+			for( ; NOTDELIM; *tp++ = *fp++);
+			*tp = 0;
+			return(tp);
+		}
+
+	Notice that the pointer ``tp'' in the subroutine ``copyaddr()''
+	is not set to any value before it is used. This subroutine works
+	correctly on a VAX because ``tp'' is allocated the second available
+	register, which is the same register which was allocated to ``bufp''
+	in the routine ``addr()'', which contains the correct value because
+	it is intended to be passed to ``copyaddr()''.
+
+	On a Pyramid, the registers used by a subroutine are not allocated
+	from the same set as the calling routine, so this happy coincidence
+	does not occur. ``tp'' has some random value, and the ``repl'' program
+	dies of a bus error.
+
+Repeat-By:
+	Install MH on a Pyramid and run the ``repl'' command.
+Fix:
+	Change the code for ``copyaddr()'' to:
+
+				for(fp = from; (*fp == ' ') && (*fp == . . .
+	    /* changed line */	for(tp = to; NOTDELIM; *tp++ = *fp++);
+				*tp = 0;
+	    /* changed line */	return(to);

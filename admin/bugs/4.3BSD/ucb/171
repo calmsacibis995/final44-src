@@ -1,0 +1,60 @@
+Path: seismo!uunet!husc6!tut.cis.ohio-state.edu!mailrus!nrl-cmf!ames!lll-tis!elxsi!beatnix!gww
+From: gww@beatnix.UUCP (Gary Winiger)
+Newsgroups: comp.bugs.4bsd
+Subject: Vi can longjmp before setjmp is called. +Fix
+Index:	ucb/ex/ex.h 4.3BSD +Fix
+
+Description:
+	It is possible for vi to take a longjmp before the setjmp has
+	completed.
+Repeat-By:
+	The macro CATCH (defined in ex.h) sets a flag to tell if the
+	the jump buffer is valid.  At least in fastpeekkey() (ex_vget.c)
+	the signal can be user generated (SIGINT).  With the original
+	version of CATCH the flag is set before the setjmp is called, 
+	thus with a lot of good luck, one could enter the signal handler
+	(trapalarm()) before the setjmp.
+	By inspection of CATCH in ex.h.
+Fix:
+	The attached code solves this problem at Elxsi.
+
+Gary..
+{ucbvax!sun,lll-lcc!lll-tis,amdahl!altos86,bridge2}!elxsi!gww
+--------- cut --------- snip --------- :.,$w diff -------------
+Index: ucb/ex/ex.h
+*** /tmp/,RCSt1003323	Tue Sep 22 16:42:41 1987
+--- ex.h	Tue Sep 22 16:39:02 1987
+***************
+*** 1,6 ****
+! /*	$Header: ex.h,v 1.1 86/12/23 18:15:35 gww Exp $ ENIX BSD
+   *
+   * $Log:	ex.h,v $
+   * Revision 1.1  86/12/23  18:15:35  gww
+   * Initial revision
+   * 
+--- 1,10 ----
+! /*	$Header: ex.h,v 1.2 87/09/22 16:37:57 gww Exp $ ENIX BSD
+   *
+   * $Log:	ex.h,v $
++  * Revision 1.2  87/09/22  16:37:57  gww
++  * Guard against possible timing bug.  If a signal comes before the setjmp has
++  * been executed.  (This version of the fix by corbett.)
++  * 
+   * Revision 1.1  86/12/23  18:15:35  gww
+   * Initial revision
+   * 
+***************
+*** 259,266 ****
+  #define	setlastchar(c)	lastc = c
+  #define	ungetchar(c)	peekc = c
+! #define	CATCH		vcatch = 1; if (setjmp(vreslab) == 0) {
+! #define	ONERR		} else { vcatch = 0;
+  #define	ENDCATCH	} vcatch = 0;
+  /*
+--- 263,270 ----
+  #define	setlastchar(c)	lastc = c
+  #define	ungetchar(c)	peekc = c
+! #define	CATCH		if (vcatch = !setjmp(vreslab)) {
+! #define	ONERR		} else {
+  #define	ENDCATCH	} vcatch = 0;
+  /*

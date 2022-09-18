@@ -1,0 +1,126 @@
+From elsie!ado@seismo.CSS.GOV Sat Apr 18 10:46:44 1987
+Date: Sat, 18 Apr 87 13:43:58 EDT
+From: elsie!ado@seismo.CSS.GOV (Arthur David Olson)
+Subject: lint boost--sizeof work
+Index: usr.bin/lint 4.3BSD
+
+Here are lint changes that deal with "special" properties of sizeof.
+One property is that an expression such as
+	i = sizeof x;
+does not "use" the variable x, but rather only its size.
+The second property is that in an expression such as
+	i = sizeof ++x;
+the incrementation operation is not done.
+
+Step one is change "lib/mip/scan.c" so that every time we see the
+word "sizeof" we increment the variable "nsizeof":
+
+	*** OLD/scan.c	Sat Apr 18 13:33:04 1987
+	--- NEW/scan.c	Sat Apr 18 13:32:46 1987
+	***************
+	*** 940,945 ****
+	--- 940,953 ----
+					return( TYPE );
+	  
+				case AR_RW:
+	+ #ifndef ASWAS
+	+ 				{
+	+ 					extern int	nsizeof;
+	+ 
+	+ 					if (p->lxrval == SIZEOF)
+	+ 						++nsizeof;
+	+ 				}
+	+ #endif /* !ASWAS */
+					/* ordinary reserved word */
+					return( yylval.intval = p->lxrval );
+
+Step two is to change "lib/mip/cgram.y"
+so that we do *not* mark a variable as having been used if it appears
+in a "sizeof" construct--that is, if nsizeof is non-zero.:
+	  
+	*** OLD/cgram.y	Sat Apr 18 13:36:26 1987
+	--- NEW/cgram.y	Sat Apr 18 13:36:03 1987
+	***************
+	*** 756,762 ****
+	--- 756,771 ----
+					defid( q, EXTERN );
+					}
+				    $$=buildtree(NAME,NIL,NIL);
+	+ #ifdef ASWAS
+				    stab[$1].suse = -lineno;
+	+ #else /* !ASWAS */
+	+ 			    {
+	+ 				extern int	nsizeof;
+	+ 
+	+ 				if (nsizeof == 0)
+	+ 					stab[$1].suse = -lineno;
+	+ 			    }
+	+ #endif /* !ASWAS */
+				}
+			|  ICON
+				={  $$=bcon(0);
+
+The final step is to decrement the variable "nsizeof" each time
+the "doszof" function is called.  The function is in "lib/mip/trees.c".
+This is also the place where we want to check for stuff such as
+"sizeof ++x":
+
+	*** OLD/trees.c	Sat Apr 18 13:38:23 1987
+	--- NEW/trees.c	Sat Apr 18 13:38:13 1987
+	***************
+	*** 1514,1524 ****
+	--- 1514,1552 ----
+			}
+		}
+	  
+	+ #ifndef ASWAS
+	+ 
+	+ int	nsizeof;
+	+ 
+	+ static
+	+ haseffects(p)
+	+ register NODE *	p;
+	+ {
+	+ 	register	o, ty;
+	+ 
+	+ 	o = p->in.op;
+	+ 	ty = optype(o);
+	+ 	if (ty == LTYPE)
+	+ 		return 0;
+	+ 	if (asgop(o) || callop(o))
+	+ 		return 1;
+	+ 	if (haseffects(p->in.left))
+	+ 		return 1;
+	+ 	if (ty == UTYPE)
+	+ 		return 0;
+	+ 	return haseffects(p->in.right);
+	+ }
+	+ #endif /* !ASWAS */
+	  NODE *
+	  doszof( p )  register NODE *p; {
+		/* do sizeof p */
+		int i;
+	  
+	+ #ifndef ASWAS
+	+ 	--nsizeof;
+	+ 	if (haseffects(p))
+	+ 		werror( "operations in object of sizeof are skipped" );
+	+ #endif /* !ASWAS */
+		/* whatever is the meaning of this if it is a bitfield? */
+		i = tsize( p->in.type, p->fn.cdim, p->fn.csiz )/SZCHAR;
+
+The good news:  the /usr/src code produces no
+	"operations in object of sizeof are skipped"
+warnings.  The other news:  it produces just six "new" warnings about unused
+variables, all of which can be eliminated easily (by eliminating the unused
+variable and by taking either the "sizeof" another variable or the "sizeof"
+the deleted variable's type):
+
+    etc/named/tools/ns.lookup/src/getinfo.c(63): static variable align unused
+    lib/libc/net/named/gethostnamadr.c(47): static variable align unused
+    old/berknet/netq.c(20): static variable temp unused
+    ucb/Mail/names.c(565): warning: cp unused in function unpack
+    ucb/dbx/object.c(174): warning: nlist unused in function readobj
+    usr.bin/deroff.c(254): warning: chainblock unused in function getfname
+
+				--ado

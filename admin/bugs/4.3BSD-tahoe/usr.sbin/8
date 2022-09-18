@@ -1,0 +1,349 @@
+From cpw%snow-white@LANL.GOV  Fri Mar  2 09:59:35 1990
+Date: Fri, 2 Mar 90 10:57:24 MST
+From: cpw%snow-white@LANL.GOV (C. Philip Wood)
+To: cert@sei.cmu.edu
+Subject: Re: email letter bombs
+Index: usr.sbin/sendmail 4.3BSD-tahoe
+
+I reported earlier that our VAX 8600 MILNET gateway/host running 4.3BSD with
+sendmail.5.54 was being starved of 'mbufs' by a particular mail
+message from bitnet.  The reason was not absolutely clear.  What was
+happening (I did a gcore) was that a header field longer than 2500 was
+being parsed in collect:
+
+	_sfgets(7fffe00b,-1,17318) from	174a
+	_collect(1) from 912d
+	_smtp()	from f33
+	_main(3,7fffeb9c,7fffebac) from	start+3d
+	
+over and over, never advancing the input pointer with the consequence that
+the TCP input queue was filled up (4096).  After a while the sender would
+try again and another input queue would fill up.  This would go on until
+the system ran out of mbufs.  I pulled some of the 'collect.c' code out
+and made a small routine which would fail due to a piece of the code which
+apparently wrote <nl><space> beyond the area reserved for the field (buf).  I
+don't know how this caused sendmail to loop.  But, I could get my test
+program to clobber a cell reserved for the purpose.  (BTW, I was using 5.61
+source for this test.)
+
+I made up a fix to 'collect.c' which will handle much longer fields.  We
+are running on 5.61 with this fix now.  I tested it and it seems ok.  ULTRIX
+does not seem to have a problem with long fields.  A Sun 4.0.3
+however, would chop the field short and then continue it as data in the
+rest of the message:  (I'm wondering if there is some boundary problem
+with the data in the as received from CORNELL, see hex at end of this
+message)
+
+Phil Wood
+
+
+Here is what the Sun does to the message:
+
+[Resent-To: CYW@ornlstc, ijy8cww@uclamvs, chang@umdenp, N530011@UNIVSCVM,
+        MENG@VAX1.PHYSIK.FU-BERLIN.DBP.DE, zaq@fnal, liu@ukcc, ZEE@SBITP,
+        li@tamphys, PENG@LAMPF, chiu@utaphy, TSANG@MSUNSCL, HWA@OREGON,
+        YDC@LBL, chang@fnal, Kuo@sunysbnp, TTCHOU@USCN, YUAN@DUVM, TZ47@ERENJ,
+        YUAN@CCNYSCI, RKPZIA@VTVM2, SYWU0001@ULKYVX, fywu@nuhub, LIN@PORTAL,
+        HU%LNSSUN6.TN.CORNELL.EDU@CRNLVAX2.BITNET, fchen@caen.engin.umich.edu,
+        HU@UHRCC.CRCC.UH.EDU, li@ukcc, WU@PHYSICS.UTAH.EDU, wux@ornlstc,
+        NJ@gec2.physics.manchester.ac.uk, leetk@vtvm2, yao@umiphys, mhye@gwuvm,
+        U088593@LANL.GOV, HMC@IB.RL.AC.UK, TKKUO@NEWTON.PHYSICS.PURDUE.EDU,
+        TFWONG@SBCCMAIL, CHAOS@UKANVAX, 11609@ncsavmsa, WANG@FSU,
+        STAN@TRIUMFCL, NCTKWAN@WATDRAGON.UWATERLOO.CA, HU@TAMPHYS, SUWU@UHRCC,
+        EZAB066@UTCHPC, b24679@anlvm, 02153@AECLCR, LING@OHSTPY, DHLEE@YKTVMV,
+        CWHLAM@CONU1, liu@vax.hmi.dbp.de, SHIH@utkvx, TAN@BROWNVM,
+        FUNG@UCRPHYS, CHING@UMKCVAX1, CYC@JHUP,
+        nvuxe!dmt@bellcore.bellcore.com, tye@crnlnuc, wkliu@watsci,
+        f1leung@semassu, chang@umdhep, keung@fnal, chaos@ukanvax, WG@ANLHEP,
+        JWQ@ANLHEP, Laynam@vtvm2, npccc@cunyvm, PY20@MCGILLA, YOUNG@ALISUVAX,
+        HO@OHSTPY, swong@utorphys, n410097@univscvm, yen@nsf1.mth.msu.edu,
+        WONG@GALTON.UCHICAGO.EDU, JESSICA_YU@UB.CC.UMICH.EDU,
+        wuc%umduap.span@sdsc, 21545MCT@MSU, WONG@NSF1.MTH.MSU.EDU,
+        JBKM701@CALSTATE, ssp@mhuxo.att.com, nc171@albny1vx
+Status: R
+
+               hsieh@arizrvax,
+              fflcl@alaska,
+              CHAO@SSCVX1,
+              dai@c.chem.upenn.edu,
+              LUILAM@CALSTATE
+]
+
+
+Attached is the fix to collect, the offending header field, and some hex
+dump of the stdin queue from the core file.
+
+
+------- collect.c -------
+*** /tmp/d16038	Thu Mar  1 16:56:55 1990
+--- collect.c	Thu Mar  1 16:50:44 1990
+***************
+*** 47,54 ****
+  {
+  	register FILE *tf;
+- 	char buf[MAXFIELD+2];
+  	register char *p;
+  	extern char *hvalue();
+  
+  	/*
+  	**  Create the temp file name and create the file.
+--- 47,56 ----
+  {
+  	register FILE *tf;
+  	register char *p;
+  	extern char *hvalue();
++ 	static int      maxfield = MAXFIELD;
++ 	static char     *buf = NULL;
+  
++ 
+  	/*
+  	**  Create the temp file name and create the file.
+***************
+*** 74,79 ****
+  	**  Try to read a UNIX-style From line
+  	*/
+  
+! 	(void) sfgets(buf, sizeof buf, InChannel);
+  	fixcrlf(buf, FALSE);
+  # ifndef NOTUNIX
+--- 76,83 ----
+  	**  Try to read a UNIX-style From line
+  	*/
++ 	if ( !buf )
++ 		buf = (char *)malloc(maxfield);
+  
+! 	(void) sfgets(buf, maxfield, InChannel);
+  	fixcrlf(buf, FALSE);
+  # ifndef NOTUNIX
+***************
+*** 81,85 ****
+  	{
+  		eatfrom(buf);
+! 		(void) sfgets(buf, sizeof buf, InChannel);
+  		fixcrlf(buf, FALSE);
+  	}
+--- 85,89 ----
+  	{
+  		eatfrom(buf);
+! 		(void) sfgets(buf, maxfield, InChannel);
+  		fixcrlf(buf, FALSE);
+  	}
+***************
+*** 96,99 ****
+--- 100,104 ----
+  	{
+  		int c;
++ 		int strlen_buf;
+  		extern bool isheader();
+  
+***************
+*** 117,128 ****
+  
+  		/* get the rest of this field */
+  		while ((c = getc(InChannel)) == ' ' || c == '\t')
+  		{
+! 			p = &buf[strlen(buf)];
+! 			*p++ = '\n';
+! 			*p++ = c;
+! 			if (sfgets(p, MAXFIELD - (p - buf), InChannel) == NULL)
+  				break;
+! 			fixcrlf(p, TRUE);
+  		}
+  		if (!feof(InChannel) && !ferror(InChannel))
+--- 122,156 ----
+  
+  		/* get the rest of this field */
++ 		strlen_buf = strlen(buf);
+  		while ((c = getc(InChannel)) == ' ' || c == '\t')
+  		{
+! 			int	tmax;
+! 			int	strlen_tline;
+! 			char	tline[MAXLINE];
+! 
+! 			tline[0] = '\n';
+! 			tline[1] = c;
+! 			if (sfgets(&tline[2], MAXLINE, InChannel) == NULL)
+  				break;
+! 			fixcrlf(&tline[2], TRUE);
+! 			p = (char *)(buf + strlen_buf);
+! 			tmax = maxfield + 4 - (p - buf);
+! 			strlen_tline = strlen(tline);
+! 			if (strlen_tline > tmax) {
+! 				tmax = (maxfield + MAXFIELD) + 4;
+! 				p = (char *) malloc(tmax);
+! 				if (p == 0) break; /* in the spirit of the
+! 						      break above */
+! 				strncpy(p, buf, strlen_buf);
+! 				free(buf);
+! 				buf = p;
+! 				p = (char *)(buf + strlen_buf);
+! 				strcpy(p, tline);
+! 				maxfield = tmax;
+! 			} else
+! 				strcpy(p, tline);
+! 
+! 			strlen_buf += strlen_tline;
+! 
+  		}
+  		if (!feof(InChannel) && !ferror(InChannel))
+***************
+*** 137,141 ****
+  		if (bitset(H_EOH, chompheader(buf, FALSE)))
+  			break;
+! 	} while (sfgets(buf, MAXFIELD, InChannel) != NULL);
+  
+  	if (tTd(30, 1))
+--- 165,169 ----
+  		if (bitset(H_EOH, chompheader(buf, FALSE)))
+  			break;
+! 	} while (sfgets(buf, maxfield, InChannel) != NULL);
+  
+  	if (tTd(30, 1))
+***************
+*** 144,148 ****
+  	/* throw away a blank line */
+  	if (buf[0] == '\0')
+! 		(void) sfgets(buf, MAXFIELD, InChannel);
+  
+  	/*
+--- 172,176 ----
+  	/* throw away a blank line */
+  	if (buf[0] == '\0')
+! 		(void) sfgets(buf, maxfield, InChannel);
+  
+  	/*
+***************
+*** 174,178 ****
+  		if (ferror(tf))
+  			tferror(tf);
+! 	} while (sfgets(buf, MAXFIELD, InChannel) != NULL);
+  	if (fflush(tf) != 0)
+  		tferror(tf);
+--- 202,206 ----
+  		if (ferror(tf))
+  			tferror(tf);
+! 	} while (sfgets(buf, maxfield, InChannel) != NULL);
+  	if (fflush(tf) != 0)
+  		tferror(tf);
+
+
+Offending header field:
+
+Resent-To:    CYW@ornlstc,
+              ijy8cww@uclamvs,
+              chang@umdenp,
+              N530011@UNIVSCVM,
+              MENG@VAX1.PHYSIK.FU-BERLIN.DBP.DE,
+              zaq@fnal,
+              liu@ukcc,
+              ZEE@SBITP,
+              li@tamphys,
+              PENG@LAMPF,
+              chiu@utaphy,
+              TSANG@MSUNSCL,
+              HWA@OREGON,
+              YDC@LBL,
+              chang@fnal,
+              Kuo@sunysbnp,
+              TTCHOU@USCN,
+              YUAN@DUVM,
+              TZ47@ERENJ,
+              YUAN@CCNYSCI,
+              RKPZIA@VTVM2,
+              SYWU0001@ULKYVX,
+              fywu@nuhub,
+              LIN@PORTAL,
+              HU%LNSSUN6.TN.CORNELL.EDU@CRNLVAX2.BITNET,
+              fchen@caen.engin.umich.edu,
+              HU@UHRCC.CRCC.UH.EDU,
+              li@ukcc,
+              WU@PHYSICS.UTAH.EDU,
+              wux@ornlstc,
+              NJ@gec2.physics.manchester.ac.uk,
+              leetk@vtvm2,
+              yao@umiphys,
+              mhye@gwuvm,
+              U088593@lanl.gov,
+              HMC@IB.RL.AC.UK,
+              TKKUO@NEWTON.PHYSICS.PURDUE.EDU,
+              TFWONG@SBCCMAIL,
+              CHAOS@UKANVAX,
+              11609@ncsavmsa,
+              WANG@FSU,
+              STAN@TRIUMFCL,
+              NCTKWAN@WATDRAGON.UWATERLOO.CA,
+              HU@TAMPHYS,
+              SUWU@UHRCC,
+              EZAB066@UTCHPC,
+              b24679@anlvm,
+              02153@AECLCR,
+              LING@OHSTPY,
+              DHLEE@YKTVMV,
+              CWHLAM@CONU1,
+              liu@vax.hmi.dbp.de,
+              SHIH@utkvx,
+              TAN@BROWNVM,
+              FUNG@UCRPHYS,
+              CHING@UMKCVAX1,
+              CYC@JHUP,
+              nvuxe!dmt@bellcore.bellcore.com,
+              tye@crnlnuc,
+              wkliu@watsci,
+              f1leung@semassu,
+              chang@umdhep,
+              keung@fnal,
+              chaos@ukanvax,
+              WG@ANLHEP,
+              JWQ@ANLHEP,
+              Laynam@vtvm2,
+              npccc@cunyvm,
+              PY20@MCGILLA,
+              YOUNG@ALISUVAX,
+              HO@OHSTPY,
+              swong@utorphys,
+              n410097@univscvm,
+              yen@nsf1.mth.msu.edu,
+              WONG@GALTON.UCHICAGO.EDU,
+              JESSICA_YU@UB.CC.UMICH.EDU,
+              wuc%umduap.span@sdsc,
+              21545MCT@MSU,
+              WONG@NSF1.MTH.MSU.EDU,
+              JBKM701@CALSTATE,
+              ssp@mhuxo.att.com,
+              nc171@albny1vx,
+              proho@ucbvms,
+              hsieh@arizrvax,
+              fflcl@alaska,
+              CHAO@SSCVX1,
+              dai@c.chem.upenn.edu,
+              LUILAM@CALSTATE
+Received: from VILLVM.BITNET by	DUVM.BITNET (Mailer R2.03B) with BSMTP id
+
+
+More adb of the core file:
+
+$c
+_sfgets(7fffe00b,-1,17318) from	174a
+_collect(1) from 912d
+_smtp()	from f33
+_main(3,7fffeb9c,7fffebac) from	start+3d
+17318,5/X
+__iob+64:	11c		330fc		33000		1000
+		70009
+33000,40/X
+33000:		20202020	20202020	5353454a	5f414349
+		55405559	43432e42	494d552e	452e4843
+		d2c5544		2020200a	20202020	20202020
+		77202020	75256375	6175646d	70732e70
+		73406e61	2c637364	20200a0d	20202020
+		20202020	20202020	34353132	54434d35
+		55534d40	200a0d2c	20202020	20202020
+		20202020	4e4f5720	534e4047	4d2e3146
+		4d2e4854	452e5553	d2c5544		2020200a
+		20202020	20202020	4a202020	374d4b42
+		43403130	54534c41	2c455441	20200a0d
+		20202020	20202020	20202020	40707373
+		7875686d	74612e6f	6f632e74	a0d2c6d
+		20202020	20202020	20202020	636e2020
+		40313731	6e626c61	78763179	200a0d2c
+		20202020	20202020	20202020	6f727020

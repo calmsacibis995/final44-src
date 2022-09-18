@@ -1,0 +1,66 @@
+Return-Path: <munnari!kre@seismo.CSS.GOV>
+From: Robert Elz <munnari!kre@seismo.CSS.GOV>
+Date: Tue, 1 Oct 85 22:17:17 EST
+Subject: re-binding unix domain sockets leaves unreferenced inodes
+Index: 	sys/uipc_usrreq.c 4.3BSD
+
+Description:
+	If a unix domain socket is bound twice, the reference from
+	the socket to the first inode is simply overwritten.
+	Attempting to do this should almost certainly be an error,
+	but it isn't, and its dead easy to fill up the inode table
+	with a single process this way...
+
+Repeat-By:
+	Run the following sh script.  Note that the pstat at the
+	end locates the inode for "foo", the first name bound
+	to the socket, with a reference count of 1.  Only patching
+	/dev/mem or a reboot will fix this ...
+
+#! /bin/sh
+set -x
+cd /tmp
+sed 's/^X//' >b.c <<'!The!End!'
+X#include <sys/types.h>
+X#include <sys/socket.h>
+X#include <sys/un.h>
+X
+Xstruct sockaddr_un port1 = { AF_UNIX, "/tmp/foo" };
+Xstruct sockaddr_un port2 = { AF_UNIX, "/tmp/bar" };
+X
+Xmain()
+X{
+X	register s;
+X	register i, j, k;
+X
+X	s = socket(AF_UNIX, SOCK_DGRAM, 0, 0);
+X	if (s < 0) {
+X		perror("socket");
+X		exit(3);
+X	}
+X	if (bind(s, &port1, sizeof port1, 0) < 0) {
+X		perror("bind-1");
+X		exit(1);
+X	}
+X	if (bind(s, &port2, sizeof port2, 0) < 0) {
+X		perror("bind-2");
+X		exit(2);
+X	}
+X	close(s);
+X	exit(0);
+X}
+!The!End!
+cc -o b b.c
+rm -f foo bar
+./b
+ls -li foo bar
+set -x `ls -i foo bar`
+pstat -i | egrep "LOC| $1 | $3 "
+exit
+
+Outline-Fix:
+	Once the problem is known, several possible fixes are
+	obvious.  One may be simply to have unp_bind() check
+	for unp->unp_inode being non-null at entry, returning an
+	error if it is.  Another would be to irele(unp->unp_inode)
+	before overwriting it if it isn't null.

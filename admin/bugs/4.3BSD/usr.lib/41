@@ -1,0 +1,91 @@
+From holub@violet.berkeley.edu  Sat Mar 21 15:22:41 1987
+Date: Sat, 21 Mar 87 15:21:52 PST
+From: holub@violet.berkeley.edu
+Subject: Curses doesn't seem to scroll properly
+Index: usr.lib/curses 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	This is either a bug in the curses package or one in the documentation
+	(becuase if it's not a bug it should be documented). I can't get
+	curses to scroll a window properly when I type a newline in
+	a window. To be more precise, it indeed scrolls but it doesn't
+	clear the bottom line of the window as it should.
+
+	I've also noticed a second scroll-related problem. The first
+	time that the window scrolls, the border gets messed up (that is
+	a bogous character magically appears in it). As the border isn't
+	actually a part of the window that's being scrolled, this seems
+	to be a bug as well.
+
+	My program looks like this:
+
+	#include <curses.h>
+
+	WINDOW	*wnew( lines, cols, y_start, x_start )
+	{
+		/* This routine works just like the newwin() except that the
+		 * window has a box around it that won't be destoyed by
+		 * writes to the window. It accomplishes this feat by creating
+		 * two windows, one inside the other, with a box drawn in
+		 * the outer one.
+		 */
+
+		WINDOW *outer, *inner;
+
+		outer = newwin(lines,   cols,   y_start,   x_start);
+		box	 ( outer, '+', '+' );
+		wrefresh ( outer 	   );
+
+		return newwin( lines-2, cols-2, y_start+1, x_start+1 ); 
+	}
+
+	main()
+	{
+		WINDOW	*win1, *win2;
+		char	str[128];
+		int	c;
+
+		initscr();	/* Initialize curses			*/
+		noecho();	/* Echo off (it screws up the screen)	*/
+		crmode();	/* Put terminal into CBREAK mode	*/
+
+		win1 = wnew(10, 20,  0, 0 );
+		win2 = wnew(10, 20, 11, 21);
+
+		wprintw(win1, "This is window one, doo wha\n" );
+		wrefresh( win1 );
+		wprintw(win2, "This is window 2.\nPress a key to continue \n" );
+		wrefresh( win2 );
+
+		c = wgetch(win2);
+		wmove   (win1, 5, 0 );
+		wprintw (win1, "Got %c, 0x%x\n", c, c );
+		wprintw (win1, "Type stuff ('q') to exit");
+		wrefresh(win1);
+
+		scrollok( win1, TRUE );
+
+	/****>>> The window doesn't scroll when I use the following loop. <<<**/
+
+		while( (c = wgetch(win1) & 0x7f) != 'q' )
+		{
+			waddch( win1, c );
+			wrefresh( win1 );
+		}
+
+	/**********************************************************************/
+
+		move(23,0);
+		refresh();
+		endwin();
+	}
+
+Repeat-By:
+	Compile the above program with "cc name.c -lcurses -ltermlib" and then
+	type a.out. It will prompt for a character, type it. The cursor 
+	jumps to the other window and you're prompted again. Characters that
+	you type will be echoed to the window but it cursese leaves junk on
+	the bottom line when it scrolls. Also, the character that you typed
+	to change windows magically appears in the left-hand border of the
+	window that just scrolled. Type a 'q' to exit the program.

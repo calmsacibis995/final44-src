@@ -1,0 +1,72 @@
+Return-Path: <rws@mit-bold>
+Date: Thu, 17 Nov 83 15:08:41 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: wait3() does not always return
+Index: sys/vax/trap.c 4.2BSD
+
+Description:
+	When doing a wait3() with WUNTRACED with a SIGCHLD handler,
+	if the inferior stops due to a SIGTTIN, SIGTTOU, SIGTSTP, or
+	SIGSTOP after the parent is already sleeping at PWAIT, the
+	wait3() never returns.
+Repeat-By:
+	The following C program will demonstrate the bug.  Run it,
+	and type ^Z to the ftp prompt.
+
+	#include <sys/signal.h>
+	#include <sys/wait.h>
+	#include <sys/ioctl.h>
+	extern int child();
+	struct sigvec sv = { child, 0, 0 };
+	struct sigvec ig = { SIG_IGN, 0, 0 };
+
+	main()
+	{
+		sigvec(SIGCHLD, &sv, 0);
+		sigvec(SIGTTOU, &ig, 0);
+		if (!fork()) {
+			short pid = getpid();
+			setpgrp(pid, pid);
+			ioctl(0, TIOCSPGRP, &pid);
+			execl("/usr/ucb/ftp", "/usr/ucb/ftp", 0);
+		}
+		wait3(0, WUNTRACED, 0);
+	}
+
+	child()
+	{
+		short pid = getpid();
+		ioctl(0, TIOCSPGRP, &pid);
+	}
+Fix:
+	What SHOULD have been done, since a new wait system call was
+	added for 4.2, is that wait3() should have been the standard
+	system call, and wait() should have been made a library
+	routine that did wait3(status, 0, 0).  However, the disgusting
+	old 4.1 code that has wait3() setting magic condition codes
+	and placing the extra arguments in registers still persists.
+	The magic condition codes get clobbered when the wait3()
+	system call gets restarted, which happens when the SIGCHLD
+	occurs.  In syscall(), the following is done even for RESTARTSYS:
+		locr0[PS] &= ~PSL_C;
+	Since wait3() is indicated by all the bits being set, the restarted
+	wait3() turns into a wait(), and you never terminate.  The fix is
+	to move the offending statement down inside the final else of the
+	following if statement:
+		if (u.u_eosys == RESTARTSYS)
+			pc = opc;
+	#ifdef notdef
+		else if (u.u_eosys == SIMULATERTI)
+			dorti();
+	#endif
+		else if (u.u_error) {
+	#ifndef lint
+	bad:
+	#endif
+			locr0[R0] = u.u_error;
+			locr0[PS] |= PSL_C;	/* carry bit */
+		} else {
+			locr0[PS] &= ~PSL_C;	/* clear carry bit */
+			locr0[R0] = u.u_r.r_val1;
+			locr0[R1] = u.u_r.r_val2;
+		}

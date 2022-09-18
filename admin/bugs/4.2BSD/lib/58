@@ -1,0 +1,97 @@
+Return-Path: <donn@utah-cs>
+Date: Mon, 27 Aug 84 18:13:35 mdt
+From: donn@utah-cs (Donn Seeley)
+Subject: The C compiler flunks on certain initializers
+
+Subject: The C compiler flunks on certain initializers
+Index:	lib/mip/trees.c 4.2BSD
+
+Description:
+	Initializers must evaluate to a constant, but the C compiler
+	fails to reduce expressions of the form '(unsigned) 2 >> 1' to
+	a constant, so they cause the compiler to bomb.  '(unsigned)'
+	can be replaced here by a cast to any type compatible with but
+	not the same as 'int' and the operator may be varied as well
+	(with varying incorrect results; some operators, in particular
+	'+', work correctly).  This bug was found by Krzysztof
+	Kozminski at the University of Rochester (whose article we
+	never got), and was followed up by Chris Torek at the
+	University of Maryland, from whose article I got all the
+	information.
+
+Repeat-By:
+	Put the following line in a file 'one.c' and try to compile it.
+
+	----------------------------------------------------------------
+	int one = (unsigned) 2 >> 1;
+	----------------------------------------------------------------
+
+	The precise message you get is:
+
+	----------------------------------------------------------------
+	"one.c", line 1: compiler error: expression causes compiler loop: try simplifying
+	----------------------------------------------------------------
+
+	(The C compiler on monet (Ralph's version) complains about an
+	illegal initialization instead -- it's smart enough not to try
+	to generate code into the data area, which is what the older
+	version did.)
+
+Fix:
+	What's happening is that when certain casts are transmuted into
+	conversions, the compiler neglects to canonicalize the
+	resulting trees.  It's a fairly simple matter to ensure that
+	makety(), the routine which does the transmutations, always
+	canonicalizes the trees it returns.  Here are the changes to
+	/usr/src/lib/mip/trees.c:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1008238	Sat Aug 25 06:30:16 1984
+	--- trees.c	Sat Aug 25 04:37:26 1984
+	***************
+	*** 1061,1067
+	  
+		if( t & TMASK ){
+			/* non-simple type */
+	! 		return( block( PCONV, p, NIL, t, d, s ) );
+			}
+	  
+		if( p->in.op == ICON ){
+
+	--- 1061,1067 -----
+	  
+		if( t & TMASK ){
+			/* non-simple type */
+	! 		return( clocal( block( PCONV, p, NIL, t, d, s ) ) );
+			}
+	  
+		if( p->in.op == ICON ){
+	***************
+	*** 1079,1085
+				}
+			}
+	  
+	! 	return( block( SCONV, p, NIL, t, d, s ) );
+	  
+		}
+	  
+
+	--- 1079,1085 -----
+				}
+			}
+	  
+	! 	return( clocal( block( SCONV, p, NIL, t, d, s ) ) );
+	  
+		}
+	  
+	----------------------------------------------------------------
+
+	I'm not sure that the first change is strictly necessary, but
+	better safe than sorry.  At any rate the sample program now
+	compiles correctly.  I don't think these changes have any nasty
+	side effects -- I recompiled the compiler with the changes
+	installed and it produced exactly the same binary as the old
+	compiler did, for what it's worth.
+
+Donn Seeley    University of Utah CS Dept    donn@utah-cs.arpa
+40 46' 6"N 111 50' 34"W    (801) 581-5668    decvax!utah-cs!donn

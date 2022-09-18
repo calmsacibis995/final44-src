@@ -1,0 +1,90 @@
+From cgd@sun-lamp.cs.berkeley.edu Fri May 14 21:07:40 1993
+From cgd@sun-lamp.cs.berkeley.edu Fri May 14 21:07:40 1993
+To: bostic@vangogh.CS.Berkeley.EDU, karels@vangogh.CS.Berkeley.EDU
+Cc: cgd@sun-lamp.cs.berkeley.edu
+Subject: bug in net/2 and BSDI 1.0 (p_wmesg in wrong place in struct proc)
+Date: Fri, 14 May 1993 20:07:22 -0700
+From: "Chris G. Demetriou" <cgd@sun-lamp.cs.berkeley.edu>
+Index: sys/sys/proc.h net2
+
+[ sorry if you got this 2x: it got a bounce that said nobody got it... ]
+
+this bug appears in net/2, and (Sean Eric Fagan checked for me) apparently
+in BSDI 1.0, as well (or, at least, in BSDI 1.0, struct proc still has p_wmesg
+in the same place...).
+
+p_wmesg is in the part of the proc struct which is supposed to be
+initialized when the proc is forked.
+
+it isn't.  what this results in is "w" will sometimes "get lucky"
+and getkerninfo() before it has ever waited on anything.  in this case,
+i've found p_wmesg (nominally a char *) to have a value somewhere around
+0x28 +/- 0x10.
+
+what this results in is a kernel panic with a vm fault in "strncpy", called
+from fill_eproc.
+
+
+the solution is to move the p_wmesg field of struct proc into the portion
+of the structure which is bzero'd during fork().
+
+
+the diff is below.
+
+
+(this was already fixed in proc.h on vangogh; looks like somebody figured
+it out before...)
+
+
+enjoy,
+
+chris
+
+=======================================================
+diff -c src/sys/sys/proc.h:1.2 src/sys/sys/proc.h:1.3
+*** src/sys/sys/proc.h:1.2	Fri May 14 19:54:38 1993
+--- src/sys/sys/proc.h	Fri May 14 19:54:38 1993
+***************
+*** 118,123 ****
+--- 118,124 ----
+  	struct	vnode *p_tracep;/* trace to vnode */
+  
+  	int	p_sig;		/* signals pending to this process */
++ 	char	*p_wmesg;	/* reason for sleep */
+  
+  /* end area that is zeroed on creation */
+  #define	p_endzero	p_startcopy
+***************
+*** 137,144 ****
+  	char	p_comm[MAXCOMLEN+1];
+  
+  /* end area that is copied on creation */
+! #define	p_endcopy	p_wmesg
+! 	char	*p_wmesg;	/* reason for sleep */
+  	int	p_thread;	/* id for this "thread" (Mach glue) XXX */
+  	struct	user *p_addr;	/* kernel virtual addr of u-area (PROC ONLY) */
+  	swblk_t	p_swaddr;	/* disk address of u area when swapped */
+--- 138,144 ----
+  	char	p_comm[MAXCOMLEN+1];
+  
+  /* end area that is copied on creation */
+! #define	p_endcopy	p_thread
+  	int	p_thread;	/* id for this "thread" (Mach glue) XXX */
+  	struct	user *p_addr;	/* kernel virtual addr of u-area (PROC ONLY) */
+  	swblk_t	p_swaddr;	/* disk address of u area when swapped */
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From karels@BSDI.COM Sat May 15 17:33:52 1993
+From: karels@BSDI.COM (Mike Karels)
+To: "Chris G. Demetriou" <cgd@sun-lamp.cs.berkeley.edu>
+Cc: bostic@vangogh.CS.Berkeley.EDU
+Subject: Re: bug in net/2 and BSDI 1.0 (p_wmesg in wrong place in struct proc) 
+Date: Sat, 15 May 93 19:33:43 CDT
+
+Thanks for pointing out the bug with p_wmesg.  I think that BSDI has a
+different fix, which is to ignore p_wmesg if a process is not sleeping;
+making sure that it is 0 is probably cleaner, though.  We found it when
+the status character is set to ^T; a ^T would sometimes crash the system.
+
+		Mike
+

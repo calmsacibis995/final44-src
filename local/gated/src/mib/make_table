@@ -1,0 +1,276 @@
+#!/bin/sh
+#
+#
+#	$Id: make_table,v 1.7 1992/07/29 03:09:49 jch Exp $
+#
+
+#    MIB Table/Group Maker
+#
+#	This is a file designed to create an input file for nroff,
+#	includable in a MIB document by putting a line of the form
+#
+#	.so mibTableFile
+#
+#	into the boilerplate file.  This works on the principle of
+#	conservation of boilerplate.
+#
+#	input variables:
+#
+#	$document	The document being instrumented
+#	$mib		The name of the nroff input file
+#	$group		The page heading text
+t="Table"
+e="Entry"
+g="Group"
+embedded_table=""
+
+object_type() {
+
+	case ${1} in
+		INTEGER| \
+		DisplayString| \
+		Gauge| \
+		Counter| \
+		PhysAddress| \
+		TimeTicks| \
+		ObjectID| \
+		NetworkAddress| \
+		IpAddress| \
+		OctetString)
+			return 1 ;
+			;;
+
+		*)
+			echo "Invalid type: " ${1} ;
+			return 0 ;
+	esac
+}
+
+
+entryname() {
+	echo ${1} | sed -e 'h;y/abcdefghijklmnopqrstuvwxyz/ABCDEFGHIJKLMNOPQRSTUVWXYZ/;G;s/\(.\).*\n./\1/'
+}
+
+#
+#	make_table "$mib" "$entry" "$i" "$document" 
+#
+if [ ${#} -eq 4 ]; then
+    document="$4"
+    mib="$1"
+    echo .bp >> $mib
+    echo -n "What is the title of the table or group for the Table of Contents? " ;
+    read group ;
+    echo -n "What is the nroff section number (6.?)? " ;
+    read number ;
+    echo \.\$0 \"$group\" \"$number\" >> $mib
+    echo  --\  $group >> $mib
+    echo '' >> $mib
+    fmt << EOF
+Describe the group; these comments will head the ${mib} area.
+CONTROL D terminates input.
+EOF
+    fmt | awk '{ printf "-- %s\n", $0 ; }' >> ${mib}
+    echo "" ;
+    echo '' >> $mib
+    table="table"
+else
+    echo -n "What document is this? " ;
+    read document ;
+    echo -n "What is the name of the '.so' file? " ;
+    read mib ;
+    echo .bp >> $mib
+    echo -n "What is the title of the table or group for the Table of Contents? " ;
+    read group ;
+    echo -n "What is the nroff section number (6.?)? " ;
+    read number
+    echo \.\$0 \"$group\" \"$number\" >> $mib
+    echo  --\  $group >> $mib
+    echo '' >> $mib
+    fmt << EOF
+Describe the group; these comments will head the ${mib} area.
+CONTROL D terminates input.
+EOF
+    fmt | awk '{ printf "-- %s\n", $0 ; }' >> ${mib}
+    echo "" ;
+    echo '' >> $mib
+    echo -n "Is this a group or a table? " ;
+    read table
+fi
+
+echo "" ;
+
+#
+# describe the Table
+#
+if [ "table" = "$table" ]; then
+#
+#	Get description of Table
+#
+	fmt << EOF
+By convention, a table or group has an identifying header that
+is part of every object name inside it, like the IP Group
+contains the ipNetToMediaTable and the ipRouteTable, and the
+ipRouteTable specifies the ipRouteEntry and in turn the
+ipRouteNextHop.  The base name for the IP Group is 'ip', and
+the base name for the ipRouteTable is 'ipRoute'.
+EOF
+    echo ''
+    echo -n "What is the base name? " ;
+    read base
+    table="$base$t"
+    entry="$base$e"
+    sequence=`entryname ${entry}`
+
+    echo $table OBJECT-TYPE >> $mib
+    echo '   ' SYNTAX ' ' SEQUENCE OF $sequence >> $mib
+    echo '   ' ACCESS ' ' not-accessible >> $mib
+    echo '   ' STATUS ' ' mandatory >> $mib
+    echo '   ' DESCRIPTION >> $mib
+    echo .fi >> $mib
+    echo .in +.75i >> $mib
+    fmt << EOF
+Please describe the ${table} (without quotes).
+This is probably something of the form "A list of ...".
+CONTROL D terminates input.
+EOF
+    input=`fmt` ;
+    echo \"${input}\" | fmt >> ${mib}
+    echo ""
+    echo .in -.75i >> $mib
+    echo .nf >> $mib
+    echo '   ' REFERENCE >> $mib
+    echo .fi >> $mib
+    echo .in +.75i >> $mib
+    fmt << EOF
+Please tell me what section and paragraph of ${document} is
+being instrumented by the ${table}?
+EOF
+    read input
+    echo \"$document "${input}"\" >> $mib
+    echo .in -.75i >> $mib
+    echo .nf >> $mib
+    if [ ${#} -eq 4 ]; then
+        echo '    ::= {' $2 $3 '}' >> $mib
+    else
+        echo -n "What is the ASN.1 description for ${table}? " ;
+	read input
+        echo '    ::= {' "${input}" '}' >> $mib
+    fi
+    echo '' >> $mib
+#
+#	Describe the Entry
+#
+    echo $entry OBJECT-TYPE >> $mib
+    echo '   ' SYNTAX ' ' $sequence >> $mib
+    echo '   ' ACCESS ' ' not-accessible >> $mib
+    echo '   ' STATUS ' ' mandatory >> $mib
+    echo '   ' DESCRIPTION >> $mib
+    echo .fi >> $mib
+    echo .in +.75i >> $mib
+    fmt << EOF
+Please describe the ${entry}, (without quotes).
+This is probably something of the form "A single ...".
+CONTROL D terminates input.
+EOF
+    input=`cat` ;
+    echo "" ;
+    echo \"${input}\" | fmt >> ${mib}
+    echo .in -.75i >> $mib
+    echo .nf >> $mib
+    fmt << EOF
+An instance is one or more of the variables in the entry,
+separated by commas, telling me how to specifically get the one
+I want.
+EOF
+    echo -n "How do you instantiate ${entry}? "
+    read input ;
+    echo '   ' INDEX '{' "${input}" '}' >> $mib
+    echo '    ::= {' $table 1 '}' >> $mib
+    echo '' >> $mib
+    echo $sequence '::=' >> $mib
+    echo '    SEQUENCE {' >> $mib
+else
+#
+#	Get description of Group
+#
+    table=""
+    echo -n "What is the group's base name? "
+    read base ;
+    entry="$base$g"
+#
+#	Describe a Group
+#
+    echo -n "What is the ASN.1 description for ${entry}? "
+    read input
+    echo $entry OBJECT IDENTIFIER '::= {' "${input}" '}' >> $mib
+    echo '' >> $mib
+fi
+
+
+#
+#	Build the SEQUENCE
+#
+echo "" ;
+echo -n "How many objects are there in ${entry}? "
+read highest ;
+i=1 ;
+objects="";
+while [ ${i} -le ${highest} ]; do
+	echo "" ;
+	echo -n "Name object ${i}: ${base}" ; 
+	read part ;
+	object="${base}${part}" ;
+	done=0
+	while [ ${done} -eq 0 ]; do
+		echo -n "What type is ${object}? " ;
+		read type
+		object_type ${type}
+		done=${?}
+	done
+	objects="${objects} ${object} ${type}" ;
+	if [ "${table}" ]; then
+	        echo '       ' ${object} >> $mib
+	        echo -n '           ' ${type} >> $mib
+	        if [ ${i} -eq ${highest} ]; then
+        		echo "" >> $mib
+	        else
+			echo "," >> ${mib}
+	        fi
+	    fi
+
+	i=`expr ${i} + 1` ;
+done
+
+if [ "$table" ]; then
+    echo '}' >> $mib
+    echo '' >> $mib
+fi
+
+#
+#	Build the various Object Descriptions
+#
+i=1;
+set ${objects}
+while [ ${#} -gt 0 ]; do
+	object=${1} ; shift
+	type=${1} ; shift
+	case ${type} in
+		TABLE)
+	    		embeded_table="${embeded_table} ${object}" ;
+			set -x
+		        make_table "${object}" "${entry}" "${i}" "${document}" 
+			set +x
+			;;
+			
+		*)
+			make_object "${object}" "${type}" "${entry}" "${i}" "${mib}" "${document}" 
+	esac
+
+    i=`expr ${i} + 1` ;
+done
+#
+#	import the embedded tables
+#
+for i in $embedded_table; do
+	echo .so ${i} >> $mib
+done

@@ -1,0 +1,43 @@
+4.3BSD network bug (#3, MCLGET/mbuf.h)
+Index:	sys/h/mbuf.h 4.3BSD FIX
+
+Description:
+The macros for addition of page clusters to mbufs were revised in 4.3BSD.
+A new macro, MCLGET, is called to add a single page cluster to an mbuf.
+If there are no free clusters, the macro calls m_clalloc to attempt
+to create a new cluster.  Unfortunately, the MCLGET macro does not run
+at high priority, but m_clalloc may only be called from splimp to block
+reentrance of the memory allocation routines.  The call to m_clalloc
+should be made from MCLALLOC, which does run at high priority. Although
+rare, the bug described in this report may cause unexplained crashes or
+random failures.
+
+Fix:
+In the file /sys/h/mbuf.h, move the test of mclfree and call to m_clalloc
+from the MCLGET macro to the MCLALLOC macro, as shown by the following diffs:
+
+*** mbuf.h.old	Thu Sep 11 06:07:29 1986
+--- mbuf.h	Thu Sep 11 06:20:07 1986
+***************
+*** 5,7 ****
+   *
+!  *	@(#)mbuf.h	7.1 (Berkeley) 6/4/86
+   */
+--- 5,7 ----
+   *
+!  *	@(#)mbuf.h	7.3 (Berkeley) 9/11/86
+   */
+***************
+*** 97,98 ****
+--- 97,100 ----
+  	{ int ms = splimp(); \
++ 	  if (mclfree == 0) \
++ 		(void)m_clalloc((i), MPG_CLUSTERS, M_DONTWAIT); \
+  	  if ((m)=mclfree) \
+***************
+*** 105,108 ****
+  	{ struct mbuf *p; \
+- 	  if (mclfree == 0) \
+- 		(void)m_clalloc(1, MPG_CLUSTERS, M_DONTWAIT); \
+  	  MCLALLOC(p, 1); \
+--- 107,108 ----

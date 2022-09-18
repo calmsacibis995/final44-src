@@ -1,0 +1,101 @@
+Return-Path: <bennety%tektronix.csnet@csnet-relay.arpa>
+Date: Thursday, 25 Jul 85 18:38:15 PDT
+From: Bennet Yee <bennety%tektronix.csnet@csnet-relay.arpa>
+Subject: min returns with noncanonical form number, rpow doc err.
+Index: usr.lib/libmp/min.c,etc. 4.2BSD
+
+Description:
+	Though I don't see it in the 4.2BSD documentation, I believe our
+	system has retained it from 4.1BSD -- I just thought I'd tell
+	you about the bug.  By the way, why were the multiple precision
+	stuff dropped (if they were intentionally)?  Their existence is
+	quite useful as I want to implement RSA encryption and high
+	precision arithmetic is a must (i.e., *plz* include them in 4.3).
+
+	Anyways, here's the bugs:
+
+	First, the documentation for rpow(3mp) is incorrect.  It should
+	appear as
+
+	rpow(a,n,b)
+	MINT *a, *b;
+	unsigned n;
+
+	instead of rpow(a,b,c) MINT *a,*b,*c;
+
+	This has been in error ever since V7 (we have a V7 box).
+
+	Second, performing a min(a) could cause the value of *a be stored
+	in a non-canonical fashion -- it should call mcan (from util.c)
+	prior to returning to the user.
+
+	I haven't spent the time to verify that all the other routines
+	leave their results in canonical form -- they (except for m_div,
+	which is called by mdiv) do not ever call mcan themselves; mayhaps
+	the algorithms used guarantees canonical representation.
+
+	The failure occurs when you want to compare zeros.  Perform a
+	a = itom(0); min(b);	/* and type in 0 */
+	where a and b are MINT *'s
+	and do a mcmp(a,b) -- they will not appear to be equal.
+Repeat-By:
+	shar file follows:
+-------------------------------------------------------------------------------
+Cut Here  8<
+-------------------------------------------------------------------------------
+: 'to disassemble this file, read it with sh.'
+( mkdir mp; cd mp;
+echo mptst2.c 1>&2
+sed -e 's/^X//' > mptst2.c << 'EOF'
+X#include <mp.h>
+X
+Xmain()
+X{
+X	MINT *two, *f, *f2;
+X
+X	two = itom(2); f = itom(0); f2 = itom(0);
+X
+X	printf("Two is "); mout(two);
+X
+X	mult(two,two,f);
+X	printf("F is "); mout(f);
+X
+X	rpow(two,two,f2);
+X	printf("F2 is "); mout(f2);
+X
+X	printf("mcmp(f,f2) is %d\n",mcmp(f,f2));
+X
+X	exit(0);
+X}
+EOF
+echo mptst4.c 1>&2
+sed -e 's/^X//' > mptst4.c << 'EOF'
+X#include <mp.h>
+X
+Xmain()
+X{
+X	MINT *a, *b;
+X
+X	a = itom(0); b = itom(0); /* initialize storage */
+X
+X	printf("a is "); mout(a);
+X
+X	printf("\nEnter new b : "); min(b);
+X
+X	printf("a is "); mout(a);
+X	printf("b is "); mout(b);
+X	printf("mcmp(a,b) is %d\n",mcmp(a,b));
+X}
+EOF
+)
+-------------------------------------------------------------------------------
+Cut Here  8<
+-------------------------------------------------------------------------------
+Fix:
+	Document mcan or place calls in all MP routines that return
+	values of possibly noncanonical form.
+
+	Change documentation to rpow in man pages.  Our llib-mp entry
+	was correct -- machine generated, right?
+
+-Bsy

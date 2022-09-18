@@ -1,0 +1,128 @@
+From guy@sun.com  Sun Feb 23 17:13:21 1986
+Received: by ucbarpa.Berkeley.EDU (5.57/1.22)
+	id AA01126; Sun, 23 Feb 86 17:13:21 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.21)
+	id AA22988; Mon, 23 Feb 87 17:12:52 PST
+Received: from snail.sun.com by Sun.COM (3.2/SMI-3.2)
+	id AA28770; Mon, 23 Feb 87 17:06:46 PST
+Received: from gorodish.wseng.sun.com.com by snail.sun.com (3.2/SMI-3.2)
+	id AA00322; Mon, 23 Feb 87 17:09:33 PST
+Received: by gorodish.wseng.sun.com.com (3.2/SMI-3.2)
+	id AA07513; Mon, 23 Feb 87 17:12:51 PST
+Date: Mon, 23 Feb 87 17:12:51 PST
+From: guy@sun.com (Guy Harris)
+Message-Id: <8702240112.AA07513@gorodish.wseng.sun.com.com>
+Subject: "syslogd" throws errors away when reinitializing
+Index: 	etc/syslogd.c 4.3BSD
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+
+Description:
+	When "syslogd" rereads the configuration file after it is sent
+	a SIGHUP, any errors it detects before setting up the destination
+	for "syslog" errors get droped on the floor.
+Repeat-By:
+	Put an illegal line at the front of "/etc/syslog.conf" and send
+	a SIGHUP to "syslogd".  Note that the complaints don't appear,
+	but do appear if you kill "syslogd" off and restart it.
+Fix:
+	This fixes the problem by making "init()" clear "Initialized"
+	just before it closes all the log files.  It also fixes a couple
+	of places where "errno" wasn't cleared before calling "logerror",
+	so that a misleading system error message isn't appended to the
+	error message, renames the variable "sun" to "s_un" so that
+	it will at least build on a Sun, and replaces the call to the
+	ancient obsolete deprecated "strcpyn" routine from 32V with a
+	call to "strncpy".
+
+*** /arch/4.3/usr/src/etc/syslogd.c	Mon May 26 22:03:20 1986
+--- syslogd.c	Mon Feb 23 17:06:47 1987
+***************
+*** 154,160 ****
+  	register int i;
+  	register char *p;
+  	int funix, finet, inetm, fklog, klogm, len;
+! 	struct sockaddr_un sun, fromunix;
+  	struct sockaddr_in sin, frominet;
+  	FILE *fp;
+  	char line[MSG_BSIZE + 1];
+--- 154,160 ----
+  	register int i;
+  	register char *p;
+  	int funix, finet, inetm, fklog, klogm, len;
+! 	struct sockaddr_un s_un, fromunix;
+  	struct sockaddr_in sin, frominet;
+  	FILE *fp;
+  	char line[MSG_BSIZE + 1];
+***************
+*** 216,226 ****
+  	(void) alarm(MarkInterval * 60 / MARKCOUNT);
+  	(void) unlink(LogName);
+  
+! 	sun.sun_family = AF_UNIX;
+! 	(void) strncpy(sun.sun_path, LogName, sizeof sun.sun_path);
+  	funix = socket(AF_UNIX, SOCK_DGRAM, 0);
+! 	if (funix < 0 || bind(funix, (struct sockaddr *) &sun,
+! 	    sizeof(sun.sun_family)+strlen(sun.sun_path)) < 0 ||
+  	    chmod(LogName, 0666) < 0) {
+  		(void) sprintf(line, "cannot create %s", LogName);
+  		logerror(line);
+--- 216,226 ----
+  	(void) alarm(MarkInterval * 60 / MARKCOUNT);
+  	(void) unlink(LogName);
+  
+! 	s_un.sun_family = AF_UNIX;
+! 	(void) strncpy(s_un.sun_path, LogName, sizeof s_un.sun_path);
+  	funix = socket(AF_UNIX, SOCK_DGRAM, 0);
+! 	if (funix < 0 || bind(funix, (struct sockaddr *) &s_un,
+! 	    sizeof(s_un.sun_family)+strlen(s_un.sun_path)) < 0 ||
+  	    chmod(LogName, 0666) < 0) {
+  		(void) sprintf(line, "cannot create %s", LogName);
+  		logerror(line);
+***************
+*** 659,665 ****
+  
+  		/* compute the device name */
+  		p = "/dev/12345678";
+! 		strcpyn(&p[5], ut.ut_line, UNAMESZ);
+  
+  		/*
+  		 * Might as well fork instead of using nonblocking I/O
+--- 659,665 ----
+  
+  		/* compute the device name */
+  		p = "/dev/12345678";
+! 		strncpy(&p[5], ut.ut_line, UNAMESZ);
+  
+  		/*
+  		 * Might as well fork instead of using nonblocking I/O
+***************
+*** 770,775 ****
+--- 770,776 ----
+  		dprintf("syslogd: going down on signal %d\n", sig);
+  		flushmsg();
+  		(void) sprintf(buf, "going down on signal %d", sig);
++ 		errno = 0;
+  		logerror(buf);
+  	}
+  	(void) unlink(LogName);
+***************
+*** 796,801 ****
+--- 797,803 ----
+  	/*
+  	 *  Close all open log files.
+  	 */
++ 	Initialized = 0;
+  	for (f = Files; f < &Files[NLOGS]; f++) {
+  		if (f->f_type == F_FILE || f->f_type == F_TTY)
+  			(void) close(f->f_file);
+***************
+*** 923,928 ****
+--- 925,932 ----
+  	char buf[MAXLINE];
+  
+  	dprintf("cfline(%s)\n", line);
++ 
++ 	errno = 0;	/* keep sys_errlist stuff out of logerror messages */
+  
+  	/* clear out file entry */
+  	bzero((char *) f, sizeof *f);

@@ -1,0 +1,195 @@
+From decvax!abvax!wrk@ucbvax.Berkeley.EDU  Tue Jan  5 12:18:27 1988
+Date: Tue, 5 Jan 88 11:03:00 EST
+From: decvax!abvax!wrk@ucbvax.Berkeley.EDU (William R. King)
+Subject: ul odes not pass \f, has dead code, lint noise
+Index: ucb/ul.c 4.3BSD
+
+Description:
+	1.	ul does not pass \f, this is necesary when ul
+		is used an an output filter for printers.
+		(very handy to make laser printers do bolding)
+	
+	2.	ul has a copy of getopt.c included in it, this is
+		unnecessary since getopt is now in libc.a
+
+	3.	ul does not cleanly pass through lint.
+
+Repeat-By:
+	1.	pr -f ul.c | ul > /tmp/foo
+		vi /tmp/foo (notice there are no \f's in /tmp/foo)
+
+	2.	inspection.
+
+	3.	lint ul.c
+
+Fix:
+	apply the following patch to ul.c (v 5.1)
+
+*** /tmp/,RCSt1008647	Tue Jan  5 10:48:10 1988
+--- ul.c	Tue Jan  5 10:42:34 1988
+***************
+*** 15,20 ****
+--- 15,21 ----
+  #endif not lint
+  
+  #include <stdio.h>
++ #include <strings.h>
+  
+  #define	IESC	'\033'
+  #define	SO	'\016'
+***************
+*** 53,59 ****
+  	char **argv;
+  {
+  	int c;
+! 	char *cp, *termtype;
+  	FILE *f;
+  	char termcap[1024];
+  	char *getenv();
+--- 54,60 ----
+  	char **argv;
+  {
+  	int c;
+! 	char *termtype;
+  	FILE *f;
+  	char termcap[1024];
+  	char *getenv();
+***************
+*** 92,98 ****
+  
+  	case 0:
+  		/* No such terminal type - assume dumb */
+! 		strcpy(termcap, "dumb:os:col#80:cr=^M:sf=^J:am:");
+  		break;
+  	}
+  	initcap();
+--- 93,99 ----
+  
+  	case 0:
+  		/* No such terminal type - assume dumb */
+! 		(void) strcpy(termcap, "dumb:os:col#80:cr=^M:sf=^J:am:");
+  		break;
+  	}
+  	initcap();
+***************
+*** 198,203 ****
+--- 199,209 ----
+  	case '\n':
+  		flushln();
+  		continue;
++ 	
++ 	case '\f':
++ 		flushln();
++ 		putchar('\f');
++ 		continue;
+  
+  	default:
+  		if (c < ' ')	/* non printing */
+***************
+*** 252,258 ****
+  	putchar('\n');
+  	if (iflag && hadmodes)
+  		iattr();
+! 	fflush(stdout);
+  	if (upln)
+  		upln--;
+  	initbuf();
+--- 258,264 ----
+  	putchar('\n');
+  	if (iflag && hadmodes)
+  		iattr();
+! 	(void) fflush(stdout);
+  	if (upln)
+  		upln--;
+  	initbuf();
+***************
+*** 325,331 ****
+  initbuf()
+  {
+  
+! 	bzero(obuf, sizeof (obuf));		/* depends on NORMAL == 0 */
+  	col = 0;
+  	maxcol = 0;
+  	mode &= ALTSET;
+--- 331,337 ----
+  initbuf()
+  {
+  
+! 	bzero((char *)obuf, sizeof (obuf));	/* depends on NORMAL == 0 */
+  	col = 0;
+  	maxcol = 0;
+  	mode &= ALTSET;
+***************
+*** 354,360 ****
+  initcap()
+  {
+  	static char tcapbuf[512];
+- 	char *termtype;
+  	char *bp = tcapbuf;
+  	char *getenv(), *tgetstr();
+  
+--- 360,365 ----
+***************
+*** 481,541 ****
+  	}
+  	curmode = newmode;
+  }
+- /*	@(#)getopt.c	3.2	*/
+- #define	ERR(s, c)	if(opterr){\
+- 	fputs(argv[0], stderr);\
+- 	fputs(s, stderr);\
+- 	fputc(c, stderr);\
+- 	fputc('\n', stderr);}
+  
+- int	opterr = 1;
+- int	optind = 1;
+- char	*optarg;
+- char	*index();
+- 
+- int
+- getopt (argc, argv, opts)
+- 	char **argv, *opts;
+- {
+- 	static int sp = 1;
+- 	char c;
+- 	char *cp;
+- 
+- 	if (sp == 1)
+- 		if (optind >= argc ||
+- 		   argv[optind][0] != '-' || argv[optind][1] == '\0')
+- 			return EOF;
+- 		else if (strcmp(argv[optind], "--") == NULL) {
+- 			optind++;
+- 			return EOF;
+- 		}
+- 		else if (strcmp(argv[optind], "-?") == NULL) {
+- 			optind++;
+- 			return '?';
+- 		}
+- 	c = argv[optind][sp];
+- 	if (c == ':' || (cp=index(opts, c)) == NULL) {
+- 		ERR (": illegal option -- ", c);
+- 		if (argv[optind][++sp] == '\0') {
+- 			optind++;
+- 			sp = 1;
+- 		}
+- 		return '?';
+- 	}
+- 	if (*++cp == ':') {
+- 		if (argv[optind][2] != '\0')
+- 			optarg = &argv[optind++][sp+1];
+- 		else if (++optind >= argc) {
+- 			ERR (": option requires an argument -- ", c);
+- 			sp = 1;
+- 			return '?';
+- 		} else
+- 			optarg = argv[optind++];
+- 		sp = 1;
+- 	}
+- 	else if (argv[optind][++sp] == '\0') {
+- 		sp = 1;
+- 		optind++;
+- 	}
+- 	return c;
+- }
+--- 486,489 ----

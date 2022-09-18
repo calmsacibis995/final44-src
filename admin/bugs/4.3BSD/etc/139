@@ -1,0 +1,95 @@
+From bruce@stride.stride.com  Wed May 18 17:42:10 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.59/1.28)
+	id AA01654; Wed, 18 May 88 17:42:10 PDT
+Received: from UXC.CSO.UIUC.EDU by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA02607; Wed, 18 May 88 17:40:23 PDT
+Received: by uxc.cso.uiuc.edu (5.51/9.7)
+	id AA12170; Wed, 18 May 88 19:36:28 CDT
+Received: by stride.Stride.COM (5.51/UUCP-Project/rel-1.0/11-05-86)
+	id AA17924; Wed, 18 May 88 10:10:02 PDT
+Date: Wed, 18 May 88 10:10:02 PDT
+From: bruce@stride.Stride.COM (Bruce Robertson)
+Message-Id: <8805181710.AA17924@stride.Stride.COM>
+Subject: Bug in new routed with multiple point-to-point links  +FIX
+Index: 	etc/routed/startup.c 4.3BSD
+Apparently-To: 4bsd-bugs@berkeley.edu
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+
+Description:
+	This describes a bug in the new version of routed found in
+	~ftp/pub/routed.tar.Z on ucbarpa.
+
+	If you have configured multiple point-to-point links with the
+	same network number, routed will only supply the first
+	interface with routing information.
+
+	In ifinit(), for every new network interface seen, the list of
+	previously seen interfaces is searched.  The interface is
+	ignored if it is already on the list; this prevents routed
+	from suppling routing information more than once on a single
+	interface.  Unfortunately, routed uses the "source" address
+	for this comparison, even with point-to-point links.  If your
+	PTP links have the same network number, this source address is
+	the same for all interfaces, causing only the first interface
+	to be put on the list.  For PTP links, the destination address
+	should be used.
+
+Repeat-By:
+	Configure more than one SLIP interface, giving them all the
+	same network number.  Only the first interface will be
+	supplied with routing information.
+
+Fix:
+	Install this patch:
+
+*** /tmp/,RCSt1a15333	Wed May 18 09:39:58 1988
+--- startup.c	Fri May 13 15:25:43 1988
+***************
+*** 65,83 ****
+  			lookforinterfaces = 1;
+  			continue;
+  		}
+- 		/* already known to us? */
+- 		if (if_ifwithaddr(&ifs.int_addr))
+- 			continue;
+- 		/* argh, this'll have to change sometime */
+- 		if (ifs.int_addr.sa_family != AF_INET)
+- 			continue;
+- 		if (ifs.int_flags & IFF_LOOPBACK) {
+- 			foundloopback = 1;
+- 			loopaddr = ifs.int_addr;
+- 			for (ifp = ifnet; ifp; ifp = ifp->int_next)
+- 			    if (ifp->int_flags & IFF_POINTOPOINT)
+- 				add_ptopt_localrt(ifp);
+- 		}
+                  if (ifs.int_flags & IFF_POINTOPOINT) {
+                          if (ioctl(s, SIOCGIFDSTADDR, (char *)&ifreq) < 0) {
+                                  syslog(LOG_ERR, "ioctl (get dstaddr)");
+--- 65,70 ----
+***************
+*** 91,96 ****
+--- 78,101 ----
+                                  continue;
+                          }
+  			ifs.int_broadaddr = ifreq.ifr_broadaddr;
++ 		}
++ 		/* already known to us? */
++ 		if (ifs.int_flags & IFF_POINTOPOINT)
++ 		{
++ 			if (if_ifwithdstaddr(&ifs.int_dstaddr))
++ 				continue;
++ 		}
++ 		else if (if_ifwithaddr(&ifs.int_addr))
++ 			continue;
++ 		/* argh, this'll have to change sometime */
++ 		if (ifs.int_addr.sa_family != AF_INET)
++ 			continue;
++ 		if (ifs.int_flags & IFF_LOOPBACK) {
++ 			foundloopback = 1;
++ 			loopaddr = ifs.int_addr;
++ 			for (ifp = ifnet; ifp; ifp = ifp->int_next)
++ 			    if (ifp->int_flags & IFF_POINTOPOINT)
++ 				add_ptopt_localrt(ifp);
+  		}
+  		if (ioctl(s, SIOCGIFMETRIC, (char *)&ifreq) < 0)
+  			syslog(LOG_ERR, "ioctl (get metric)");

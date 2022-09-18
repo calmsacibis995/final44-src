@@ -1,0 +1,136 @@
+Return-Path: <sdcsvax!sdcc3!muller@Nosc>
+Date: Fri, 4 Jan 85 16:37:58 pst
+From: sdcsvax!sdcc3!muller@Nosc (Keith Muller)
+Subject: 4.2 does not properly size the virtual memory paging point
+Index:	sys/sys/vm_sched.c 4.2BSD
+
+Description:
+	At boot time 4.2 will size the paging point and swapping point
+	according to the amount of free main memory is available. The
+	algorithim used for sizing lotsfree (the paging point) does not
+	have an upper bound, but always sets the paging point to be 1/4
+	of free memory. This can be quite a large value for machines with
+	with greater than around 3 megabytes of main memory (with memory
+	prices getting lower, machines with more than 4 megs are quite common).
+	This is a real performance problem in these large memory machines
+	as they will begin paging when the machine is not even close to
+	running out of memory. This premature paging begins to use up
+	cpu cycles causing the machines throughput to rapidly decline (and
+	also tends to offset any gains obtained by increasing the amount
+	of main memory a machine might have).
+
+	The swapping point maximium (desfree) is set a bit too large.
+
+Repeat-By:
+	Load up your machine with a lot of memory intensive programs and watch
+	the virtual memory system with a vmstat 3. The sr (scan rate) should
+	always be as small as possible to maximize throughput (scanning costs
+	cpu cycles).  The fr value (free memory) indicates the size of free
+	memory in the system. On large memory machines the sr can be quite
+	high (100 or more) with 1 megabyte (or more) of main memory free.
+Fix:
+	The fix has two parts:
+	1) adding a new #define to vax/vmparam.h for the maximium limit on
+	   lotsfree and changing the swapping point.
+	2) changing the code in sys/vm_sched.c that sizes lotsfree.
+
+	The diffs are below:
+
+RCS file: RCS/vmparam.h,v
+retrieving revision 1.1
+diff -c -r1.1 vmparam.h
+*** /tmp/,RCSt1029938	Sat Dec 29 15:16:36 1984
+--- vmparam.h	Sat Dec 29 14:31:03 1984
+***************
+*** 97,105
+  
+  /*
+   * Paging thresholds (see vm_sched.c).
+!  * Strategy of 4/22/81:
+!  *	lotsfree is 1/4 of memory free.
+!  *	desfree is 200k bytes, but at most 1/8 of memory
+   *	minfree is 64k bytes, but at most 1/2 of desfree
+   */
+  #define	LOTSFREEFRACT	4
+
+--- 97,105 -----
+  
+  /*
+   * Paging thresholds (see vm_sched.c).
+!  * Strategy of 9/28/84:
+!  *	lotsfree is 512k bytes, but at most 1/4 of memory
+!  *	desfree is 128k bytes, but at most 1/8 of memory
+   *	minfree is 64k bytes, but at most 1/2 of desfree
+   */
+  #define	LOTSFREE	(512 * 1024)
+***************
+*** 102,107
+   *	desfree is 200k bytes, but at most 1/8 of memory
+   *	minfree is 64k bytes, but at most 1/2 of desfree
+   */
+  #define	LOTSFREEFRACT	4
+  #define	DESFREE		(200 * 1024)
+  #define	DESFREEFRACT	8
+
+--- 102,108 -----
+   *	desfree is 128k bytes, but at most 1/8 of memory
+   *	minfree is 64k bytes, but at most 1/2 of desfree
+   */
++ #define	LOTSFREE	(512 * 1024)
+  #define	LOTSFREEFRACT	4
+  #define	DESFREE		(128 * 1024)
+  #define	DESFREEFRACT	8
+***************
+*** 103,109
+   *	minfree is 64k bytes, but at most 1/2 of desfree
+   */
+  #define	LOTSFREEFRACT	4
+! #define	DESFREE		(200 * 1024)
+  #define	DESFREEFRACT	8
+  #define	MINFREE		(64 * 1024)
+  #define	MINFREEFRACT	2
+
+--- 104,110 -----
+   */
+  #define	LOTSFREE	(512 * 1024)
+  #define	LOTSFREEFRACT	4
+! #define	DESFREE		(128 * 1024)
+  #define	DESFREEFRACT	8
+  #define	MINFREE		(64 * 1024)
+  #define	MINFREEFRACT	2
+
+--------------------------------------------------------------------
+RCS file: RCS/vm_sched.c,v
+retrieving revision 1.1
+diff -c -r1.1 vm_sched.c
+*** /tmp/,RCSt1029948	Sat Dec 29 15:17:11 1984
+--- vm_sched.c	Sat Dec 29 14:44:32 1984
+***************
+*** 55,61
+  	 *			tolerable.
+  	 */
+!	if (lotsfree == 0)
+! 		lotsfree = LOOPPAGES / LOTSFREEFRACT;
+  	if (desfree == 0) {
+  		desfree = DESFREE / NBPG;
+  		if (desfree > LOOPPAGES / DESFREEFRACT)
+
+--- 55,64 -----
+  	 *			tolerable.
+  	 */
+!	if (lotsfree == 0){
+! 		lotsfree = LOTSFREE / NBPG;
+! 		if (lotsfree > LOOPPAGES / LOTSFREEFRACT)
+! 			lotsfree = LOOPPAGES / LOTSFREEFRACT;
+!	}
+  	if (desfree == 0) {
+  		desfree = DESFREE / NBPG;
+  		if (desfree > LOOPPAGES / DESFREEFRACT)
+
+---------------------------------------------------------------------
+
+	Keith Muller
+	University of California, San Diego
+	Academic Computer Center
+	ucbvax!sdcsvax!muller
+	muller@nprdc

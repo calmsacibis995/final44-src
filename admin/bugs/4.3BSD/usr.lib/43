@@ -1,0 +1,121 @@
+From mcvax!cwi.nl!denise@seismo.css.gov  Thu Mar 26 04:48:03 1987
+From: mcvax!cwi.nl!denise@seismo.css.gov
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Curses Bug
+Organization: Centrum voor Wiskunde en Informatica
+	      Kruislaan 413, 1098 SJ Amsterdam, The Netherlands
+Phone: +31-20-592 4056
+Date: Thu, 26 Mar 87 13:32:31 +0100
+Index: usr.lib/libcurses/cr_tty.c 4.3BSD
+
+Description:
+	Curses writes to a pointer that points to the static environment
+	variable TERM.  This can cause problems if an exec is then done.
+
+Repeat-By:
+	%cat > foo.c
+	#include <curses.h>
+	extern char **environ;
+	
+	main()
+	{
+		char *x;
+		initscr();
+		endwin();
+			/* show the values of the environment variables */
+			/* Note that TERM is now screwed up		*/
+		while((x = *environ++) != NULL)
+			printf("%s\n",x);
+
+		execl("/bin/sh", "sh", "-c", "date", 0);
+	}
+	^D
+	
+	%cc foo.c -lcurses -ltermcap
+	%setenv TERM h2		# or any other of the two-letter names
+	%a.out
+
+	The crucial feature is that the variable TERM must be shorter than
+	the 2nd terminal name in the appropriate TERMCAP entry (another
+	bug, I think: the function longname in curses claims to find the
+	long name of the terminal, while in fact it simply finds the 2nd
+	name).
+
+Fix:
+	Apply the following diff:
+
+	*** cr_tty.c.old	Thu Mar 26 11:34:22 1987
+	--- cr_tty.c		Thu Mar 26 11:34:54 1987
+	***************
+	*** 6,11 ****
+	--- 6,12 ----
+	  
+	  #ifndef lint
+	  static char sccsid[] = "@(#)cr_tty.c	5.2 (Berkeley) 11/8/85";
+	+ static char sccsid2[] = "@(#)cr_tty.c	1.2 (CWI Mods) 87/03/26";
+	  #endif not lint
+	  
+	  /*
+	***************
+	*** 134,141 ****
+	  
+	  	PC = _PC ? _PC[0] : FALSE;
+	  	aoftspace = _tspace;
+	! 	strncpy(ttytype, longname(genbuf, type), sizeof(ttytype) - 1);
+	! 	ttytype[sizeof(ttytype) - 1] = '\0';
+	  	if (unknown)
+	  		return ERR;
+	  	return OK;
+	--- 135,141 ----
+	  
+	  	PC = _PC ? _PC[0] : FALSE;
+	  	aoftspace = _tspace;
+	! 	longname(genbuf,ttytype);
+	  	if (unknown)
+	  		return ERR;
+	  	return OK;
+
+
+Denise Draper
+denise@cwi.nl
+
+============================================
+Path: seismo!lll-lcc!pyramid!prls!mips!dce
+From: dce@mips.UUCP (David Elliott)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: Curses Bug
+In article <233@sering.mcvax.cwi.nl> denise@sering.UUCP (Denise L. Draper) writes:
+>Index:	/usr/src/usr.lib/libcurses/cr_tty.c
+>Description:
+>	Curses writes to a pointer that points to the static environment
+>	variable TERM.  This can cause problems if an exec is then done.
+...
+>	The crucial feature is that the variable TERM must be shorter than
+>	the 2nd terminal name in the appropriate TERMCAP entry (another
+>	bug, I think: the function longname in curses claims to find the
+>	long name of the terminal, while in fact it simply finds the 2nd
+>	name).
+
+The idea of "longname" is that a termcap entry is supposed to look
+like:
+
+	xx|longname|other aliases:...
+
+It isn't the longest name, but the "most common" name for the terminal.
+Finding the longest text string is not particularly useful, since that
+string will almost always have spaces in it.
+
+The result of longname() is correct.
+
+Of course, the fix given is correct, and fixes more than just the
+exec() problems. We had a user here that complained (and rightly so)
+that no program should change the value of the TERM variable unless
+that is part of its job. In this specific case, the program was a
+bug report form editor, which at times would execute the user's editor.
+In this case, the editor was emacs, and the user had programmed it
+in such a way that it knew about specific values for TERM, none of
+which were the "longname" value.
+-- 
+			David Elliott
+
+UUCP: 	{decvax,ucbvax,ihnp4}!decwrl!mips!dce, DDD:  	408-720-1700

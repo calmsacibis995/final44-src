@@ -1,0 +1,144 @@
+From forys@cs.utah.edu  Sun Jan 29 03:07:04 1989
+Date: Sun, 29 Jan 89 04:05:54 MST
+From: forys@cs.utah.edu (Jeff Forys)
+Subject: Long headers can cause Sendmail 5.61 to loop
+Index: 	usr.lib/sendmail/collect.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	In our case, a "To:" header with many continuation lines got
+	sendmail into an `infinite' loop.  Actually, after a couple
+	hours, the connection would time out, but only after wasting
+	lotsa CPU time.
+
+	The last couple of days, SUN.COM was trying to get a letter
+	to out mailer.  Here is one that just got started:
+
+	USER       PID %CPU %MEM   SZ  RSS TT STAT  TIME COMMAND
+	root     12165 80.6  0.9  225  150 ?  R     3:01 -AA12165 SUN.COM: DATA
+
+	After a couple hours, sendmail would timeout:
+
+	Jan 29 00:45:23 cs sendmail[12165]: AA12165: SYSERR: net timeout:
+		Connection timed out during collect with SUN.COM
+
+	The network was fine, in fact, we had the *same* data in our
+	receive queue both times I noticed it had hung:
+
+	80578500$<mbuf
+	80578500:       next            off             len     type    act
+	80578500:       8055b100        38              68      1       0
+	8055b100:       8057c200        c               112     1       0
+	8057c200:       80583d80        c               112     1       0
+	80583d80:       0               c               16      1       0
+	8055b100+c/s
+	8055b10c:        and I'm going to take a [...]
+
+	Anyway, three gcore's on two different connections revealed the
+	same thing:
+
+	_sfgets(7fffdf9f,ffffffff,19fd4) from 1764
+	_collect(1) from 959c
+	_smtp() from f59
+	_main(3,7fffeb34,7fffeb44) from start+3d
+
+	The obvious tip-off that something was wrong is that second arg
+	to sfgets(), -1, is supposed to be the length of a string (whos
+	addr is the first arg) to pass to an fgets().
+
+	The problem is with a loop in collect() which I will try to
+	illustrate (since it's probably easier than recreating a mail
+	message that causes the bug).
+
+		char buf[MAXFIELD+2];		/* field input buffer */
+
+		/* while this is a continuation line in the header field */
+		while ((c = getc(InChannel)) == ' ' || c == '\t')
+			p = &buf[strlen(buf)];
+			*p++ = '\n';	/* terminate previous line */
+			*p++ = c;	/* continuation char for new line */
+			if (sfgets(p, MAXFIELD - (p - buf), InChannel) == NULL)
+				break;
+			fixcrlf(p, TRUE);	/* remove `\n' from p */
+		}
+
+	Note the second argument to sfgets(), "MAXFIELD - (p - buf)".
+	Given the definition of `buf' being 2 characters longer than
+	MAXFIELD (apparently because of the two `p++' lines), if `p'
+	becomes large, then "(p - buf)" can become greater than MAXFIELD,
+	resulting in a negative argument.
+
+	Given a negative argument (or zero), fgets() will simply stuff
+	a `\0' at `p'.  At worst, this can cause the first memory location
+	following the buf[] array to be trashed.  Gak.  I have core files
+	and binaries that show that the looping starts here, but didnt
+	track it any farther 'cause I be tired.
+
+	Anyway, I fixed the code and the next time SUN.COM connected,
+	the mail was delivered without a problem.
+
+Repeat-By:
+	Examination.
+
+Fix:
+
+	First, I changed the declaration of `buf[]' from MAXFIELD+2 to
+	MAXFIELD so I could deal with the `p++' stuff where it should
+	be dealt with.
+
+	Second, if the remaining space in `buf[]' is < MAXFIELD-2, I
+	simply trash the rest of the input line.  While probably not
+	ideal, I'm gonna double MAXFIELD (to like 4096 or something)
+	so the truncation should only happen in the worst of cases.
+
+*** /tmp/,RCSt1017532	Sun Jan 29 02:58:19 1989
+--- collect.c	Sun Jan 29 02:38:22 1989
+***************
+*** 46,52 ****
+  	bool sayok;
+  {
+  	register FILE *tf;
+! 	char buf[MAXFIELD+2];
+  	register char *p;
+  	extern char *hvalue();
+  
+--- 46,52 ----
+  	bool sayok;
+  {
+  	register FILE *tf;
+! 	char buf[MAXFIELD];
+  	register char *p;
+  	extern char *hvalue();
+  
+***************
+*** 119,129 ****
+  		while ((c = getc(InChannel)) == ' ' || c == '\t')
+  		{
+  			p = &buf[strlen(buf)];
+! 			*p++ = '\n';
+! 			*p++ = c;
+! 			if (sfgets(p, MAXFIELD - (p - buf), InChannel) == NULL)
+! 				break;
+! 			fixcrlf(p, TRUE);
+  		}
+  		if (!feof(InChannel) && !ferror(InChannel))
+  			(void) ungetc(c, InChannel);
+--- 119,136 ----
+  		while ((c = getc(InChannel)) == ' ' || c == '\t')
+  		{
+  			p = &buf[strlen(buf)];
+! 			if ((p-buf) < MAXFIELD-2) {
+! 				/* we have room for more of this field */
+! 				*p++ = '\n';
+! 				*p++ = c;
+! 				if (sfgets(p, MAXFIELD - (p - buf), InChannel) == NULL)
+! 					break;
+! 				fixcrlf(p, TRUE);
+! 			} else {
+! 				/* we are out of room; toss rest of line */
+! 				while ((c=getc(InChannel)) != '\n' && c != EOF)
+! 					continue;
+! 			}
+  		}
+  		if (!feof(InChannel) && !ferror(InChannel))
+  			(void) ungetc(c, InChannel);

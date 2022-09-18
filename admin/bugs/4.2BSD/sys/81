@@ -1,0 +1,60 @@
+Return-Path: <rws@mit-bold>
+Date: Sat, 25 Feb 84 22:19:26 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: bug in select()
+Index: sys/sys/sys_generic.c 4.2BSD
+
+Description:
+	If a SIGTSTP is generated on the controlling tty of a process
+	that is waiting in a select() on that tty, the process will
+	mysteriously vanish.
+
+Repeat-By:
+	Run in foreground the program:
+
+	main()
+	{
+		int fds = 1;
+		select(1, &fds, 0, 0, 0);
+	}
+
+	and then generate SIGTSTP from the keyboard.  The process will
+	correctly suspend, but as soon as a character becomes available
+	for input to the terminal (i.e. as soon as you type CR to the shell),
+	the process will vanish.
+
+	Why:  At the select(), the tty t_rsel gets set to the process, but no
+	chars are available, so the process goes into state SSLEEP on &selwait.
+	When the suspend character is typed, a psignal() on the process
+	changes its state to SSTOP and sets p_cursig to SIGTSTP.  When input
+	chars are made available to the tty, a ttwakeup() is performed, which
+	calls selwakeup() because t_rsel is still set.  Since this is the only
+	process that has done select() on the tty, there are no collisions,
+	and selwakeup() simply calls setrun() on the process rather than
+	calling wakeup().  Therein lies the bug, because this bogusly makes
+	the process runnable, and it will run before the input chars are
+	gobbled, and so the select() will succeed and try to return.  However,
+	p_cursig is still set to SIGTSTP, and syscall() will see it and call
+	psig(), which will call exit() and the process will vanish.
+
+	Also note another bug (which I don't propose a fix for here): select()
+	will succeed on a tty even if the process and the tty are in different
+	process groups.  So the process will think there is data to read, and
+	then hang trying to do the actual read.
+Fix:
+	selwakeup() should make the same checks in the single process case
+	that wakeup() makes per process in the general case.
+
+	In selwakeup(), replace:
+		setrun(p);
+	with:
+		{
+			if (p->p_stat == SSLEEP)
+				setrun(p);
+			else	unsleep(p);
+		}
+
+	[Note that the special casing of one process from multiple processes
+	 and tracking collisions doesn't seem to have helped much, since
+	 setrun() or unsleep() will do basically the same work wakeup() does
+	 in munging the hash chain.]

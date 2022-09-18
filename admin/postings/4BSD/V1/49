@@ -1,0 +1,2100 @@
+Subject: (inet 3 of 4) updated IP/TCP and XNS sources for 4.3BSD
+Index: sys 4.3BSD
+
+Description:
+	This is number 4 of 11 total articles posted to the newsgroup
+	comp.bugs.4bsd.ucb-fixes.  This archive is number 3 of the 4
+	articles that make up the inet posting.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	netinet
+#	netinet/icmp_var.h
+#	netinet/if_ether.c
+#	netinet/if_ether.h
+#	netinet/in.c
+#	netinet/in.h
+#	netinet/in_cksum.c
+#	netinet/in_pcb.c
+#	netinet/in_pcb.h
+#	netinet/in_proto.c
+#	netinet/in_systm.h
+#	netinet/in_var.h
+#
+echo c - netinet
+mkdir netinet > /dev/null 2>&1
+echo x - netinet/icmp_var.h
+sed 's/^X//' >netinet/icmp_var.h << 'END-of-netinet/icmp_var.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)icmp_var.h	7.3 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Variables related to this implementation
+X * of the internet control message protocol.
+X */
+Xstruct	icmpstat {
+X/* statistics related to icmp packets generated */
+X	int	icps_error;		/* # of calls to icmp_error */
+X	int	icps_oldshort;		/* no error 'cuz old ip too short */
+X	int	icps_oldicmp;		/* no error 'cuz old was icmp */
+X	int	icps_outhist[ICMP_MAXTYPE + 1];
+X/* statistics related to input messages processed */
+X 	int	icps_badcode;		/* icmp_code out of range */
+X	int	icps_tooshort;		/* packet < ICMP_MINLEN */
+X	int	icps_checksum;		/* bad checksum */
+X	int	icps_badlen;		/* calculated bound mismatch */
+X	int	icps_reflect;		/* number of responses */
+X	int	icps_inhist[ICMP_MAXTYPE + 1];
+X};
+X
+X#ifdef KERNEL
+Xstruct	icmpstat icmpstat;
+X#endif
+END-of-netinet/icmp_var.h
+echo x - netinet/if_ether.c
+sed 's/^X//' >netinet/if_ether.c << 'END-of-netinet/if_ether.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)if_ether.c	7.6 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Ethernet address resolution protocol.
+X * TODO:
+X *	run at splnet (add ARP protocol intr.)
+X *	link entries onto hash chains, keep free list
+X *	add "inuse/lock" bit (or ref. count) along with valid bit
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "time.h"
+X#include "kernel.h"
+X#include "errno.h"
+X#include "ioctl.h"
+X#include "syslog.h"
+X
+X#include "../net/if.h"
+X#include "in.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "if_ether.h"
+X
+X#ifdef GATEWAY
+X#define	ARPTAB_BSIZ	16		/* bucket size */
+X#define	ARPTAB_NB	37		/* number of buckets */
+X#else
+X#define	ARPTAB_BSIZ	9		/* bucket size */
+X#define	ARPTAB_NB	19		/* number of buckets */
+X#endif
+X#define	ARPTAB_SIZE	(ARPTAB_BSIZ * ARPTAB_NB)
+Xstruct	arptab arptab[ARPTAB_SIZE];
+Xint	arptab_size = ARPTAB_SIZE;	/* for arp command */
+X
+X/*
+X * ARP trailer negotiation.  Trailer protocol is not IP specific,
+X * but ARP request/response use IP addresses.
+X */
+X#define ETHERTYPE_IPTRAILERS ETHERTYPE_TRAIL
+X
+X#define	ARPTAB_HASH(a) \
+X	((u_long)(a) % ARPTAB_NB)
+X
+X#define	ARPTAB_LOOK(at,addr) { \
+X	register n; \
+X	at = &arptab[ARPTAB_HASH(addr) * ARPTAB_BSIZ]; \
+X	for (n = 0 ; n < ARPTAB_BSIZ ; n++,at++) \
+X		if (at->at_iaddr.s_addr == addr) \
+X			break; \
+X	if (n >= ARPTAB_BSIZ) \
+X		at = 0; \
+X}
+X
+X/* timer values */
+X#define	ARPT_AGE	(60*1)	/* aging timer, 1 min. */
+X#define	ARPT_KILLC	20	/* kill completed entry in 20 mins. */
+X#define	ARPT_KILLI	3	/* kill incomplete entry in 3 minutes */
+X
+Xu_char	etherbroadcastaddr[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+Xextern struct ifnet loif;
+X
+X/*
+X * Timeout routine.  Age arp_tab entries once a minute.
+X */
+Xarptimer()
+X{
+X	register struct arptab *at;
+X	register i;
+X
+X	timeout(arptimer, (caddr_t)0, ARPT_AGE * hz);
+X	at = &arptab[0];
+X	for (i = 0; i < ARPTAB_SIZE; i++, at++) {
+X		if (at->at_flags == 0 || (at->at_flags & ATF_PERM))
+X			continue;
+X		if (++at->at_timer < ((at->at_flags&ATF_COM) ?
+X		    ARPT_KILLC : ARPT_KILLI))
+X			continue;
+X		/* timer has expired, clear entry */
+X		arptfree(at);
+X	}
+X}
+X
+X/*
+X * Broadcast an ARP packet, asking who has addr on interface ac.
+X */
+Xarpwhohas(ac, addr)
+X	register struct arpcom *ac;
+X	struct in_addr *addr;
+X{
+X	register struct mbuf *m;
+X	register struct ether_header *eh;
+X	register struct ether_arp *ea;
+X	struct sockaddr sa;
+X
+X	if ((m = m_get(M_DONTWAIT, MT_DATA)) == NULL)
+X		return;
+X	m->m_len = sizeof *ea;
+X	m->m_off = MMAXOFF - m->m_len;
+X	ea = mtod(m, struct ether_arp *);
+X	eh = (struct ether_header *)sa.sa_data;
+X	bzero((caddr_t)ea, sizeof (*ea));
+X	bcopy((caddr_t)etherbroadcastaddr, (caddr_t)eh->ether_dhost,
+X	    sizeof(eh->ether_dhost));
+X	eh->ether_type = ETHERTYPE_ARP;		/* if_output will swap */
+X	ea->arp_hrd = htons(ARPHRD_ETHER);
+X	ea->arp_pro = htons(ETHERTYPE_IP);
+X	ea->arp_hln = sizeof(ea->arp_sha);	/* hardware address length */
+X	ea->arp_pln = sizeof(ea->arp_spa);	/* protocol address length */
+X	ea->arp_op = htons(ARPOP_REQUEST);
+X	bcopy((caddr_t)ac->ac_enaddr, (caddr_t)ea->arp_sha,
+X	   sizeof(ea->arp_sha));
+X	bcopy((caddr_t)&ac->ac_ipaddr, (caddr_t)ea->arp_spa,
+X	   sizeof(ea->arp_spa));
+X	bcopy((caddr_t)addr, (caddr_t)ea->arp_tpa, sizeof(ea->arp_tpa));
+X	sa.sa_family = AF_UNSPEC;
+X	(*ac->ac_if.if_output)(&ac->ac_if, m, &sa);
+X}
+X
+Xint	useloopback = 1;	/* use loopback interface for local traffic */
+X
+X/*
+X * Resolve an IP address into an ethernet address.  If success, 
+X * desten is filled in.  If there is no entry in arptab,
+X * set one up and broadcast a request for the IP address.
+X * Hold onto this mbuf and resend it once the address
+X * is finally resolved.  A return value of 1 indicates
+X * that desten has been filled in and the packet should be sent
+X * normally; a 0 return indicates that the packet has been
+X * taken over here, either now or for later transmission.
+X *
+X * We do some (conservative) locking here at splimp, since
+X * arptab is also altered from input interrupt service (ecintr/ilintr
+X * calls arpinput when ETHERTYPE_ARP packets come in).
+X */
+Xarpresolve(ac, m, destip, desten, usetrailers)
+X	register struct arpcom *ac;
+X	struct mbuf *m;
+X	register struct in_addr *destip;
+X	register u_char *desten;
+X	int *usetrailers;
+X{
+X	register struct arptab *at;
+X	struct sockaddr_in sin;
+X	u_long lna;
+X	int s;
+X
+X	*usetrailers = 0;
+X	if (in_broadcast(*destip)) {	/* broadcast address */
+X		bcopy((caddr_t)etherbroadcastaddr, (caddr_t)desten,
+X		    sizeof(etherbroadcastaddr));
+X		return (1);
+X	}
+X	lna = in_lnaof(*destip);
+X	/* if for us, use software loopback driver if up */
+X	if (destip->s_addr == ac->ac_ipaddr.s_addr) {
+X		/*
+X		 * This test used to be
+X		 *	if (loif.if_flags & IFF_UP)
+X		 * It allowed local traffic to be forced
+X		 * through the hardware by configuring the loopback down.
+X		 * However, it causes problems during network configuration
+X		 * for boards that can't receive packets they send.
+X		 * It is now necessary to clear "useloopback"
+X		 * to force traffic out to the hardware.
+X		 */
+X		if (useloopback) {
+X			sin.sin_family = AF_INET;
+X			sin.sin_addr = *destip;
+X			(void) looutput(&loif, m, (struct sockaddr *)&sin);
+X			/*
+X			 * The packet has already been sent and freed.
+X			 */
+X			return (0);
+X		} else {
+X			bcopy((caddr_t)ac->ac_enaddr, (caddr_t)desten,
+X			    sizeof(ac->ac_enaddr));
+X			return (1);
+X		}
+X	}
+X	s = splimp();
+X	ARPTAB_LOOK(at, destip->s_addr);
+X	if (at == 0) {			/* not found */
+X		if (ac->ac_if.if_flags & IFF_NOARP) {
+X			bcopy((caddr_t)ac->ac_enaddr, (caddr_t)desten, 3);
+X			desten[3] = (lna >> 16) & 0x7f;
+X			desten[4] = (lna >> 8) & 0xff;
+X			desten[5] = lna & 0xff;
+X			splx(s);
+X			return (1);
+X		} else {
+X			at = arptnew(destip);
+X			if (at == 0)
+X				panic("arpresolve: no free entry");
+X			at->at_hold = m;
+X			arpwhohas(ac, destip);
+X			splx(s);
+X			return (0);
+X		}
+X	}
+X	at->at_timer = 0;		/* restart the timer */
+X	if (at->at_flags & ATF_COM) {	/* entry IS complete */
+X		bcopy((caddr_t)at->at_enaddr, (caddr_t)desten,
+X		    sizeof(at->at_enaddr));
+X		if (at->at_flags & ATF_USETRAILERS)
+X			*usetrailers = 1;
+X		splx(s);
+X		return (1);
+X	}
+X	/*
+X	 * There is an arptab entry, but no ethernet address
+X	 * response yet.  Replace the held mbuf with this
+X	 * latest one.
+X	 */
+X	if (at->at_hold)
+X		m_freem(at->at_hold);
+X	at->at_hold = m;
+X	arpwhohas(ac, destip);		/* ask again */
+X	splx(s);
+X	return (0);
+X}
+X
+X/*
+X * Called from 10 Mb/s Ethernet interrupt handlers
+X * when ether packet type ETHERTYPE_ARP
+X * is received.  Common length and type checks are done here,
+X * then the protocol-specific routine is called.
+X */
+Xarpinput(ac, m)
+X	struct arpcom *ac;
+X	struct mbuf *m;
+X{
+X	register struct arphdr *ar;
+X
+X	if (ac->ac_if.if_flags & IFF_NOARP)
+X		goto out;
+X	IF_ADJ(m);
+X	if (m->m_len < sizeof(struct arphdr))
+X		goto out;
+X	ar = mtod(m, struct arphdr *);
+X	if (ntohs(ar->ar_hrd) != ARPHRD_ETHER)
+X		goto out;
+X	if (m->m_len < sizeof(struct arphdr) + 2 * ar->ar_hln + 2 * ar->ar_pln)
+X		goto out;
+X
+X	switch (ntohs(ar->ar_pro)) {
+X
+X	case ETHERTYPE_IP:
+X	case ETHERTYPE_IPTRAILERS:
+X		in_arpinput(ac, m);
+X		return;
+X
+X	default:
+X		break;
+X	}
+Xout:
+X	m_freem(m);
+X}
+X
+X/*
+X * ARP for Internet protocols on 10 Mb/s Ethernet.
+X * Algorithm is that given in RFC 826.
+X * In addition, a sanity check is performed on the sender
+X * protocol address, to catch impersonators.
+X * We also handle negotiations for use of trailer protocol:
+X * ARP replies for protocol type ETHERTYPE_TRAIL are sent
+X * along with IP replies if we want trailers sent to us,
+X * and also send them in response to IP replies.
+X * This allows either end to announce the desire to receive
+X * trailer packets.
+X * We reply to requests for ETHERTYPE_TRAIL protocol as well,
+X * but don't normally send requests.
+X */
+Xin_arpinput(ac, m)
+X	register struct arpcom *ac;
+X	struct mbuf *m;
+X{
+X	register struct ether_arp *ea;
+X	struct ether_header *eh;
+X	register struct arptab *at;  /* same as "merge" flag */
+X	struct mbuf *mcopy = 0;
+X	struct sockaddr_in sin;
+X	struct sockaddr sa;
+X	struct in_addr isaddr, itaddr, myaddr;
+X	int proto, op, s, completed = 0;
+X
+X	myaddr = ac->ac_ipaddr;
+X	ea = mtod(m, struct ether_arp *);
+X	proto = ntohs(ea->arp_pro);
+X	op = ntohs(ea->arp_op);
+X	bcopy((caddr_t)ea->arp_spa, (caddr_t)&isaddr, sizeof (isaddr));
+X	bcopy((caddr_t)ea->arp_tpa, (caddr_t)&itaddr, sizeof (itaddr));
+X	if (!bcmp((caddr_t)ea->arp_sha, (caddr_t)ac->ac_enaddr,
+X	  sizeof (ea->arp_sha)))
+X		goto out;	/* it's from me, ignore it. */
+X	if (!bcmp((caddr_t)ea->arp_sha, (caddr_t)etherbroadcastaddr,
+X	    sizeof (ea->arp_sha))) {
+X		log(LOG_ERR,
+X		    "arp: ether address is broadcast for IP address %x!\n",
+X		    ntohl(isaddr.s_addr));
+X		goto out;
+X	}
+X	if (isaddr.s_addr == myaddr.s_addr) {
+X		log(LOG_ERR, "%s: %s\n",
+X			"duplicate IP address!! sent from ethernet address",
+X			ether_sprintf(ea->arp_sha));
+X		itaddr = myaddr;
+X		if (op == ARPOP_REQUEST)
+X			goto reply;
+X		goto out;
+X	}
+X	s = splimp();
+X	ARPTAB_LOOK(at, isaddr.s_addr);
+X	if (at) {
+X		bcopy((caddr_t)ea->arp_sha, (caddr_t)at->at_enaddr,
+X		    sizeof(ea->arp_sha));
+X		if ((at->at_flags & ATF_COM) == 0)
+X			completed = 1;
+X		at->at_flags |= ATF_COM;
+X		if (at->at_hold) {
+X			sin.sin_family = AF_INET;
+X			sin.sin_addr = isaddr;
+X			(*ac->ac_if.if_output)(&ac->ac_if, 
+X			    at->at_hold, (struct sockaddr *)&sin);
+X			at->at_hold = 0;
+X		}
+X	}
+X	if (at == 0 && itaddr.s_addr == myaddr.s_addr) {
+X		/* ensure we have a table entry */
+X		if (at = arptnew(&isaddr)) {
+X			bcopy((caddr_t)ea->arp_sha, (caddr_t)at->at_enaddr,
+X			    sizeof(ea->arp_sha));
+X			completed = 1;
+X			at->at_flags |= ATF_COM;
+X		}
+X	}
+X	splx(s);
+Xreply:
+X	switch (proto) {
+X
+X	case ETHERTYPE_IPTRAILERS:
+X		/* partner says trailers are OK */
+X		if (at)
+X			at->at_flags |= ATF_USETRAILERS;
+X		/*
+X		 * Reply to request iff we want trailers.
+X		 */
+X		if (op != ARPOP_REQUEST || ac->ac_if.if_flags & IFF_NOTRAILERS)
+X			goto out;
+X		break;
+X
+X	case ETHERTYPE_IP:
+X		/*
+X		 * Reply if this is an IP request,
+X		 * or if we want to send a trailer response.
+X		 * Send the latter only to the IP response
+X		 * that completes the current ARP entry.
+X		 */
+X		if (op != ARPOP_REQUEST &&
+X		    (completed == 0 || ac->ac_if.if_flags & IFF_NOTRAILERS))
+X			goto out;
+X	}
+X	if (itaddr.s_addr == myaddr.s_addr) {
+X		/* I am the target */
+X		bcopy((caddr_t)ea->arp_sha, (caddr_t)ea->arp_tha,
+X		    sizeof(ea->arp_sha));
+X		bcopy((caddr_t)ac->ac_enaddr, (caddr_t)ea->arp_sha,
+X		    sizeof(ea->arp_sha));
+X	} else {
+X		ARPTAB_LOOK(at, itaddr.s_addr);
+X		if (at == NULL || (at->at_flags & ATF_PUBL) == 0)
+X			goto out;
+X		bcopy((caddr_t)ea->arp_sha, (caddr_t)ea->arp_tha,
+X		    sizeof(ea->arp_sha));
+X		bcopy((caddr_t)at->at_enaddr, (caddr_t)ea->arp_sha,
+X		    sizeof(ea->arp_sha));
+X	}
+X
+X	bcopy((caddr_t)ea->arp_spa, (caddr_t)ea->arp_tpa,
+X	    sizeof(ea->arp_spa));
+X	bcopy((caddr_t)&itaddr, (caddr_t)ea->arp_spa,
+X	    sizeof(ea->arp_spa));
+X	ea->arp_op = htons(ARPOP_REPLY); 
+X	/*
+X	 * If incoming packet was an IP reply,
+X	 * we are sending a reply for type IPTRAILERS.
+X	 * If we are sending a reply for type IP
+X	 * and we want to receive trailers,
+X	 * send a trailer reply as well.
+X	 */
+X	if (op == ARPOP_REPLY)
+X		ea->arp_pro = htons(ETHERTYPE_IPTRAILERS);
+X	else if (proto == ETHERTYPE_IP &&
+X	    (ac->ac_if.if_flags & IFF_NOTRAILERS) == 0)
+X		mcopy = m_copy(m, 0, (int)M_COPYALL);
+X	eh = (struct ether_header *)sa.sa_data;
+X	bcopy((caddr_t)ea->arp_tha, (caddr_t)eh->ether_dhost,
+X	    sizeof(eh->ether_dhost));
+X	eh->ether_type = ETHERTYPE_ARP;
+X	sa.sa_family = AF_UNSPEC;
+X	(*ac->ac_if.if_output)(&ac->ac_if, m, &sa);
+X	if (mcopy) {
+X		ea = mtod(mcopy, struct ether_arp *);
+X		ea->arp_pro = htons(ETHERTYPE_IPTRAILERS);
+X		(*ac->ac_if.if_output)(&ac->ac_if, mcopy, &sa);
+X	}
+X	return;
+Xout:
+X	m_freem(m);
+X	return;
+X}
+X
+X/*
+X * Free an arptab entry.
+X */
+Xarptfree(at)
+X	register struct arptab *at;
+X{
+X	int s = splimp();
+X
+X	if (at->at_hold)
+X		m_freem(at->at_hold);
+X	at->at_hold = 0;
+X	at->at_timer = at->at_flags = 0;
+X	at->at_iaddr.s_addr = 0;
+X	splx(s);
+X}
+X
+X/*
+X * Enter a new address in arptab, pushing out the oldest entry 
+X * from the bucket if there is no room.
+X * This always succeeds since no bucket can be completely filled
+X * with permanent entries (except from arpioctl when testing whether
+X * another permanent entry will fit).
+X * MUST BE CALLED AT SPLIMP.
+X */
+Xstruct arptab *
+Xarptnew(addr)
+X	struct in_addr *addr;
+X{
+X	register n;
+X	int oldest = -1;
+X	register struct arptab *at, *ato = NULL;
+X	static int first = 1;
+X
+X	if (first) {
+X		first = 0;
+X		timeout(arptimer, (caddr_t)0, hz);
+X	}
+X	at = &arptab[ARPTAB_HASH(addr->s_addr) * ARPTAB_BSIZ];
+X	for (n = 0; n < ARPTAB_BSIZ; n++,at++) {
+X		if (at->at_flags == 0)
+X			goto out;	 /* found an empty entry */
+X		if (at->at_flags & ATF_PERM)
+X			continue;
+X		if ((int) at->at_timer > oldest) {
+X			oldest = at->at_timer;
+X			ato = at;
+X		}
+X	}
+X	if (ato == NULL)
+X		return (NULL);
+X	at = ato;
+X	arptfree(at);
+Xout:
+X	at->at_iaddr = *addr;
+X	at->at_flags = ATF_INUSE;
+X	return (at);
+X}
+X
+Xarpioctl(cmd, data)
+X	int cmd;
+X	caddr_t data;
+X{
+X	register struct arpreq *ar = (struct arpreq *)data;
+X	register struct arptab *at;
+X	register struct sockaddr_in *sin;
+X	int s;
+X
+X	if (ar->arp_pa.sa_family != AF_INET ||
+X	    ar->arp_ha.sa_family != AF_UNSPEC)
+X		return (EAFNOSUPPORT);
+X	sin = (struct sockaddr_in *)&ar->arp_pa;
+X	s = splimp();
+X	ARPTAB_LOOK(at, sin->sin_addr.s_addr);
+X	if (at == NULL) {		/* not found */
+X		if (cmd != SIOCSARP) {
+X			splx(s);
+X			return (ENXIO);
+X		}
+X		if (ifa_ifwithnet(&ar->arp_pa) == NULL) {
+X			splx(s);
+X			return (ENETUNREACH);
+X		}
+X	}
+X	switch (cmd) {
+X
+X	case SIOCSARP:		/* set entry */
+X		if (at == NULL) {
+X			at = arptnew(&sin->sin_addr);
+X			if (at == NULL) {
+X				splx(s);
+X				return (EADDRNOTAVAIL);
+X			}
+X			if (ar->arp_flags & ATF_PERM) {
+X			/* never make all entries in a bucket permanent */
+X				register struct arptab *tat;
+X				
+X				/* try to re-allocate */
+X				tat = arptnew(&sin->sin_addr);
+X				if (tat == NULL) {
+X					arptfree(at);
+X					splx(s);
+X					return (EADDRNOTAVAIL);
+X				}
+X				arptfree(tat);
+X			}
+X		}
+X		bcopy((caddr_t)ar->arp_ha.sa_data, (caddr_t)at->at_enaddr,
+X		    sizeof(at->at_enaddr));
+X		at->at_flags = ATF_COM | ATF_INUSE |
+X			(ar->arp_flags & (ATF_PERM|ATF_PUBL|ATF_USETRAILERS));
+X		at->at_timer = 0;
+X		break;
+X
+X	case SIOCDARP:		/* delete entry */
+X		arptfree(at);
+X		break;
+X
+X	case SIOCGARP:		/* get entry */
+X		bcopy((caddr_t)at->at_enaddr, (caddr_t)ar->arp_ha.sa_data,
+X		    sizeof(at->at_enaddr));
+X		ar->arp_flags = at->at_flags;
+X		break;
+X	}
+X	splx(s);
+X	return (0);
+X}
+X
+X/*
+X * Convert Ethernet address to printable (loggable) representation.
+X */
+Xchar *
+Xether_sprintf(ap)
+X	register u_char *ap;
+X{
+X	register i;
+X	static char etherbuf[18];
+X	register char *cp = etherbuf;
+X	static char digits[] = "0123456789abcdef";
+X
+X	for (i = 0; i < 6; i++) {
+X		*cp++ = digits[*ap >> 4];
+X		*cp++ = digits[*ap++ & 0xf];
+X		*cp++ = ':';
+X	}
+X	*--cp = 0;
+X	return (etherbuf);
+X}
+END-of-netinet/if_ether.c
+echo x - netinet/if_ether.h
+sed 's/^X//' >netinet/if_ether.h << 'END-of-netinet/if_ether.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)if_ether.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Structure of a 10Mb/s Ethernet header.
+X */
+Xstruct	ether_header {
+X	u_char	ether_dhost[6];
+X	u_char	ether_shost[6];
+X	u_short	ether_type;
+X};
+X
+X#define	ETHERTYPE_PUP	0x0200		/* PUP protocol */
+X#define	ETHERTYPE_IP	0x0800		/* IP protocol */
+X#define ETHERTYPE_ARP	0x0806		/* Addr. resolution protocol */
+X
+X/*
+X * The ETHERTYPE_NTRAILER packet types starting at ETHERTYPE_TRAIL have
+X * (type-ETHERTYPE_TRAIL)*512 bytes of data followed
+X * by an ETHER type (as given above) and then the (variable-length) header.
+X */
+X#define	ETHERTYPE_TRAIL		0x1000		/* Trailer packet */
+X#define	ETHERTYPE_NTRAILER	16
+X
+X#define	ETHERMTU	1500
+X#define	ETHERMIN	(60-14)
+X
+X/*
+X * Ethernet Address Resolution Protocol.
+X *
+X * See RFC 826 for protocol description.  Structure below is adapted
+X * to resolving internet addresses.  Field names used correspond to 
+X * RFC 826.
+X */
+Xstruct	ether_arp {
+X	struct	arphdr ea_hdr;	/* fixed-size header */
+X	u_char	arp_sha[6];	/* sender hardware address */
+X	u_char	arp_spa[4];	/* sender protocol address */
+X	u_char	arp_tha[6];	/* target hardware address */
+X	u_char	arp_tpa[4];	/* target protocol address */
+X};
+X#define	arp_hrd	ea_hdr.ar_hrd
+X#define	arp_pro	ea_hdr.ar_pro
+X#define	arp_hln	ea_hdr.ar_hln
+X#define	arp_pln	ea_hdr.ar_pln
+X#define	arp_op	ea_hdr.ar_op
+X
+X
+X/*
+X * Structure shared between the ethernet driver modules and
+X * the address resolution code.  For example, each ec_softc or il_softc
+X * begins with this structure.
+X */
+Xstruct	arpcom {
+X	struct 	ifnet ac_if;		/* network-visible interface */
+X	u_char	ac_enaddr[6];		/* ethernet hardware address */
+X	struct in_addr ac_ipaddr;	/* copy of ip address- XXX */
+X};
+X
+X/*
+X * Internet to ethernet address resolution table.
+X */
+Xstruct	arptab {
+X	struct	in_addr at_iaddr;	/* internet address */
+X	u_char	at_enaddr[6];		/* ethernet address */
+X	u_char	at_timer;		/* minutes since last reference */
+X	u_char	at_flags;		/* flags */
+X	struct	mbuf *at_hold;		/* last packet until resolved/timeout */
+X};
+X
+X#ifdef	KERNEL
+Xu_char etherbroadcastaddr[6];
+Xstruct	arptab *arptnew();
+Xchar *ether_sprintf();
+X#endif
+END-of-netinet/if_ether.h
+echo x - netinet/in.c
+sed 's/^X//' >netinet/in.c << 'END-of-netinet/in.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in.c	7.7 (Berkeley) 4/3/88
+X */
+X
+X#include "param.h"
+X#include "ioctl.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "uio.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "in_systm.h"
+X#include "../net/if.h"
+X#include "../net/route.h"
+X#include "../net/af.h"
+X#include "in.h"
+X#include "in_var.h"
+X
+X#ifdef INET
+Xinet_hash(sin, hp)
+X	register struct sockaddr_in *sin;
+X	struct afhash *hp;
+X{
+X	register u_long n;
+X
+X	n = in_netof(sin->sin_addr);
+X	if (n)
+X	    while ((n & 0xff) == 0)
+X		n >>= 8;
+X	hp->afh_nethash = n;
+X	hp->afh_hosthash = ntohl(sin->sin_addr.s_addr);
+X}
+X
+Xinet_netmatch(sin1, sin2)
+X	struct sockaddr_in *sin1, *sin2;
+X{
+X
+X	return (in_netof(sin1->sin_addr) == in_netof(sin2->sin_addr));
+X}
+X
+X/*
+X * Formulate an Internet address from network + host.
+X */
+Xstruct in_addr
+Xin_makeaddr(net, host)
+X	u_long net, host;
+X{
+X	register struct in_ifaddr *ia;
+X	register u_long mask;
+X	u_long addr;
+X
+X	if (IN_CLASSA(net))
+X		mask = IN_CLASSA_HOST;
+X	else if (IN_CLASSB(net))
+X		mask = IN_CLASSB_HOST;
+X	else
+X		mask = IN_CLASSC_HOST;
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if ((ia->ia_netmask & net) == ia->ia_net) {
+X			mask = ~ia->ia_subnetmask;
+X			break;
+X		}
+X	addr = htonl(net | (host & mask));
+X	return (*(struct in_addr *)&addr);
+X}
+X
+X/*
+X * Return the network number from an internet address.
+X */
+Xu_long
+Xin_netof(in)
+X	struct in_addr in;
+X{
+X	register u_long i = ntohl(in.s_addr);
+X	register u_long net;
+X	register struct in_ifaddr *ia;
+X
+X	if (IN_CLASSA(i))
+X		net = i & IN_CLASSA_NET;
+X	else if (IN_CLASSB(i))
+X		net = i & IN_CLASSB_NET;
+X	else if (IN_CLASSC(i))
+X		net = i & IN_CLASSC_NET;
+X	else
+X		return (0);
+X
+X	/*
+X	 * Check whether network is a subnet;
+X	 * if so, return subnet number.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if (net == ia->ia_net)
+X			return (i & ia->ia_subnetmask);
+X	return (net);
+X}
+X
+X/*
+X * Return the host portion of an internet address.
+X */
+Xu_long
+Xin_lnaof(in)
+X	struct in_addr in;
+X{
+X	register u_long i = ntohl(in.s_addr);
+X	register u_long net, host;
+X	register struct in_ifaddr *ia;
+X
+X	if (IN_CLASSA(i)) {
+X		net = i & IN_CLASSA_NET;
+X		host = i & IN_CLASSA_HOST;
+X	} else if (IN_CLASSB(i)) {
+X		net = i & IN_CLASSB_NET;
+X		host = i & IN_CLASSB_HOST;
+X	} else if (IN_CLASSC(i)) {
+X		net = i & IN_CLASSC_NET;
+X		host = i & IN_CLASSC_HOST;
+X	} else
+X		return (i);
+X
+X	/*
+X	 * Check whether network is a subnet;
+X	 * if so, use the modified interpretation of `host'.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if (net == ia->ia_net)
+X			return (host &~ ia->ia_subnetmask);
+X	return (host);
+X}
+X
+X#ifndef SUBNETSARELOCAL
+X#define	SUBNETSARELOCAL	1
+X#endif
+Xint subnetsarelocal = SUBNETSARELOCAL;
+X/*
+X * Return 1 if an internet address is for a ``local'' host
+X * (one to which we have a connection).  If subnetsarelocal
+X * is true, this includes other subnets of the local net.
+X * Otherwise, it includes only the directly-connected (sub)nets.
+X */
+Xin_localaddr(in)
+X	struct in_addr in;
+X{
+X	register u_long i = ntohl(in.s_addr);
+X	register struct in_ifaddr *ia;
+X
+X	if (subnetsarelocal) {
+X		for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X			if ((i & ia->ia_netmask) == ia->ia_net)
+X				return (1);
+X	} else {
+X		for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X			if ((i & ia->ia_subnetmask) == ia->ia_subnet)
+X				return (1);
+X	}
+X	return (0);
+X}
+X
+X/*
+X * Determine whether an IP address is in a reserved set of addresses
+X * that may not be forwarded, or whether datagrams to that destination
+X * may be forwarded.
+X */
+Xin_canforward(in)
+X	struct in_addr in;
+X{
+X	register u_long i = ntohl(in.s_addr);
+X	register u_long net;
+X
+X	if (IN_EXPERIMENTAL(i))
+X		return (0);
+X	if (IN_CLASSA(i)) {
+X		net = i & IN_CLASSA_NET;
+X		if (net == 0 || net == IN_LOOPBACKNET)
+X			return (0);
+X	}
+X	return (1);
+X}
+X
+Xint	in_interfaces;		/* number of external internet interfaces */
+Xextern	struct ifnet loif;
+X
+X/*
+X * Generic internet control operations (ioctl's).
+X * Ifp is 0 if not an interface-specific ioctl.
+X */
+X/* ARGSUSED */
+Xin_control(so, cmd, data, ifp)
+X	struct socket *so;
+X	int cmd;
+X	caddr_t data;
+X	register struct ifnet *ifp;
+X{
+X	register struct ifreq *ifr = (struct ifreq *)data;
+X	register struct in_ifaddr *ia = 0;
+X	struct ifaddr *ifa;
+X	struct mbuf *m;
+X	int error;
+X
+X	/*
+X	 * Find address for this interface, if it exists.
+X	 */
+X	if (ifp)
+X		for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X			if (ia->ia_ifp == ifp)
+X				break;
+X
+X	switch (cmd) {
+X
+X	case SIOCSIFADDR:
+X	case SIOCSIFNETMASK:
+X	case SIOCSIFDSTADDR:
+X		if (!suser())
+X			return (u.u_error);
+X
+X		if (ifp == 0)
+X			panic("in_control");
+X		if (ia == (struct in_ifaddr *)0) {
+X			m = m_getclr(M_WAIT, MT_IFADDR);
+X			if (m == (struct mbuf *)NULL)
+X				return (ENOBUFS);
+X			if (ia = in_ifaddr) {
+X				for ( ; ia->ia_next; ia = ia->ia_next)
+X					;
+X				ia->ia_next = mtod(m, struct in_ifaddr *);
+X			} else
+X				in_ifaddr = mtod(m, struct in_ifaddr *);
+X			ia = mtod(m, struct in_ifaddr *);
+X			if (ifa = ifp->if_addrlist) {
+X				for ( ; ifa->ifa_next; ifa = ifa->ifa_next)
+X					;
+X				ifa->ifa_next = (struct ifaddr *) ia;
+X			} else
+X				ifp->if_addrlist = (struct ifaddr *) ia;
+X			ia->ia_ifp = ifp;
+X			IA_SIN(ia)->sin_family = AF_INET;
+X			if (ifp != &loif)
+X				in_interfaces++;
+X		}
+X		break;
+X
+X	case SIOCSIFBRDADDR:
+X		if (!suser())
+X			return (u.u_error);
+X		/* FALLTHROUGH */
+X
+X	default:
+X		if (ia == (struct in_ifaddr *)0)
+X			return (EADDRNOTAVAIL);
+X		break;
+X	}
+X
+X	switch (cmd) {
+X
+X	case SIOCGIFADDR:
+X		ifr->ifr_addr = ia->ia_addr;
+X		break;
+X
+X	case SIOCGIFBRDADDR:
+X		if ((ifp->if_flags & IFF_BROADCAST) == 0)
+X			return (EINVAL);
+X		ifr->ifr_dstaddr = ia->ia_broadaddr;
+X		break;
+X
+X	case SIOCGIFDSTADDR:
+X		if ((ifp->if_flags & IFF_POINTOPOINT) == 0)
+X			return (EINVAL);
+X		ifr->ifr_dstaddr = ia->ia_dstaddr;
+X		break;
+X
+X	case SIOCGIFNETMASK:
+X#define	satosin(sa)	((struct sockaddr_in *)(sa))
+X		satosin(&ifr->ifr_addr)->sin_family = AF_INET;
+X		satosin(&ifr->ifr_addr)->sin_addr.s_addr = htonl(ia->ia_subnetmask);
+X		break;
+X
+X	case SIOCSIFDSTADDR:
+X	    {
+X		struct sockaddr oldaddr;
+X
+X		if ((ifp->if_flags & IFF_POINTOPOINT) == 0)
+X			return (EINVAL);
+X		oldaddr = ia->ia_dstaddr;
+X		ia->ia_dstaddr = ifr->ifr_dstaddr;
+X		if (ifp->if_ioctl &&
+X		    (error = (*ifp->if_ioctl)(ifp, SIOCSIFDSTADDR, ia))) {
+X			ia->ia_dstaddr = oldaddr;
+X			return (error);
+X		}
+X		if (ia->ia_flags & IFA_ROUTE) {
+X			rtinit(&oldaddr, &ia->ia_addr, (int)SIOCDELRT,
+X			    RTF_HOST);
+X			rtinit(&ia->ia_dstaddr, &ia->ia_addr, (int)SIOCADDRT,
+X			    RTF_HOST|RTF_UP);
+X		}
+X	    }
+X		break;
+X
+X	case SIOCSIFBRDADDR:
+X		if ((ifp->if_flags & IFF_BROADCAST) == 0)
+X			return (EINVAL);
+X		ia->ia_broadaddr = ifr->ifr_broadaddr;
+X		break;
+X
+X	case SIOCSIFADDR:
+X		return (in_ifinit(ifp, ia, &ifr->ifr_addr));
+X
+X	case SIOCSIFNETMASK:
+X		ia->ia_subnetmask = ntohl(satosin(&ifr->ifr_addr)->sin_addr.s_addr);
+X		break;
+X
+X	default:
+X		if (ifp == 0 || ifp->if_ioctl == 0)
+X			return (EOPNOTSUPP);
+X		return ((*ifp->if_ioctl)(ifp, cmd, data));
+X	}
+X	return (0);
+X}
+X
+X/*
+X * Initialize an interface's internet address
+X * and routing table entry.
+X */
+Xin_ifinit(ifp, ia, sin)
+X	register struct ifnet *ifp;
+X	register struct in_ifaddr *ia;
+X	struct sockaddr_in *sin;
+X{
+X	register u_long i = ntohl(sin->sin_addr.s_addr);
+X	struct sockaddr oldaddr;
+X	struct sockaddr_in netaddr;
+X	int s = splimp(), error;
+X
+X	oldaddr = ia->ia_addr;
+X	ia->ia_addr = *(struct sockaddr *)sin;
+X
+X	/*
+X	 * Give the interface a chance to initialize
+X	 * if this is its first address,
+X	 * and to validate the address if necessary.
+X	 */
+X	if (ifp->if_ioctl && (error = (*ifp->if_ioctl)(ifp, SIOCSIFADDR, ia))) {
+X		splx(s);
+X		ia->ia_addr = oldaddr;
+X		return (error);
+X	}
+X
+X	/*
+X	 * Delete any previous route for an old address.
+X	 */
+X	bzero((caddr_t)&netaddr, sizeof (netaddr));
+X	netaddr.sin_family = AF_INET;
+X	if (ia->ia_flags & IFA_ROUTE) {
+X		if (ifp->if_flags & IFF_LOOPBACK)
+X			rtinit(&oldaddr, &oldaddr, (int)SIOCDELRT, RTF_HOST);
+X		else if (ifp->if_flags & IFF_POINTOPOINT)
+X			rtinit(&ia->ia_dstaddr, &oldaddr, (int)SIOCDELRT,
+X			    RTF_HOST);
+X		else {
+X			netaddr.sin_addr = in_makeaddr(ia->ia_subnet,
+X			    INADDR_ANY);
+X			rtinit((struct sockaddr *)&netaddr, &oldaddr, 
+X			    (int)SIOCDELRT, 0);
+X		}
+X		ia->ia_flags &= ~IFA_ROUTE;
+X	}
+X	if (IN_CLASSA(i))
+X		ia->ia_netmask = IN_CLASSA_NET;
+X	else if (IN_CLASSB(i))
+X		ia->ia_netmask = IN_CLASSB_NET;
+X	else
+X		ia->ia_netmask = IN_CLASSC_NET;
+X	ia->ia_net = i & ia->ia_netmask;
+X	/*
+X	 * The subnet mask includes at least the standard network part,
+X	 * but may already have been set to a larger value.
+X	 */
+X	ia->ia_subnetmask |= ia->ia_netmask;
+X	ia->ia_subnet = i & ia->ia_subnetmask;
+X	if (ifp->if_flags & IFF_BROADCAST) {
+X		ia->ia_broadaddr.sa_family = AF_INET;
+X		((struct sockaddr_in *)(&ia->ia_broadaddr))->sin_addr =
+X			in_makeaddr(ia->ia_subnet, INADDR_BROADCAST);
+X		ia->ia_netbroadcast.s_addr =
+X		    htonl(ia->ia_net | (INADDR_BROADCAST &~ ia->ia_netmask));
+X	}
+X	/*
+X	 * Add route for the network.
+X	 */
+X	if (ifp->if_flags & IFF_LOOPBACK)
+X		rtinit(&ia->ia_addr, &ia->ia_addr, (int)SIOCADDRT,
+X		    RTF_HOST|RTF_UP);
+X	else if (ifp->if_flags & IFF_POINTOPOINT)
+X		rtinit(&ia->ia_dstaddr, &ia->ia_addr, (int)SIOCADDRT,
+X		    RTF_HOST|RTF_UP);
+X	else {
+X		netaddr.sin_addr = in_makeaddr(ia->ia_subnet, INADDR_ANY);
+X		rtinit((struct sockaddr *)&netaddr, &ia->ia_addr,
+X		    (int)SIOCADDRT, RTF_UP);
+X	}
+X	ia->ia_flags |= IFA_ROUTE;
+X	splx(s);
+X	return (0);
+X}
+X
+X/*
+X * Return address info for specified internet network.
+X */
+Xstruct in_ifaddr *
+Xin_iaonnetof(net)
+X	u_long net;
+X{
+X	register struct in_ifaddr *ia;
+X
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if (ia->ia_subnet == net)
+X			return (ia);
+X	return ((struct in_ifaddr *)0);
+X}
+X
+X/*
+X * Return 1 if the address might be a local broadcast address.
+X */
+Xin_broadcast(in)
+X	struct in_addr in;
+X{
+X	register struct in_ifaddr *ia;
+X	u_long t;
+X
+X	/*
+X	 * Look through the list of addresses for a match
+X	 * with a broadcast address.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X	    if (ia->ia_ifp->if_flags & IFF_BROADCAST) {
+X		if (satosin(&ia->ia_broadaddr)->sin_addr.s_addr == in.s_addr)
+X		     return (1);
+X		/*
+X		 * Check for old-style (host 0) broadcast.
+X		 */
+X		if ((t = ntohl(in.s_addr)) == ia->ia_subnet || t == ia->ia_net)
+X		    return (1);
+X	}
+X	if (in.s_addr == INADDR_BROADCAST || in.s_addr == INADDR_ANY)
+X		return (1);
+X	return (0);
+X}
+X#endif
+END-of-netinet/in.c
+echo x - netinet/in.h
+sed 's/^X//' >netinet/in.h << 'END-of-netinet/in.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in.h	7.5 (Berkeley) 2/22/88
+X */
+X
+X/*
+X * Constants and structures defined by the internet system,
+X * Per RFC 790, September 1981.
+X */
+X
+X/*
+X * Protocols
+X */
+X#define	IPPROTO_IP		0		/* dummy for IP */
+X#define	IPPROTO_ICMP		1		/* control message protocol */
+X#define	IPPROTO_GGP		3		/* gateway^2 (deprecated) */
+X#define	IPPROTO_TCP		6		/* tcp */
+X#define	IPPROTO_EGP		8		/* exterior gateway protocol */
+X#define	IPPROTO_PUP		12		/* pup */
+X#define	IPPROTO_UDP		17		/* user datagram protocol */
+X#define	IPPROTO_IDP		22		/* xns idp */
+X
+X#define	IPPROTO_RAW		255		/* raw IP packet */
+X#define	IPPROTO_MAX		256
+X
+X
+X/*
+X * Ports < IPPORT_RESERVED are reserved for
+X * privileged processes (e.g. root).
+X * Ports > IPPORT_USERRESERVED are reserved
+X * for servers, not necessarily privileged.
+X */
+X#define	IPPORT_RESERVED		1024
+X#define	IPPORT_USERRESERVED	5000
+X
+X/*
+X * Link numbers
+X */
+X#define	IMPLINK_IP		155
+X#define	IMPLINK_LOWEXPER	156
+X#define	IMPLINK_HIGHEXPER	158
+X
+X/*
+X * Internet address (a structure for historical reasons)
+X */
+Xstruct in_addr {
+X	u_long s_addr;
+X};
+X
+X/*
+X * Definitions of bits in internet address integers.
+X * On subnets, the decomposition of addresses to host and net parts
+X * is done according to subnet mask, not the masks here.
+X */
+X#define	IN_CLASSA(i)		(((long)(i) & 0x80000000) == 0)
+X#define	IN_CLASSA_NET		0xff000000
+X#define	IN_CLASSA_NSHIFT	24
+X#define	IN_CLASSA_HOST		0x00ffffff
+X#define	IN_CLASSA_MAX		128
+X
+X#define	IN_CLASSB(i)		(((long)(i) & 0xc0000000) == 0x80000000)
+X#define	IN_CLASSB_NET		0xffff0000
+X#define	IN_CLASSB_NSHIFT	16
+X#define	IN_CLASSB_HOST		0x0000ffff
+X#define	IN_CLASSB_MAX		65536
+X
+X#define	IN_CLASSC(i)		(((long)(i) & 0xe0000000) == 0xc0000000)
+X#define	IN_CLASSC_NET		0xffffff00
+X#define	IN_CLASSC_NSHIFT	8
+X#define	IN_CLASSC_HOST		0x000000ff
+X
+X#define	IN_CLASSD(i)		(((long)(i) & 0xf0000000) == 0xe0000000)
+X#define	IN_MULTICAST(i)		IN_CLASSD(i)
+X
+X#define	IN_EXPERIMENTAL(i)	(((long)(i) & 0xe0000000) == 0xe0000000)
+X#define	IN_BADCLASS(i)		(((long)(i) & 0xf0000000) == 0xf0000000)
+X
+X#define	INADDR_ANY		(u_long)0x00000000
+X#define	INADDR_BROADCAST	(u_long)0xffffffff	/* must be masked */
+X#ifndef KERNEL
+X#define	INADDR_NONE		0xffffffff		/* -1 return */
+X#endif
+X
+X#define	IN_LOOPBACKNET		127			/* official! */
+X
+X/*
+X * Socket address, internet style.
+X */
+Xstruct sockaddr_in {
+X	short	sin_family;
+X	u_short	sin_port;
+X	struct	in_addr sin_addr;
+X	char	sin_zero[8];
+X};
+X
+X/*
+X * Options for use with [gs]etsockopt at the IP level.
+X */
+X#define	IP_OPTIONS	1		/* set/get IP per-packet options */
+X
+X#ifdef KERNEL
+Xextern	struct domain inetdomain;
+Xextern	struct protosw inetsw[];
+Xstruct	in_addr in_makeaddr();
+Xu_long	in_netof(), in_lnaof();
+X#endif
+END-of-netinet/in.h
+echo x - netinet/in_cksum.c
+sed 's/^X//' >netinet/in_cksum.c << 'END-of-netinet/in_cksum.c'
+X/*
+X * Copyright (c) 1988 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_cksum.c	7.1 (Berkeley) 3/29/88
+X */
+X
+X#include "../h/types.h"
+X#include "../h/mbuf.h"
+X
+X/*
+X * Checksum routine for Internet Protocol family headers (Portable Version).
+X *
+X * This routine is very heavily used in the network
+X * code and should be modified for each CPU to be as fast as possible.
+X */
+X
+X#define ADDCARRY(x)  (x > 65535 ? x -= 65535 : x)
+X#define REDUCE {l_util.l = sum; sum = l_util.s[0] + l_util.s[1]; ADDCARRY(sum);}
+X
+Xin_cksum_c(m, len)
+X	register struct mbuf *m;
+X	register int len;
+X{
+X	register u_short *w;
+X	register int sum = 0;
+X	register int mlen = 0;
+X	int byte_swapped = 0;
+X
+X	union {
+X		char	c[2];
+X		u_short	s;
+X	} s_util;
+X	union {
+X		u_short s[2];
+X		long	l;
+X	} l_util;
+X
+X	for (;m && len; m = m->m_next) {
+X		if (m->m_len == 0)
+X			continue;
+X		w = mtod(m, u_short *);
+X		if (mlen == -1) {
+X			/*
+X			 * The first byte of this mbuf is the continuation
+X			 * of a word spanning between this mbuf and the
+X			 * last mbuf.
+X			 *
+X			 * s_util.c[0] is already saved when scanning previous 
+X			 * mbuf.
+X			 */
+X			s_util.c[1] = *(char *)w;
+X			sum += s_util.s;
+X			w = (u_short *)((char *)w + 1);
+X			mlen = m->m_len - 1;
+X			len--;
+X		} else
+X			mlen = m->m_len;
+X		if (len < mlen)
+X			mlen = len;
+X		len -= mlen;
+X		/*
+X		 * Force to even boundary.
+X		 */
+X		if ((1 & (int) w) && (mlen > 0)) {
+X			REDUCE;
+X			sum <<= 8;
+X			s_util.c[0] = *(u_char *)w;
+X			w = (u_short *)((char *)w + 1);
+X			mlen--;
+X			byte_swapped = 1;
+X		}
+X		/*
+X		 * Unroll the loop to make overhead from
+X		 * branches &c small.
+X		 */
+X		while ((mlen -= 32) >= 0) {
+X			sum += w[0]; sum += w[1]; sum += w[2]; sum += w[3];
+X			sum += w[4]; sum += w[5]; sum += w[6]; sum += w[7];
+X			sum += w[8]; sum += w[9]; sum += w[10]; sum += w[11];
+X			sum += w[12]; sum += w[13]; sum += w[14]; sum += w[15];
+X			w += 16;
+X		}
+X		mlen += 32;
+X		while ((mlen -= 8) >= 0) {
+X			sum += w[0]; sum += w[1]; sum += w[2]; sum += w[3];
+X			w += 4;
+X		}
+X		mlen += 8;
+X		if (mlen == 0 && byte_swapped == 0)
+X			continue;
+X		REDUCE;
+X		while ((mlen -= 2) >= 0) {
+X			sum += *w++;
+X		}
+X		if (byte_swapped) {
+X			REDUCE;
+X			sum <<= 8;
+X			byte_swapped = 0;
+X			if (mlen == -1) {
+X				s_util.c[1] = *(char *)w;
+X				sum += s_util.s;
+X				mlen = 0;
+X			} else
+X				mlen = -1;
+X		} else if (mlen == -1)
+X			s_util.c[0] = *(char *)w;
+X	}
+X	if (len)
+X		printf("cksum: out of data\n");
+X	if (mlen == -1) {
+X		/* The last mbuf has odd # of bytes. Follow the
+X		   standard (the odd byte may be shifted left by 8 bits
+X		   or not as determined by endian-ness of the machine) */
+X		s_util.c[1] = 0;
+X		sum += s_util.s;
+X	}
+X	REDUCE;
+X	return (~sum & 0xffff);
+X}
+END-of-netinet/in_cksum.c
+echo x - netinet/in_pcb.c
+sed 's/^X//' >netinet/in_pcb.c << 'END-of-netinet/in_pcb.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_pcb.c	7.6 (Berkeley) 12/7/87
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "ioctl.h"
+X#include "in.h"
+X#include "in_systm.h"
+X#include "../net/if.h"
+X#include "../net/route.h"
+X#include "in_pcb.h"
+X#include "in_var.h"
+X#include "protosw.h"
+X
+Xstruct	in_addr zeroin_addr;
+X
+Xin_pcballoc(so, head)
+X	struct socket *so;
+X	struct inpcb *head;
+X{
+X	struct mbuf *m;
+X	register struct inpcb *inp;
+X
+X	m = m_getclr(M_DONTWAIT, MT_PCB);
+X	if (m == NULL)
+X		return (ENOBUFS);
+X	inp = mtod(m, struct inpcb *);
+X	inp->inp_head = head;
+X	inp->inp_socket = so;
+X	insque(inp, head);
+X	so->so_pcb = (caddr_t)inp;
+X	return (0);
+X}
+X	
+Xin_pcbbind(inp, nam)
+X	register struct inpcb *inp;
+X	struct mbuf *nam;
+X{
+X	register struct socket *so = inp->inp_socket;
+X	register struct inpcb *head = inp->inp_head;
+X	register struct sockaddr_in *sin;
+X	u_short lport = 0;
+X
+X	if (in_ifaddr == 0)
+X		return (EADDRNOTAVAIL);
+X	if (inp->inp_lport || inp->inp_laddr.s_addr != INADDR_ANY)
+X		return (EINVAL);
+X	if (nam == 0)
+X		goto noname;
+X	sin = mtod(nam, struct sockaddr_in *);
+X	if (nam->m_len != sizeof (*sin))
+X		return (EINVAL);
+X	if (sin->sin_addr.s_addr != INADDR_ANY) {
+X		int tport = sin->sin_port;
+X
+X		sin->sin_port = 0;		/* yech... */
+X		if (ifa_ifwithaddr((struct sockaddr *)sin) == 0)
+X			return (EADDRNOTAVAIL);
+X		sin->sin_port = tport;
+X	}
+X	lport = sin->sin_port;
+X	if (lport) {
+X		u_short aport = ntohs(lport);
+X		int wild = 0;
+X
+X		/* GROSS */
+X		if (aport < IPPORT_RESERVED && u.u_uid != 0)
+X			return (EACCES);
+X		/* even GROSSER, but this is the Internet */
+X		if ((so->so_options & SO_REUSEADDR) == 0 &&
+X		    ((so->so_proto->pr_flags & PR_CONNREQUIRED) == 0 ||
+X		     (so->so_options & SO_ACCEPTCONN) == 0))
+X			wild = INPLOOKUP_WILDCARD;
+X		if (in_pcblookup(head,
+X		    zeroin_addr, 0, sin->sin_addr, lport, wild))
+X			return (EADDRINUSE);
+X	}
+X	inp->inp_laddr = sin->sin_addr;
+Xnoname:
+X	if (lport == 0)
+X		do {
+X			if (head->inp_lport++ < IPPORT_RESERVED ||
+X			    head->inp_lport > IPPORT_USERRESERVED)
+X				head->inp_lport = IPPORT_RESERVED;
+X			lport = htons(head->inp_lport);
+X		} while (in_pcblookup(head,
+X			    zeroin_addr, 0, inp->inp_laddr, lport, 0));
+X	inp->inp_lport = lport;
+X	return (0);
+X}
+X
+X/*
+X * Connect from a socket to a specified address.
+X * Both address and port must be specified in argument sin.
+X * If don't have a local address for this socket yet,
+X * then pick one.
+X */
+Xin_pcbconnect(inp, nam)
+X	register struct inpcb *inp;
+X	struct mbuf *nam;
+X{
+X	struct in_ifaddr *ia;
+X	struct sockaddr_in *ifaddr;
+X	register struct sockaddr_in *sin = mtod(nam, struct sockaddr_in *);
+X
+X	if (nam->m_len != sizeof (*sin))
+X		return (EINVAL);
+X	if (sin->sin_family != AF_INET)
+X		return (EAFNOSUPPORT);
+X	if (sin->sin_port == 0)
+X		return (EADDRNOTAVAIL);
+X	if (in_ifaddr) {
+X		/*
+X		 * If the destination address is INADDR_ANY,
+X		 * use the primary local address.
+X		 * If the supplied address is INADDR_BROADCAST,
+X		 * and the primary interface supports broadcast,
+X		 * choose the broadcast address for that interface.
+X		 */
+X#define	satosin(sa)	((struct sockaddr_in *)(sa))
+X		if (sin->sin_addr.s_addr == INADDR_ANY)
+X		    sin->sin_addr = IA_SIN(in_ifaddr)->sin_addr;
+X		else if (sin->sin_addr.s_addr == (u_long)INADDR_BROADCAST &&
+X		  (in_ifaddr->ia_ifp->if_flags & IFF_BROADCAST))
+X		    sin->sin_addr = satosin(&in_ifaddr->ia_broadaddr)->sin_addr;
+X	}
+X	if (inp->inp_laddr.s_addr == INADDR_ANY) {
+X		register struct route *ro;
+X		struct ifnet *ifp;
+X
+X		ia = (struct in_ifaddr *)0;
+X		/* 
+X		 * If route is known or can be allocated now,
+X		 * our src addr is taken from the i/f, else punt.
+X		 */
+X		ro = &inp->inp_route;
+X		if (ro->ro_rt &&
+X		    (satosin(&ro->ro_dst)->sin_addr.s_addr !=
+X			sin->sin_addr.s_addr || 
+X		    inp->inp_socket->so_options & SO_DONTROUTE)) {
+X			RTFREE(ro->ro_rt);
+X			ro->ro_rt = (struct rtentry *)0;
+X		}
+X		if ((inp->inp_socket->so_options & SO_DONTROUTE) == 0 && /*XXX*/
+X		    (ro->ro_rt == (struct rtentry *)0 ||
+X		    ro->ro_rt->rt_ifp == (struct ifnet *)0)) {
+X			/* No route yet, so try to acquire one */
+X			ro->ro_dst.sa_family = AF_INET;
+X			((struct sockaddr_in *) &ro->ro_dst)->sin_addr =
+X				sin->sin_addr;
+X			rtalloc(ro);
+X		}
+X		/*
+X		 * If we found a route, use the address
+X		 * corresponding to the outgoing interface
+X		 * unless it is the loopback (in case a route
+X		 * to our address on another net goes to loopback).
+X		 */
+X		if (ro->ro_rt && (ifp = ro->ro_rt->rt_ifp) &&
+X		    (ifp->if_flags & IFF_LOOPBACK) == 0)
+X			for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X				if (ia->ia_ifp == ifp)
+X					break;
+X		if (ia == 0) {
+X			int fport = sin->sin_port;
+X
+X			sin->sin_port = 0;
+X			ia = (struct in_ifaddr *)
+X			    ifa_ifwithdstaddr((struct sockaddr *)sin);
+X			sin->sin_port = fport;
+X			if (ia == 0)
+X				ia = in_iaonnetof(in_netof(sin->sin_addr));
+X			if (ia == 0)
+X				ia = in_ifaddr;
+X			if (ia == 0)
+X				return (EADDRNOTAVAIL);
+X		}
+X		ifaddr = (struct sockaddr_in *)&ia->ia_addr;
+X	}
+X	if (in_pcblookup(inp->inp_head,
+X	    sin->sin_addr,
+X	    sin->sin_port,
+X	    inp->inp_laddr.s_addr ? inp->inp_laddr : ifaddr->sin_addr,
+X	    inp->inp_lport,
+X	    0))
+X		return (EADDRINUSE);
+X	if (inp->inp_laddr.s_addr == INADDR_ANY) {
+X		if (inp->inp_lport == 0)
+X			(void)in_pcbbind(inp, (struct mbuf *)0);
+X		inp->inp_laddr = ifaddr->sin_addr;
+X	}
+X	inp->inp_faddr = sin->sin_addr;
+X	inp->inp_fport = sin->sin_port;
+X	return (0);
+X}
+X
+Xin_pcbdisconnect(inp)
+X	struct inpcb *inp;
+X{
+X
+X	inp->inp_faddr.s_addr = INADDR_ANY;
+X	inp->inp_fport = 0;
+X	if (inp->inp_socket->so_state & SS_NOFDREF)
+X		in_pcbdetach(inp);
+X}
+X
+Xin_pcbdetach(inp)
+X	struct inpcb *inp;
+X{
+X	struct socket *so = inp->inp_socket;
+X
+X	so->so_pcb = 0;
+X	sofree(so);
+X	if (inp->inp_options)
+X		(void)m_free(inp->inp_options);
+X	if (inp->inp_route.ro_rt)
+X		rtfree(inp->inp_route.ro_rt);
+X	remque(inp);
+X	(void) m_free(dtom(inp));
+X}
+X
+Xin_setsockaddr(inp, nam)
+X	register struct inpcb *inp;
+X	struct mbuf *nam;
+X{
+X	register struct sockaddr_in *sin;
+X	
+X	nam->m_len = sizeof (*sin);
+X	sin = mtod(nam, struct sockaddr_in *);
+X	bzero((caddr_t)sin, sizeof (*sin));
+X	sin->sin_family = AF_INET;
+X	sin->sin_port = inp->inp_lport;
+X	sin->sin_addr = inp->inp_laddr;
+X}
+X
+Xin_setpeeraddr(inp, nam)
+X	struct inpcb *inp;
+X	struct mbuf *nam;
+X{
+X	register struct sockaddr_in *sin;
+X	
+X	nam->m_len = sizeof (*sin);
+X	sin = mtod(nam, struct sockaddr_in *);
+X	bzero((caddr_t)sin, sizeof (*sin));
+X	sin->sin_family = AF_INET;
+X	sin->sin_port = inp->inp_fport;
+X	sin->sin_addr = inp->inp_faddr;
+X}
+X
+X/*
+X * Pass some notification to all connections of a protocol
+X * associated with address dst.  Call the protocol specific
+X * routine (if any) to handle each connection.
+X */
+Xin_pcbnotify(head, dst, errno, notify)
+X	struct inpcb *head;
+X	register struct in_addr *dst;
+X	int errno, (*notify)();
+X{
+X	register struct inpcb *inp, *oinp;
+X	int s = splimp();
+X
+X	for (inp = head->inp_next; inp != head;) {
+X		if (inp->inp_faddr.s_addr != dst->s_addr ||
+X		    inp->inp_socket == 0) {
+X			inp = inp->inp_next;
+X			continue;
+X		}
+X		if (errno) 
+X			inp->inp_socket->so_error = errno;
+X		oinp = inp;
+X		inp = inp->inp_next;
+X		if (notify)
+X			(*notify)(oinp);
+X	}
+X	splx(s);
+X}
+X
+X/*
+X * Check for alternatives when higher level complains
+X * about service problems.  For now, invalidate cached
+X * routing information.  If the route was created dynamically
+X * (by a redirect), time to try a default gateway again.
+X */
+Xin_losing(inp)
+X	struct inpcb *inp;
+X{
+X	register struct rtentry *rt;
+X
+X	if ((rt = inp->inp_route.ro_rt)) {
+X		if (rt->rt_flags & RTF_DYNAMIC)
+X			(void) rtrequest((int)SIOCDELRT, rt);
+X		rtfree(rt);
+X		inp->inp_route.ro_rt = 0;
+X		/*
+X		 * A new route can be allocated
+X		 * the next time output is attempted.
+X		 */
+X	}
+X}
+X
+X/*
+X * After a routing change, flush old routing
+X * and allocate a (hopefully) better one.
+X */
+Xin_rtchange(inp)
+X	register struct inpcb *inp;
+X{
+X	if (inp->inp_route.ro_rt) {
+X		rtfree(inp->inp_route.ro_rt);
+X		inp->inp_route.ro_rt = 0;
+X		/*
+X		 * A new route can be allocated the next time
+X		 * output is attempted.
+X		 */
+X	}
+X}
+X
+Xstruct inpcb *
+Xin_pcblookup(head, faddr, fport, laddr, lport, flags)
+X	struct inpcb *head;
+X	struct in_addr faddr, laddr;
+X	u_short fport, lport;
+X	int flags;
+X{
+X	register struct inpcb *inp, *match = 0;
+X	int matchwild = 3, wildcard;
+X
+X	for (inp = head->inp_next; inp != head; inp = inp->inp_next) {
+X		if (inp->inp_lport != lport)
+X			continue;
+X		wildcard = 0;
+X		if (inp->inp_laddr.s_addr != INADDR_ANY) {
+X			if (laddr.s_addr == INADDR_ANY)
+X				wildcard++;
+X			else if (inp->inp_laddr.s_addr != laddr.s_addr)
+X				continue;
+X		} else {
+X			if (laddr.s_addr != INADDR_ANY)
+X				wildcard++;
+X		}
+X		if (inp->inp_faddr.s_addr != INADDR_ANY) {
+X			if (faddr.s_addr == INADDR_ANY)
+X				wildcard++;
+X			else if (inp->inp_faddr.s_addr != faddr.s_addr ||
+X			    inp->inp_fport != fport)
+X				continue;
+X		} else {
+X			if (faddr.s_addr != INADDR_ANY)
+X				wildcard++;
+X		}
+X		if (wildcard && (flags & INPLOOKUP_WILDCARD) == 0)
+X			continue;
+X		if (wildcard < matchwild) {
+X			match = inp;
+X			matchwild = wildcard;
+X			if (matchwild == 0)
+X				break;
+X		}
+X	}
+X	return (match);
+X}
+END-of-netinet/in_pcb.c
+echo x - netinet/in_pcb.h
+sed 's/^X//' >netinet/in_pcb.h << 'END-of-netinet/in_pcb.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_pcb.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Common structure pcb for internet protocol implementation.
+X * Here are stored pointers to local and foreign host table
+X * entries, local and foreign socket numbers, and pointers
+X * up (to a socket structure) and down (to a protocol-specific)
+X * control block.
+X */
+Xstruct inpcb {
+X	struct	inpcb *inp_next,*inp_prev;
+X					/* pointers to other pcb's */
+X	struct	inpcb *inp_head;	/* pointer back to chain of inpcb's
+X					   for this protocol */
+X	struct	in_addr inp_faddr;	/* foreign host table entry */
+X	u_short	inp_fport;		/* foreign port */
+X	struct	in_addr inp_laddr;	/* local host table entry */
+X	u_short	inp_lport;		/* local port */
+X	struct	socket *inp_socket;	/* back pointer to socket */
+X	caddr_t	inp_ppcb;		/* pointer to per-protocol pcb */
+X	struct	route inp_route;	/* placeholder for routing entry */
+X	struct	mbuf *inp_options;	/* IP options */
+X};
+X
+X#define	INPLOOKUP_WILDCARD	1
+X#define	INPLOOKUP_SETLOCAL	2
+X
+X#define	sotoinpcb(so)	((struct inpcb *)(so)->so_pcb)
+X
+X#ifdef KERNEL
+Xstruct	inpcb *in_pcblookup();
+X#endif
+END-of-netinet/in_pcb.h
+echo x - netinet/in_proto.c
+sed 's/^X//' >netinet/in_proto.c << 'END-of-netinet/in_proto.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_proto.c	7.2 (Berkeley) 12/7/87
+X */
+X
+X#include "param.h"
+X#include "socket.h"
+X#include "protosw.h"
+X#include "domain.h"
+X#include "mbuf.h"
+X
+X#include "in.h"
+X#include "in_systm.h"
+X
+X/*
+X * TCP/IP protocol family: IP, ICMP, UDP, TCP.
+X */
+Xint	ip_output(),ip_ctloutput();
+Xint	ip_init(),ip_slowtimo(),ip_drain();
+Xint	icmp_input();
+Xint	udp_input(),udp_ctlinput();
+Xint	udp_usrreq();
+Xint	udp_init();
+Xint	tcp_input(),tcp_ctlinput();
+Xint	tcp_usrreq(),tcp_ctloutput();
+Xint	tcp_init(),tcp_fasttimo(),tcp_slowtimo(),tcp_drain();
+Xint	rip_input(),rip_output(),rip_ctloutput();
+Xextern	int raw_usrreq();
+X/*
+X * IMP protocol family: raw interface.
+X * Using the raw interface entry to get the timer routine
+X * in is a kludge.
+X */
+X#include "imp.h"
+X#if NIMP > 0
+Xint	rimp_output(), hostslowtimo();
+X#endif
+X
+X#ifdef NSIP
+Xint	idpip_input(), nsip_ctlinput();
+X#endif
+X
+Xextern	struct domain inetdomain;
+X
+Xstruct protosw inetsw[] = {
+X{ 0,		&inetdomain,	0,		0,
+X  0,		ip_output,	0,		0,
+X  0,
+X  ip_init,	0,		ip_slowtimo,	ip_drain,
+X},
+X{ SOCK_DGRAM,	&inetdomain,	IPPROTO_UDP,	PR_ATOMIC|PR_ADDR,
+X  udp_input,	0,		udp_ctlinput,	ip_ctloutput,
+X  udp_usrreq,
+X  udp_init,	0,		0,		0,
+X},
+X{ SOCK_STREAM,	&inetdomain,	IPPROTO_TCP,	PR_CONNREQUIRED|PR_WANTRCVD,
+X  tcp_input,	0,		tcp_ctlinput,	tcp_ctloutput,
+X  tcp_usrreq,
+X  tcp_init,	tcp_fasttimo,	tcp_slowtimo,	tcp_drain,
+X},
+X{ SOCK_RAW,	&inetdomain,	IPPROTO_RAW,	PR_ATOMIC|PR_ADDR,
+X  rip_input,	rip_output,	0,		rip_ctloutput,
+X  raw_usrreq,
+X  0,		0,		0,		0,
+X},
+X{ SOCK_RAW,	&inetdomain,	IPPROTO_ICMP,	PR_ATOMIC|PR_ADDR,
+X  icmp_input,	rip_output,	0,		rip_ctloutput,
+X  raw_usrreq,
+X  0,		0,		0,		0,
+X},
+X#ifdef NSIP
+X{ SOCK_RAW,	&inetdomain,	IPPROTO_IDP,	PR_ATOMIC|PR_ADDR,
+X  idpip_input,	rip_output,	nsip_ctlinput,	0,
+X  raw_usrreq,
+X  0,		0,		0,		0,
+X},
+X#endif
+X	/* raw wildcard */
+X{ SOCK_RAW,	&inetdomain,	0,		PR_ATOMIC|PR_ADDR,
+X  rip_input,	rip_output,	0,		rip_ctloutput,
+X  raw_usrreq,
+X  0,		0,		0,		0,
+X},
+X};
+X
+Xstruct domain inetdomain =
+X    { AF_INET, "internet", 0, 0, 0, 
+X      inetsw, &inetsw[sizeof(inetsw)/sizeof(inetsw[0])] };
+X
+X#if NIMP > 0
+Xextern	struct domain impdomain;
+X
+Xstruct protosw impsw[] = {
+X{ SOCK_RAW,	&impdomain,	0,		PR_ATOMIC|PR_ADDR,
+X  0,		rimp_output,	0,		0,
+X  raw_usrreq,
+X  0,		0,		hostslowtimo,	0,
+X},
+X};
+X
+Xstruct domain impdomain =
+X    { AF_IMPLINK, "imp", 0, 0, 0,
+X      impsw, &impsw[sizeof (impsw)/sizeof(impsw[0])] };
+X#endif
+X
+X#include "hy.h"
+X#if NHY > 0
+X/*
+X * HYPERchannel protocol family: raw interface.
+X */
+Xint	rhy_output();
+Xextern	struct domain hydomain;
+X
+Xstruct protosw hysw[] = {
+X{ SOCK_RAW,	&hydomain,	0,		PR_ATOMIC|PR_ADDR,
+X  0,		rhy_output,	0,		0,
+X  raw_usrreq,
+X  0,		0,		0,		0,
+X},
+X};
+X
+Xstruct domain hydomain =
+X    { AF_HYLINK, "hy", 0, 0, 0, hysw, &hysw[sizeof (hysw)/sizeof(hysw[0])] };
+X#endif
+END-of-netinet/in_proto.c
+echo x - netinet/in_systm.h
+sed 's/^X//' >netinet/in_systm.h << 'END-of-netinet/in_systm.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_systm.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Miscellaneous internetwork
+X * definitions for kernel.
+X */
+X
+X/*
+X * Network types.
+X *
+X * Internally the system keeps counters in the headers with the bytes
+X * swapped so that VAX instructions will work on them.  It reverses
+X * the bytes before transmission at each protocol level.  The n_ types
+X * represent the types with the bytes in ``high-ender'' order.
+X */
+Xtypedef u_short n_short;		/* short as received from the net */
+Xtypedef u_long	n_long;			/* long as received from the net */
+X
+Xtypedef	u_long	n_time;			/* ms since 00:00 GMT, byte rev */
+X
+X#ifdef KERNEL
+Xn_time	iptime();
+X#endif
+END-of-netinet/in_systm.h
+echo x - netinet/in_var.h
+sed 's/^X//' >netinet/in_var.h << 'END-of-netinet/in_var.h'
+X/*
+X * Copyright (c) 1985, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)in_var.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Interface address, Internet version.  One of these structures
+X * is allocated for each interface with an Internet address.
+X * The ifaddr structure contains the protocol-independent part
+X * of the structure and is assumed to be first.
+X */
+Xstruct in_ifaddr {
+X	struct	ifaddr ia_ifa;		/* protocol-independent info */
+X#define	ia_addr	ia_ifa.ifa_addr
+X#define	ia_broadaddr	ia_ifa.ifa_broadaddr
+X#define	ia_dstaddr	ia_ifa.ifa_dstaddr
+X#define	ia_ifp		ia_ifa.ifa_ifp
+X	u_long	ia_net;			/* network number of interface */
+X	u_long	ia_netmask;		/* mask of net part */
+X	u_long	ia_subnet;		/* subnet number, including net */
+X	u_long	ia_subnetmask;		/* mask of net + subnet */
+X	struct	in_addr ia_netbroadcast; /* broadcast addr for (logical) net */
+X	int	ia_flags;
+X	struct	in_ifaddr *ia_next;	/* next in list of internet addresses */
+X};
+X/*
+X * Given a pointer to an in_ifaddr (ifaddr),
+X * return a pointer to the addr as a sockadd_in.
+X */
+X#define	IA_SIN(ia) ((struct sockaddr_in *)(&((struct in_ifaddr *)ia)->ia_addr))
+X/*
+X * ia_flags
+X */
+X#define	IFA_ROUTE	0x01		/* routing entry installed */
+X
+X#ifdef	KERNEL
+Xstruct	in_ifaddr *in_ifaddr;
+Xstruct	in_ifaddr *in_iaonnetof();
+Xstruct	ifqueue	ipintrq;		/* ip packet input queue */
+X#endif
+END-of-netinet/in_var.h
+exit
+

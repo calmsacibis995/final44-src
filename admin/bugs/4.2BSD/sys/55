@@ -1,0 +1,61 @@
+Return-Path: <spgggm@ucbopal.CC>
+Date: Tue, 31 Jan 84 19:00:23 pst
+From: spgggm@ucbopal.CC (Greg Minshall)
+Subject: in Unix domain, sockaddr_un is too long
+Index: 	sys/h/un.h 4.2BSD
+
+Description:
+	Doing a bind() in the Unix domain, if we pass the size of
+	the sockaddr_un structure, we get EINVAL (on our system; on
+	ucbarpa it seems to give EMSGSIZE).  This is because the Vax
+	C compiler says that the size is 112 bytes, and therefore
+	sys/sys/uipc_userreq.c in unp_bind() doesn't have room to
+	stick on a null termination.  Really, sockaddr_un seems to
+	be 111 bytes long, but apparently the compiler says "well, it's
+	going to take me 112 bytes, since the next data structure will
+	start at an even byte address".
+Repeat-By:
+
+#include <sys/un.h>
+(more includes)
+int
+hintSet(path)
+char *path;		/* path name for hint */
+{
+	int s, length, diddle, savedError;
+	long mypid;
+	struct sockaddr_un foo;
+
+	s = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+	if (s == -1) {
+		perror("hintSet: socket");
+		exit(1);
+	}
+
+	length = strlen(path);
+	if (length > sizeof foo.sun_path)
+		length = sizeof foo.sun_path;
+	
+	strncpy(foo.sun_path, path, length);
+
+	if (bind(s, &foo, (sizeof foo)-1) == -1) {
+		if (	((savedError = errno) == EADDRINUSE) &&
+			(open(path, O_RDONLY) == -1) &&
+			(errno == EOPNOTSUPP) &&
+			(unlink(path) != -1) &&
+			(bind(s, &foo, (sizeof foo)-1) != -1) )
+				;
+		else {
+			errno = savedError;
+			perror("hintSet: bind");
+			exit(1);
+		}
+	}
+
+	return(s);
+}
+Fix:
+	One of two things:  Change the C compiler (but, I'm not sure that
+	would be a fix, or a failure).  Better yet, make
+	sun_path[108] instead of sun_path[109].

@@ -1,0 +1,771 @@
+Return-Path: <amd!nsc!chongo>
+Date: Fri, 4 Jan 85 00:38:03 pst
+From: amd!nsc!chongo (Landon C. Noll)
+Subject: compact and uncompact bug fix
+Subject: compact/uncompact exit wrong, are always verbose, are not consistent
+Index:	ucb/compact/{compact,uncompact}.c,/usr/man/man1/compact.1 4.2BSD
+
+Description:
+	Compact and uncompact exit with an exit code of 1 when everything
+	worked just fine.  Compact and uncompact always announce their
+	actions (% file reduction or new file name) to standard error.
+
+	Compact does not always form a .C file.  There is no way when
+	compacting a file would not save bytes to have compact form the .C
+	file.  This causes problems for make/shell scripts which which to setup
+	deompacting rules and expect to find the compact file.  There is
+	no way to force compact to compact a file.
+	
+	Compact and uncompact do not need to have a 12 byte filename
+	limit as the man page suggests.
+Repeat-By:
+	Compact a file and notice the non-zero exit code.  Uncompact the
+	file and notice the same thing.  Notice the balby reports.
+
+	Notice that the compacted file is not formed:
+
+	echo -n 'a' > very.small.file
+	compact very.small.file
+	echo 'abcdefghjiklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW' > bigger.file
+	compact bugger.file
+Fix:
+	Below you will find the files compact.c, uncompact.c and the man page
+	compact.1.  The following is a summary of the changes:
+
+		* -q flag added to shutup the programs
+		* -f flag in compact forces it to form a compacted file
+		* programs exit with 0 if all is o.k.
+		* compact exits with EINVAL on short files unless -f is used
+		* proper exit codes are used
+		* documenttation of changes in the man page
+
+	An attempt to change few lines of code was made.  Programming style
+	comflicts were resolved in favor of the old program to make the
+	diff as small as reasonable.
+
+	-------------------------------compact.c below---------------------
+	#ifndef lint
+	static char sccsid[] = "@(#)compact.c	4.4.1 (Modified) 4-jan-85";
+	#endif lint
+	
+	/*
+	 *  Adaptive Huffman code input to output
+	 *
+	 *  On - line algorithm
+	 *
+	 *  Does not prepend decoding tree
+	 *
+	 *  Written by Colin L. Mc Master (UCB) February 28, 1979
+	 *  Modified by Landon Noll (nsc) October 22, 1984: Added -f & -q options,
+	 *	exits with 0 on normal ending.
+	 */
+	
+	#define TRUE 1
+	#define FALSE 0
+	
+	#include "compact.h"
+	#include <errno.h>
+	
+	union cio d;
+	int bits;
+	extern int errno;	/* last system error */
+	int saved_errno=0;	/* last saved errno */
+	
+	main (argc, argv)
+	short argc;
+	char *argv [ ];
+	{
+		register short i, j;
+		register int m;
+		union cio c;
+		short l;
+		longint ic, n;
+		char *cp, fname [LNAME];
+		char forced;			/* TRUE => compact no matter what */
+		char quiet;			/* TRUE => don't report results */
+	
+		/* process flags */
+		forced = FALSE;
+		quiet = FALSE;
+		while ( argc > 1 && argv[1][0] == '-' ) {
+			if ( argv[1][2] == 0 ) {
+				if ( argv[1][1] == 'f' ) {
+					forced = TRUE;
+				} else if ( argv[1][1] == 'q' ) {
+					quiet = TRUE;
+				} else {
+					fprintf( stderr, "usage: compact [-f] [-q] [file ...]\n");
+					exit(EINVAL);
+				}
+			} else if ( strcmp( argv[1], "-fq" ) == 0 || strcmp( argv[1], "-qf" ) == 0 ) {
+				forced = TRUE;
+				quiet = TRUE;
+			} else {
+				fprintf( stderr, "usage: compact [-f] [-q] [file ...]\n");
+				exit(EINVAL);
+			}
+			--argc;
+			++argv;
+		}
+	
+		dir [513] . next = NULL;
+		for (head = dir + (j = 513); j--; ) {
+			dirp = head--;
+			head -> next = dirp;
+		}
+		bottom = dirp -> pt = dict;
+		dict [0] . top [0] = dict [0] . top [1] = dirp;
+		dirq = dirp -> next;
+		in [EF] . flags = FBIT | SEEN;
+	
+		for (i = 1; ; i++) {
+			ic = oc =  0;
+			(bottom -> top [1]) -> next = flist;
+			bottom -> top [1] = dirp;
+			flist = dirq;
+			if (i >= argc) {
+				uncfp = stdin;
+				cfp = stdout;
+			}
+			else {
+				m = -1;
+				cp = fname;
+				for (l = 0; l < (LNAME - 3) && (*cp = argv [i][l]); l++)
+					if (*cp++ == '/') m = l;
+				if (l >= (LNAME - 3) || (l - m) > MAXNAMLEN - 1) {
+					saved_errno = ENAMETOOLONG;
+					fprintf (stderr, "%s: File name too long\n", argv [i]);
+					if (i >= argc - 1) break;
+					continue;
+				}
+				if ((uncfp = fopen (argv [i], "r")) == NULL) {
+					saved_errno = (errno) ? errno : EINVAL;
+					perror (argv [i]);
+					if (i >= argc - 1) break;
+					continue;
+				}
+			}
+	
+			fstat (fileno (uncfp), &status);
+			if ((status.st_mode & 040000) == 040000) {
+				saved_errno = EISDIR;
+				fprintf (stderr, "%s: Can't compact a directory\n", argv [i]);
+				if (i < argc) goto closein;
+				break;
+			}
+	
+			if ((d . integ = getc (uncfp)) != EOF) {
+				ic++;
+				if ((c . integ = getc (uncfp)) != EOF) {
+					d . chars . hib = c . integ & 0377;
+					if ((d . integ &= 0177777) == COMPACTED) {
+						saved_errno = EINVAL;
+						fprintf (stderr, "%s: Already compacted.\n", argv [i]);
+						if (i < argc) goto closein;
+						break;
+					}
+					if (d . integ == PACKED) {
+						saved_errno = EINVAL;
+						fprintf (stderr, "%s: Already packed using program pack.  Use unpack.\n", argv [i]);
+						if (i < argc) goto closein;
+						break;
+					}
+					if (i < argc) {
+						*cp++ = '.'; *cp++ = 'C'; *cp = '\0';
+						if ((cfp = fopen(fname,"w")) == NULL) {
+							saved_errno = errno;
+							perror (fname);
+							goto closein;
+						}
+						if (chmod(fname, status.st_mode) < 0) {
+							saved_errno = errno;
+							perror (fname);
+							goto closein;
+						}
+					}
+					c . integ = COMPACTED;
+					putc (c . chars . lob, cfp);
+					putc (c . chars . hib, cfp);
+					if (ferror (cfp)) {
+						saved_errno = (errno) ? errno : EINVAL;
+						if (i < argc) {
+							perror (fname);
+							unlink (fname);
+							goto closeboth;
+						}
+						else goto fail;
+					}
+					bits = 8;
+					oc = 2;
+					c . integ = d . integ & 0377;
+		
+					in [NC] . fp = in [EF] . fp = dict [0] . sp [0] . p = bottom = dict + 1;
+					bottom -> count [0] = bottom -> count [1] = dict [0] . count [1] = 1;
+					dirp -> next = dict [0] . top [1] = bottom -> top [0] = bottom -> top [1] = dirq = NEW;
+					dirq -> next = NULL;
+					dict [0] . fath . fp = NULL;
+					dirq -> pt = bottom -> fath . fp = in [c . integ] . fp = dict;
+					in [c . integ] . flags = (FBIT | SEEN);
+					in [NC] . flags = SEEN;
+					dict [0] . fath . flags = RLEAF;
+					bottom -> fath . flags = (LLEAF | RLEAF);
+					dict [0] . count [0] = 2;
+	
+					dict [0] . sp [1] . ch = c . integ;
+					bottom -> sp [0] . ch = NC;
+					bottom -> sp [1] . ch = EF;
+		
+					for (c . integ = ((d . integ >> 8) & 0377); c . integ != EOF; c . integ = getc (uncfp)) {
+						ic++;
+						if (in [c . integ] . flags & SEEN) encode (c . integ);
+						else {
+							encode (NC);
+							uptree (NC);
+							insert (c . integ);
+		
+							m = 0200;
+							for (j = 8; j--; m >>= 1) {
+								d . integ <<= 1;
+								if (m & c . integ) d . integ++;
+								++bits;
+								if ((bits &= 017) == 0) {
+									putc (d . chars . hib, cfp);
+									putc (d . chars . lob, cfp);
+									oc += 2;
+								}
+							}
+						}
+						if (ferror (cfp)) {
+							saved_errno = (errno) ? errno : EINVAL;
+							if (i < argc) {
+								perror (fname);
+								unlink (fname);
+								goto closeboth;
+							}
+							else goto fail;
+						}
+						uptree (c . integ);
+		
+					}
+	
+					if (ferror (uncfp)) {
+						saved_errno = (errno) ? errno : EINVAL;
+						if (i < argc) {
+							perror (argv [i]);
+							unlink (fname);
+							goto closeboth;
+						}
+						else goto fail;
+					}
+		
+					encode (EF);
+		
+					if (bits) {
+						d . integ <<= (16 - bits);
+						oc++;
+						putc (d . chars . hib, cfp);
+						if (bits > 8) {
+							oc++;
+							putc (d . chars . lob, cfp);
+						}
+						bits = 0;
+					}
+				}
+				else {			/* single char file */
+					clearerr(uncfp);
+					if (i < argc) {
+						*cp++ = '.'; *cp++ = 'C'; *cp = '\0';
+						if ((cfp = fopen(fname,"w")) == NULL) {
+							saved_errno = errno;
+							perror (fname);
+							goto closein;
+						}
+						if (chmod(fname, status.st_mode) < 0) {
+							saved_errno = errno;
+							perror (fname);
+							goto closein;
+						}
+					}
+					c . integ = COMPACTED;
+					putc (c . chars . lob, cfp);
+					putc (c . chars . hib, cfp);
+					putc(d.chars.lob,cfp);
+					oc = ic+1;
+				}
+	
+			/* empty input file, force process if needed */
+			} else if ( forced == TRUE ) {
+				clearerr(uncfp);
+				if (i < argc) {
+					*cp++ = '.'; *cp++ = 'C'; *cp = '\0';
+					if ((cfp = fopen(fname,"w")) == NULL) {
+						saved_errno = errno;
+						perror (fname);
+						goto closein;
+					}
+					if (chmod(fname, status.st_mode) < 0) {
+						saved_errno = errno;
+						perror (fname);
+						goto closein;
+					}
+				}
+				c . integ = COMPACTED;
+				putc (c . chars . lob, cfp);
+				putc (c . chars . hib, cfp);
+			}
+	
+			if (ferror (uncfp) || ferror (cfp)) {
+				saved_errno = (errno) ? errno : EINVAL;
+				if (i < argc) {
+					if (ferror (cfp))
+						perror (fname);
+					else
+						perror (argv [i]);
+					if (oc > 1) {
+						unlink (fname);
+						goto closeboth;
+					}
+					goto closein;
+				}
+				else goto fail;
+			} else {
+				/* be sure they want a report */
+				if ( quiet == FALSE ) {
+					/* was not forced to poorly compress report */
+					if (forced == FALSE && oc >= ic) {
+						/* exit non-zero if non-forced bad compress size */
+						saved_errno = (saved_errno==0) ? EINVAL : saved_errno;
+						if (i < argc) fprintf (stderr, "%s: ", argv [i]);
+						if (i < argc) fprintf (stderr, "Not compacted.  ");
+						fprintf (stderr, "Does not save bytes.\n");
+						if (i < argc) {
+							if (oc > 1) {
+								unlink (fname);
+								goto closeboth;
+							}
+							goto closein;
+						}
+						else break;
+					/* forced poor compression report */
+					} else if ( oc > ic ) {
+						while ((oc - ic) > 21474) {
+							ic /= 10;
+							oc /= 10;
+						}
+						n = 100000 * (oc - ic) / oc + 5;
+						m = (n % 1000) / 10;
+						bits = m % 10 + '0';
+						c . integ = m / 10 + '0';
+						if (i < argc) fprintf (stderr, "%s:  ", argv [i]);
+						fprintf (stderr, "Compression : %5ld.%c%c%%\n", (-n) / 1000, c . chars . lob, bits);
+					/* no change in size report */
+					} else if ( oc == ic ) {
+						if (i < argc) fprintf (stderr, "%s:  ", argv [i]);
+						if ( oc == 0 ) {
+							fprintf (stderr, "Compression : was empty, now 2 bytes\n");
+						} else {
+							fprintf (stderr, "Compression : 0.00%\n");
+						}
+					/* normal compression report */
+					} else {
+						while ((ic - oc) > 21474) {
+							ic /= 10;
+							oc /= 10;
+						}
+						n = 100000 * (ic - oc) / ic + 5;
+						m = (n % 1000) / 10;
+						bits = m % 10 + '0';
+						c . integ = m / 10 + '0';
+						if (i < argc) fprintf (stderr, "%s:  ", argv [i]);
+						fprintf (stderr, "Compression : %4ld.%c%c%%\n", n / 1000, c . chars . lob, bits);
+					}
+				}
+				/* note a non-forced non-compact */
+				if (forced == FALSE && oc >= ic) {
+					/* exit non-zero if non-forced bad compress size */
+					saved_errno = (saved_errno==0) ? EINVAL : saved_errno;
+					if (i < argc) {
+						if (oc > 1) {
+							unlink (fname);
+							goto closeboth;
+						}
+						goto closein;
+					}
+					else break;
+				}
+			}
+	
+				    if (i >= argc) break;
+				    unlink (argv [i]);
+			closeboth : fclose (cfp);
+			closein   : fclose (uncfp);
+				    if (i >= argc-1) break;
+				    for (j = 256; j--; ) in [j] . flags = 0;
+				    continue;
+			fail 	  : fprintf (stderr, "Unsuccessful compact of standard input to standard output.\n");
+				    break;
+		}
+		exit(saved_errno);
+	}
+	
+	encode (ch)
+	int ch;
+	{
+	
+		register struct node *pp;
+		register char j;
+		union cio c;
+		int stack [17], stp, stbits;
+	
+		c . integ = ch;
+		stack [stp = 0] = in [c . integ] . flags & FBIT;
+		stbits = 1;
+		pp = in [c . integ] . fp;
+	
+		while (pp -> fath . fp) {
+			stack [stp] <<= 1;
+			if (pp -> fath . flags & FBIT) stack [stp]++;
+			stbits++;
+			if ((stbits &= 017) == 0) stp++;
+			pp = pp ->  fath . fp;
+		}
+	
+		/* pop the output stack */
+	
+		for (stp++; stp--; ) {
+			for (j = 0; j < stbits; j++) {
+				d . integ <<= 1;
+				if (stack [stp] & 01) d . integ++;
+				++bits;
+				if ((bits &= 017) == 0) {
+					putc (d . chars . hib, cfp);
+					putc (d . chars . lob, cfp);
+					if (ferror (cfp)) return;
+					oc += 2;
+				}
+				stack [stp] >>= 1;
+			}
+			stbits = 16;
+		}
+	}
+	----------------------------end of compact.c-----------------------
+
+	---------------------------uncompact.c below-----------------------
+	#ifndef lint
+	static char sccsid[] = "@(#)compact.c	4.4.1 (Modified) 4-jan-85";
+	#endif lint
+	
+	/*
+	 *  Uncompact adaptive Huffman code input to output
+	 *
+	 *  On - line algorithm
+	 *
+	 *  Input file does not contain decoding tree
+	 *
+	 *  Written by Colin L. Mc Master (UCB) February 14, 1979
+	 *  Modified by Landon Noll (nsc) October 22, 1984: exits with 0 when o.k.,
+	 *				added -q flag for being quiet
+	 */
+	
+	#include "compact.h"
+	#include <errno.h>
+	
+	#define TRUE 1
+	#define FALSE 0
+	
+	extern int errno;		/* last system error */
+	int saved_errno=0;		/* last saved errno */
+	
+	main (argc, argv)
+	short argc;
+	char *argv [ ];
+	{
+		register short i;
+		register struct node *p;
+		register short j;
+		register int m;
+		union cio c, d;
+		char b;
+		longint ic, n;
+		char fname [LNAME], *cp;
+		char quiet;
+	
+		/* check for the quiet flag */
+		if ( argc > 1 && strcmp( argv[1], "-q" ) == 0 ) {
+			quiet = TRUE;
+			--argc;
+			++argv;
+		} else {
+			quiet = FALSE;
+		}
+	
+		dir [513] . next = NULL;
+		for (head = dir + (j = 513); j--; ) {
+			dirp = head--;
+			head -> next = dirp;
+		}
+		bottom = dirp -> pt = dict;
+		dict [0] . top [0] = dict [0] . top [1] = dirp;
+		dirq = dirp -> next;
+		in [EF] . flags = FBIT | SEEN;
+	
+		for (i = 1; ; i++) {
+			ic = oc = 0;
+			(bottom -> top [1]) -> next = flist;
+			bottom -> top [1] = dirp;
+			flist = dirq;
+			if (i >= argc) {
+				uncfp = stdout;
+				cfp = stdin;
+			}
+			else {
+				m = -1;
+				cp = fname;
+				for (j = 0; j < (LNAME - 3) && (*cp = argv [i][j]); j++)
+					if (*cp++ == '/') m = j;
+				if (cp [-1] == 'C' && cp [-2] == '.') cp [-2] = 0;
+				else {
+					saved_errno = EINVAL;
+					fprintf (stderr, "%s: File name must end with \".C\"\n", argv [i]);
+					if (i == argc - 1) break;
+					continue;
+				}
+				if (j >= (LNAME - 3) || (j - m) > MAXNAMLEN) {
+					saved_errno = ENAMETOOLONG;
+					fprintf (stderr, "File name too long -- %s\n", argv [i]);
+					if (i == argc - 1) break;
+					continue;
+				}
+				if ((cfp = fopen (argv [i], "r")) == NULL) {
+					saved_errno = (errno) ? errno : EINVAL;
+					perror (argv [i]);
+					if (i == argc - 1) break;
+					continue;
+				}
+				if ((uncfp = fopen (fname, "w")) == NULL ||
+				    fstat(fileno(cfp),&status) < 0 ||
+				    chmod(fname,status.st_mode & 07777) < 0) {
+					saved_errno = (errno) ? errno : EINVAL;
+					perror (fname);
+					fclose (cfp);
+					if (i == argc - 1) break;
+					continue;
+				}
+			}
+	
+			if ((c . integ = getc (cfp)) != EOF) {
+				if ((d . integ = getc (cfp)) != EOF) {
+					c . chars . hib = d . integ & 0377;
+					c . integ &= 0177777;
+					if (c . integ != COMPACTED) goto notcompact;
+					if ((c . integ = getc (cfp)) != EOF) {
+						putc (c . chars . lob, uncfp);
+						ic = 3;
+			
+						in [NC] . fp = in [EF] . fp = dict [0] . sp [0] . p = bottom = dict + 1;
+						bottom -> count [0] = bottom -> count [1] = dict [0] . count [1] = 1;
+						dirp -> next = dict [0] . top [1] = bottom -> top [0] = bottom -> top [1] = dirq = NEW;
+						dirq -> next = NULL;
+						dict [0] . fath . fp = NULL;
+						dirq -> pt = bottom -> fath . fp = in [c . integ] . fp = dict;
+						in [c . integ] . flags = (FBIT | SEEN);
+						in [NC] . flags = SEEN;
+						dict [0] . fath . flags = RLEAF;
+						bottom -> fath . flags = (LLEAF | RLEAF);
+						dict [0] . count [0] = 2;
+			
+						dict [0] . sp [1] . ch = c . integ;
+						bottom -> sp [0] . ch = NC;
+						bottom -> sp [1] . ch = EF;
+			
+						p = dict;
+						while ((c . integ = getc (cfp)) != EOF) {
+							ic++;
+							for (m = 0200; m; ) {
+								b = (m & c . integ ? 1 : 0);
+								m >>= 1;
+								if (p -> fath . flags & (b ? RLEAF : LLEAF)) {
+									d . integ = p -> sp [b] . ch;
+									if (d . integ == EF) break;
+									if (d . integ == NC) {
+										uptree (NC);
+										d . integ = 0;
+										for (j = 8; j--; m >>= 1) {
+											if (m == 0) {
+												c . integ = getc (cfp);
+												ic++;
+												m = 0200;
+											}
+											d . integ <<= 1;
+											if (m & c . integ) d . integ++;
+										}
+										insert (d . integ);
+									}
+									uptree (d . integ);
+									putc (d . chars . lob, uncfp);
+									oc++;
+									p = dict;
+								}
+								else p = p -> sp [b] . p;
+							}
+						}
+					}
+				}
+				else goto notcompact;
+			}
+			else {
+				notcompact : if (i < argc) {
+						     fprintf (stderr, "%s: ", argv [i]);
+						     unlink (fname);
+					     }
+					     saved_errno = EINVAL;
+					     if (c . integ == PACKED) fprintf (stderr, "File is packed. Use unpack.\n");
+					     else fprintf (stderr, "Not a compacted file.\n");
+					     if (i >= argc) break;
+					     goto closeboth;
+			}
+	
+			if (ferror (uncfp) || ferror (cfp)) {
+				saved_errno = (errno) ? errno : EINVAL;
+				if (i < argc) {
+					if (ferror (uncfp))
+						perror (fname);
+					else
+						perror (argv [i]);
+					fprintf (stderr, "Unable to uncompact %s\n", argv [i]);
+					unlink (fname);
+					goto closeboth;
+				}
+			}
+				    if (i >= argc) break;
+				    if ( quiet == FALSE ) {
+					    fprintf (stderr, "%s uncompacted to %s\n", argv [i], fname);
+				    }
+				    unlink (argv [i]);
+			closeboth : fclose (cfp);
+			closein   : fclose (uncfp);
+				    if (i == argc - 1) break;
+				    for (j = 256; j--; ) in [j] . flags = 0;
+				    continue;
+			fail 	  : fprintf (stderr, "Unsuccessful uncompact of standard input to standard output.\n");
+				    break;
+		}
+		exit(saved_errno);
+	}
+	----------------------------------end of uncompact.c------------------
+
+	--------------------------man page compact.1 below-------------------
+	.TH COMPACT 1 "22 October 1984"
+	.UC 4
+	.SH NAME
+	compact, uncompact, ccat \- compress/uncompress/cat files
+	.SH SYNOPSIS
+	.B compact
+	[ -f ] [ -q ] [ name ... ]
+	.br
+	.B uncompact [ -q ]
+	[
+	name ...
+	]
+	.br
+	.B ccat
+	[ file ... ]
+	.SH DESCRIPTION
+	.I Compact
+	compresses the named files using an adaptive Huffman code.  If no file
+	names are given, the standard input is compacted to the standard output.
+	.I Compact
+	operates as an on-line algorithm.  Each time a byte is read,
+	it is encoded immediately according to the current prefix code.
+	This code is an optimal Huffman code for the set of frequencies seen so far.
+	It is unnecessary to prepend a decoding tree to the compressed file
+	since the encoder and the decoder start in the same state and stay
+	synchronized.  Furthermore,
+	.I compact
+	and
+	.I uncompact
+	can operate as filters.  In particular,
+	.sp
+		... | compact | uncompact | ...
+	.br
+	.sp
+	operates as a (very slow) no-op.
+	.PP
+	When an argument
+	.I file
+	is given, it is compacted and the resulting file is placed in
+	.I file.C;
+	.I file
+	is unlinked.  The first two bytes of the compacted file code the
+	fact that the file is compacted.  This code is used to prohibit recompaction.
+	.PP
+	If
+	.I compact
+	is given the flag
+	.I -f
+	it will be forced to compress the file even if the resulting
+	compression results in a larger file.  This option is useful when
+	dealing with
+	.I make(1)
+	or a shell script which wants to treat compression in a uniform way.
+	By default, when the compression would result in a file larger than
+	size of the data being compressed,
+	.I compact
+	operates in one of two ways.  First, if
+	.I compact
+	being used as a filter, the data is passed through compressed.  When
+	it is working on files, they are left unmodified and the resulting
+	*.C is attempted to be removed.  In both cases an error message is produced.
+	.PP
+	The
+	.I -q
+	flag when used with
+	.I compact
+	will prevent the degree of compression report.
+	.I Compact
+	will still report when the size of data is too small for compression,
+	unless the
+	.I -f
+	flag is also given.
+	When the
+	.I -q
+	flag is used with
+	.I uncompact
+	the new file name reports are suppressed.
+	.PP
+	The amount of compression to be expected depends on the type of file being
+	compressed.  Typical values of compression are:
+	Text (38%), Pascal Source (43%), C Source (36%) and Binary (19%).
+	These values are the percentages of file bytes reduced.
+	.PP
+	.I Uncompact
+	restores the original file from a file compressed by
+	.I compact.
+	If no file names are given, the standard input is uncompacted to
+	the standard output.
+	.PP
+	.I Ccat
+	cats the original file from a file compressed by
+	.I compact,
+	without uncompressing the file.
+	.SH RESTRICTION
+	The last segment of the filename must contain fewer than 2 characters
+	less than the maximum filename length to allow space for the appended '.C'.
+	.SH FILES
+	.ta 1i
+	*.C	compacted file created by compact, removed by uncompact
+	.SH "SEE ALSO"
+	Gallager, Robert G., `Variations on a Theme of Huffman',
+	.I "I.E.E.E.  Transactions on Information Theory,"
+	vol. IT-24, no. 6, November 1978, pp. 668 - 674.
+	.SH AUTHOR
+	Colin L. Mc Master
+	.SH BUGS
+	Compression routines are by default noisy, the
+	.I -q
+	and
+	.I -f
+	flags were added as an option rather than the default to
+	preserve the historical method of operation.  Not all
+	systems will have these options.
+	-------------------------end of compact.1----------------------------

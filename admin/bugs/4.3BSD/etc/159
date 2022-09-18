@@ -1,0 +1,204 @@
+From schoch@trident.arc.nasa.gov  Mon Jul 17 16:37:12 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA01832; Mon, 17 Jul 89 16:37:12 -0700
+Received: from trident.arc.nasa.gov by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA26294; Mon, 17 Jul 89 16:35:20 -0700
+Received: by trident.arc.nasa.gov (5.61/1.2); Mon, 17 Jul 89 16:35:30 -0700
+Date: Mon, 17 Jul 89 16:35:30 -0700
+From: Steve Schoch <schoch@trident.arc.nasa.gov>
+Message-Id: <8907172335.AA27839@trident.arc.nasa.gov>
+Subject: the $INCLUDE directive doesn't work
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Index: 	etc/named 4.3BSD
+
+Description:
+	If you use the $INCLUDE directive in a named file, named will
+	not be authoritative for that domain.  The problem is that
+	named counts the SOA records in each file, and if that number
+	is not exactly 1, then it reports a problem.
+Repeat-By:
+	Create two files: named.berkeley and named.berkeley.inc.  In the
+	first, but these lines:
+
+Berkeley.EDU.	IN	SOA ucbvax.Berkeley.EDU. rwh.ucbvax.Berkeley.EDU. (
+			3000388 10800 1800 3600000 86400 )
+		IN	NS	ucbvax.Berkeley.EDU
+$INCLUDE	named.berkeley.inc
+
+	In the second file, but the A, MX, CNAME, and HINFO records.
+
+	When named is started, it will print
+	"<path>/named.berkeley: no SOA record" and become non-authoritative
+	for that domain.
+Fix:
+	This is a quick, gross hack, but it works.  Fix these two files:
+	ns_init.c and db_load.c
+
+*** /tmp/d27767	Mon Jul 17 16:32:26 1989
+--- ns_init.c	Mon Jul 17 16:17:55 1989
+***************
+*** 17,23 ****
+  
+  #ifndef lint
+  static char osccsid[] = "@(#)ns_init.c	4.28 (Berkeley) 1/14/89";
+! static char sccsid[] = "@(#)ns_init.c	1.1 (Ames) 7/17/89";
+  #endif /* not lint */
+  
+  #include <sys/types.h>
+--- 17,23 ----
+  
+  #ifndef lint
+  static char osccsid[] = "@(#)ns_init.c	4.28 (Berkeley) 1/14/89";
+! static char sccsid[] = "%W% (Ames) %G%";
+  #endif /* not lint */
+  
+  #include <sys/types.h>
+***************
+*** 240,246 ****
+  			if (debug)
+  				fprintf(ddt, "reloading zone\n");
+  #endif
+! 			(void) db_load(zp->z_source, zp->z_origin, zp);
+  			break;
+  
+  		case Z_PRIMARY:
+--- 240,247 ----
+  			if (debug)
+  				fprintf(ddt, "reloading zone\n");
+  #endif
+! 			(void) db_load(zp->z_source, zp->z_origin, zp,
+! 			    (int *)0);
+  			break;
+  
+  		case Z_PRIMARY:
+***************
+*** 275,281 ****
+  			if (debug)
+  				fprintf(ddt, "reloading zone\n");
+  #endif
+! 			if (db_load(zp->z_source, zp->z_origin, zp) == 0)
+  				zp->z_auth = 1;
+  #ifdef ALLOW_UPDATES
+  			/* Guarantee calls to ns_maint() */
+--- 276,283 ----
+  			if (debug)
+  				fprintf(ddt, "reloading zone\n");
+  #endif
+! 			if (db_load(zp->z_source, zp->z_origin, zp,
+! 			    (int *)0) == 0)
+  				zp->z_auth = 1;
+  #ifdef ALLOW_UPDATES
+  			/* Guarantee calls to ns_maint() */
+***************
+*** 417,423 ****
+  	 * immediately.
+  	 */
+  	if (zp->z_source == NULL ||
+! 	    db_load(zp->z_source, zp->z_origin, zp) != 0) {
+  		/*
+  		 * Set zone to be refreshed immediately.
+  		 */
+--- 419,425 ----
+  	 * immediately.
+  	 */
+  	if (zp->z_source == NULL ||
+! 	    db_load(zp->z_source, zp->z_origin, zp, (int *)0) != 0) {
+  		/*
+  		 * Set zone to be refreshed immediately.
+  		 */
+*** /tmp/d27783	Mon Jul 17 16:33:03 1989
+--- db_load.c	Mon Jul 17 16:16:46 1989
+***************
+*** 17,23 ****
+  
+  #ifndef lint
+  static char osccsid[] = "@(#)db_load.c	4.30 (Berkeley) 1/14/89";
+! static char sccsid[] = "@(#)db_load.c	1.1 (Ames) 7/17/89";
+  #endif /* not lint */
+  
+  /*
+--- 17,23 ----
+  
+  #ifndef lint
+  static char osccsid[] = "@(#)db_load.c	4.30 (Berkeley) 1/14/89";
+! static char sccsid[] = "%W% (Ames) %G%";
+  #endif /* not lint */
+  
+  /*
+***************
+*** 99,107 ****
+   * Load the database from 'filename'. Origin is appended to all domain
+   * names in the file.
+   */
+! db_load(filename, in_origin, zp)
+  	char *filename, *in_origin;
+  	struct zoneinfo *zp;
+  {
+  	register u_char *cp;
+  	register struct map *mp;
+--- 99,108 ----
+   * Load the database from 'filename'. Origin is appended to all domain
+   * names in the file.
+   */
+! db_load(filename, in_origin, zp, nsoa)
+  	char *filename, *in_origin;
+  	struct zoneinfo *zp;
++ 	int *nsoa;
+  {
+  	register u_char *cp;
+  	register struct map *mp;
+***************
+*** 126,131 ****
+--- 127,134 ----
+  		    filename, in_origin, zp - zones);
+  #endif
+  
++ 	if (nsoa)
++ 		read_soa = *nsoa;
+  	(void) strcpy(origin, in_origin);
+  	if ((fp = fopen(filename, "r")) == NULL) {
+  		if (zp->z_type != Z_SECONDARY)
+***************
+*** 165,171 ****
+  			}
+  			didinclude = 1;
+                          zp->z_state |= Z_INCLUDE;
+! 			errs += db_load(buf, tmporigin, zp);
+  			continue;
+  
+  		case ORIGIN:
+--- 168,174 ----
+  			}
+  			didinclude = 1;
+                          zp->z_state |= Z_INCLUDE;
+! 			errs += db_load(buf, tmporigin, zp, &read_soa);
+  			continue;
+  
+  		case ORIGIN:
+***************
+*** 491,497 ****
+  		zp->z_ftime = sb.st_mtime;
+  	zp->z_lastupdate = sb.st_mtime;
+  	lineno = slineno;
+!         if (zp->z_type != Z_CACHE && read_soa != 1) {
+  		errs++;
+  		if (read_soa == 0)
+  			syslog(LOG_ERR, "%s: no SOA record", filename);
+--- 494,500 ----
+  		zp->z_ftime = sb.st_mtime;
+  	zp->z_lastupdate = sb.st_mtime;
+  	lineno = slineno;
+!         if (zp->z_type != Z_CACHE && nsoa == NULL && read_soa != 1) {
+  		errs++;
+  		if (read_soa == 0)
+  			syslog(LOG_ERR, "%s: no SOA record", filename);
+***************
+*** 498,503 ****
+--- 501,508 ----
+  		else
+  			syslog(LOG_ERR, "%s: multiple SOA records", filename);
+  	}
++ 	if (nsoa)
++ 		*nsoa = read_soa;
+  	return (errs);
+  }

@@ -1,0 +1,177 @@
+Return-Path: <chris@maryland>
+Date: Mon, 6 Aug 84 15:27:31 edt
+From: chris@maryland (Chris Torek)
+To: 4bsd-bugs@BERKELEY
+Subject: 2 /lib/c2 bugs with fixes from uucp-land
+
+Index:	lib/c2 4.2BSD Fix
+
+Description:
+	1) c2 incorrectly converts ``extv'' and ``extzv'' instructions
+	   (to mov's) that occur in word 1 (extzv $16,$16,...).
+	2) c2 mangles certain movz and cvt instructions which are
+	   followed by bic's and then branches.
+
+Repeat-by:
+	1) run /lib/c2 over this input:
+
+		extv	$16,$16,_a,_a
+		extzv	$16,$16,_b,_b
+
+	   c2 will convert them to movwl and movzwl's that reference
+	   _a+1 and _b+1 (instead of _a+2 and _b+2)
+
+	2) run /lib/c2 over this input:
+
+			.globl	_main
+		_main:
+			.word	0
+			jbr	L26
+		L15:
+			movzwl	(r6)+,r0
+			bicl2	$-65536,r0
+			jeql	L16
+			calls	$0,_foo
+		L16:
+			ret
+		L26:
+			jbr	L15
+
+	   It will put out an extzv instruction, which increments
+	   r6 by the wrong amount (4 instead of 2).  There are other
+	   things that can go wrong here, too; this is just one of
+	   a set.
+
+Fix:
+	The following is a diff listing of the changes as installed
+	in what seems to be a standard 4.2BSD distribution:
+
+RCS file: RCS/c21.c,v
+retrieving revision 1.1
+diff -b -c1 -r1.1 c21.c
+*** /tmp/,RCSt1008078	Mon Aug  6 14:59:31 1984
+--- c21.c	Mon Aug  6 13:43:32 1984
+***************
+*** 277,279
+  		**	extv	$n*8,$8,A,B	>	cvtbl	n+A,B
+! 		**	extv	$n*16,$16,A,B	>	cvtwl	n+A,B
+  		**	extzv	$n*8,$8,A,B	>	movzbl	n+A,B
+
+--- 277,279 -----
+  		**	extv	$n*8,$8,A,B	>	cvtbl	n+A,B
+! 		**	extv	$n*16,$16,A,B	>	cvtwl	2n+A,B
+  		**	extzv	$n*8,$8,A,B	>	movzbl	n+A,B
+***************
+*** 279,281
+  		**	extzv	$n*8,$8,A,B	>	movzbl	n+A,B
+! 		**	extzv	$n*16,$16,A,B	>	movzwl	n+A,B
+  		*/
+
+--- 279,281 -----
+  		**	extzv	$n*8,$8,A,B	>	movzbl	n+A,B
+! 		**	extzv	$n*16,$16,A,B	>	movzwl	2n+A,B
+  		*/
+***************
+*** 324,326
+  			else
+! 				sprintf(regs[RT1], "%d%s%s", coff, regs[RT3][0]=='(' ? "":"+",
+  					regs[RT3]);
+
+--- 324,328 -----
+  			else
+! 				sprintf(regs[RT1], "%d%s%s",
+! 					(flen == 8 ? coff : 2*coff),
+! 					(regs[RT3][0] == '(' ? "" : "+"),
+  					regs[RT3]);
+***************
+*** 790,791
+  	register char *cp1,*cp2; int r;
+  	char src[C2_ASIZE];
+
+--- 792,794 -----
+  	register char *cp1,*cp2; int r;
++ 	int lhssiz, subop;
+  	char src[C2_ASIZE];
+***************
+*** 806,807
+  			}
+  			if (p->back->op==CVT || p->back->op==MOVZ) {/* greedy, aren't we? */
+
+--- 809,824 -----
+  			}
++ 			/*
++ 			 * 'pos', 'siz' known; find out the size of the
++ 			 * left-hand operand of what the bicl will turn into.
++ 			 */
++ 			if (pos==0) {
++ 				if (siz==8)
++ 					lhssiz = BYTE;/* movzbl */
++ 				else if (siz==16)
++ 					lhssiz = WORD;/* movzwl */
++ 				else
++ 					lhssiz = BYTE;/* extzvl */
++ 			}
++ 			else
++ 				lhssiz = BYTE;/* extzvl */
+  			if (p->back->op==CVT || p->back->op==MOVZ) {/* greedy, aren't we? */
+***************
+*** 808,810
+  				splitrand(p->back); cp1=regs[RT1]; cp2=regs[RT2];
+! 				if (equstr(src,cp2) && okio(cp1) && !indexa(cp1)
+  				  && 0<=(r=isreg(cp2)) && r<NUSE
+
+--- 825,840 -----
+  				splitrand(p->back); cp1=regs[RT1]; cp2=regs[RT2];
+! 				/*
+! 				 * If indexa(cp1) || autoid(cp1), the fold may
+! 				 * still be OK if the CVT/MOVZ has the same
+! 				 * size operand on its left size as what we
+! 				 * will turn the bicl into.
+! 				 * However, if the CVT is from a float or
+! 				 * double, forget it!
+! 				 */
+! 				subop = p->back->subop&0xF;/* type of LHS of
+! 							      CVT/MOVZ */
+! 				if (equstr(src,cp2) && okio(cp1)
+! 				  && subop != FFLOAT && subop != DFLOAT
+! 				  && subop != GFLOAT && subop != HFLOAT
+! 				  && ((!indexa(cp1) && !autoid(cp1)) || lhssiz == subop)
+  				  && 0<=(r=isreg(cp2)) && r<NUSE
+***************
+*** 810,812
+  				  && 0<=(r=isreg(cp2)) && r<NUSE
+! 				  && bitsize[p->back->subop&0xF]>=(pos+siz)
+  				  && bitsize[p->back->subop>>4]>=(pos+siz)) {/* good CVT */
+
+--- 840,842 -----
+  				  && 0<=(r=isreg(cp2)) && r<NUSE
+! 				  && bitsize[subop]>=(pos+siz)
+  				  && bitsize[p->back->subop>>4]>=(pos+siz)) {/* good CVT */
+***************
+*** 818,821
+  			splitrand(p); /* retrieve destination of BICL */
+! 			if (siz==8 && pos==0) {
+! 				p->combop = T(MOVZ,U(BYTE,LONG));
+  				sprintf(line,"%s,%s",src,lastrand);
+
+--- 848,851 -----
+  			splitrand(p); /* retrieve destination of BICL */
+! 			if ((siz==8 || siz == 16) && pos==0) {
+! 				p->combop = T(MOVZ,U(lhssiz,LONG));
+  				sprintf(line,"%s,%s",src,lastrand);
+***************
+*** 1363,1364
+  	while (*p) if (*p++=='[') return(1);
+  	return(0);
+
+--- 1393,1402 -----
+  	while (*p) if (*p++=='[') return(1);
++ 	return(0);
++ }
++ 
++ autoid(p) register char *p; {	/* 1-> uses autoincrement/autodecrement;
++ 				   0-> doesn't */
++ 	if (*p == '-' && *(p+1) == '(') return(1);
++ 	while (*p) p++;
++ 	if (*--p == '+' && *--p == ')') return(1);
+  	return(0);

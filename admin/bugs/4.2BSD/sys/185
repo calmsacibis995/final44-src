@@ -1,0 +1,125 @@
+Return-Path: <teklds!damonp%tektronix.csnet@csnet-relay.arpa>
+From: teklds!damonp%tektronix.csnet@csnet-relay.arpa
+To: 4bsd-bugs@BERKELEY
+Date: Tuesday, 6 Nov 84 19:44:27 PST
+Subject: Kernel stack too small
+Index:	sys/sys/sys_process.c 4.2BSD
+
+Description:
+	If a user is tracing a programme that just happens to be blocked
+	on a tty write and it has a signal pending and it had a file open
+	that has a link count <= 0 and it has some stuff in it and his action
+	in the debugger causes the debugger to kill the process, the
+	system dies of a "KSP invalid" panic.
+
+Repeat-By:
+/*
+ * try to crash this sucker
+ *
+ * run this on a tty (mine was through a dmf, no guarantees for other ttys)
+ * and hit '^S' when asked to.  Wait a few minutes then try '^Q' to see
+ * if your system is still there. If so, try a few more '^S's.  Works
+ * every time for me on VAXen.
+ *
+ * note that the pipe stuff is irrelevant.  I tried to get it to block on a
+ * write on a pipe in the child, but that didn't kill it.
+ */
+#include <signal.h>
+#include <sys/file.h>
+
+main() {
+    int ret, _pipe[2], pid, i;
+
+    for (i = 0;; ++i) {
+        ret = pipe(_pipe);
+        if (ret < 0) {
+            perror("pipe");
+            exit();
+        }
+        switch (pid = fork()) {
+            case -1:
+                perror("fork");
+                exit();
+
+            case 0:     /* child    */
+                close(_pipe[0]);
+                child(_pipe[1]);
+                break;
+
+            default:    /* parent   */
+                daddy(pid);
+                break;
+        }
+        close(_pipe[0]);
+        close(_pipe[1]);
+        printf("%d\n", i);
+    }
+}
+
+/*
+ * child - child process
+ *
+ * declare myself traceable, open a temp file, write as much data
+ * as possible to the parent.
+ * wait to die
+ */
+child(pipe) {
+    int ret, i, fd;
+    char buf[4096];
+
+    ptrace(0);      /* allow for trace: (not sure whats needed here)    */
+
+    unlink("/tmp/dap");
+    ret = fd = open("/tmp/dap", O_WRONLY | O_CREAT);
+    if (ret < 0) {
+        perror("child: open");
+        exit();
+    }
+    unlink("/tmp/dap");
+    for (i=0; i<1024; ++i)
+        write(fd, buf, sizeof(buf));
+
+    while (1) {
+        printf("Child: Hit ^S.#########################################\n");
+    }
+}
+
+/*
+ * daddy -  parent process
+ *
+ * trace the child. allow it to run for a bit, then kill it.
+ */
+daddy(pid) {
+    int ret;
+
+    sleep(30);          /* sleep 30 seconds */
+    kill(pid, SIGINT);
+    ptrace(8, pid);
+    while ((ret = wait(0)) != pid)
+        if (ret < 0) {
+            perror("parent: wait");
+            exit();
+        }
+}
+Fix:
+	I suppose that rather than add another page to each process'
+	kernel stack region, (increase UPAGES) or do silly things to try to grow
+	it in the rare instances that the above bug is encountered (a user crashed
+	one machine about 3 times one weekend trying to debug a programme)
+	the easiest thing to do is assign to the stack pointer just before
+	calling exit() in procxmt(), the "case 8:" case statement.
+	Since exit() never returns, direct assignment to the KSP of the
+	base of the process' kernel stack should work fine.
+
+	The KSP can be assigned to by doing a
+
+		movab	_u+NBGP*UPAGES,sp
+
+	on a VAX. (Perhaps this should be done in exit(), to catch any
+	other potential problem areas)
+
+	Agreed, this is gross and disgusting, but i'd rather not be burdened
+	with another page being allocated to every process in the system
+	just to catch this rare occurance.
+
+	If anyone has a better solution, please let me know.

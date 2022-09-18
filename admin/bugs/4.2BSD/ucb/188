@@ -1,0 +1,454 @@
+Return-Path: <sun!gorodish!guy>
+Return-Path: <guy@gorodish>
+Date: Wed, 26 Jun 85 03:50:32 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: Several bugs in "ftp"
+Index: 	ucb/ftp/cmds.c 4.2BSD
+
+Description:
+	1) The "!" command has an undocumented feature; if it's invoked in
+	   the form "!<command>", the <command> is executed and control
+	   returns to "ftp" when it exits.  This is nicely consistent
+	   with most other UNIX commands (I wish more commands would
+	   interpret an undecorated "!" as a request to spawn an
+	   interactive subshell, as "ftp" does).  However, instead of
+	   just handing the <command> to an "sh -c", it tries to do the
+	   "glob"bing and tokenizing itself and does an "execvp" directly.
+	   This does not work correctly.
+
+	   Also, when invoked without a <command>, it prefixes the
+	   shell's name with a "-", causing it to be run as a login shell,
+	   which is wrong.  (And if the shell is not "sh", it prefixes
+	   it with a "+" instead.)
+
+	2) If you try to retrieve something into a local file, and you
+	   don't have write permission on the file, it tests whether
+	   you have write permission on the directory containing that file.
+	   However, the test is wrong - if the local file name is a path
+	   containing slashes, it does a test on a null pathname rather
+	   than on the containing directory.
+
+	3) The code that reads reply codes throws some reply codes away;
+	   see my previous posting.
+
+	4) "ftp" should permit passwords of at least 50 characters in
+	   length; see a previous bug posting by, I believe, rws@mit-bold.
+	   (I think 4.3BSD almost fixes this, but the code limits passwords
+	   to 49 characters.)
+
+Repeat-By:
+	1) Try
+
+		ftp>!echo "*.c"
+
+	and notice that it does not print "*.c".  Then try
+
+		ftp>!
+
+	and do a "ps"; note that you're running "-sh" or "+csh" (or something
+	like that).
+
+	2) Try doing a "get" where the target file is not in the current
+	   directory and is in a directory where you don't have write
+	   permission.  It won't complain, but it won't do it either.
+
+Fix:
+	Here's an omnibus set of fixes:
+
+*** /arch/4.2/usr/src/ucb/ftp/cmds.c	Tue Jul 26 21:34:47 1983
+--- 4.2.fixed/cmds.c	Wed Jun 26 03:17:10 1985
+***************
+*** 703,709
+  	dest = argv[argc - 1];
+  	argv[argc - 1] = NULL;
+  	if (strcmp(dest, "-"))
+! 		if (globulize(&dest) && confirm("local-file", dest))
+  			return;
+  	cmd = argv[0][1] == 'l' ? "NLST" : "LIST";
+  	for (mode = "w"; cp = remglob(argc, argv); mode = "a")
+
+--- 703,709 -----
+  	dest = argv[argc - 1];
+  	argv[argc - 1] = NULL;
+  	if (strcmp(dest, "-"))
+! 		if (!globulize(&dest) || !confirm("local-file", dest))
+  			return;
+  	cmd = argv[0][1] == 'l' ? "NLST" : "LIST";
+  	for (mode = "w"; cp = remglob(argc, argv); mode = "a")
+***************
+*** 728,733
+  			close(pid);
+  		signal(SIGINT, SIG_DFL);
+  		signal(SIGQUIT, SIG_DFL);
+  		if (argc <= 1) {
+  			shell = getenv("SHELL");
+  			if (shell == NULL)
+
+--- 728,739 -----
+  			close(pid);
+  		signal(SIGINT, SIG_DFL);
+  		signal(SIGQUIT, SIG_DFL);
++ 		shell = getenv("SHELL");
++ 		if (shell == NULL)
++ 			shell = "/bin/sh";
++ 		namep = rindex(shell,'/');
++ 		if (namep == NULL)
++ 			namep = shell;
+  		if (argc <= 1) {
+  			if (debug) {
+  				printf ("%s\n", shell);
+***************
+*** 729,744
+  		signal(SIGINT, SIG_DFL);
+  		signal(SIGQUIT, SIG_DFL);
+  		if (argc <= 1) {
+- 			shell = getenv("SHELL");
+- 			if (shell == NULL)
+- 				shell = "/bin/sh";
+- 			namep = rindex(shell,'/');
+- 			if (namep == NULL)
+- 				namep = shell;
+- 			strcpy(shellnam,"-");
+- 			strcat(shellnam, ++namep);
+- 			if (strcmp(namep, "sh") != 0)
+- 				shellnam[0] = '+';
+  			if (debug) {
+  				printf ("%s\n", shell);
+  				fflush (stdout);
+
+--- 735,740 -----
+  		if (namep == NULL)
+  			namep = shell;
+  		if (argc <= 1) {
+  			if (debug) {
+  				printf ("%s\n", shell);
+  				fflush (stdout);
+***************
+*** 743,759
+  				printf ("%s\n", shell);
+  				fflush (stdout);
+  			}
+! 			execl(shell, shellnam, 0);
+! 			perror(shell);
+! 			exit(1);
+! 		}
+! 		cpp = &argv[1];
+! 		if (argc > 2) {
+! 			if ((gargs = glob(cpp)) != NULL)
+! 				cpp = gargs;
+! 			if (globerr != NULL) {
+! 				printf("%s\n", globerr);
+! 				exit(1);
+  			}
+  		}
+  		if (debug) {
+
+--- 739,755 -----
+  				printf ("%s\n", shell);
+  				fflush (stdout);
+  			}
+! 			execl(shell, shell, (char *)0);
+! 		} else {
+! 			char *args[4];	/* "sh" "-c" <command> NULL */
+! 
+! 			args[0] = shell;
+! 			args[1] = "-c";
+! 			args[2] = argv[1];
+! 			args[3] = NULL;
+! 			if (debug) {
+! 				printf("%s -c %s\n", shell, argv[1]);
+! 				fflush(stdout);
+  			}
+  			execv(shell, args);
+  		}
+***************
+*** 755,760
+  				printf("%s\n", globerr);
+  				exit(1);
+  			}
+  		}
+  		if (debug) {
+  			register char **zip = cpp;
+
+--- 751,757 -----
+  				printf("%s -c %s\n", shell, argv[1]);
+  				fflush(stdout);
+  			}
++ 			execv(shell, args);
+  		}
+  		perror(shell);
+  		exit(1);
+***************
+*** 756,772
+  				exit(1);
+  			}
+  		}
+! 		if (debug) {
+! 			register char **zip = cpp;
+! 
+! 			printf("%s", *zip);
+! 			while (*++zip != NULL)
+! 				printf(" %s", *zip);
+! 			printf("\n");
+! 			fflush(stdout);
+! 		}
+! 		execvp(argv[1], cpp);
+! 		perror(argv[1]);
+  		exit(1);
+  	}
+  	if (pid > 0)
+
+--- 753,759 -----
+  			}
+  			execv(shell, args);
+  		}
+! 		perror(shell);
+  		exit(1);
+  	}
+  	if (pid > 0)
+
+*** /arch/4.2/usr/src/ucb/ftp/ftp.c	Tue Jul 26 21:34:47 1983
+--- 4.2.fixed/ftp.c	Wed Jun 26 03:46:14 1985
+***************
+*** 182,189
+  				originalcode = code;
+  			continue;
+  		}
+! 		if (expecteof || empty(cin))
+! 			return (n - '0');
+  	}
+  }
+  
+
+--- 182,188 -----
+  				originalcode = code;
+  			continue;
+  		}
+! 		return (n - '0');
+  	}
+  }
+  
+***************
+*** 187,206
+  	}
+  }
+  
+- empty(f)
+- 	FILE *f;
+- {
+- 	long mask;
+- 	struct timeval t;
+- 
+- 	if (f->_cnt > 0)
+- 		return (0);
+- 	mask = (1 << fileno(f));
+- 	t.tv_sec = t.tv_usec = 0;
+- 	(void) select(20, &mask, 0, 0, &t);
+- 	return (mask == 0);
+- }
+- 
+  jmp_buf	sendabort;
+  
+  abortsend()
+
+--- 186,191 -----
+  	}
+  }
+  
+  jmp_buf	sendabort;
+  
+  abortsend()
+***************
+*** 356,362
+  	oldintr = signal(SIGINT, abortrecv);
+  	if (strcmp(local, "-") && *local != '|')
+  		if (access(local, 2) < 0) {
+! 			char *dir = rindex(local, '/');
+  
+  			if (dir != NULL)
+  				*dir = 0;
+
+--- 341,348 -----
+  	oldintr = signal(SIGINT, abortrecv);
+  	if (strcmp(local, "-") && *local != '|')
+  		if (access(local, 2) < 0) {
+! 			if (errno == ENOENT) {
+! 				char *dir = rindex(local, '/');
+  
+  				if (dir != NULL)
+  					*dir = 0;
+***************
+*** 358,366
+  		if (access(local, 2) < 0) {
+  			char *dir = rindex(local, '/');
+  
+! 			if (dir != NULL)
+! 				*dir = 0;
+! 			if (access(dir ? dir : ".", 2) < 0) {
+  				perror(local);
+  				goto bad;
+  			}
+
+--- 344,358 -----
+  			if (errno == ENOENT) {
+  				char *dir = rindex(local, '/');
+  
+! 				if (dir != NULL)
+! 					*dir = 0;
+! 				if (access(dir ? local : ".", 2) < 0) {
+! 					perror(local);
+! 					goto bad;
+! 				}
+! 				if (dir != NULL)
+! 					*dir = '/';
+! 			} else {
+  				perror(local);
+  				goto bad;
+  			}
+***************
+*** 364,371
+  				perror(local);
+  				goto bad;
+  			}
+- 			if (dir != NULL)
+- 				*dir = '/';
+  		}
+  	if (initconn())
+  		goto bad;
+
+--- 356,361 -----
+  				perror(local);
+  				goto bad;
+  			}
+  		}
+  	if (initconn())
+  		goto bad;
+***************
+*** 493,499
+  	}
+  	if (!sendport)
+  		if (setsockopt(data, SOL_SOCKET, SO_REUSEADDR, 0, 0) < 0) {
+! 			perror("ftp: setsockopt (resuse address)");
+  			goto bad;
+  		}
+  	if (bind(data, (char *)&data_addr, sizeof (data_addr), 0) < 0) {
+
+--- 483,489 -----
+  	}
+  	if (!sendport)
+  		if (setsockopt(data, SOL_SOCKET, SO_REUSEADDR, 0, 0) < 0) {
+! 			perror("ftp: setsockopt (reuse address)");
+  			goto bad;
+  		}
+  	if (bind(data, (char *)&data_addr, sizeof (data_addr), 0) < 0) {
+
+*** /arch/4.2/usr/src/ucb/ftp/getpass.c	Tue Jul 26 21:34:48 1983
+--- 4.2.fixed/getpass.c	Sun Apr  7 12:22:25 1985
+***************
+*** 15,21
+  	register char *p;
+  	register c;
+  	FILE *fi;
+! 	static char pbuf[9];
+  	int (*signal())();
+  	int (*sig)();
+  
+
+--- 15,21 -----
+  	register char *p;
+  	register c;
+  	FILE *fi;
+! 	static char pbuf[51];
+  	int (*signal())();
+  	int (*sig)();
+  
+***************
+*** 30,36
+  	stty(fileno(fi), &ttyb);
+  	fprintf(stderr, "%s", prompt); fflush(stderr);
+  	for (p=pbuf; (c = getc(fi))!='\n' && c!=EOF;) {
+! 		if (p < &pbuf[8])
+  			*p++ = c;
+  	}
+  	*p = '\0';
+
+--- 30,36 -----
+  	stty(fileno(fi), &ttyb);
+  	fprintf(stderr, "%s", prompt); fflush(stderr);
+  	for (p=pbuf; (c = getc(fi))!='\n' && c!=EOF;) {
+! 		if (p < &pbuf[50])
+  			*p++ = c;
+  	}
+  	*p = '\0';
+
+*** /arch/4.2/usr/src/ucb/ftp/main.c	Tue Jul 26 21:34:48 1983
+--- 4.2.fixed/main.c	Sun Apr  7 12:22:26 1985
+***************
+*** 251,257
+  	argp = margv;
+  	stringbase = line;		/* scan from first of buffer */
+  	argbase = argbuf;		/* store from first of buffer */
+! 	while (*argp++ = slurpstring())
+  		margc++;
+  }
+  
+
+--- 251,261 -----
+  	argp = margv;
+  	stringbase = line;		/* scan from first of buffer */
+  	argbase = argbuf;		/* store from first of buffer */
+! 	while (*stringbase == ' ' || *stringbase == '\t')
+! 		stringbase++;		/* skip initial white space */
+! 	if (*stringbase == '!') {	/* handle shell escapes specially */
+! 		stringbase++;
+! 		*argp++ = "!";		/* command name is "!" */
+  		margc++;
+  		while (*stringbase == ' ' || *stringbase == '\t')
+  			stringbase++;		/* skip white space */
+***************
+*** 253,258
+  	argbase = argbuf;		/* store from first of buffer */
+  	while (*argp++ = slurpstring())
+  		margc++;
+  }
+  
+  /*
+
+--- 257,273 -----
+  		stringbase++;
+  		*argp++ = "!";		/* command name is "!" */
+  		margc++;
++ 		while (*stringbase == ' ' || *stringbase == '\t')
++ 			stringbase++;		/* skip white space */
++ 		if (*stringbase != '\0') {
++ 			*argp++ = stringbase;	/* argument is entire command string */
++ 			margc++;
++ 		}
++ 		*argp++ = NULL;
++ 	} else {
++ 		while (*argp++ = slurpstring())
++ 			margc++;
++ 	}
+  }
+  
+  /*
+***************
+*** 268,277
+  	register char *ap = argbase;
+  	char *tmp = argbase;		/* will return this if token found */
+  
+- 	if (*sb == '!') {		/* recognize ! as a token for shell */
+- 		stringbase++;
+- 		return ("!");
+- 	}
+  S0:
+  	switch (*sb) {
+  
+
+--- 283,288 -----
+  	register char *ap = argbase;
+  	char *tmp = argbase;		/* will return this if token found */
+  
+  S0:
+  	switch (*sb) {
+  

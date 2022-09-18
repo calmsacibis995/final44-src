@@ -1,0 +1,150 @@
+Subject: IP options
+Index: sys/netinet/ip_input.c 4.3BSD
+
+Description:
+	There are a few oddities in the IP options code in 4.3BSD.  The
+	record route option looked up a garbage address and would drop
+	the packet if it failed.  The other bug of interest was in the IP
+	timestamp handling.  Here is a set of diffs to fix the record
+	route bug and several other minor things.
+
+Repeat-By:
+	Use a 4.3BSD gateway to forward packets with a record route option.
+	Note that the packets are either dropped or have the wrong route
+	address.
+Fix:
+	Apply the following patch.
+
+*** /nbsd/usr/src.4.3/sys/netinet/ip_input.c	Thu Jun  5 00:28:15 1986
+--- ip_input.c	Mon Sep 14 14:59:07 1987
+***************
+*** 5,7 ****
+   *
+!  *	@(#)ip_input.c	7.1 (Berkeley) 6/5/86
+   */
+--- 5,7 ----
+   *
+!  *	@(#)ip_input.c	7.6.1.2 (Berkeley) 9/14/87
+   */
+***************
+*** 302,304 ****
+  	if (fp == 0) {
+! 		if ((t = m_get(M_WAIT, MT_FTABLE)) == NULL)
+  			goto dropfrag;
+--- 302,304 ----
+  	if (fp == 0) {
+! 		if ((t = m_get(M_DONTWAIT, MT_FTABLE)) == NULL)
+  			goto dropfrag;
+***************
+*** 490,491 ****
+--- 490,492 ----
+  
++ extern struct in_ifaddr *ifptoia();
+  struct in_ifaddr *ip_rtaddr();
+***************
+*** 595,597 ****
+  				break;
+! 			bcopy((caddr_t)(cp + off), (caddr_t)&ipaddr.sin_addr,
+  			    sizeof(ipaddr.sin_addr));
+--- 596,598 ----
+  				break;
+! 			bcopy((caddr_t)(&ip->ip_dst), (caddr_t)&ipaddr.sin_addr,
+  			    sizeof(ipaddr.sin_addr));
+***************
+*** 602,604 ****
+  				type = ICMP_UNREACH;
+! 				code = ICMP_UNREACH_SRCFAIL;
+  				goto bad;
+--- 603,605 ----
+  				type = ICMP_UNREACH;
+! 				code = ICMP_UNREACH_HOST;
+  				goto bad;
+***************
+*** 620,622 ****
+  			}
+! 			sin = (struct in_addr *)(cp+cp[IPOPT_OFFSET]-1);
+  			switch (ipt->ipt_flg) {
+--- 621,623 ----
+  			}
+! 			sin = (struct in_addr *)(cp + ipt->ipt_ptr - 1);
+  			switch (ipt->ipt_flg) {
+***************
+*** 630,636 ****
+  					goto bad;
+! 				if (in_ifaddr == 0)
+! 					goto bad;	/* ??? */
+! 				bcopy((caddr_t)&IA_SIN(in_ifaddr)->sin_addr,
+  				    (caddr_t)sin, sizeof(struct in_addr));
+! 				sin++;
+  				break;
+--- 631,636 ----
+  					goto bad;
+! 				ia = ifptoia(ifp);
+! 				bcopy((caddr_t)&IA_SIN(ia)->sin_addr,
+  				    (caddr_t)sin, sizeof(struct in_addr));
+! 				ipt->ipt_ptr += sizeof(struct in_addr);
+  				break;
+***************
+*** 638,639 ****
+--- 638,642 ----
+  			case IPOPT_TS_PRESPEC:
++ 				if (ipt->ipt_ptr + sizeof(n_time) +
++ 				    sizeof(struct in_addr) > ipt->ipt_len)
++ 					goto bad;
+  				bcopy((caddr_t)sin, (caddr_t)&ipaddr.sin_addr,
+***************
+*** 642,646 ****
+  					continue;
+- 				if (ipt->ipt_ptr + sizeof(n_time) +
+- 				    sizeof(struct in_addr) > ipt->ipt_len)
+- 					goto bad;
+  				ipt->ipt_ptr += sizeof(struct in_addr);
+--- 645,646 ----
+***************
+*** 652,654 ****
+  			ntime = iptime();
+! 			bcopy((caddr_t)&ntime, (caddr_t)sin, sizeof(n_time));
+  			ipt->ipt_ptr += sizeof(n_time);
+--- 652,655 ----
+  			ntime = iptime();
+! 			bcopy((caddr_t)&ntime, (caddr_t)cp + ipt->ipt_ptr - 1,
+! 			    sizeof(n_time));
+  			ipt->ipt_ptr += sizeof(n_time);
+***************
+*** 731,733 ****
+  		return ((struct mbuf *)0);
+! 	m = m_get(M_WAIT, MT_SOOPTS);
+  	m->m_len = ip_nhops * sizeof(struct in_addr) + IPOPT_OFFSET + 1 + 1;
+--- 732,736 ----
+  		return ((struct mbuf *)0);
+! 	m = m_get(M_DONTWAIT, MT_SOOPTS);
+! 	if (m == 0)
+! 		return ((struct mbuf *)0);
+  	m->m_len = ip_nhops * sizeof(struct in_addr) + IPOPT_OFFSET + 1 + 1;
+***************
+*** 841,843 ****
+  	}
+! 	if (ip->ip_ttl < IPTTLDEC) {
+  		type = ICMP_TIMXCEED, code = ICMP_TIMXCEED_INTRANS;
+--- 844,846 ----
+  	}
+! 	if (ip->ip_ttl <= IPTTLDEC) {
+  		type = ICMP_TIMXCEED, code = ICMP_TIMXCEED_INTRANS;
+***************
+*** 870,873 ****
+--- 873,881 ----
+  	 * and if packet was not source routed (or has any options).
++ 	 * Also, don't send redirect if forwarding using a default route
++ 	 * or a route modfied by a redirect.
+  	 */
++ #define	satosin(sa)	((struct sockaddr_in *)(sa))
+  	if (ipforward_rt.ro_rt && ipforward_rt.ro_rt->rt_ifp == ifp &&
++ 	    (ipforward_rt.ro_rt->rt_flags & RTF_DYNAMIC) == 0 &&
++ 	    satosin(&ipforward_rt.ro_rt->rt_dst)->sin_addr.s_addr != 0 &&
+  	    ipsendredirects && ip->ip_hl == (sizeof(struct ip) >> 2)) {
+***************
+*** 874,876 ****
+  		struct in_ifaddr *ia;
+- 		extern struct in_ifaddr *ifptoia();
+  		u_long src = ntohl(ip->ip_src.s_addr);
+--- 882,883 ----

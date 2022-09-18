@@ -1,0 +1,766 @@
+.\" $XConsortium: newt.man,v 5.2 91/02/16 09:59:58 rws Exp $
+.\"
+.\" Copyright (c) 1989, 1990, 1991 by Sun Microsystems, Inc. and the X Consortium.
+.\" 
+.\"                         All Rights Reserved
+.\" 
+.\" Permission to use, copy, modify, and distribute this software and its 
+.\" documentation for any purpose and without fee is hereby granted, 
+.\" provided that the above copyright notice appear in all copies and that
+.\" both that copyright notice and this permission notice appear in 
+.\" supporting documentation, and that the names of Sun Microsystems,
+.\" the X Consortium, and MIT not be used in advertising or publicity 
+.\" pertaining to distribution of the software without specific, written 
+.\" prior permission.  
+.\" 
+.\" SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+.\" INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+.\" SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+.\" DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+.\" WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+.\" ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+.\" SOFTWARE.
+.\"
+.TH NewT 1 "28 July 1989"
+.SH NAME
+NewT \- A tool for creating interpreters for C libraries
+
+.SH SYNOPSIS
+An interpreter created using NewT can be invoked in the following way:
+.LP
+.BI "fooint [-ipt] [-dD] [-C [-u][-h headerfile]] [file [file2...]]"
+.LP 
+
+.SH DESCRIPTION
+.I NewT,
+which stands for New Tool,
+consists of a preprocessor, and a set of C files that can be linked
+in with user-supplied source files in order to create an 
+interpreter for any set of
+C functions.  The user must supply a set of files describing the
+interface to his or her functions; these files are preprocessed
+into a C file, which is compiled along with a set of standard NewT files
+and the user's source files implementing the desired
+functions.
+.LP
+Interpreters created in this way can take commands 
+from the keyboard or from a script file, and include some high-level
+programming constructs such as loops and "if" statements, as well
+as an interactive debugger.  The interpreter can also generate
+C translations of its input.
+.LP
+This man page consists of two main sections. The first section, 
+INTERPRETER CREATION, is devoted to
+the process of creating an interpreter.  The second, INTERPRETER USAGE,
+is devoted to
+usage of the resulting interpreter, and includes descriptions of
+the language it accepts, command line options, and debugging facilities.
+The interpreter created can be given any appropriate name;
+Our examples will create and use an interpreter called
+.I fooint.
+
+.SH INTERPRETER CREATION
+.SS Interpreter Files 
+.LP
+The following input files are needed to create the interpreter.
+
+.LP
+\fIfoo\fP.m - This file contains the functional interface specifications of
+all interpreter commands. C style comments are allowed.
+A special argument type VARARG may be used to specify variable number of 
+arguments(see example below).
+
+.IP
+e.g. 
+
+/*To set an integer variable to some value.
+  Usage: foo = set_integer(123)
+           foo = set_integet(ONE)*/
+
+int set_integer(int)
+
+/*To implement the C library function "printf". Since the interpreter cannot
+  call library functions with variable parameters directly, we define "printf" 
+  as an escape function (using "!" syntax) so that the user function "_printf" 
+  will be called by the interpreter instead.
+  Usage: printf("%s is %d\\n", "one",1)
+         printf("%s",HELLO)*/
+
+!void printf(char*,VARARG)
+
+/*To set a 32 bit variable to some value according to the specified type.
+  The number of arguments depends on the type.
+  Usage: assign(&IntVar,"int",123)
+           assign(&FloatVar,"float",1.23)
+           assign(&CharArrayVar1,"char[]",3,'a','b','c')
+           assign(&CharArrayVar2,"char[]",5,'a','b','c','d','e')*/
+
+void assign(T32bit*,char*,VARARG)
+
+/*To print a 32 bit variable according to the specified type 
+  The number of arguments depends on the type.
+  Usage: dump(IntVar,"int")
+           dump(FloatVar,"float")
+           dump(CharArrayVar1,"char[]",3)
+           dump(CharArrayVar2,"char[]",5)*/
+
+void dump(T32bit,char*,VARARG)
+
+/*to sleep for some seconds 
+  usage: sleep(10)*/
+
+void sleep(int)
+
+.LP
+\fIfoo\fP.c - This file contains the C implementation of any undefined functions
+which are specified in the .m file. 
+
+.IP
+e.g.
+
+#include "foo.h"
+
+typedef MAXSTRLEN 256
+.br
+#define eqstr(a,b) !strcmp((a),(b))
+
+int
+set_integer(intval)
+        int intval;
+.br
+{
+        return(intval);
+.br
+}
+
+/*NewT provides its own macros for the standard vararg facility, a user 
+  has to include the file "NewTvarargs.h" when using vararg with NewT.*/ 
+
+#ifdef NEWT
+.br
+#include "NewTvarargs.h"
+.br
+#else
+.br
+#include "varargs.h"
+.br
+#endif
+
+void
+_printf(fmt,va_alist)	/* notice the '_' before the function name */
+.br
+	/* This is a partial implementation of the print function */
+        char *fmt;
+        va_dcl
+.br
+{
+.br
+        va_list ap;
+        char *p;
+        char *fp;
+        char form[MAXSTRLEN];
+
+        if (strlen(fmt) >= MAXSTRLEN) {
+.br
+                printf("_prinf: format string exceeded maximum length\n");
+                return;
+        }
+.br
+        va_start(ap);
+        for(p = fmt; *p; p++) {
+.br
+                if (*p != '%') {
+.br
+                        putchar(*p);
+                        continue;
+                }
+.br
+                /* just found %, search for ...d, ...f or ...s */
+                for (fp=form,*fp++=*p++;*p;p++,fp++) {
+.br
+                        sprintf(fp,"%c",*p);
+                        if (*p == 'd') {
+.br
+                                printf(form,va_arg(ap,int));
+                                fflush(stdout);
+                                break;
+                        } else if (*p == 'f') {
+.br
+                                printf(form,va_arg(ap,double));
+                                fflush(stdout);
+                                break;
+                        } else if (*p == 's') {
+.br
+                                printf(form,va_arg(ap,char*));
+                                fflush(stdout);
+                                break;
+.br
+                        }
+                }
+.br
+                /*
+                  search for ...d, ...f or ...s failed,
+                  just print out what's accumulated so far
+                */
+                if (*p == '\\0') {
+.br
+                        printf("%s",form);
+                        break;
+                }
+.br
+        }
+.br
+        va_end(ap);
+.br
+}
+
+
+
+void
+assign(var,type,va_alist)
+        T32bit *var;
+        char* type;
+        va_dcl
+.br
+{
+        int i,total_items;
+        va_list ap;
+ 
+        va_start(ap);
+        if (eqstr(type,"int"))
+                *((int*)var) = va_arg(ap,int);
+        else if (eqstr(type,"float"))
+                *((float*)var) = *va_arg(ap,double);
+        else if (eqstr(type,"char[]")) {
+                total_items = va_arg(ap,int);
+                *((char**)var) = (char*)malloc(sizeof(char) * total_items);
+                for (i=0; i< total_items; ++i)
+                        (*((char**)var))[i] = va_arg(ap,char);
+        } else
+                printf("assign: invalid type\\n");
+        va_end(ap);
+.br
+}
+
+
+void
+dump(var,type,va_alist)
+        T32bit var;
+        char* type;
+        va_dcl
+.br
+{
+        int i,total_items;
+        va_list ap;
+
+        va_start(ap);
+        if (eqstr(type,"int"))
+                printf("%d\\n", (int)var);
+        else if (eqstr(type,"float"))
+                printf("%g\\n", *(float*)&var);
+        else if (eqstr(type,"char[]")) {
+                total_items = va_arg(ap,int);
+                for (i=0; i< total_items; ++i)
+                        printf("%c ",((char*)var)[i] );
+                putchar('\\n');
+        } else
+                printf("dump: invalid type\\n");
+        va_end(ap);
+.br
+}
+
+ 
+.LP
+\fIfoo\fP.h - This file contains external function declarations, 
+type definitions, defined constants and inclusion of any other necessary files.
+
+.IP
+e.g.
+
+#define ONE 1
+.br
+#define TWO 2
+.br
+#define FOUR 4
+.br
+#define HELLO "hello world!"
+.br
+typedef int T32bit;
+
+extern void _printf();
+.br
+extern void dump();
+.br
+extern void assign();
+.br
+extern int set_integer();
+
+.LP
+\fIfoo\fP.k - This file contains a listing of defined integer constants 
+and enumerated type elements that the interpreter is expected to recognize.
+C-style comments are allowed.
+
+.IP
+e.g.
+
+ONE TWO FOUR HELLO
+
+.LP
+config.h - This file contains the definition of MAXARG, the maximum number of
+arguments allowed for interpeter commands.
+
+.IP
+e.g.
+
+#define MAXARG 16
+	
+
+.SS Interpreter Creation Process
+
+.LP
+A program called \fBipp\fP is used to create an interface module (interface.c 
+and interface.h) from the required .m file and optional .k and .h files. 
+The .h file, if present, will be included in interface.c. 
+
+\fIfoo\fP.m + [\fIfoo\fP.k] + [\fIfoo\fP.h] \-> <ipp> \-> interface.c + interface.h
+
+ipp usage:
+.sp
+ipp [-n] [-k src1.k [-k src2.k]...] [-i src1.h [-i src2.h]...] [-u prefix [-u prefix]...] [-l prefix] [src.m...]
+
+ -k: to specify a .k file
+ -i: to specify a file to be included in the automatically created interface module
+ -u: to use an interface library with the specified prefix
+ -l: to specify a prefix for an interface library
+ -n: to use the new style interface
+
+See the FILES section for examples about the usage of interface library.
+
+.IP
+ipp -k \fIfoo\fP.k -i \fIfoo\fP.h -n
+
+.LP
+The "n" option is required for producing a new style interface that
+works with all the NewT functionalities mentioned in this document. 
+By default, \fIipp\fP generates an old style interface (still exist for
+backward compatibility) which requires function names be prepended with 
+underscores and arguments be passed with an extra level of indirection 
+for all functions defined in \fIfoo\fP.c. 
+Function assignment and C translation won't work with the old style interface.
+.LP
+The C-implementation file, config.h, other NewT files 
+and any necessary libraries  will be compiled with the previously generated 
+interface module to create the NewT interpreter.
+
+\fIfoo\fP.c + interface.c  + interface.h + config.h + looper src + debugger src + interpreter src + [other libraries] \-> NewT interpreter
+
+looper src: looper.yacc looper.lex looper.h var.c var.h
+
+debugger src: debugger.c debugger.h
+
+interpreter src: interpret.c interpret.h
+
+
+
+.SH INTERPRETER USAGE
+Your interpreter can be thought of as having two parts: a front end
+called the 
+.I looper,
+and a back end 
+.I interpreter.
+The looper parses the input, and handles loops, if-statements,
+macro definitions, the reading of other files, its own kind of
+variables, called looper variables.  It passes simple commands on
+to the actual interpreter, which interprets the command name
+and arguments and makes calls to the actual C code implementing
+a particular command.
+.SS THE INTERPRETER LANGUAGE
+.SS Basic Predicate Syntax
+.LP
+The basic commands of the interpreter, called predicates,
+are of the form
+.IP
+.B pred(arg1 [,arg2,...])[;]
+.LP
+These correspond to the user-defined functions that have
+been built into the interpreter.
+The input is free-format, so the placement of extra spaces, tabs, 
+and carriage returns is unimportant.  Comments are allowed, both
+C-style (/* ... */) and sh-style (#...<end of line>).  The C-style
+comments are permitted anywhere.  The sh-style comments are
+only allowed in certain places (anywhere a predicate is allowed,
+or after the semicolon following a foreach value), but have the
+advantage of being passed on into an automatically-generated
+C translation of the script, in the appropriate place.
+The semicolon is optional, and is intended to allow fragments of C
+code to be interpreted.  Spaces are not allowed in an argument,
+unless the argument is a string between double quotes.
+.LP
+Arguments can take the form of identifier(variable), 
+integer constant (hexadecimal,
+octal, decimal, enumerated elements or C-defined symbol), float constant,
+string constant, character constants or expressions (&identifier,*identifier
+or integer | integer [|...]).
+.LP
+Note: If the named variable does not exist, it will be created (according to
+the type specified in .m file). Moreover, arguments of the form &var or *var 
+will also result in the creation of the appropriate variable type, and the 
+expected use of the address of var as the predicate's argument.  
+Declarations are thus rendered unnecessary.  \fIdumpvar()\fP is a built-in 
+predicate which list all variables and types created by the interpreter. 
+Variables created by the interpreter will sometimes be referred to
+as 
+.I interpreter variables
+in this document, to help differentiate them from looper variables,
+defined below.
+.
+.SS Function assignments
+If a predicate's specification in its .m file gives a return type,
+the predicate may be invoked as a function and have its value
+assigned to an interpreter variable:
+.IP
+\fB\fIvarname \fB= \fIpred(arg1,arg2,...)
+.LP
+If the named variable does not exist, the interpreter will create it.
+The variable's name may be a simple identifier, or a looper variable
+whose value is a simple identifier (note that if a looper variable
+is used, C translation may not produce a correct output -- see
+below).  The predicate whose value is
+assigned to a variable may not be a macro (see below).
+.
+.SS Looper variable assignments
+.LP
+The looper front end maintains a list of special variables, called
+.I looper variables,
+whose values are treated as strings.  A predicate may have looper
+variables among its arguments, and these strings are evaluated
+before the complete predicate is passed on to the interpreter.
+Looper variables 
+are of the form \fB@\fIvarname\fR, where \fIvarname\fR begins with a letter
+and may contain
+letters, digits, and underscores. 
+Statements of the form
+.IP
+\fB@\fIloopervarname \fB= \fIargument
+.LP
+assign the given value to the variable.  This variable can then
+be used as an argument to a predicate, or in any of the special constructs
+described below (foreach and for loops, macros, and if statements).
+Looper variables may be used alone as arguments, or they may be
+embedded in larger arguments (in quoted strings, for instance).  More than
+one variable may be embedded in a single predicate argument.  If 
+a variable appears at the beginning of a larger argument, it should
+be preceded by a "\\" character
+(e.g. \fB@x = MASK1; @y = 2; Set_Bitmask(\\@x|@y)\fR).
+.
+.SS Foreach Loops
+.LP
+The 
+.I foreach
+loop has as arguments a list of looper variables, and a semicolon-separated
+list of values to assign
+to these variables for each iteration of the loop.  
+The statements in the loop body may use the loop variables as arguments.  
+The form is as follows:
+.IP
+.nf
+\fBforeach @var1 [@var2...@varN] (val1; val2; ...valM)
+\fI	loop body
+\fBend[;]
+.fi
+.LP
+For each iteration of the loop,
+the looper takes N values from the value list and assigns
+them to the corresponding loop
+variables, and executes the loop body.
+The number of values must be a multiple of the number of
+variables.  Foreach loops may be nested.
+.LP
+.
+.SS For Loops
+The 
+.I for
+loop takes as arguments a looper variable, an optional starting
+value (default: 1), an ending value, and an optional step value
+(default: 1).  The start, end, and step values must be literal integers
+or looper variables that evaluate to integers. The form is:
+.IP
+.nf
+\fBfor (@var; [start;] end [; step])
+\fI	loop body
+\fBend[;]
+.fi
+.LP
+Note that a step value cannot be specified unless a start value
+is also given -- "for (@var; 10; 20)" will be interpreted as
+a loop from 10 to 20, and the step value will default to 1.
+.SS If Statements
+The
+.B if
+statement takes as an argument a single value, and evaluates whether
+it is zero or not.  This value may be a literal integer, a defined
+constant known to the interpreter, an interpreter variable (of
+appropriate type, such as char or integer), or a looper variable
+which evaluates to any of these.  There is an optional else statement.
+.IP
+.nf
+\fBif (\fI value\fB ) [then]
+\fI	body to be executed if true
+\fB [else
+\fI	body to be executed if false\fB ]
+\fB endif
+.fi
+.LP
+.SS Macro Definitions
+.LP
+Looper macros allow multiple statements to be compressed into one command,
+with arguments which can be used anywhere in the macro body.  The macro
+arguments are expressed as looper variables, but are translated into
+longer names as the macro body is read in (Thus, macro parameters may not
+be embedded in longer arguments as normal looper variables may -- if it
+is necessary to embed a macro parameter in an argument within the
+macro body, assign it to an intermediate variable within the macro and
+embed that variable instead).  The syntax is as follows:
+.IP
+.nf
+\fBmacro macname([@arg1, @arg2,...])
+\fI	macro body, which may reference arguments
+\fBendmacro[;]
+.fi
+.LP
+The macro can then be invoked as if it were a built-in
+predicate.
+If regular looper variables are referenced inside the macro body, they
+will take on the value they have \fI at the time the macro is executed.
+.
+.SS Reading Source Files
+.LP
+The user may direct the looper to read commands from another file using
+the \fIsource\fR command, followed by the filename.  
+.IP
+.nf
+\fB source \fI filename
+.fi
+.LP
+This command
+causes the looper to read commands from the named file until it encounters
+either the \fBresume\fR command, or the end of the file.  If the
+resume command is found, the looper continues execution from the input
+file in which the source command was executed; if the end of file
+is reached without finding the resume command, looper execution stops.
+.LP
+The environment variable MACROPATH, if present, is used by the
+interpreter to find files named in a \fBsource\fR command.
+The form is of a colon-separated list.  Note that if this
+variable is defined, the current directory is not searched before
+the others in the path.  Thus, it is suggested that this
+variable always start with a ".", as in ".:../shared_macros".
+.LP
+A file read with the source command may in turn read other files, to
+a depth of up to 16 (provided, of course, that the system can handle
+that many open files).  Source commands may be embedded in loops,
+macros, and if statements;  Be aware that the named file is read in
+at the time the source command is \fIparsed,\fR not executed; this
+imposes the restriction that the file must exist at the time execution
+starts, but gives the freedom to enclose the command in a loop without
+worrying about the overhead of re-reading the file with each loop
+iteration.
+.
+.SH OPTIONS
+.TP
+.B \-i
+Invoke the interpreter in interactive mode: it causes a ">>"
+prompt to be printed for each command, and a ">" prompt for lines within
+a command.  These prompts are sent to the standard error.
+Commands are executed immediately in interactive mode; otherwise,
+the entire input is read in and parsed before execution begins.
+.TP
+.B \-p
+for "print only"; in this mode, commands coming from the looper
+front end are simply printed out, rather than executed.  Useful for
+debugging loops and other constructs.
+.TP
+.B \-t
+for "trace"; in trace mode, commands coming from the looper
+front end are printed out before being passed on to the interpreter.
+.TP
+.B \-C
+Invokes C translation mode.  The input file is parsed and translated
+into C. 
+The C file is given a name derived from the name of the source
+interpreter script by substituting ".c" for the filename's extension,
+or appending ".c" if it has no extension. If the input is being taken
+from standard input, the C translation is placed on the standard output.
+If some simple rules are followed when
+writing interpreter scripts, the translation should produce 
+a legal and equivalent C program without need for any manual modification:
+  * Do not embed looper variables within larger arguments, such as strings,
+unless the variable's
+value is constant throughout the execution of the program.
+  * If a foreach loop loops on variable names (assigning different
+interpreter variable names to looper variables), predicates which have
+the effect of making assignments to these variables should not be used
+(the same effect can be obtained legally if the looper variable is used as an 
+address, e.g. "assign(&@loopvar,x)").  This constraint arises from
+how foreach loops are translated to C: the different loop values are
+assigned to C variables at each loop iteration.  This also applies
+to functional assignments -- if you loop on variable names
+and do assignments to these variables, the C translation will not
+be correct.
+.TP
+.B \-h headerfile
+In translation mode, specifies a file to be inserted at the
+head of the resulting C program, before main().  This may include
+"#include"s, type definitions, etc.
+.TP
+.B \-u
+In translation mode, causes prepending of an underscore character
+to all predicate names in the resulting C translation. 
+.TP
+.B \-d
+Two process debug mode.  A single filename must be supplied with this option.
+The file is parsed, and a debugging prompt is printed; the user
+may then use any of the debugger commands listed below.
+The two process mode guaranteer a clean environment when the NewT debugger
+rerun a script.
+.TP
+.B \-D
+Single process debug mode.  A single filename must be supplied with this option.
+The file is parsed, and a debugging prompt is printed; the user
+may then use any of the debugger commands listed below.
+The single process mode is intended to facilitate the running of dbx on top
+of the NewT debugger. But it does not guaranteer a clean environment when
+the NewT debugger rerun a script.
+.LP
+.SS Debugger Commands Usage
+.LP
+\fBlist\fP [\fIstartline\fP[,\fIendline\fP]]
+.IP
+List the next ten lines from current source file. List from \fIstartline\fP
+through \fIendline\fP. 
+.LP
+\fBstop at\fP \fIsourceline\fP
+.IP
+Stop execution when the \fIsourceline\fP is reached. Can stop at any function 
+call, macro call, \fIforeach\fP loop, \fIfor\fP loop, \fIif\fP statement or \fIsource\fP statement.
+.LP
+\fBdelete all\fP
+.br
+\fBdelete\fP \fIcmd-no\fP[,\fIcmd-no\fP]...
+.IP
+Remove all \fBstop\fPs or those corresponding to each \fIcmd-no\fP (as displayed
+by \fBstatus\fP).
+.LP
+\fBstatus\fP
+.IP
+Display active \fBstop\fP commands and associated command numbers.
+.LP
+\fBrun\fP
+.IP
+Start executing specified script.
+.LP
+\fBstep\fP [\fIn\fP]
+.IP
+Execute the next \fIn\fP source lines. If omitted, \fIn\fP is taken to be 1. 
+Can step into \fImacro\fP calls, \fIif\fP statements, \fIforeach\fP loops, 
+\fIfor\fP loops and \fIsource\fP statements.
+.LP
+\fBnext\fP [\fIn\fP]
+.IP
+Execute the next \fIn\fP source lines. If omitted, \fIn\fP is taken to be 1. 
+\fBNext\fP steps past \fImacro\fP calls, \fIif\fP statements, \fIforeach\fP 
+loops, \fIfor\fP loops and \fIsource\fP statements.
+.LP
+\fBcont\fP [\fBat\fP \fIsourceline\fP]
+.IP
+Continue execution from where it stopped. If \fBat\fP \fIsourceline\fP is
+specified, resume starting at \fIsourceline\fP.
+.LP
+\fBquit\fP
+.IP
+Exit.
+.LP
+\fBcall\fP \fIprocedure\fP(\fIparameters\fP)
+.IP
+Call the Interpreter to execute the named procedure.(no function assignment)
+The parameters should not contain any looper variables.
+.LP
+\fBalias\fP \fInew-command-name character-sequence\fP
+.IP
+Respond to \fInew-command-name\fP as though it were \fIcharacter-sequence\fP.
+.LP
+The file \fB.NewTdbinit\fP is processed by the debugger at initialization time
+if that file exists in the current directory, or in the user's home directory.
+This file takes the format of one \fBalias\fP command per line.
+
+.SH EXAMPLES
+Below is a sample session using the looper in interactive,
+print-only mode,
+allowing its output to be printed directly to the terminal.
+The formatting of the loop values and body are arbitrary
+.RS
+.nf
+hobbes% \fBlooper -ip\fR
+>> \fBhello(world)\fR
+hello(world)
+>> \fB@x=HELLO_OVER_THERE\fR
+>> \fBsay(@x)\fR
+say(HELLO_OVER_THERE)
+>> \fB@y="Good Dog!"\fR
+>> \fBforeach @dog @thing (Lassie; @y;\fR
+>                       \fBRex;    "Sit";\fR
+>                       \fBRover;  @y;\fR
+>                       \fBSpuds;  "Give me a brewski")\fR
+>       \fBTell_Dog(@dog,@thing)\fR
+>       \fBTell_Dog(@dog, "rollover");  /* note the optional semicolon */\fR
+> \fBend;			/* semicolon is optional here, too */\fR  
+Tell_Dog(Lassie, "Good Dog!")
+Tell_Dog(Lassie, "rollover")
+Tell_Dog(Rex, "Sit")
+Tell_Dog(Rex, "rollover")
+Tell_Dog(Rover, "Good Dog!")
+Tell_Dog(Rover, "rollover")
+Tell_Dog(Spuds, "Give me a brewski")
+Tell_Dog(Spuds, "rollover")
+>> \fBPlease(@thing)  /* loop variable will keep last value */\fR
+Please("Give me a brewski")
+.fi
+.RE
+.LP
+The next example illustrates the definition of a macro.  Since the
+variables representing the macro arguments cannot themselves be
+embedded in larger arguments, some regular looper variables are used
+to embed the arguments in a string.
+.RS
+.nf
+>> \fBmacro line(@x1, @y1, @x2, @y2)\fR
+>       \fBMoveTo(@x1, @y1)\fR
+>       \fBLineto(@x2, @y2)\fR
+>	\fB/* macro parameters cannot be directly embedded! */\fR
+>       \fB@mx1 = @x1; @my1 = @y1; @mx2 = @x2; @my2 = @y2;\fR
+>       \fBprint("Line drawn from (@mx1, @my1) to (@mx2, @my2)")\fR
+> \fBendmacro\fR
+>> \fBline(0, 0, 400, 500)\fR
+MoveTo(0, 0)
+Lineto(400, 500)
+print("Line drawn from (0, 0) to (400, 500)")
+>> 
+
+.fi
+.RE
+.SH FILES
+.nf
+goldbach:/usr/graphics/src/newt/* 		source code and SCCS directory
+goldbach:/usr/graphics/src/newt/utiltest
+     					This directory contains a sample makefile and set of source files
+     					for a sample interpreter, implementing a useful set of utility functions.
+					The makefile is easily enhanced to make more complicated interpreters, 
+					which can include the set of utility functions.
+goldbach:/usr/graphics/src/newt/phigstest
+     					This directory contains a sample makefile and set of source files
+     					for an experimental SunPHIGS interpreter, The makefile is easily 
+					enhanced to make more complicated interpreters. 
+					This example also illustrates the usage interface library.
+
+.SH SEE ALSO
+

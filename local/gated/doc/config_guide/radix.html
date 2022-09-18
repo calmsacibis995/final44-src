@@ -1,0 +1,1012 @@
+<html>
+<head>
+<title>
+A Tree-Based Packet Routing Table for Berkeley Unix
+</title>
+</head>
+
+<body>
+<h1>A Tree-Based Packet Routing Table for Berkeley Unix</h1>
+Keith Sklower
+<p>
+<address>
+Computer System Research Group<br>
+EECS Department, Computer Science Division<br>
+University of California<br>
+Berkeley, California  94720
+</address>
+<p>
+<h2>Abstract</h2>
+Packet forwarding for OSI poses strong challenges for routing lookups:
+the algorithm must be able to efficiently accommodate variable length,
+and potentially very long addresses.
+The 4.3 Reno release of Berkeley 
+UNIX
+uses a reduced radix tree
+to make decisions about forwarding packets.
+<p>
+
+This data structure is general enough to encompass protocol to
+link layer address translation
+such as the Address Resolution Protocol (ARP),
+and the End System to Intermediate System Protocol (ES-IS),
+and should apply to any hierarchical routing scheme,
+such as source and quality-of-service routing,
+or choosing between multiple Datakits on a single system.
+<p>
+
+The system
+uses a message oriented mechanism to communicate between
+the kernel and user processes to maintain the routing database,
+inform user processes of spontaneous events such as redirects,
+routing lookup failures, and suspected timeouts through gateways.
+<p>
+
+<h2>Introduction</h2>
+
+An important focus of the 4.3 Reno release of Berkeley
+UNIX
+was to
+make support for the OSI protocols publicly available.
+OSI addresses are typically very long (20 bytes) and with the
+explosive growth of the Internet, a router may have to contend
+with thousands of them.
+<p>
+
+The traditional hash-based scheme of routing lookups
+would perform poorly in this environment.
+The older algorithm assumed that it would be cheap
+to compute hashes, that one could easily identify
+the network portion of an address, and easily compare them.
+<p>
+
+It is likely to be expensive to compute the hash 
+of a 20 byte address.
+Moreover,
+where there are multiple hierarchies, it would be complicated
+and context dependent to identify which portion of the address
+should be considered as <em>the network portion</em> for comparison
+at changing levels.
+In general, it is not apparent how
+to accommodate hierarchies while using hashing, other than rehashing
+for each level of hierarchy possible.
+<p>
+
+Van Jacobsen, of the Lawrence Berkeley Laboratory, suggested
+using the PATRICIA algorithm (described below), but with
+an additional invariant to maintain a routing tree.
+This meshes extremely well with notions of multiple hierarchical
+defaults, and the cost of an entire lookup is approximately the same as
+the cost of computing a single hash.
+<p>
+
+Since there is now a means to store variable length addresses,
+and reason to use addresses of differing sizes within a given
+route (using a protocol destination address with a link-layer
+gateway to accomplish ARP-like translation, for example),
+it was decided that using fixed length ioctl's to communicate
+between the kernel and routing process would be too restrictive.
+Instead, a message based mechanism is used
+for passing routing information to and from the kernel.
+This mechanism provides additional potential for remote management
+when future releases supply the ability to splice
+communications channels.
+<p>
+
+<h2>Kernel Issues</h2>
+
+<h3>Routing Lookups</h3>
+
+<h4>Restatement of the Problem.</h4>
+
+Let's describe the problem once again in a little more detail:
+A packet arrives with a very long protocol address.
+If the destination address is not that of the local system,
+one wants to decide quickly how to forward it.
+This decision entails choosing a network interface and a next-hop agent.
+(Point-to-point links only have one agent on the other end of the link,
+so sometimes it's enough just to figure out which link!).
+<p>
+
+Some of the routing protocols currently in use give us criteria for making
+this choice, in what may seem a bizarre way:
+the space of addresses is partitioned into a set of equivalence classes
+by specifying a pair consisting of a prototype address and a bitmask;
+a test address is deemed to belong to the class if any bit in which
+it differs from the prototype address corresponds to a zero bit of
+the provided mask.
+<p>
+
+Let's give an example, using the protocol addresses for the
+Internet Family [Post],  which are 32-bit numbers:
+
+<pre>
+Example 1:  Some Address Classes
+
+        Prototype        Mask        ClassName
+        0x80030000       0xffff0000  LBL
+        0x80200000       0xffff0000  Berkeley
+        0x80208200       0xffffff00  CsDivSubnet
+        0x80209600       0xffffff00  SpurSubnet
+        0                0           TheOutside
+</pre>
+
+The author's machine (okeeffe.Berkeley.EDU) has the address 0x80208203.
+Consequently, it belongs to the classes
+Berkeley, CsDivSubnet, TheOutside,
+but not LBL nor SpurSubnet.
+With each class
+is associated a networking interface, in most cases a next-hop agent,
+and a collection of other useful information, and that collection
+is referred to as a <em>route</em>.
+Continuing the example, okeeffe.Berkeley.EDU can talk directly to any system
+in the class CsDivSubnet (all such systems are on a single ethernet),
+but requires an intermediary to talk to anybody else.
+<p>
+
+The routing lookup problem is to find the most specific class containing
+a given protocol address.
+Paradoxically, that will be the one with largest number of one bits
+in the mask.
+The NSF net may provide a regional router with about 2000 routes of this type.
+The lookup algorithm must look up the appropriate class
+quickly (among both numerous and lengthy addresses),
+and yet have nice properties with respect to masks.
+
+<h4>The algorithm</h4>
+
+The collection of prototype addresses are assembled into a variant
+of a PATRICIA tree, which is technically a binary radix tree with
+one-way branching removed.
+(In fact some writers call any tree with explicit external and
+internal nodes a <em>trie</em>).
+Although this algorithm is given a lengthy exposition in [Sedg]
+and also is discussed in [Knut] and [Morr], we will review it here.
+<p>
+
+We build a tree with internal nodes and leaves.
+The leaves will represent address classes, and will contain
+information common to all possible destinations in each class.
+As such, there will be at least a mask and prototype address.
+Each internal node represents a bit position to test.
+Given the
+tree and a candidate address thought of as a sequence of bits, the
+lookup algorithm is as follows:
+
+<ol>
+<li> Set node to the top of the tree.
+<li> If at a leaf node, stop.
+<li> Extract a bit position to test.
+<li> If that bit of the candidate address is on, set the node to the
+     right child of the current node, otherwise set node to the left
+     child.
+<li> Repeat steps 2 - 4.
+</ol>
+<p>
+
+Once we arrive at a leaf node, we need to check whether we have selected
+the appropriate class.
+The class may consist of a single host.  This is a special case where the
+mask consists of all one bits, but it is a common enough occurence
+that we check for it (by use of a null pointer for the mask),
+and do an outright string compare.
+Otherwise, in which case we perform the masking operation.
+<p>
+
+It is possible to have the same prototype address with differing masks;
+this is handled by a linked list of leaf nodes.
+This arises due to boundary conditions for the smallest representation
+of the default route (which collides with the boundary marker for the
+empty tree).
+It also arises if you want to route to subnet 0 of a subnetted class
+A or B internet address.
+<p>
+
+If the leaf node isn't correct, then we backtrack up the tree
+looking for indications that a more general mask may apply
+(i.e. one having fewer one bits).
+This may happen if we are asked to look up an address other than
+the prototype addresses used to construct the tree.
+Rather than keep a separate stack of nodes traversed while searching the
+tree, backtracking is facilitated by having explicit parent pointers
+in each node.
+This also facilitates deletion, and allows non-recursive walks of the tree.
+
+<h4>A Lookup Example</h4>
+
+<pre>
+scale=100
+define m0 |
+[ box invis ht 48 wid 120 with .sw at 0,0
+line  from 0,24 to 120,24 
+box ht 48 wid 120 with .nw at 0,48 
+] |
+
+define m1 |
+[ box invis ht 71 wid 63 with .sw at 0,0
+line  from 24,32 to 0,0 
+circle rad 23 at 40,48
+] |
+
+box invis ht 359 wid 528 with .sw at 0,0
+line  from 320,196 to 324,207 dotted
+line  from 299,225 to 317,223 dotted
+line  from 300,225 to 282,213 dotted
+line  from 282,213 to 262,185 dotted
+line -> from 262,185 to 254,128 dotted
+"\f1\s10\&default\f1\s0" at 57,300
+"\f1\s9\&m = 0xffffff00\f1\s0" at 469,11
+"\f1\s9\&m = 0xffffff00\f1\s0" at 309,12
+"\f1\s9\&p = 0x80208200\f1\s0" at 309,36
+"\f1\s9\&p = 0x80200000\f1\s0" at 227,116
+"\f1\s9\&m = 0xffff0000\f1\s0" at 149,172
+"\f1\s9\&p = 0x80030000\f1\s0" at 149,196
+"\f1\s9\&m = 0x00000000\f1\s0" at 60,252
+"\f1\s9\&p = 0x00000000\f1\s0" at 60,276
+line  from 400,80 to 432,48 
+m0 with .nw at 408,48
+m0 with .nw at 248,48
+m0 with .nw at 168,128
+m0 with .nw at 88,208
+m0 with .nw at 0,288
+line  from 152,320 to 208,272 
+line  from 240,240 to 288,192 
+line  from 320,160 to 368,112 
+m1 with .nw at 344,120
+m1 with .nw at 264,200
+m1 with .nw at 184,280
+m1 with .nw at 96,359
+"\f1\s9\&m = 0xffff0000\f1\s0" at 226,92
+"\f1\s9\&p = 0x80209600\f1\s0" at 469,36
+"\f1\s10\&SpurSubnet\f1\s0" at 472,60
+"\f1\s10\&CsDivSubnet\f1\s0" at 303,61
+"\f1\s10\&Berkeley\f1\s0" at 225,141
+"\f1\s10\&LBL\f1\s0" at 147,219
+"\f1\s9\&bit 0\f1\s0" at 137,335
+"\f1\s9\&bit 10\f1\s0" at 225,256
+"\f1\s9\&bit 19\f1\s0" at 384,96
+"\f1\s9\&bit 16\f1\s0" at 304,176
+line  from 317,223 to 324,207 dotted
+.PE
+.DS C
+<strong>Figure 1.</strong>
+.DE
+</pre>
+
+Figure 1. shows how one would construct a reduced radix tree
+to decide among the prototype addresses given in the example
+of address classes.
+In examining the address for okeeffe.Berkeley.EDU (0x80208203), we find that
+bit 0 is on (0x80000000: go right), bit 10 is on (0x00200000: go right),
+bit 16 is on (0x00008000: go right), but that bit 19 is off
+(0x00001000: go left).
+And, in fact okeeffe does match the CsDivSubnet class.
+<p>
+
+If we were to look up another machine at Berkeley, say
+miro.Berkeley.EDU (0x80209514), we are driven down to
+the SpurSubnet class, which does not match.  So we backtrack
+up to the second internal node above it, which has an indication
+that there is a mask which may apply.
+This is represented in the diagram by the dotted line,
+which actually points to data associated with mask
+contained in the leaf, rather than the leaf itself.
+<p>
+
+<!--
+The internal node based on bit 10 does not have an indication
+that there is a mask which may apply to it.
+This because any search backtracking through there would
+have had to had a 1 for bit 10 (since it otherwise would
+have been trapped by the leaf for LBL itself), as
+the LBL class has that bit off.  There is a measure of
+how high in the tree a mask can apply (in our current scheme)
+which we call the index of the mask.
+The interested reader can peruse the source code in 4.3 Reno
+for further elaboration.
+>
+
+Backtracking only occurs when given packets are covered by a
+default route, or when non-prefix masks are employed.
+The current implementation deals with non-contiguous masks
+in a way requiring an explicit masking and re-lookup operation
+for each possibly applicable mask encountered while backtracking.
+This has the advantage that routes can be entered one by one
+without requiring searches or reorganization of subtrees.
+<p>
+
+Researchers in the field ([Tsuc], [Butl]) have suggested this might
+be avoided by constructing a tree in which the nodes test bits
+in non-increasing order, governed by the masks found in leaves underneath.
+This is the object of current study.
+
+<h4>Comparison with the previous method.</h4>
+
+Releases of Berkeley
+UNIX
+prior to 4.3 Reno employed an explicit three level hierarchy for routes,
+routing first to hosts, then to networks, then to defaults.
+The collections of host routes and network routes were entirely
+seperate hash arrays.
+<p>
+
+Given a candidate address, an address family specific method would
+be invoked to compute a hash value for the hosts array, and a bucket chosen.
+Each element of the bucket would be compared against the candidate address,
+via a second address family specific method for each comparison
+(i.e. requiring a subroutine call per comparision).
+<p>
+
+If the candidate address was not found, the process would be repeated
+with the network hash array.
+If that failed, a list of defaults would be searched to see if there
+were any for the address family of the candidate address.
+<p>
+
+By contrast,
+the initial search of the tree also is written
+in a protocol independent way.
+Furthermore,
+the new algorithm performs its comparisons in a
+protocol independent way, permitting the back-tracking loop to
+occur without separate subroutine calls.
+<p>
+
+It is interesting to note that in the average case,
+PATRICIA trees are approximately balanced.  The expected length
+of a search is only 1.44 log (number of entries); and of course
+the maximum possible search is the number of bits in the address.
+By contrast, the worst case for a degenerate hash is the number
+of entries to be searched.  So, if we had 2000 IP entries, in the
+PATRICIA case one would expect 15 bit tests, whereas in the typical
+hashing situation of sqrt(N), on would expect about 44 hash entries
+in 44 hash chains, with an average of 22 comparisons after hashing.
+The (pathological) worst case is 32 bit tests versus 2000 compares.
+<p>
+
+<h3>The Routing Entry</h3>
+
+The routing entry is a collection of information for use by protocol
+implementations.
+It has a base part which contains all the aspects common to a class
+of hosts with which we might want to communicate that we can express
+in a protocol-independent (or protocol-uniform) way.
+It certainly includes the connectors used in constructing the tree,
+the prototype address (which we think of as the destination address),
+and the mask.
+<p>
+
+There are binary flags present which may greatly alter the interpretation
+of the route, or even cause new ones to spring into existence.
+(see <strong>Cloning Operation</strong>, below).
+There are pointers to a protocol independent control structure
+describing the network interface (the <em>ifnet</em> structure),
+and the protocol level address which should be used in identifying
+the local system (the <em>ifaddr</em> structure).
+<p>
+
+There is a possible gateway address,
+that is used in situations in which protocol packets
+must be sent to the intended recipients via an intermediary.
+This mode of operation is identified by having a flag
+<strong>RTF_GATEWAY</strong>.
+In the other case (where no gateway is required), there
+is a pointer to device- and protocol- specific information,
+such as link-layer to protocol address translations,
+or even other protocol control blocks for situations
+such as running connectionless protocols over X.25.
+<p>
+
+The route includes a collection of statistics that are commonly maintained by
+reliable and flow controlled protocols,
+such as round-trip time, round-trip time variance, 
+maximum packet size for this path, maximum number of gatewaying
+or forwarding operations expected, in-bound and out-bound
+throughput measures, and a bitmask to indicate if any of
+these values should be left unaltered by protocol operation.
+There are some other statistics that are purely housekeeping
+matters, such as the number of protocol control blocks keeping
+a reference to this route.
+<p>
+
+<h4>Cloning Operation</h4>
+
+As mentioned above, it is sometimes convenient
+for skeletal routing entries to be created and partially filled
+in upon first reference (or lookup), with the missing information
+to be supplied later.
+Allocating a dedicated routing entry at initial connect time saves
+the expensive of checking validity on each use.
+<p>
+
+An example of this would be a user opening a TCP connection to
+another machine on the same ethernet, for which the link-layer
+address was not yet known.
+The creation of such entries would triggered by the flag
+<strong>RTF_CLONING</strong> in a route being looked up.
+<p>
+
+For other sorts of link layer translations, such as IP address
+to X.121 addresses for use over a public data network,
+it may be desirable to have a message sent to a user level daemon
+when the route is created, requesting
+an external resolution of protocol addresses.
+This mode is enabled by the flag <strong>RTF_XRESOLVE</strong>.
+<p>
+
+Another example would be a configuration in which there are many different
+subnets on the other side of a serial link,
+where each subnet may have different
+performance characteristics (which could be learned operationally),
+but that each use would be infrequent and random enough that
+it would be wasteful
+permanently to allocate space for routing entries to each possible subnet
+in advance.
+<p>
+
+Here, a way to specify the netmask for the
+newly cloned route is necessary, which needs to be more specific than
+the netmask for the cloning route which creates it.
+Thus, the route structure includes a pointer for this secondary mask,
+which is only used in such a situation.
+The primary netmask is used for <em>trapping</em> the lookup; the secondary
+mask would be used as the primary mask in the newly created route
+which would restrict additional lookups to that newly identified class of
+hosts.
+<p>
+
+<h4>Black Holes (or Border Patrol)</h4>
+
+A handy use for hierarchical defaults would be at the gateway
+of a campus to catch packets for non-existent subnets or hosts
+within the campus that would otherwise be sent to the default
+route advertised by the regional connection to a backbone network.
+This is easily implemented by the flag <strong>RTF_REJECT</strong>.
+<p>
+
+In 4.3 Reno,
+the network output routines added an additional parameter,
+a pointer to the route.
+This parameter enabled cached link layer information to be retrieved,
+but also allows
+the loopback driver to recognize the <strong>RTF_REJECT</strong> flag.
+When it does so, it consumes the offending packet and returns
+EHOSTUNREACH or ENETUNREACH, prompting the protocols to do
+the appropriate magic with no other changes.
+<p>
+
+<h3>Ancillary addressing structures:</h3>
+
+<h4>The protocol independent network interface structure (ifnet)</h4>
+
+For each network interface device, there is a structure
+describing a number of protocol independent elements.
+Some of these serve to identify the device:
+a printable name and a unit identifier.
+There are also general statistics kept about each device,
+some inherent about the device itself (such as maximum
+packet size,
+a generic type for the device,
+and binary flags indicating whether the device is point-to-point
+or broadcast or deaf to its own broadcasts).
+There are other statistics reflecting use, such as
+number of packets in and outbound, (and how many of those encountered
+errors), time of last use, total number of bytes transmitted and received.
+There are a collection of methods associated with the device.
+These include a general output routine to process packets
+and place them on an output queue, an internal routine to 
+initiate transmission, an ioctl routine, initialization, reset, and two
+routines used at startup time.
+<p>
+
+This structure has escaped relatively unchagned from
+previous versions of BSD;
+a good description of it can be found in [Leff].
+The new additions include the device start method which has makes it possible
+for all ethernet drivers to use a common output routine, more statistics
+required by SNMP [Case], and throughput statistics used for protocol
+operation.
+<p>
+
+<h4>The protocol address structure (sockaddr)</h4>
+
+All protocol addresses have a common two byte header
+detailing the length and type of the address.
+<p>
+
+The 4.3 Reno release adds a device independent link-layer
+address format, which may be used in sending link-layer packets
+or disambiguating interfaces when more than one have the same
+protocol addresses.
+
+<h4>The protocol dependent interface addressing structure (ifaddr)</h4>
+
+There may be multiple protocol addresses associated with each network
+interface.
+The <em>ifaddr</em> structure provides a place to store them and other
+device- and protocol-specific information.
+In fact, some protocols allow either multiple names for the same interface,
+or the same name for multiple interfaces or both.
+<p>
+
+Even though the values will differ from protocol to protocol, there are some
+other common elements that can be identified, so that
+this structure has a protocol independent header, with a protocol
+specific tail expected to follow immediately.
+<p>
+
+The protocol independent elements include
+the address, associated subnet mask, destination or broadcast address,
+linkage to the next address and the associated <em>ifnet</em>,
+a method to be invoked when routes associated with this address
+are created or deleted,
+a routing entry associated with this address for this interface,
+and generic flags for this level.
+<p>
+
+This structure is also discussed in [Leff].
+The method, routing entry, and flags fields are new (since 4.3 BSD),
+and the protocol addresses have been changed to pointers
+rather than allocating fixed size spaces for them.
+<p>
+
+<h2>Messages and Formats</h2>
+
+As mentioned above,
+BSD has adopted a message passing approach for management of the
+routing table, for a variety of reasons.
+First, network address are of variable length,
+and we may have varying numbers of them in differing operations.
+Second, it provides a clean and uniform way of informing a routing process
+of spontaneous events, such a redirects, routing misses,
+requests to resolve link layer address translations,
+or internal evidence that a gateway may have crashed,
+(due to lack of acknowledgments across a class of connections).
+Third, it provides a way for making additions or changes
+to the management interface while maintaining backwards compatibility.
+A version number is embedded in the message header, and 
+each message is self delimiting, so that any unknown message to the
+user program can be skipped.
+Finally, for the future when it will be possible to splice message
+streams together, it provides an easy path towards remote system
+management.
+<p>
+
+<h3>The basic format</h3>
+
+All messages have a common header, and some varying
+number of protocol addresses appended to them.
+The header includes the total length of the message,
+a version number and a type, which allows non-understood messages
+to be skipped.
+There is space for a user-supplied sequence number.
+The returned message includes the pid of the originating process.
+<p>
+
+The header also includes a number of metrics, a bit mask to
+identify which are being specified, and a second bit mask
+to specify which metrics must remained unchanged by the protocols.
+<p>
+
+The interpretation and number of the trailing protocol addresses
+is specified by a bitmask.
+The potential addresses are:
+
+<dl>
+<dt> <strong>RTA_DST</strong>
+<dd> Prototype address
+
+<dt> <strong>RTA_NETMASK</strong>
+<dd> Bitmask for describing class
+
+<dt> <strong>RTA_GATEWAY</strong>
+<dd> Gateway
+
+<dt> <strong>RTA_GENMASK</strong>
+<dd> Bitmask for routes created by cloning
+
+<dt> <strong>RTA_IFA</strong>
+<dd> The protocol address to be used as a source address when sending
+     to hosts covered by this route
+
+<dt> <strong>RTA_IFP</strong>
+<dd> An address unambiguously specifying which interface (struct
+     <em>ifnet</em>) is associated with this route, such as a
+     link-level address.
+
+<dt> <strong>RTA_AUTHOR</strong>
+<dd> Address identifying sender of redirect, etc.
+
+</dl>
+
+<h3>Message Types.</h3>
+
+In this section, we'll discuss each of the message types,
+describing features unique to each, and contrasting the
+intent of otherwise similar looking messages.
+<p>
+
+<h4>RTM_ADD - Enter a new route into the table.</h4>
+
+This is the basic operation for creating the routing table.
+The destination and gateway addresses must be present.
+If there is no netmask present, the route is assumed to be
+a route to a host.
+In the case where the host or class specified by the
+route is directly reachable, the gateway address may be
+used to specify a link layer address (for hosts), or the protocol
+address of the outgoing interface, which may
+implicity identify the
+<em>ifaddr</em> and <em>ifnet</em> structure pointers.
+Even the case of a class reached via a gateway,
+one may be able to deduce the interface from the
+address of the gateway.
+If there is ambiguity about this, as may be the case in OSI
+protocol operation, they must be explicitly supplied.
+<p>
+
+The flags may specify cloning operation, as described in section 2.2.1.
+If the the new routes are to specify a subclass instead of
+a host route, a generating bit mask needs to be supplied.
+<p>
+
+<h4>RTM_DELETE - Remove an entry from the table</h4>
+
+If there is only one entry in the routing table with a given prototype
+address, that is sufficient to identify the route to be deleted.
+Otherwise,
+the netmask associated with the route
+must additionally be specified.
+
+<h4>RTM_CHANGE - Alter characteristics of a route</h4>
+
+Due to gateways going up or down, it may be desireable to change
+the designated forwarding agent for a class of hosts.
+It is also desirable to do so atomically (locking out
+forwarding requests), so that there isn't a period in which
+incorrect host or network unreachable protocol messages are generated
+in response to packets to be forwarded.
+Changing the gateway implicitly or explicitly requires changing
+the associated <em>ifaddr</em> and <em>ifnet</em> structures.
+<p>
+
+In this message, one can also alter the metrics associated with a route
+or some of the flags (cloning, resolving, link-layer-ness).
+<p>
+
+Altering the netmask associated with a route is not permitted,
+since this would affect the geometry of the tree; instead one
+deletes and re-inserts.
+<p>
+
+<h4>RTM_GET - Look up route and report characteristics.</h4>
+
+This message is diagnostic in nature.
+The user supplies a destination and the best match route
+indication is returned, along with all of the metrics filled in.
+Where there are multiple routes with the same
+prototype address (but multiple netmasks), specifying the netmask
+will allow the user to select the appropriate route.
+<p>
+
+<h4>RTM_REDIRECT - Request to change gateway.</h4>
+
+This message is an example of a spontaneous event.
+Both the TCP/IP and OSI family of protocols have the potential
+for receiving an advisory report from a gateway that
+the initiating system would be better off sending a packet
+to another gateway on the same network for forwarding to a
+remote location.
+<p>
+
+When the routing table is maintained by a user-level process,
+it is important that the routing process be notified of any
+changes to the routing table.
+<p>
+
+For OSI protocols, the initiating system may get a message
+specifying the original destination, a bitmask specifying
+a class of hosts for which this redirect also pertains,
+the replacement gateway to be used, and the author
+of the message.
+<p>
+
+<h4>RTM_LOSING - Trouble reports.</h4>
+
+<em>Reliable</em> byte and message stream protocols such as TCP or OSI-TP keep
+retransmission timers.
+If a connection suddenly stops working, it may
+signal the loss of a gateway.
+User-level routing processes may be interested in keeping track of such
+events, at the very least to determine if it appears the
+local or a remote gateway as failed.
+This message identifies the route which covers the remote
+hosts involved in such lossage.
+<p>
+
+<h4>RTM_MISS - A routing table lookup failed.</h4>
+
+The local system was asked to forward a packet or initiate
+a connection to a destination for which it could not find a suitable route.
+One could imagine a system attached to a wide area network
+which would only allow a limited number of active reachable destinations,
+such as an X.25 network.
+The system might only enter those active peers in the network table,
+and open new ones (or close old ones) based on the number of misses.
+<p>
+
+This may be useful for purely diagnostic purposes as well.
+<p>
+
+<h4>RTM_RESOLVE - Request to complete route info via CHANGE.</h4>
+
+This is very similar to the RTM_MISS message.
+It is intended for cloning operation (which would not otherwise
+cause an RTM_MISS type  message) where some information needs to be obtained
+externally from some process that is not convenient to be
+coded directly into the kernel.
+<p>
+     
+<h2>Measurements</h2>
+
+We performed a synthetic test of constructing a routing table of
+about 1600 entries using both the new and old methods (in a user-level
+process).
+We then searched each table randomly 100000 times for entries
+in the table.
+The routing table was constructed from data obtained on a gateway system
+at Cornell University, which stands between the Cornell campus and the NSF net.
+<p>
+
+In fact, the time required to construct a table of 1600 routes was on the
+order of half a second for either method; our test actually measured
+constructing the table 10 times and emptying it 9 times.
+The test results show the new (radix tree based) method to be about 50%
+faster in constructing the tree and 200% faster in searching it.
+The overhead column represents the time required to loop through
+all routes calling a routine that does nothing instead of adding,
+deleting or lookup a route.
+The units in the table below are user time in seconds,
+as measured on a CCI tahoe processor running 4.3 Reno BSD.
+
+<pre>
+.TS
+center;
+l |c c c
+_ _ _ _
+l |n n n.
+operation	old	new 	overhead
+create	10.28	6.75	.10
+search	29.72	7.38	.86
+</pre>
+
+<h2>References:</h2>
+
+<dl>
+<dt> [Butl]
+<dd> Butler, Duane M.   Private communication, August 1990.
+     
+<dt> [Case]
+<dd> Case, J.D., <em>et al.</em> Simple Network Management Protocol RFC
+     1157, SRI Network Information Center, May 1990.
+
+<dt> [Knut]
+<dd> Knuth, Donald E.  <em>The Art of Computer Programming</em>, Vol
+     3. pp. 490-493, Addison-Wesley, Reading MA 1973
+
+<dt> [Morr]
+<dd> Morrison, Donald R.  <em>J ACM</em> <strong>15</strong> (1968), pp. 514-534
+     
+<dt> [Leff]
+<dd> Leffler, Samuel J. <em>et al.</em> <cite>The Design and implementation
+     of the 4.3BSD UNIX\(co Operating System.</cite> Addison-Wesley,
+     Reading, MA 1988
+
+<dt> [Post]
+<dd> Postel, J.  <cite>Internet Protocol - DARPA Internet Program
+     Protocol Specification</cite>, RTC 791, USC Information Sciences
+     Institute, September 1981.
+
+<dt> [Sedg]
+<dd> Sedgwick, Robert.  <cite>Algorithms in C.</cite> pp. 253-257,
+     Addison-Wesley, Reading MA 1990
+
+<dt> [Tsuc]
+<dd> Tsuchiya, Paul.  Efficient assignement of addresses in the
+     Internet.  (IETF Proceedings, July 1990),
+</dl>
+
+<h2>Appendix A.  Radix Tree Declarations and Search Algorithm</h2>
+
+We include a somewhat simplified version of the header
+file for the radix tree; but the algorithm for searching
+the tree is taken verbatim.
+
+<pre><code>
+<em>/*
+ * Copyright (c) 1988, 1990 Regents of the University of California.
+ * All rights reserved.
+ *
+ *	@(#)radix.h	7.4a (Berkeley) 11/28/90
+ */</em>
+
+/*
+ * Common Indices
+ */
+struct radix_info {
+	short	ri_b;			<em>/* bit offset; -1-index(netmask) */</em>
+	char	ri_bmask;		<em>/* node: mask for bit test*/</em>
+	u_char	ri_flags;		<em>/* enumerated next */</em>
+}
+#define <strong>RNF_ROOT</strong>	1		<em>/* leaf is root leaf for tree */</em>
+#define <strong>RNF_ACTIVE</strong>	2		<em>/* This node is alive (for rtfree) */</em>
+
+<em>/*
+ * Radix search tree node layout.
+ */</em>
+
+struct Radix_node {
+	struct	radix_mask *rn_mklist;	<em>/* indication a mask may apply */</em>
+	struct	radix_node *rn_p;	<em>/* parent */</em>
+	struct	radix_info rn_ri;	<em>/* bit number and mask, flags */</em>
+	int	rn_off;			<em>/* precomputed offset for byte test */</em>
+	struct	radix_node *rn_l;	<em>/* progeny */</em>
+	struct	radix_node *rn_r;	<em>/* progeny */</em>
+};
+
+struct Radix_leaf {
+	struct	radix_mask *rn_mklist;	<em>/* our handle to the annotation */</em>
+	struct	radix_node *rn_p;	<em>/* parent */</em>
+	struct	radix_info rn_ri;	<em>/* bit number and mask, flags */</em>
+	caddr_t	rn_key;			<em>/* object of search */</em>
+	caddr_t	rn_mask;		<em>/* netmask, if present */</em>
+	struct	radix_node *rn_dupedkey;
+};
+<em>/*
+ * The actual radix node struct is defined
+ * in terms of a structure containing a union with copious defines such as:
+ */</em>
+#define <strong>rn_key</strong> rn_u.rn_leaf.rn_Key
+#define <strong>rn_b</strong>	rn_ri.ri_b
+
+<em>/*
+ * Annotations to tree concerning potential routes applying to subtrees.
+ */</em>
+
+extern struct radix_mask {
+	struct	radix_info rm_ri;	<em>/* bit number and mask, flags */</em>
+	struct	radix_mask *rm_mklist;	<em>/* more masks to try */</em>
+	caddr_t	rm_mask;		<em>/* the mask */</em>
+	int	rm_refs;		<em>/* # of references to this struct */</em>
+} *rn_mkfreelist;
+
+struct radix_node *
+rn_search(v, head)
+	struct radix_node *head;
+	register caddr_t v;
+{
+	register struct radix_node *x;
+
+	for (x = head; x->rn_b >= 0;) {
+		if (x->rn_bmask & v[x->rn_off])
+			x = x->rn_r;
+		else
+			x = x->rn_l;
+	}
+	return x;
+};
+</code></pre>
+
+<h2>Appendix B: Header Files for routing mesages, structures.</h2>
+
+This also is a slightly simplified version of
+the actual header file:
+
+<pre><code>
+<em>/*
+ *  Copyright (c) 1980, 1990 Regents of the University of California.
+ *  All rights reserved.
+ *
+ *	@(#)route.h	7.12a (Berkeley) 11/28/90
+ */</em>
+
+<em>/*
+ * These numbers are used by reliable protocols for determining
+ * retransmission behavior and are included in the routing structure.
+ */</em>
+struct rt_metrics {
+	u_long	rmx_locks;	<em>/* Kernel must leave these values alone */</em>
+	u_long	rmx_mtu;	<em>/* MTU for this path */</em>
+	u_long	rmx_hopcount;	<em>/* max hops expected */</em>
+	u_long	rmx_expire;	<em>/* lifetime for route, e.g. redirect */</em>
+	u_long	rmx_recvpipe;	<em>/* inbound delay-bandwith product */</em>
+	u_long	rmx_sendpipe;	<em>/* outbound delay-bandwith product */</em>
+	u_long	rmx_ssthresh;	<em>/* outbound gateway buffer limit */</em>
+	u_long	rmx_rtt;	<em>/* estimated round trip time */</em>
+	u_long	rmx_rttvar;	<em>/* estimated rtt variance */</em>
+};
+<em>/*
+ * Bits for locking and initializing metrics
+ */</em>
+#define <strong>RTV_MTU</strong>		0x1	<em>/* init or lock _mtu */</em>
+#define <strong>RTV_HOPCOUNT</strong>	0x2	<em>/* init or lock _hopcount */</em>
+#define <strong>RTV_EXPIRE</strong>	0x4	<em>/* init or lock _hopcount */</em>
+#define <strong>RTV_RPIPE</strong>	0x8	<em>/* init or lock _recvpipe */</em>
+#define <strong>RTV_SPIPE</strong>	0x10	<em>/* init or lock _sendpipe */</em>
+#define <strong>RTV_SSTHRESH</strong>	0x20	<em>/* init or lock _ssthresh */</em>
+#define <strong>RTV_RTT</strong>		0x40	<em>/* init or lock _rtt */</em>
+#define <strong>RTV_RTTVAR</strong>	0x80	<em>/* init or lock _rttvar */</em>
+
+struct rtentry {
+	struct	radix_node rt_nodes[2];	<em>/* tree glue, and other values */</em>
+#define	<strong>rt_key(r)</strong>	((struct sockaddr *)((r)->rt_nodes->rn_key))
+#define	<strong>rt_mask(r)</strong>	((struct sockaddr *)((r)->rt_nodes->rn_mask))
+	struct	sockaddr *rt_gateway;	<em>/* value */</em>
+	short	rt_flags;		<em>/* up/down?, host/net */</em>
+	short	rt_refcnt;		<em>/* # held references */</em>
+	u_long	rt_use;			<em>/* raw # packets forwarded */</em>
+	struct	ifnet *rt_ifp;		<em>/* the answer: interface to use */</em>
+	struct	ifaddr *rt_ifa;		<em>/* the answer: interface to use */</em>
+	struct	sockaddr *rt_genmask;	<em>/* for generation of cloned routes */</em>
+	caddr_t	rt_llinfo;		<em>/* pointer to link level info cache */</em>
+	struct	rt_metrics rt_rmx;	<em>/* metrics used by rx'ing protocols */</em>
+	short	rt_idle;		<em>/* easy to tell llayer still live */</em>
+};
+<em>/*
+ * Flags
+ */</em>
+#define <strong>RTF_UP</strong>		0x1		<em>/* route useable */</em>
+#define <strong>RTF_GATEWAY</strong>	0x2		<em>/* destination is a gateway */</em>
+#define <strong>RTF_HOST</strong>	0x4		<em>/* host entry (net otherwise) */</em>
+#define <strong>RTF_REJECT</strong>	0x8		<em>/* host or net unreachable */</em>
+#define <strong>RTF_DYNAMIC</strong>	0x10		<em>/* created dynamically (by redirect) */</em>
+#define <strong>RTF_MODIFIED</strong>	0x20		<em>/* modified dynamically (by redirect) */</em>
+#define <strong>RTF_DONE</strong>	0x40		<em>/* message confirmed */</em>
+#define <strong>RTF_MASK</strong>	0x80		<em>/* subnet mask present */</em>
+#define <strong>RTF_CLONING</strong>	0x100		<em>/* generate new routes on use */</em>
+#define <strong>RTF_XRESOLVE</strong>	0x200		<em>/* external daemon resolves name */</em>
+#define <strong>RTF_LLINFO</strong>	0x400		<em>/* generated by ARP or ESIS */</em>
+<em>/*
+ * Structures for routing messages.
+ */</em>
+struct rt_msghdr {
+	u_short	rtm_msglen;	<em>/* to skip over non-understood messages */</em>
+	u_char	rtm_version;	<em>/* future binary compatability */</em>
+	u_char	rtm_type;	<em>/* message type */</em>
+	u_short	rtm_index;	<em>/* index for associated ifp */</em>
+	pid_t	rtm_pid;	<em>/* identify sender */</em>
+	int	rtm_addrs;	<em>/* bitmask identifying sockaddrs in msg */</em>
+	int	rtm_seq;	<em>/* for sender to identify action */</em>
+	int	rtm_errno;	<em>/* why failed */</em>
+	int	rtm_flags;	<em>/* flags, incl. kern & message, e.g. DONE */</em>
+	int	rtm_use;	<em>/* from rtentry */</em>
+	u_long	rtm_inits;	<em>/* which metrics we are initializing */</em>
+	struct	rt_metrics rtm_rmx;   <em>/* metrics themselves */</em>
+};
+<em>/*
+ * Message Types
+ */</em>
+#define <strong>RTM_ADD</strong>		0x1	<em>/* Add Route */</em>
+#define <strong>RTM_DELETE</strong>	0x2	<em>/* Delete Route */</em>
+#define <strong>RTM_CHANGE</strong>	0x3	<em>/* Change Metrics or flags */</em>
+#define <strong>RTM_GET</strong>		0x4	<em>/* Report Metrics */</em>
+#define <strong>RTM_LOSING</strong>	0x5	<em>/* Kernel Suspects Partitioning */</em>
+#define <strong>RTM_REDIRECT</strong>	0x6	<em>/* Told to use different route */</em>
+#define <strong>RTM_MISS</strong>	0x7	<em>/* Lookup failed on this address */</em>
+#define <strong>RTM_LOCK</strong>	0x8	<em>/* fix specified metrics */</em>
+#define <strong>RTM_OLDADD</strong>	0x9	<em>/* caused by SIOCADDRT */</em>
+#define <strong>RTM_OLDDEL</strong>	0xa	<em>/* caused by SIOCDELRT */</em>
+#define <strong>RTM_RESOLVE</strong>	0xb	<em>/* req to resolve dst to LL addr */</em>
+<em>/*
+ * Bits for identifying trailing or optional sockaddrs.
+ */</em>
+#define <strong>RTA_DST</strong>		0x1	<em>/* destination sockaddr present */</em>
+#define <strong>RTA_GATEWAY</strong>	0x2	<em>/* gateway sockaddr present */</em>
+#define <strong>RTA_NETMASK</strong>	0x4	<em>/* netmask sockaddr present */</em>
+#define <strong>RTA_GENMASK</strong>	0x8	<em>/* cloning mask sockaddr present */</em>
+#define <strong>RTA_IFP</strong>		0x10	<em>/* interface name sockaddr present */</em>
+#define <strong>RTA_IFA</strong>		0x20	<em>/* interface addr sockaddr present */</em>
+#define <strong>RTA_AUTHOR</strong>	0x40	<em>/* sockaddr for author of redirect */</em>
+</code></pre>
+</body>
+</html>

@@ -1,0 +1,128 @@
+From @relay.cs.net:rad@tekgen.csc.tek.com  Sat Mar  5 07:22:18 1988
+Subject: window dumps core when deleting lines
+Index: ucb/window/wwdelline.c 4.3BSD
+Date: 04 Mar 88 12:30:59 PST (Fri)
+From: rad@tekgen.csc.tek.com
+
+Description:
+	When a line is deleted from a window, wwdelline() rearranges
+	the line buffer pointers so that the deleted line is now at the
+	bottom of the ww_buf[rownumber] array.  It then clears that
+	line.  If the line is visible, wwdelline() just calls
+	wwclreol() to clear the line.  If the line is not visible,
+	wwdelline writes the spaces itself, presumably avoiding some
+	unnecessary work that wwclreol() would have done.
+
+	If the left column of the window buffer (ww_b.l) is non-zero,
+	an offset proportional to the number of columns and the sizeof
+	the structure elements must be added to the row pointer to make
+	it point directly at the line -- wwdelline() does not do this.
+	If the zeroth line of a window is deleted, some of the line
+	pointers themselves may be overwritten, leading to a
+	segmentation violation when they are used again as pointers.
+
+	Inspection of the code indicates that the same problem exists in
+	wwinsline.c.  In the case of wwinsline() however, the mis-written
+	addresses are at the bottom of the buffer and so they wouldn't
+	get used as pointers (so no core dump).  I guess it will just
+	scribble on some adjacent line's data.  Since I have not actually
+	witnessed wwinsline() failing, I did not include a fix for it
+	in this report.
+
+Repeat-By:
+	Use this as your .windowrc:
+
+window (row = 4, nrow = $nrow*2/3 , column = $ncol/10, ncol = $ncol*8/10 )
+
+	Start up vi.  Create two empty lines, and move the cursor to the
+	top one (this needs to also be the top line of the window.  If vi
+	uses a smaller window for some reason [like baud rate] then you'll
+	need to coerce it to use the whole screen).  Type 'dddd' to delete
+	the two lines.  When the second line is deleted, window will crash.
+Fix:
+	I include three possible ways of fixing wwdelline().
+
+	This is in the section that begins with "Now clear the last line",
+	at the bottom of wwdelline.c .  The simplest fix is to call
+	wwclreol1() always, not just when the line is visible.
+
+======== first fix ========
+*** .dist/wwdelline.c	Wed Apr 24 17:09:59 1985
+--- wwdelline.c	Thu Mar  3 20:46:03 1988
+***************
+*** 48,56 ****
+  	/*
+  	 * Now clear the last line.
+  	 */
+! 	if (visible)
+! 		wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+! 	else
+! 		for (i = w->ww_b.nc; --i >= 0;)
+! 			cp++->c_w = ' ';
+  }
+--- 48,52 ----
+  	/*
+  	 * Now clear the last line.
+  	 */
+! 	wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+  }
+===========================
+
+	Alternatively, the current functionality may be retained by
+	adding the necessary offset to cp before looping through the
+	line writing spaces.
+
+======== second fix ========
+*** .dist/wwdelline.c	Wed Apr 24 17:09:59 1985
+--- wwdelline.c	Thu Mar  3 20:48:05 1988
+***************
+*** 50,56 ****
+  	 */
+  	if (visible)
+  		wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+! 	else
+  		for (i = w->ww_b.nc; --i >= 0;)
+  			cp++->c_w = ' ';
+  }
+--- 50,61 ----
+  	 */
+  	if (visible)
+  		wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+! 	else {
+! 		/*
+! 		 * add in offset for left margin
+! 		 */
+! 		cp = cp + w->ww_b.l * sizeof (w->ww_buf[w->ww_b.l][w->ww_b.t]);
+  		for (i = w->ww_b.nc; --i >= 0;)
+  			cp++->c_w = ' ';
++ 	}
+  }
+============================
+
+	Having said this much, I think it is clearer to index back into
+	ww_buf, just as wwclreol() will:
+
+======== third fix ========
+*** .dist/wwdelline.c	Wed Apr 24 17:09:59 1985
+--- wwdelline.c	Thu Mar  3 21:28:54 1988
+***************
+*** 50,56 ****
+  	 */
+  	if (visible)
+  		wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+! 	else
+  		for (i = w->ww_b.nc; --i >= 0;)
+  			cp++->c_w = ' ';
+  }
+--- 50,58 ----
+  	 */
+  	if (visible)
+  		wwclreol1(w, w->ww_b.b - 1, w->ww_b.l, deleted);
+! 	else {
+! 		cp = &(w->ww_buf[w->ww_b.b - 1][w->ww_b.l]);
+  		for (i = w->ww_b.nc; --i >= 0;)
+  			cp++->c_w = ' ';
++ 	}
+  }
+===========================
+

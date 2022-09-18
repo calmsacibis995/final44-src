@@ -1,0 +1,518 @@
+head	1.8;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.8
+date	94.12.20.21.04.03;	author margo;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	94.11.29.16.35.01;	author margo;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	94.10.04.19.42.16;	author margo;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	94.09.20.17.48.56;	author margo;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	94.09.20.14.48.24;	author margo;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	94.05.26.19.09.29;	author margo;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	94.05.26.13.57.19;	author margo;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	94.05.13.21.33.00;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@Original wafs-only version
+@
+
+
+1.8
+log
+@Add inchkpt field (in checkpoint).
+@
+text
+@#ifdef CLFS
+/*
+ * CLFS
+ * $Log: mkwafs.c,v $
+ * Revision 1.7  1994/11/29  16:35:01  margo
+ * Remove extraneous debugging messages
+ *
+ * Revision 1.6  1994/10/04  19:42:16  margo
+ * Incorporate merged BSD/AIX wafs code.  Still has compiler error.
+ *
+ * Revision 1.1  1994/09/21  18:33:49  jat
+ * Initial working version for WAFS.
+ *
+ */
+#endif
+
+/*
+ * Copyright (c) 1994 The President and Fellows of Harvard University.
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+static char *rcsid = "$Id";
+
+#ifdef AIX
+#include <sys/cdefs.h>
+#include <sys/bsd_param.h>
+#else
+#include <sys/param.h>
+#endif
+#include <sys/disklabel.h>
+#include <sys/time.h>
+#include <sys/mount.h>
+
+#include <ufs/wafs/wafs.h>
+#include <ufs/wafs/wnode.h>
+
+#include <unistd.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "extern.h"
+
+static struct wafs wafs_default =  {
+	/* *wafs_link */	NULL,
+	/* *wafs_rlink */	NULL,
+	/* wafs_magic */	WAFS_MAGIC,
+	/* wafs_version */	WAFS_DEF_VERSION,
+	/* wafs_sblkno */	WAFS_DEF_SBLKNO,
+	/* wafs_interval */	WAFS_DEF_INTERVAL,
+	/* wafs_int_shift */	WAFS_DEF_INT_SHIFT,
+	/* wafs_time */		0,
+	/* wafs_rtime */	0,
+	/* wafs_size */		0,
+	/* wafs_dsize */	0,
+	/* wafs_bsize */	WAFS_DEF_BSIZE,
+	/* wafs_minfree */	0,
+	/* wafs_maxthreads */	WAFS_DEF_MAX_THREADS,
+	/* wafs_bmask */	WAFS_DEF_BMASK,
+	/* wafs_bshift */	WAFS_DEF_BSHIFT,
+	/* wafs_fsbtodb */	WAFS_DEF_FSBTODB,
+	/* wafs_sbsize */	WAFS_SBSIZE,
+	/* wafs_sbshift */	0,
+	/* wafs_bfree */	0,
+	/* wafs_tinfopb */	WAFS_DEF_BSIZE / sizeof(struct tinfo),
+	/* wafs_lsn */		0,
+	/* wafs_check */	0,
+	/* wafs_head */		0,
+	/* wafs_tail */		0,
+	/* wafs_state */	1,
+	/* wafs_inchkpt */	0,
+	/* wafs_fmod */		0,
+	/* wafs_clean */	1,
+	/* wafs_ronly */	0,
+	/* wafs_flags */	0,
+	/* wafs_fsmnt[MAXMNTLEN] */	{ 0 },
+	/* wafs_pad */		{ 0 },
+	/* wafs_id */		0,
+	/* wafs_cksum */	0
+};
+
+
+int
+mkwafs(fd, lp, partp, minfree, block_size, num_threads, id)
+	int fd;
+	struct disklabel *lp;
+	struct partition *partp;
+	int minfree;
+	int block_size;
+	int num_threads;
+	long id;
+{
+	struct wafs *wafsp;	/* Superblock */
+	struct wafs_header *rechdrp;	/* Log record header */
+	wafs_page_header_t *page_headerp;	/* Header on a wafs data page */
+	daddr_t	sb_addr;	/* Address of superblocks */
+	char *page;		/* Temporary buffer */
+	int bsize;		/* Block size */
+	int threads;		/* Number of log threads */
+	int db_per_fb;		/* Disk blocks per file block */
+	int off;		/* Offset at which to write */
+	int num_sbblocks;	/* Number of sbblocks in the file system */
+
+#ifdef DIAGNOSTIC
+	printf("Making WAFS filesystem on %s\n", special);
+#endif
+	wafsp = &wafs_default;
+
+	if (!(bsize = block_size))
+		bsize = WAFS_DEF_BSIZE;
+	if (!(threads = num_threads))
+		threads = WAFS_DEF_MAX_THREADS;
+
+	/* Modify parts of superblock overridden by command line arguments */
+	if (bsize != WAFS_DEF_BSIZE) {
+		wafsp->wafs_bshift = log2(bsize);
+		if (1 << wafsp->wafs_bshift != bsize)
+			fatal("%d: block size not a power of 2", bsize);
+		wafsp->wafs_bsize = bsize;
+		wafsp->wafs_bmask = bsize - 1;
+		wafsp->wafs_tinfopb = bsize / sizeof(struct tinfo);
+	}
+
+	if (minfree)
+		wafsp->wafs_minfree = minfree;
+	wafsp->wafs_maxthreads = threads;
+	wafsp->wafs_id = id;
+
+	/*
+	 * Fill in parts of superblock that can be computed from file system
+	 * size, disk geometry and current time.
+	 */
+	db_per_fb = bsize/lp->d_secsize;
+	wafsp->wafs_fsbtodb = log2(db_per_fb);
+	wafsp->wafs_size = partp->p_size >> wafsp->wafs_fsbtodb;
+
+	/*
+	 * To set the number of data blocks in the file system, we have
+	 * subtract off the LABEL, the superblocks, and any thread-id
+	 * blocks.
+	 */
+	wafsp->wafs_dsize =
+	    wafsp->wafs_size - (SBOFF >> wafsp->wafs_bshift);
+
+	/*
+	 * Figure out how many superblocks are in the whole file system.
+	 * We want to compute the ceiling of the number of blocks divided
+	 * by the size of the interval expressed in blocks.  SBSHIFT is
+	 * used to convert from superblocks to file system blocks.  The
+	 * computation is the ceiling of the number of superblocks in
+	 * the entire file system divided by the size of the interval.
+	 */
+	wafsp->wafs_sbshift = log2(WAFS_SBSIZE >> wafsp->wafs_bshift);
+	num_sbblocks = 1 + ((wafsp->wafs_dsize >> wafsp->wafs_sbshift)  - 1
+	    >> wafsp->wafs_int_shift);
+	/* Subtract enough file system blocks to account for the superblocks */
+	wafsp->wafs_dsize -= (num_sbblocks << wafsp->wafs_sbshift);
+
+	/* Now substract blocks to hold thread info */
+/* Not Yet Supported
+	wafsp->wafs_dsize -=
+	    max_threads + wafsp->wafs_tinfopb - 1 / wafsp->wafs_tinfopb;
+*/
+	wafsp->wafs_bfree = wafsp->wafs_dsize;
+
+	if ((wafsp->wafs_time = time(NULL)) == -1)
+		fatal("time: %s", strerror(errno));
+	wafsp->wafs_rtime = wafsp->wafs_time;
+
+	/*
+	 * Figure out where the superblocks are going to live.
+	 * sb_addr is expressed in disk blocks.
+	 */
+	for (sb_addr = SBLOCK;
+	    num_sbblocks--;
+	    sb_addr += SB_INTERVAL_DB(wafsp)) {
+
+		off = sb_addr * lp->d_secsize;
+
+		/* Calculate checksum */
+		wafsp->wafs_cksum = cksum(wafsp,
+		    sizeof(struct wafs) - sizeof(wafsp->wafs_cksum));
+
+		printf("0x%x(byte 0x%x) ", sb_addr, off);
+		if (num_sbblocks % 6 == 0)
+			printf("\n");
+		put(fd, off, wafsp, WAFS_SBSIZE);
+	}
+#ifdef DIAGNOSTIC
+	printf("head: %lx tail: %lx\n", wafsp->wafs_head,
+	    wafsp->wafs_tail);
+#endif
+
+	/*
+	 * Now write first page of the log.  We identify the log end by
+	 * a log record with record type NO_RECORD and length 0 so that
+	 * zero'd pages look like the end of log.
+	 */
+	sb_addr = SBLOCK + (1 << wafsp->wafs_sbshift + wafsp->wafs_fsbtodb);
+	off = sb_addr * lp->d_secsize;
+
+	/* Now create a blank page that we can initialize. */
+	if ((page = (char *)malloc(wafsp->wafs_bsize)) == NULL) {
+		perror("new_wafs:");
+		return(1);
+	}
+
+#ifdef DIAGNOSTIC
+	printf("Writing Page and record header\n");
+#endif
+	page_headerp = (wafs_page_header_t *)page;
+	page_headerp->tv_usec = wafsp->wafs_time;
+	page_headerp->tv_sec = 0;
+	rechdrp = (struct wafs_header *)
+	    (page + sizeof(wafs_page_header_t));
+	rechdrp->length = 0;
+	rechdrp->rectype = WAFS_NORECORD;
+	put(fd, off, page, wafsp->wafs_bsize);
+	free(page);
+
+	/* Now write the thread information */
+
+	close(fd);
+	return (0);
+}
+
+void
+wafsinit()
+{}
+
+@
+
+
+1.7
+log
+@Remove extraneous debugging messages
+@
+text
+@d5 3
+d99 1
+@
+
+
+1.6
+log
+@Incorporate merged BSD/AIX wafs code.  Still has compiler error.
+@
+text
+@d5 3
+d129 1
+a129 1
+	printf("MAKING WAFS FILESYSTEM ON %s\n", special);
+d208 5
+d214 2
+a215 4
+		printf("Writing Superblock at block 0x%x, byte 0x%x\n",
+		    sb_addr, off);
+		printf("head: %lx tail: %lx\n", wafsp->wafs_head,
+		    wafsp->wafs_tail);
+a216 2
+		put(fd, off, wafsp, WAFS_SBSIZE);
+	}
+@
+
+
+1.5
+log
+@We were never writing multiple SBs and were writing fractions
+of blocks to disk.
+@
+text
+@d1 12
+a12 1
+/*-
+d44 1
+d46 4
+a49 4
+#ifndef lint
+static char sccsid[] = "@@(#)lfs.c	8.1 (Berkeley) 6/5/93";
+#endif /* not lint */
+
+d51 1
+d61 1
+a63 1
+#include "config.h"
+a103 25
+/*
+ * Am I going to support naming and directories in WAFS?
+
+struct direct lfs_root_dir[] = {
+	{ ROOTINO, sizeof(struct direct), DT_DIR, 1, "."},
+	{ ROOTINO, sizeof(struct direct), DT_DIR, 2, ".."},
+	{ LFS_IFILE_INUM, sizeof(struct direct), DT_REG, 5, "ifile"},
+	{ LOSTFOUNDINO, sizeof(struct direct), DT_DIR, 10, "lost+found"},
+};
+
+struct direct lfs_lf_dir[] = {
+        { LOSTFOUNDINO, sizeof(struct direct), DT_DIR, 1, "." },
+        { ROOTINO, sizeof(struct direct), DT_DIR, 2, ".." },
+};
+
+
+
+static daddr_t make_dinode 
+	__P((ino_t, struct dinode *, int, daddr_t, struct lfs *));
+static void make_dir __P(( void *, struct direct *, int));
+ *
+ */
+
+static void put __P((int, off_t, void *, size_t));
+
+d105 1
+a105 1
+make_wafs(fd, lp, partp, minfree, block_size, num_threads, id)
+d125 3
+d208 1
+a208 1
+		printf("head: %qx tail: %qx\n", wafsp->wafs_head,
+a244 17
+}
+
+static void
+put(fd, off, p, len)
+	int fd;
+	off_t off;
+	void *p;
+	size_t len;
+{
+	int wbytes;
+
+	if (lseek(fd, off, SEEK_SET) < 0)
+		fatal("%s: %s", special, strerror(errno));
+	if ((wbytes = write(fd, p, len)) < 0)
+		fatal("%s: %s", special, strerror(errno));
+	if (wbytes != len)
+		fatal("%s: short write (%d, not %d)", special, wbytes, len);
+@
+
+
+1.4
+log
+@Checksum computation incorrect -- need to take sizeof the
+wafs structure, not the pointer to it.
+@
+text
+@d127 2
+a128 3
+	struct wafs_header rechdr;	/* Log record header */
+	wafs_page_header_t page_header;	/* Header on a wafs data page */
+	daddr_t	last_sb_addr;	/* Address of superblocks */
+a133 1
+	int i, j;
+d177 5
+d184 2
+a185 3
+	num_sbblocks = 1 +
+	    (wafsp->wafs_dsize >> WAFS_DEF_BSHIFT + wafsp->wafs_sbshift);
+
+d200 8
+a207 4
+	/* Figure out where the superblocks are going to live */
+	for (sb_addr = SBLOCK; num_sbblocks--; ) {
+		sb_addr << (wafsp->wafs_sbshift +
+		    wafsp->wafs_int_shift + wafsp->wafs_fsbtodb);
+d210 3
+a212 3
+	/* Calculate checksum */
+	wafsp->wafs_cksum =
+	    cksum(wafsp, sizeof(struct wafs) - sizeof(wafsp->wafs_cksum));
+d215 4
+a218 2
+	printf("Writing Superblock at block 0x%X, byte 0x%X\n", sb_addr, off);
+	printf("head: %qx tail: %qx\n", wafsp->wafs_head, wafsp->wafs_tail);
+a229 13
+	page_header.tv_usec = wafsp->wafs_time;
+	page_header.tv_sec = 0;
+#ifdef DIAGNOSTIC
+	printf("Writing Page header\n");
+#endif
+	put(fd, off, &page_header, sizeof(wafs_page_header_t));
+	off += sizeof(wafs_page_header_t);
+	rechdr.length = 0;
+	rechdr.rectype = WAFS_NORECORD;
+#ifdef DIAGNOSTIC
+	printf("Writing End-of-Log record header\n");
+#endif
+	put(fd, off, &rechdr, sizeof(rechdr));
+d231 1
+a231 1
+	/* Now write read of page */
+d237 11
+a247 1
+	put(fd, off + sizeof(rechdr), page, wafsp->wafs_bsize - sizeof(rechdr));
+@
+
+
+1.3
+log
+@Add checksum calculation
+@
+text
+@d206 1
+a206 1
+	    cksum(wafsp, sizeof(wafsp) - sizeof(wafsp->wafs_cksum));
+@
+
+
+1.2
+log
+@Add an id field to file system creation so that we can associate
+logs with their file system.
+@
+text
+@d87 1
+a87 1
+	/* wafs_cksum */	WAFS_CKSUM
+d203 5
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d86 1
+d117 1
+a117 1
+make_wafs(fd, lp, partp, minfree, block_size, num_threads)
+d124 1
+d159 1
+@

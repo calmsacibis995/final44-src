@@ -1,0 +1,99 @@
+From lepreau@utah-cs.ARPA  Sun Jan 18 00:04:37 1987
+Received: by ucbarpa.Berkeley.EDU (5.57/1.20)
+	id AA26525; Sun, 18 Jan 87 00:04:37 PST
+Received: by utah-cs.ARPA (5.31/4.40.2)
+	id AA13951; Sun, 18 Jan 87 01:06:08 MST
+Date: Sun, 18 Jan 87 01:06:08 MST
+From: lepreau@utah-cs.arpa (Jay Lepreau)
+Message-Id: <8701180806.AA13951@utah-cs.ARPA>
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Cc: peter@utah-cs.ARPA
+Subject: TIME_WAIT should be terminated when a new SYN arrives
+
+Index:	sys/netinet/tcp_input.c		4.3BSD Fix
+
+Description:
+The second of two rsh's or two lpq's in succession takes six seconds
+longer to finish than normal.  This has been bugging me for a long time
+(in 4.3 beta it took 10 seconds longer), so one night Peter Ford and I
+tracked it down.
+
+The server is in TIME_WAIT state after the first rsh finishes.  Then it
+receives a SYN packet (from the new rsh) with a much higher sequence
+number, but with the exact same ports and hosts as before ==> it's on
+the same connection.  Therefore the packet is treated as a garbage
+packet on the old connection, and an ACK for the last valid packet
+received is sent back.  The client receives the bogus (to it) ACK and
+sends a RST.  Note that the client never got an ACK for its SYN.  Six
+seconds later the client's REXMT goes off, it resends the SYN and
+everything works fine, since the RST clobbered the server's old connection.
+
+I have verified that this bug in the TIME_WAIT side is in all the Unix
+kernels here (4.3 BSD, Sun 3.0, Ultrix 1.2, Apollo Aegis 9.2, Gould UTX
+2.0, HP-UX, SGI 3.5, Integrated Solutions, and presumably 4.2 BSD), but
+it only becomes noticeable when the client is a 4.3 system, which has a
+much longer initial RTT than the old ones.  They were only about one
+second, so the SYN got retransmitted much faster and people didn't notice.
+
+With the applications distributed with 4.3, this only happens with
+client programs which ask for a privileged port, because they are the
+only ones which specify a specific local port.  All other ones just use
+a zero local port and the kernel assigns the next higher free one (more
+or less), causing the SYN packet to be on a new connection.  However,
+this problem could happen to a user program too, if it asked for a
+specific port.
+
+Repeat-By:
+	time rsh <host> /bin/date; time rsh <host> /bin/date
+
+The second one will take 6 seconds (beta * SRTTBASE) longer elapsed time
+than the 1st.  Trial and error discovers that a sleep of 30 seconds (2 *
+MSL) is required between the two commands before the elapsed times are equal.
+
+Fix:
+That a host must dally in TIME_WAIT for 2*MSL "no matter what" seems to
+be either a hole in the TCP spec, or an excessively strict
+interpretation of it.  If in TIME_WAIT a packet arrives, seemingly on
+that connection but 1) with a sequence number putting it beyond the
+window and 2) with SYN set, then it is really for a new connection, and
+there is no need to dally in TIME_WAIT anymore, because the sender
+clearly got your ACK.  In that case we just close the tcb and go back
+and run in_pcblookup again.
+
+One might consider fixing up the privilege-port-picking code in
+in_pccbind and rrsevport.  That wouldn't hurt, but we think the
+real fix is above.
+
+Your line numbers may differ slightly, cause this patch is to sccs id 6.22.
+
+*** /tmp/,RCSt1013099	Sat Jan 17 23:46:35 1987
+--- tcp_input.c	Tue Jan 13 03:13:30 1987
+***************
+*** 259,262 ****
+--- 259,263 ----
+  	ti->ti_urp = ntohs(ti->ti_urp);
+  
++ getpcb:
+  	/*
+  	 * Locate pcb for segment.
+***************
+*** 520,525 ****
+  		todrop = (ti->ti_seq+ti->ti_len) - (tp->rcv_nxt+tp->rcv_wnd);
+  		if (todrop > 0) {
+! 			if (todrop >= ti->ti_len)
+  				goto dropafterack;
+  			m_adj(m, -todrop);
+  			ti->ti_len -= todrop;
+--- 521,532 ----
+  		todrop = (ti->ti_seq+ti->ti_len) - (tp->rcv_nxt+tp->rcv_wnd);
+  		if (todrop > 0) {
+! 			if (todrop >= ti->ti_len) {
+! 				if ((tiflags & TH_SYN) &&  /* new connection */
+! 				    tp->t_state == TCPS_TIME_WAIT) {
+! 					tcp_close(tp);
+! 					goto getpcb;
+! 				}
+  				goto dropafterack;
++ 			}
+  			m_adj(m, -todrop);
+  			ti->ti_len -= todrop;

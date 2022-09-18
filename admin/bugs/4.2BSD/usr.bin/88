@@ -1,0 +1,62 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn ()
+Date: Wed, 23 Nov 83 15:13:21 pst
+Subject: Computed GOTOs can cause f77 to dump core
+Index: usr.bin/f77/src/f77pass1/regalloc.c 4.2BSD
+
+Description:
+	This problem occurs in the f77 compiler supplied on a tape
+	made on 8/23/83.
+
+	While compiling a program with 'f77 -O ...' that contains
+	a computed GOTO, f77 stops with a 'Termination code 11' or
+	'Termination code 132' and a core dump of f77pass1 is left
+	behind.  This only occurs with a certain very large program
+	which I have that is generated with a ratfor-like pre-
+	processor and contains zillions of gotos and DO loops.
+
+Repeat-By:
+	The program that causes this is much too large to send by
+	mail or news, but it is available on request.  I have tried
+	replicating the problem with smaller programs, to no avail.
+	The program contains the line:
+
+		GOTO(16,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15),COMBO
+
+Fix:
+	Fortunately the error is fairly obvious.  Running dbx on
+	f77pass1 shows that it dies with the PC in the routine alreg()
+	of regalloc.c.  At that point it is in code that handles
+	computed GOTOs; it is running through a list of all the labels
+	used by the computed GOTO statement.  If it finds that a label
+	is outside of the current DO loop, it flags it and breaks the
+	loop.  If it runs through the list and finds no such branches,
+	it should just fall out.  Unfortunately the test for the last
+	label at the top of the for loop has an off-by-one error and
+	skips off the end into never-never land.  This test IS handled
+	correctly in very similar code earlier in the same routine, so
+	it is clear what the correct code should be (in
+	src/f77pass1/regalloc.c):
+
+	***************
+	*** 835,841
+	  
+		    case SKCMGOTO:
+		      lp = (struct Labelblock **) sp->ctlinfo;
+	! 	      for (i = 0; i <= sp->label; i++, lp++)
+			if (!locallabel((*lp)->labelno))
+			  {
+			    gensetall(sp);
+
+	--- 861,867 -----
+	  
+		    case SKCMGOTO:
+		      lp = (struct Labelblock **) sp->ctlinfo;
+	! 	      for (i = 0; i < sp->label; i++, lp++)
+			if (!locallabel((*lp)->labelno))
+			  {
+			    gensetall(sp);
+
+Donn Seeley    UCSD Chemistry Dept. RRCF    ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016    sdcsvax!sdchema!donn@noscvax
+

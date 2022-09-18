@@ -1,0 +1,535 @@
+head     1.6;
+access   jkf layer sklower;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.6
+date     87.12.15.16.59.55;  author sklower;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     83.08.28.17.14.27;  author layer;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     83.08.12.02.46.43;  author layer;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     83.03.23.20.50.32;  author layer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     83.03.14.14.11.54;  author jkf;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     83.01.26.12.13.10;  author jkf;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@databases for declarations
+@
+
+
+1.6
+log
+@cci changes from purdue
+@
+text
+@(include-if (null (get 'chead 'version)) "../chead.l")
+(Liszt-file datab
+   "$Header: /b/users/housel/lisp/liszt/RCS/datab.l,v 1.1 86/10/20 09:50:52 housel Exp $")
+
+;;; ----	d a t a b			data base
+;;;
+;;;				-[Sat Aug  6 23:59:11 1983 by layer]-
+
+;--- d-tranloc :: locate a function in the transfer table
+;
+; return the offset we should use for this function call
+;
+(defun d-tranloc (fname)
+   (cond ((get fname g-tranloc))
+	 (t (Push g-tran fname)
+	    (let ((newval (* 8 g-trancnt)))
+		(putprop fname newval g-tranloc)
+		(incr g-trancnt)
+		newval))))
+
+
+;--- d-loc :: return the location of the variable or value in IADR form 
+;	- form : form whose value we are to locate
+;
+; if we are given a xxx as form, we check yyy;
+;	xxx		yyy
+;     --------	     ---------
+;	nil	     Nil is always returned
+;	symbol	     return the location of the symbols value, first looking
+;		     in the registers, then on the stack, then the bind list.
+;		     If g-ingorereg is t then we don't check the registers.
+;		     We would want to do this if we were interested in storing
+;		     something in the symbol's value location.
+;	number	     always return the location of the number on the bind
+;		     list (as a (lbind n))
+;	other	     always return the location of the other on the bind
+;		     list (as a (lbind n))
+;
+(defun d-loc (form)
+   (if (null form) then 'Nil
+    elseif (numberp form) then
+	 (if (and (fixp form) (greaterp form -1025) (lessp form 1024))
+	     then `(fixnum ,form)		; small fixnum
+	     else (d-loclit form nil))
+    elseif (symbolp form) 
+       then (if (and (null g-ignorereg) (car (d-bestreg form nil))) thenret
+		else (if (d-specialp form) then (d-loclit form t)
+			 else (do ((ll g-locs (cdr ll))	; check stack
+				   (n g-loccnt))
+				  ((null ll)
+				   (comp-warn (or form)
+					      " declared special by compiler")
+				   (d-makespec form)
+				   (d-loclit form t))
+				  (if (atom (car ll))
+				      then (if (eq form (car ll))
+					       then (return `(stack ,n))
+					       else (setq n (1- n)))))))
+       else (d-loclit form nil)))
+
+
+;--- d-loclit :: locate or add litteral to bind list
+;	- form : form to check for and add if not present
+;	- flag : if t then if we are given a symbol, return the location of
+;		 its value, else return the location of the symbol itself
+;
+; scheme: we share the locations of atom (symbols,numbers,string) but always
+;	 create a fresh copy of anything else.
+(defun d-loclit (form flag)
+   (prog (loc onplist symboltype)
+       (if (null form) 
+	   then (return 'Nil)
+	elseif (symbolp form)
+	   then (setq symboltype t)
+		(cond ((setq loc (get form g-bindloc))
+		       (setq onplist t)))
+	elseif (atom form)
+	   then (do ((ll g-lits (cdr ll))	; search for atom on list
+		     (n g-litcnt (1- n)))
+		    ((null ll))
+		    (if (eq form (car ll))
+			then (setq loc n)	; found it
+			     (return))))	; leave do
+       (if (null loc)
+	   then (Push g-lits form)
+		(setq g-litcnt (1+ g-litcnt)
+		      loc g-litcnt)
+		(cond ((and symboltype (null onplist))
+		       (putprop form loc g-bindloc))))
+
+       (return (if (and flag symboltype) then `(bind ,loc)
+		   else `(lbind ,loc)))))
+			     
+
+
+;--- d-locv :: find the location of a value cell, and dont return a register
+;
+(defun d-locv (sm)
+  (let ((g-ignorereg t))
+       (d-loc sm)))
+
+
+;--- d-simple :: see of arg can be addresses in one instruction
+; we define simple and really simple as follows
+;  <rsimple> ::= number
+;		 quoted anything
+;		 local symbol
+;		 t
+;		 nil
+;  <simple>  ::= <rsimple>
+;		 (cdr <rsimple>)
+;		 global symbol
+;
+(defun d-simple (arg)
+   (let (tmp)
+       (if (d-rsimple arg) thenret
+	elseif (atom arg) then (d-loc arg)
+	elseif (and (memq (car arg) '(cdr car cddr cdar))
+		    (setq tmp (d-rsimple (cadr arg))))
+	   then (if (eq 'Nil tmp) then tmp
+		 elseif (atom tmp)
+		    then #+(or for-vax for-tahoe)
+			 (if (eq 'car (car arg))
+			     then `(racc 4 ,tmp)
+			  elseif (eq 'cdr (car arg))
+			     then `(racc 0 ,tmp)
+			  elseif (eq 'cddr (car arg))
+			     then `(racc * 0 ,tmp)
+			  elseif (eq 'cdar (car arg))
+			     then `(racc * 4 ,tmp))
+			 #+for-68k
+			 (if (eq 'car (car arg))
+			     then `(racc 4 ,tmp)
+			  elseif (eq 'cdr (car arg))
+			     then `(racc 0 ,tmp))
+		 elseif (not (eq 'cdr (car arg)))
+		    then nil
+		 elseif (eq 'lbind (car tmp))
+		    then `(bind ,(cadr tmp))
+		 elseif (eq 'stack (car tmp))
+		    then `(vstack ,(cadr tmp))
+		 elseif (eq 'fixnum (car tmp))
+		    then `(immed ,(cadr tmp))
+		 elseif (atom (car tmp))
+		    then `(0 ,(cadr tmp))
+		    else (comp-err "bad arg to d-simple: " (or arg))))))
+
+(defun d-rsimple (arg)
+   (if (atom arg) then
+       (if (null arg) then 'Nil
+	elseif (eq t arg) then 'T
+	elseif (or (numberp arg)
+		   (memq arg g-locs)) 
+	   then (d-loc arg)
+	   else (car (d-bestreg arg nil)))
+    elseif (eq 'quote (car arg)) then (d-loclit (cadr arg) nil)))
+
+;--- d-specialp :: check if a variable is special
+; a varible is special if it has been declared as such, or if
+; the variable special is t
+(defun d-specialp (vrb)
+  (or special
+      (eq 'special (d-findfirstprop vrb 'bindtype))   ; local special decl
+      (eq 'special (get vrb g-bindtype))))
+
+(defun d-fixnump (vrb)
+   (and (symbolp vrb)
+	(or (eq 'fixnum (d-findfirstprop vrb 'vartype))
+	    (eq 'fixnum (get vrb g-vartype)))))
+
+;--- d-functyp :: return the type of function
+;	- name : function name
+;
+; If name had a macro function definition, we return `macro'.  Otherwise
+; we see if name as a declared type, if so we return that.  Otherwise
+; we see if name is defined and we return that if so, and finally if
+; we have no idea what this function is, we return lambda.
+;   This is not really satisfactory, but will handle most cases.
+;
+; If macrochk is nil then we don't check for the macro case.  This
+; is important to prevent recursive macroexpansion.
+;
+(defun d-functyp (name macrochk)
+   (let (func ftyp)
+      (if (atom name) 
+	 then
+	      (setq func (getd name))
+	      (setq ftyp (if (and macrochk (get name 'cmacro)) ;compiler macro
+			    then 'cmacro
+			  elseif (bcdp func)
+			    then (let ((type (getdisc func)))
+				    (if (memq type '(lambda nlambda macro))
+				       then type
+				     elseif (stringp type)
+				       then 'lambda	; foreign function
+				       else (comp-warn
+					       "function "
+					       name
+					       " has a strange discipline "
+					       type)
+					    'lambda	; assume lambda
+				    ))
+			  elseif (dtpr func)
+			    then (car func)
+			  elseif (and macrochk (get name 'macro-autoload))
+			    then 'macro))
+	      (if (memq ftyp '(macro cmacro)) then ftyp
+	       elseif (d-findfirstprop name 'functype) thenret
+	       elseif (get name g-functype) thenret  ; check if declared first
+	       elseif ftyp thenret
+		 else 'lambda)
+	 else 'lambda)))		; default is lambda
+
+;--- d-allfixnumargs :: check if all forms are fixnums
+; make sure all forms are fixnums or symbols whose declared type are fixnums
+;
+(defun d-allfixnumargs (forms)
+   (do ((xx forms (cdr xx))
+	(arg))
+       ((null xx) t)
+       (cond ((and (fixp (setq arg (car xx))) (not (bigp arg))))
+	     ((d-fixnump arg))
+	     (t (return nil)))))
+
+	      
+(defun d-findfirstprop (name type)
+   (do ((xx g-decls (cdr xx))
+	(rcd))
+       ((null xx))
+       (if (and (eq name (caar xx))
+		(get (setq rcd (cdar xx)) type))
+	  then (return rcd))))
+
+	      
+
+
+@
+
+
+1.5
+log
+@lxref everything
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/datab.l,v 1.4 83/08/12 02:46:43 layer Exp $")
+d122 1
+a122 1
+		    then #+for-vax
+@
+
+
+1.4
+log
+@New lexpr stuff for both/reg for 68k
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/datab.l,v 1.3 83/03/23 20:50:32 layer Exp $")
+a12 1
+;.. d-calltran
+a38 1
+;.. c-prog, d-exp, d-locv, d-rsimple, d-simple
+a68 1
+;.. c-errset, cc-quote, d-loc, d-rsimple, e-cvt, e-shallowbind
+a97 1
+;.. c-do, cc-setq
+a113 3
+;.. c-*throw, c-rplaca, c-rplacd, cc-cxxr, cc-eq, cc-memq
+;.. cc-oneminus, cc-oneplus, cc-typep, d-fixnumcode, d-fixop
+;.. d-semisimple, d-supercxr, d-superrplacx, d-typecmplx, d-typesimp
+a147 1
+;.. d-simple
+a160 1
+;.. d-bindlrec, d-classify, d-loc
+a165 1
+;.. d-allfixnumargs
+a182 1
+;.. d-exp, d-macroexpand
+a216 1
+;.. d-exp
+a225 1
+;.. d-fixnump, d-functyp, d-specialp
+@
+
+
+1.3
+log
+@merge of 68k and vax versions
+@
+text
+@d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/datab.l,v 1.2 83/03/14 14:11:54 jkf Exp $")
+d6 2
+a7 1
+;;; $Locker:  $
+d9 1
+a9 1
+;--- d-tranloc :: locate a function in the transfer table	  = d-tranloc =
+d42 1
+a42 1
+   (If (null form) then 'Nil
+d44 1
+a44 1
+	 (If (and (fixp form) (greaterp form -1025) (lessp form 1024))
+d48 2
+a49 2
+       then (If (and (null g-ignorereg) (car (d-bestreg form nil))) thenret
+		else (If (d-specialp form) then (d-loclit form t)
+d57 2
+a58 2
+				  (If (atom (car ll))
+				      then (If (eq form (car ll))
+d74 1
+a74 1
+       (If (null form) 
+d84 1
+a84 1
+		    (If (eq form (car ll))
+d87 1
+a87 1
+       (If (null loc)
+d94 1
+a94 1
+       (return (If (and flag symboltype) then `(bind ,loc)
+d123 1
+a123 1
+       (If (d-rsimple arg) thenret
+d127 1
+a127 1
+	   then (If (eq 'Nil tmp) then tmp
+d130 1
+a130 1
+			 (If (eq 'car (car arg))
+d139 1
+a139 1
+			 (If (eq 'car (car arg))
+d157 2
+a158 2
+   (If (atom arg) then
+       (If (null arg) then 'Nil
+d196 1
+a196 1
+      (If (atom name) 
+d199 1
+a199 1
+	      (setq ftyp (If (and macrochk (get name 'cmacro)) ;compiler macro
+d218 1
+a218 1
+	      (If (memq ftyp '(macro cmacro)) then ftyp
+d243 1
+a243 1
+       (If (and (eq name (caar xx))
+@
+
+
+1.2
+log
+@check for fixnum's correctly.
+check foreign function types correctly
+@
+text
+@d1 1
+a1 1
+(include-if (null (get 'chead 'version)) "chead.l")
+d3 1
+a3 1
+   "$Header: /na/franz/liszt/RCS/datab.l,v 1.1 83/01/26 12:13:10 jkf Exp $")
+d6 1
+a6 1
+;;; $Locker$
+d14 3
+a16 3
+  (cond ((get fname g-tranloc))
+	(t (Push g-tran fname)
+	   (let ((newval (* 8 g-trancnt)))
+d28 2
+a29 2
+;	nil		Nil is always returned
+;	symbol		return the location of the symbols value, first looking
+d34 1
+a34 1
+;	number		always return the location of the number on the bind
+d36 1
+a36 1
+;	other	     	always return the location of the other on the bind
+d41 6
+a46 6
+  (If (null form) then 'Nil
+   elseif (numberp form) then 
+          (If (and (fixp form) (greaterp form -1025) (lessp form 1024))
+	      then `(fixnum ,form)		; small fixnum
+	      else (d-loclit form nil))
+   elseif (symbolp form) 
+d49 12
+a60 12
+				  else 
+				    (do ((ll g-locs (cdr ll))	; check stack
+					 (n g-loccnt))	
+					((null ll) 
+					 (comp-warn (or form) " declared special by compiler")
+					 (d-makespec form)
+					 (d-loclit form t))
+					(If (atom (car ll))
+					    then (If (eq form (car ll))
+						     then (return `(stack ,n))
+						     else (setq n (1- n)))))))
+    else (d-loclit form nil)))
+d72 20
+a91 20
+  (prog (loc onplist symboltype)
+	(If (null form) 
+	    then (return 'Nil)
+	 elseif (symbolp form)
+	    then (setq symboltype t)
+		 (cond ((setq loc (get form g-bindloc))
+			(setq onplist t)))
+	 elseif (atom form)
+	    then (do ((ll g-lits (cdr ll))	; search for atom on list
+		      (n g-litcnt (1- n)))
+		     ((null ll))
+		     (If (eq form (car ll))
+			 then (setq loc n)	; found it
+			 (return))))	; leave do
+	(If (null loc)
+	    then (Push g-lits form)
+		 (setq g-litcnt (1+ g-litcnt)
+		       loc g-litcnt)
+		 (cond ((and symboltype (null onplist))
+			(putprop form loc g-bindloc))))
+d94 1
+a94 1
+				     else `(lbind ,loc)))))
+a105 1
+
+d121 1
+a121 1
+  (let (tmp)
+d125 1
+a125 1
+		       (setq tmp (d-rsimple (cadr arg))))
+d128 25
+a152 10
+		     then (If (eq 'car (car arg)) then `(racc 4 ,tmp)
+			   elseif (eq 'cdr (car arg)) then `(racc 0 ,tmp)
+			   elseif (eq 'cddr (car arg)) then `(racc * 0 ,tmp)
+			   elseif (eq 'cdar (car arg)) then `(racc * 4 ,tmp))
+		 elseif (not (eq 'cdr (car arg))) then nil
+		 elseif (eq 'lbind (car tmp)) then `(bind ,(cadr tmp))
+		 elseif (eq 'stack (car tmp)) then `(vstack ,(cadr tmp))
+		 elseif (eq 'fixnum (car tmp)) then `(immed ,(cadr tmp))
+		 elseif (atom (car tmp))    then `(0 ,(cadr tmp))
+		 else (comp-err "bad arg to d-simple: " (or arg))))))
+d156 8
+a163 8
+  (If (atom arg) then
+      (If (null arg) then 'Nil
+       elseif (eq t arg) then 'T
+       elseif (or (numberp arg)
+		  (memq arg g-locs)) 
+	  then (d-loc arg)
+       else (car (d-bestreg arg nil)))
+   elseif (eq 'quote (car arg)) then (d-loclit (cadr arg) nil)))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d3 1
+a3 1
+   "$Header$")
+d6 1
+a6 1
+;;;
+d187 12
+a198 1
+			    then (getdisc func)
+d218 1
+a218 1
+       (cond ((fixp (setq arg (car xx))))
+@

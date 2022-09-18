@@ -1,0 +1,137 @@
+Return-Path: <decvax!mcvax!jim>
+Date: Fri, 6 Apr 84 17:32:55 -0200
+From: decvax!mcvax!jim (Jim McKie)
+Subject: Two fixes for pseudo-ttys
+Index:	sys/sys/tty_pty.c 4.2BSD
+
+Description:
+	1) When the slave end of a pseudo-tty closes, the controlling
+	   side is not informed if it is already trying to read from
+	   the device.
+
+	2) As it says in the manual, it should be but isn't possible to
+	   send an end-of-file to the slave side by the controlling side
+	   doing a 0-length write in TIOCREMOTE mode.
+Repeat-By:
+	1) The following short program may or may not cause the parent to
+	   wait forever in the read(), depending on whether it gets there
+	   before the child exits. It is always possible to put a sleep()
+	   in the child process before the exit to ensure the parent gets
+	   to read.
+	
+	main()
+	{
+		switch(fork()){
+
+		case -1:
+			perror("fork");
+			break;
+
+		case 0:
+			child();
+			/*NOTREACHED*/
+
+		default:
+			parent();
+			/*NOTREACHED*/
+		}
+		exit(1);
+	}
+
+	child()
+	{
+		register int fd;
+
+		if((fd = open("/dev/ttyp4", 1)) == -1){
+			perror("/dev/ttyp4");
+			exit(1);
+		}
+		(void) write(fd, "Hello world\n", 12);
+		exit(0);
+	}
+
+	parent()
+	{
+		register int fd, n;
+		char buf[100];
+
+		if((fd = open("/dev/ptyp4", 2)) == -1){
+			perror("/dev/ptyp4");
+			exit(1);
+		}
+		while((n = read(fd, buf, sizeof(buf))) > 0)
+			(void) write(1, buf, n);
+		if(n == -1)
+			perror("read");
+		else
+			printf("EOF");
+		exit(0);
+	}
+	
+	2) Typing EOF to a process expecting input from a shell window in
+	   EMACS - the process is undisturbed.
+Fix:
+	The following is a diff -c of the original 4.2BSD module with the
+	current one.
+
+	The EOF fix comes from David Rosenthal, David.Rosenthal@CMU-CS-A.ARPA
+
+*** sys.gen/sys/tty_pty.c	Tue Mar 27 15:12:08 1984
+--- sys/sys/tty_pty.c	Sun Apr  1 20:42:26 1984
+***************
+*** 78,83
+  	tp = &pt_tty[minor(dev)];
+  	(*linesw[tp->t_line].l_close)(tp);
+  	ttyclose(tp);
+  }
+  
+  ptsread(dev, uio)
+
+--- 78,84 -----
+  	tp = &pt_tty[minor(dev)];
+  	(*linesw[tp->t_line].l_close)(tp);
+  	ttyclose(tp);
++ 	ptcwakeup(tp);
+  }
+  
+  ptsread(dev, uio)
+***************
+*** 236,242
+  		error = ureadc(0, uio);
+  	}
+  	while (tp->t_outq.c_cc == 0 || (tp->t_state&TS_TTSTOP)) {
+! 		if (pti->pt_flags&PF_NBIO)
+  			return (EWOULDBLOCK);
+  		sleep((caddr_t)&tp->t_outq.c_cf, TTIPRI);
+  	}
+
+--- 237,243 -----
+  		error = ureadc(0, uio);
+  	}
+  	while (tp->t_outq.c_cc == 0 || (tp->t_state&TS_TTSTOP)) {
+! 		if (((tp->t_state&TS_CARR_ON) == 0) || (pti->pt_flags&PF_NBIO))
+  			return (EWOULDBLOCK);
+  		sleep((caddr_t)&tp->t_outq.c_cf, TTIPRI);
+  	}
+***************
+*** 337,342
+  			break;
+  		iov = uio->uio_iov;
+  		if (iov->iov_len == 0) {
+  			uio->uio_iovcnt--;	
+  			uio->uio_iov++;
+  			if (uio->uio_iovcnt < 0)
+
+--- 338,349 -----
+  			break;
+  		iov = uio->uio_iov;
+  		if (iov->iov_len == 0) {
++ 			while((pti->pt_flags&PF_REMOTE) && tp->t_rawq.c_cc != 0)
++ 				sleep((caddr_t)&tp->t_rawq.c_cf, TTIPRI);
++ 			if(pti->pt_flags&PF_REMOTE){
++ 				(void) putc(0, &tp->t_rawq);
++ 				wakeup((caddr_t)&tp->t_rawq);
++ 			}
+  			uio->uio_iovcnt--;	
+  			uio->uio_iov++;
+  			if (uio->uio_iovcnt < 0)

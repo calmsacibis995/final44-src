@@ -1,0 +1,525 @@
+From @relay.cs.net:rad@puffin.uss.tek.com  Mon Oct 26 18:24:40 1987
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: standalone code doesn't work on microvaxen
+Index: sys/stand/srt0.c 4.3BSD
+Date: Mon, 26 Oct 87 11:27:04 PST
+From: rad%puffin.uss.tek.com@relay.cs.net
+
+Description:
+	The VMB loader requires a special format data area at the
+	beginning of a disk.  It also does not load programs beginning
+	at address zero.  Srt0 only knows how to work when it begins
+	at address zero, and no boot block is provided for rd disks.
+	Strcmp and strlen are used by standalone routines, but use VAX
+	instructions not present in microvaxen, and so they don't work
+	standalone.
+Repeat-By:
+	install the ra boot block and try to boot from disk.
+Fix:
+	Here are the changes I have made to the standalone code in the
+	4.3bsd distribution so it will boot on a Microvax.  I'm not a
+	wizard, and I don't promise it will work for you.  I don't
+	understand this stuff all that well, either, so I won't go into
+	great length justifying it.
+
+	Naturally, a couple comments first.  Bootrd is for "rd" disks.
+	As it stands, you have to run installboot by hand (instead of
+	letting newfs do it) - I did not create a "bootrd" to match the
+	rdboot I wrote.  You can just use bootra (or link it to
+	bootrd).
+
+	You will note that strcmp.c and strlen.c were added to
+	libsa.a.  These are the C versions - just copy them in from
+	/usr/src/lib/libc/gen.  The strlen and strcmp in libc use
+	special VAX instructions not present in the microvax.
+
+	The *.patch files are context diffs you should be able to feed
+	directly to patch.
+
+	Tpcopy is loaded with relsrt0.o because the VMB loader does not
+	put programs in memory starting at address zero.  Actually,
+	that one fact (that VMB loads programs beginning at some
+	non-zero address) caused most of the work.
+
+	I'd be interested in any fixes or improvements you happen to
+	come up with.
+
+	Richard Doty
+	rad@tektronix.tek.com
+
+
+
+# This is a shell archive.  Remove anything before this line, then
+# unpack it by saving it in a file and typing "sh file".  (Files
+# unpacked will be owned by you and have default permissions.)
+#
+# This archive contains:
+# mdec/Makefile.patch mdec/rdboot.s stand/Makefile.patch stand/autoconf.c.patch stand/conf.c.patch stand/srt0.c.patch stand/tmscp.c.patch stand/uda.c.patch
+
+mkdir mdec
+echo x - mdec/Makefile.patch
+cat > "mdec/Makefile.patch" << '//E*O*F mdec/Makefile.patch//'
+*** /sys/mdec/Makefile	Thu Jun  5 01:54:48 1986
+--- Makefile	Tue Aug 18 16:13:42 1987
+***************
+*** 5,11 ****
+  #
+  #	@(#)Makefile	7.1 (Berkeley) 6/5/86
+  #
+! ALL=	hkboot hpboot htboot mtboot noboot raboot rlboot \
+  	upboot utboot tmboot tsboot tuboot \
+  	httoggle mttoggle tmtoggle tstoggle uttoggle
+  
+--- 5,11 ----
+  #
+  #	@(#)Makefile	7.1 (Berkeley) 6/5/86
+  #
+! ALL=	hkboot hpboot htboot mtboot noboot raboot rlboot rdboot \
+  	upboot utboot tmboot tsboot tuboot \
+  	httoggle mttoggle tmtoggle tstoggle uttoggle
+  
+***************
+*** 52,57 ****
+--- 52,64 ----
+  	strip a.out
+  	dd if=a.out bs=32 skip=1 of=b.out
+  	dd if=b.out of=rlboot conv=sync
++ 
++ rdboot: rdboot.s
++ 	as rdboot.s
++ 	nm -u a.out
++ 	strip a.out
++ 	dd if=a.out bs=32 skip=1 of=b.out
++ 	dd if=b.out of=rdboot conv=sync
+  
+  tmboot: tmboot.s
+  	as tmboot.s
+//E*O*F mdec/Makefile.patch//
+
+echo x - mdec/rdboot.s
+cat > "mdec/rdboot.s" << '//E*O*F mdec/rdboot.s//'
+/*
+** This is a VMB boot block for microvax.  For more info, see
+** the KA-630 User's manual.
+*/
+
+/*
+**          ---------------------------------------------------
+** BB + 0: |      1     |      N     |      any value          |
+**          ---------------------------------------------------
+*/
+xxx:	.long	0x001040000
+/*
+**          ---------------------------------------------------
+**      4: |        low  lbn         |      high lbn           |
+**          ---------------------------------------------------
+*/
+	.long	0x000010000
+/*
+** BB + 2*N
+**          ---------------------------------------------------
+**    + 0: | check byte |      K     |     0     |   18 (HEX)  |
+**          ---------------------------------------------------
+*/
+	.long	0x0e7000018
+/*
+**          ---------------------------------------------------
+**    + 4: |     any  value          |  1 or 81  |      0      |
+**          ---------------------------------------------------
+*/
+	.long	0x000008100
+/*
+**          ---------------------------------------------------
+**    + 8: |     size in blocks of the image                   |
+**          ---------------------------------------------------
+*/
+	.long	0x00000000f
+/*
+**          ---------------------------------------------------
+**    +12: |     load offset from default load address         |
+**          ---------------------------------------------------
+*/
+	.long	0x000000000
+/*
+**          ---------------------------------------------------
+**    +16: |     offset into image to start execution          |
+**          ---------------------------------------------------
+*/
+	.long	0x000000002
+/*
+**          ---------------------------------------------------
+**    +20: |     sum of previous three longwords               |
+**          ---------------------------------------------------
+*/
+	.long	0x000000011
+/*
+**
+** BB +0:	These two bytes can have any value
+**
+** BB+2:	This value is the word offset from the start of the
+**		bootblock to the identification area described below.
+**
+** BB+3:	This byte must be one.
+**
+** BB+4:	This longword contains the logical block number
+**		(word swapped) of the secondary image.
+**
+** BB+(2*n)+0:	This byte defines the expected instruction set.
+**		18(hex) means VAX.
+**
+** BB+(2*n)+1:	This byte defines the expected controller type, 0
+**		means unknown.
+**
+** BB+(2*n)+2:	This byte defines the file structure on the volume,
+**		it may be any value.
+**
+** BB+(2*n)+3:	This byte must be the ones complement of the sum of
+**		the previous three bytes.
+**
+** BB+(2*n)+4:	This byte must be zero.
+**
+** BB+(2*n)+5:	This byte must be 1 or 81 (hex).  This byte defines
+**		the version number of the format standard and the
+**		type of disk.  The version is one, the high bit is 0
+**		for single sided, 1 for double sided.
+**
+** BB+(2*n)+6:	These two bytes may be any value, but generally they
+**		are zero.
+**
+** BB+(2*n)+8:	This entry is a longword containing the size in
+**		blocks of the secondary bootstrap image.
+**
+** BB+(2*n)+12:	This entry is a longword containing a load offset
+**		(usually zero) from the default load address of the
+**		secondary bootstrap.
+**
+** BB+(2*n)+16:	This entry is a longword containing the byte offset
+**		into the secondary bootstrap where execution is to
+**		begin.
+**
+** BB+(2*n)+20:	This entry is a longword containing the sum of the
+**		previous three longwords.
+*/
+//E*O*F mdec/rdboot.s//
+
+mkdir stand
+echo x - stand/Makefile.patch
+cat > "stand/Makefile.patch" << '//E*O*F stand/Makefile.patch//'
+*** /sys/stand/Makefile	Thu Jun  5 01:48:32 1986
+--- Makefile	Fri Oct 23 20:39:15 1987
+***************
+*** 8,14 ****
+  DESTDIR=/
+  INCPATH=-I. -I../h
+  CFLAGS=	-O ${INCPATH} -DSTANDALONE ${COPTS} 
+! COPTS=	-DVAX780 -DVAX750 -DVAX730 -DVAX8600
+  730OPTS=-O ${INCPATH} -DSTANDALONE -DVAX730
+  RELOC=	70000
+  
+--- 8,14 ----
+  DESTDIR=/
+  INCPATH=-I. -I../h
+  CFLAGS=	-O ${INCPATH} -DSTANDALONE ${COPTS} 
+! COPTS=	-DVAX780 -DVAX750 -DVAX730 -DVAX8600 -DVAX630
+  730OPTS=-O ${INCPATH} -DSTANDALONE -DVAX730
+  RELOC=	70000
+  
+***************
+*** 19,25 ****
+  DUMMIES= bootxx.c confxx.c
+  DRIVERS=autoconf.o hp.o hpmaptype.o ht.o idc.o mba.o mt.o \
+  	rk.o rl.o tm.o ts.o \
+! 	up.o upmaptype.o uba.o uda.o ut.o
+  # These drivers don't have ecc correction and bad sector forwarding;
+  # they are placed in the file system boot area for 750's.  If your
+  # root has bad sectors you can try and squeeze the newer drivers in...
+--- 19,25 ----
+  DUMMIES= bootxx.c confxx.c
+  DRIVERS=autoconf.o hp.o hpmaptype.o ht.o idc.o mba.o mt.o \
+  	rk.o rl.o tm.o ts.o \
+! 	up.o upmaptype.o uba.o uda.o ut.o tmscp.o
+  # These drivers don't have ecc correction and bad sector forwarding;
+  # they are placed in the file system boot area for 750's.  If your
+  # root has bad sectors you can try and squeeze the newer drivers in...
+***************
+*** 32,38 ****
+  
+  all: ${ALL}
+  
+! ${LIBSA}: sys.o conf.o ${DRIVERS} prf.o machdep.o dkbad.o
+  	ar crv ${LIBSA} $?
+  	ranlib ${LIBSA}
+  
+--- 32,39 ----
+  
+  all: ${ALL}
+  
+! # C versions of strcmp and strlen, for microvax
+! ${LIBSA}: sys.o conf.o ${DRIVERS} prf.o machdep.o dkbad.o strlen.o strcmp.o
+  	ar crv ${LIBSA} $?
+  	ranlib ${LIBSA}
+  
+***************
+*** 67,74 ****
+  	cc -c -O -DJUSTASK tpboot.c
+  	rm -f tpboot.c
+  
+! tpcopy:	copy.o tpsrt0.o ${LIBSA}
+! 	ld -N tpsrt0.o copy.o ${LIBSA} -lc
+  	strip a.out; dd if=a.out of=tpcopy ibs=32 skip=1; rm -f a.out
+  
+  tpformat: format.o tpsrt0.o confhpup.o ${LIBSA}
+--- 68,75 ----
+  	cc -c -O -DJUSTASK tpboot.c
+  	rm -f tpboot.c
+  
+! tpcopy:	copy.o relsrt0.o ${LIBSA}
+! 	ld -N -T ${RELOC} relsrt0.o copy.o ${LIBSA} -lc
+  	strip a.out; dd if=a.out of=tpcopy ibs=32 skip=1; rm -f a.out
+  
+  tpformat: format.o tpsrt0.o confhpup.o ${LIBSA}
+//E*O*F stand/Makefile.patch//
+
+echo x - stand/autoconf.c.patch
+cat > "stand/autoconf.c.patch" << '//E*O*F stand/autoconf.c.patch//'
+*** /sys/stand/autoconf.c	Tue Dec  9 10:35:20 1986
+--- autoconf.c	Fri Oct  2 16:45:58 1987
+***************
+*** 51,56 ****
+--- 51,71 ----
+  #undef	UTR
+  #undef	UMA
+  
++ 	/*
++ 	 * The map registers start right at 20088000 on the
++ 	 * ka630, so we have to subtract out the 2k offset to make the
++ 	 * pointers work..
++ 	 */
++ 
++ #define UTR(i)	((struct uba_regs *)((caddr_t)(NEX630+(i))-0x800))
++ #define UMA	((caddr_t)UMEM630)
++ 
++ struct	uba_regs *ubaddr630[] = { UTR(0) };
++ caddr_t	umaddr630[] = { UMA };
++ 
++ #undef UTR
++ #undef UMA
++ 
+  configure()
+  {
+  	union cpusid cpusid;
+***************
+*** 82,87 ****
+--- 97,108 ----
+  		umaddr = umaddr730;
+  		nmba = nuba = 0;
+  		break;
++ 
++ 	case VAX_630:
++ 		ubaddr = ubaddr630;
++ 		umaddr = umaddr630;
++ 		nmba = nuba = 0;
++ 		break;
+  	}
+  	/*
+  	 * Forward into the past...
+***************
+*** 96,101 ****
+--- 117,128 ----
+  			ubaddr[i]->uba_cr = UBACR_ADINIT;
+  	if ((cpu != VAX_780) && (cpu != VAX_8600))
+  		mtpr(IUR, 0);
++ 	/* enable external access to local memory
++ 	   - aka the interprocessor doorbell
++ 	   cf Emulex QD01/D disk controller technical manual, p 6-9
++ 	 */
++ 	if (cpu == VAX_630)
++ 		*(ubamem(0,017777500)) = 0x20;
+  	/* give unibus devices a chance to recover... */
+  	if (nuba > 0)
+  		DELAY(2000000);
+//E*O*F stand/autoconf.c.patch//
+
+echo x - stand/conf.c.patch
+cat > "stand/conf.c.patch" << '//E*O*F stand/conf.c.patch//'
+*** /sys/stand/conf.c	Tue Dec  9 10:35:34 1986
+--- conf.c	Fri Oct  2 15:44:15 1987
+***************
+*** 94,99 ****
+--- 94,102 ----
+  int	idcstrategy(), idcopen(), idcioctl();
+  #endif
+  int	rlstrategy(), rlopen(), rlioctl();
++ #if defined(VAX630)
++ int	tmscpstrategy(), tmscpopen(), tmscpclose();
++ #endif
+  #ifndef BOOT
+  int	tmstrategy(), tmopen(), tmclose();
+  int	tsstrategy(), tsopen(), tsclose();
+***************
+*** 117,122 ****
+--- 120,128 ----
+  	{ "rb",	idcstrategy,	idcopen,	nullsys,	idcioctl },
+  #endif
+  	{ "rl",	rlstrategy,	rlopen,		nullsys,	rlioctl },
++ #if defined(VAX630)
++ 	{ "tk",	tmscpstrategy,	tmscpopen,	tmscpclose,	nullioctl },
++ #endif
+  #ifndef BOOT
+  	{ "ts",	tsstrategy,	tsopen,		tsclose,	nullioctl },
+  #if defined(VAX780) || defined(VAX750) || defined(VAX8600)
+//E*O*F stand/conf.c.patch//
+
+echo x - stand/srt0.c.patch
+cat > "stand/srt0.c.patch" << '//E*O*F stand/srt0.c.patch//'
+*** /sys/stand/srt0.c	Tue Dec  9 10:36:36 1986
+--- srt0.c	Fri Oct 16 11:06:33 1987
+***************
+*** 27,34 ****
+  	.set	HIGH,31		# mask for total disable
+  
+  entry:	.globl	entry
+! 	.word	0x0
+  	mtpr	$HIGH,$IPL		# just in case
+  #ifdef REL
+  	movl	$RELOC,sp
+  #else
+--- 27,57 ----
+  	.set	HIGH,31		# mask for total disable
+  
+  entry:	.globl	entry
+! /*	.word	0x0 */
+! 	nop
+! 	nop
+  	mtpr	$HIGH,$IPL		# just in case
++ 	/*
++ 	 * some things are different on a microvax, due to being loaded by VMB
++ 	 */
++ 	mfpr	$SID, r3
++ 	extzv	$24, $8, r3, r3		/* ka630 is cpu type 8, stored */
++ 	cmpl	r3, $8			/* in the top word of $SID */
++ 	bneq	1f
++ 	/*
++ 	 * VMB has set things up so sp contains the physical address
++ 	 * of entry, so we add that to aedata to get the true aedata.
++ 	 */
++ 	addl2	sp,aedata
++ 	/*
++ 	 * in a "normal" raboot, r5 (containing the boot flags) is copied
++ 	 * into r11.  On a microvax we are loaded by VMB instead, so we
++ 	 * retrieve r5 from the "Extended RPB" (see KA630 User's Manual,
++ 	 * pg. 3-21) and put it into r11 here.
++ 	 */
++ 	movl	0x30(r11), r11
++ 	movl	$9, r10			/* device type on 630 is "ra(0,0)" */
++ 1:
+  #ifdef REL
+  	movl	$RELOC,sp
+  #else
+***************
+*** 41,47 ****
+  	cmpl	r0,sp
+  	jlss	clr
+  #ifdef REL
+! 	movc3	aedata,*$0,(sp)
+  /*
+   * Reclear bss segment separately from text and data
+   * since movc3 can't move more than 64K bytes
+--- 64,73 ----
+  	cmpl	r0,sp
+  	jlss	clr
+  #ifdef REL
+! 	/*
+! 	 * if entry is non-zero, we need to copy from entry, not 0
+! 	 */
+! 	movc3	aedata,entry,(sp)
+  /*
+   * Reclear bss segment separately from text and data
+   * since movc3 can't move more than 64K bytes
+***************
+*** 104,109 ****
+--- 130,139 ----
+  	.word	5f-0b		# 2 is 750
+  	.word	5f-0b		# 3 is 730
+  	.word	6f-0b		# 4 is 8600
++ 	.word	1f-0b		# 5 is unassigned
++ 	.word	1f-0b		# 6 is unassigned
++ 	.word	1f-0b		# 7 is unassigned
++ 	.word	5f-0b		# 8 is 630
+  5:
+  	mtpr	$0xf,$MCESR
+  	brb	1f
+//E*O*F stand/srt0.c.patch//
+
+echo x - stand/tmscp.c.patch
+cat > "stand/tmscp.c.patch" << '//E*O*F stand/tmscp.c.patch//'
+*** /sys/stand/tmscp.c	Tue Dec  9 10:36:45 1986
+--- tmscp.c	Fri Oct 23 14:10:12 1987
+***************
+*** 46,53 ****
+  #include "../machine/pte.h"
+   
+  #include "../h/param.h"
+! #include "../h/gnode.h"
+! #include "../h/devio.h"
+   
+  #include "savax.h"
+   
+--- 46,53 ----
+  #include "../machine/pte.h"
+   
+  #include "../h/param.h"
+! #include "../h/inode.h"
+! #include "../h/fs.h"
+   
+  #include "savax.h"
+   
+//E*O*F stand/tmscp.c.patch//
+
+echo x - stand/uda.c.patch
+cat > "stand/uda.c.patch" << '//E*O*F stand/uda.c.patch//'
+*** /tmp/,RCSt1013173	Fri Oct 23 13:24:14 1987
+--- uda.c	Fri Oct 23 13:23:09 1987
+***************
+*** 57,62
+  #else
+  int ra81_off[] = { 0, 15884, 0, 242606, 258490, 565690, 242606, 49324 };
+  #endif
+  
+  struct mscp *udcmd();
+  static int ratype[NRA];
+
+--- 57,64 -----
+  #else
+  int ra81_off[] = { 0, 15884, 0, 242606, 258490, 565690, 242606, 49324 };
+  #endif
++ int rd52_off[] = { 0, 15884, 0, -1, -1, -1, 25650, -1 };
++ int rd53_off[] = { 0, 15884, 0, -1, 0, 33440, 49324, 15884 };
+  
+  struct mscp *udcmd();
+  static int ratype[NRA];
+***************
+*** 128,133
+  		break;
+  	case    81:
+  		off = ra81_off[io->i_boff];
+  		break;
+  	default:
+  		printf("uda%d: don't support ra%d's\n", i, ratype[i]);
+
+--- 130,141 -----
+  		break;
+  	case    81:
+  		off = ra81_off[io->i_boff];
++ 		break;
++ 	case	52:
++ 		off = rd52_off[io->i_boff];
++ 		break;
++ 	case	53:
++ 		off = rd53_off[io->i_boff];
+  		break;
+  	default:
+  		printf("uda%d: don't support ra%d's\n", i, ratype[i]);
+//E*O*F stand/uda.c.patch//
+
+exit 0

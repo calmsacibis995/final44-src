@@ -1,0 +1,74 @@
+Return-Path: <sdcsvax!sdcc3!steve@Nosc>
+Date: Tue, 4 Sep 84 04:43:16 pdt
+From: sdcsvax!sdcc3!steve@Nosc (steve serocki)
+Errors-To: sdcsvax!sdcc3!steve@Nosc (steve serocki)
+To: 4bsd-bugs@BERKELEY
+
+Subject: PCC's Indefensible Argument Processing -- storage class checks
+Index:  lib/mip/pftn.c 4.2BSD
+
+Description:
+	Error checking in the portable C compiler's semantic analysis
+	phase has always been less than rigorous, to the point now of
+	being the butt of cruel jokes comparing the pcc in robustness
+	to the C shell.  Recent ridicule (*) has been directed
+	especially at the comic handling of irregular parameter 
+	declarations.
+
+	The pcc will often respond to missing parameters with a "bad
+	arg temp" warning, and then go on to generate incorrect code.
+	a catch for the "bad arg temp" bug is described in a second,
+	co-posted bug report.
+
+	The pcc will disdain catching parameters described as "static",
+	or "extern" storage class in semantic analysis, ultimately
+	falling on its nose in codegen, or, gosh forbid, at assemble
+	time or later if other bugs are present.  A catch for the
+	misspecified parameter SC is described here.  The problem 
+	is simply that the appropriate check against these two 
+	meaningless storage classes is never made.
+
+	[(*) Refs: 3015@utah-cs.UUCP, 8180-8181@ucmp-cs.UUCP]
+
+
+Repeat-By:
+	Give the following C program to the pcc.  The compilation will
+	terminate ungracefully with an internal compiler error.
+
+	main(perverse )
+		static int perverse;	/* bad storage class */
+	{
+	}
+
+
+Fix:
+	A formal parameter SC may be only PARAM (undeclared, implicit)
+	or REGISTER.  [ See K&R, appendix A, on external function defs]
+	It seems reasonable to catch misdeclarations of parameter SC 
+	in fixclass().  One way to do this is shown in the context diff 
+	below.
+
+*** pftn.c	Sun Jul 17 13:37:05 1983
+--- jess.pftn.c	Tue Sep  4 04:09:07 1984
+***************
+*** 1562,1567
+  		else class = AUTO;
+  
+  		}
+  
+  	/* now, do general checking */
+  
+
+--- 1562,1574 -----
+  		else class = AUTO;
+  
+  		}
++ #ifdef STONEWALL
++ 	else if( blevel == 1 && class != PARAM && class != REGISTER) {
++ 		uerror( "declared parameter has illegal storage class" );
++ 		return( PARAM);
++ 		}
++ #endif
++ 		
+  
+  	/* now, do general checking */

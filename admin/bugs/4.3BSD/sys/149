@@ -1,0 +1,55 @@
+From ulysses!ggs@ucbvax.Berkeley.EDU  Tue Aug 11 13:48:09 1987
+From: ulysses!ggs@ucbvax.berkeley.edu
+Subject: Cooked I/O is broken for the TU78 tape driver (VAX)
+Date: Tue, 11 Aug 87 16:11:38 EDT
+Index: sys/vaxmba/mt.c 4.3BSD
+
+Description:
+	The "seek" capability of cooked I/O is broken in the 4.3BSD
+	TU78 device driver: backward seeks don't work.
+Repeat-By:
+	Copy an image of a root partition onto a tape using 2Kbyte blocks,
+	then try to fsck the tape with "fsck -n /dev/mtfoo".
+Fix:
+	Context diffs follow.
+
+*** /source/sys/vaxmba/mt.c	Thu Jun  5 04:32:57 1986
+--- /sys/vaxmba/mt.c	Tue Aug 11 14:50:13 1987
+***************
+*** 295,301 ****
+  	register struct buf *bp = mi->mi_tab.b_actf;
+  	register struct mu_softc *sc = &mu_softc[MUUNIT(bp->b_dev)];
+  	daddr_t blkno;
+- 	int count;
+  
+  	if (sc->sc_openf < 0) {
+  		bp->b_flags |= B_ERROR;
+--- 300,305 ----
+***************
+*** 368,379 ****
+  	/* Issue skip operations to position the next block for cooked I/O. */
+  
+  	if (blkno < bdbtofsb(bp->b_blkno))
+! 		count = (unsigned)(bdbtofsb(bp->b_blkno) - blkno);
+! 	else
+! 		count = (unsigned)(blkno - bdbtofsb(bp->b_blkno));
+! 	if (count > 0377)
+! 		count = 0377;
+! 	mtaddr->mtncs[MUUNIT(bp->b_dev)] = count | MT_SFORW|MT_GO;
+  	return (MBU_STARTED);
+  }
+  
+--- 372,384 ----
+  	/* Issue skip operations to position the next block for cooked I/O. */
+  
+  	if (blkno < bdbtofsb(bp->b_blkno))
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+! 		  (min((unsigned)(bdbtofsb(bp->b_blkno) - blkno), 0377) << 8) |
+! 			MT_SFORW|MT_GO;
+! 	else
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+! 		  (min((unsigned)(blkno - bdbtofsb(bp->b_blkno)), 0377) << 8) |
+! 			MT_SREV|MT_GO;
+  	return (MBU_STARTED);
+  }
+  

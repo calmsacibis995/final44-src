@@ -1,0 +1,42 @@
+From jrs@ef.ecn.purdue.edu  Wed Mar 11 20:11:24 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA16785; Wed, 11 Mar 87 20:11:24 PST
+Received: by ucbvax.Berkeley.EDU (5.57/1.23)
+	id AA13255; Wed, 11 Mar 87 20:25:28 PST
+Received: by ef.ecn.purdue.edu (5.44/1.2)
+	id AA29500; Wed, 11 Mar 87 23:23:51 EST
+Date: Wed, 11 Mar 87 23:23:51 EST
+From: jrs@ef.ecn.purdue.edu (Jeff Schwab)
+Message-Id: <8703120423.AA29500@ef.ecn.purdue.edu>
+Subject: Routes through a non-zero metric gateway don't reflect gateway cost
+Index: 	etc/routed/output.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Routes through a gateway with a non-zero cost metric do not
+	have this metric added to the routing cost.  We locally
+	have two network segments connected by two gateways.  One is
+	a fast link which should be used as long as it's available.
+	The other is a slip line which should only be used if the
+	primary gateway is down.  In order to reflect this, we give the
+	slip line a non-trivial metric cost.  Unfortunately, both gateways
+	issue equal cost routes to network segments on the other sides of
+	themselves.  Although the route metric for the
+	specific interface reflects the metric ifconfig'd into the
+	route, any route packets sent do not reflect the cost of the
+	interface for any other networks on the "other" side of
+	the expensive gateway.  One then ends up with the interesting case of
+	routes to networks on the other side of the gateway having
+	a lower metric than that of the direct gateway host.
+Repeat-By:
+	Set up a gateway with a non-zero metric.  Examine the routes
+	broadcast by both sides with query.
+Fix:
+	Kirk Smith and I debated whether the proper fix belongs in
+	routing packet input or output.  Although input is probably
+	more "morally" correct, the fix in output is a lot easier.
+	106c106,107	output.c
+	<	n->rip_metric = htonl(min(rt->rt_metric + 1, HOPCNT_INFINITY));
+	---
+	>	n->rip_metric = htonl(min(rt->rt_metric + 1
+	>			+ (ifp? ifp->int_metric: 0), HOPCNT_INFINITY));

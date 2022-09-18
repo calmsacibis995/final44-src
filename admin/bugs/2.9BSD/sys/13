@@ -1,0 +1,276 @@
+From menlo70!slu70!ejh  Wed Aug 15 04:16:14 1984
+Date: Wed, 15 Aug 84 04:16:34 pdt
+From: menlo70!slu70!ejh
+Subject: tar hangs and also does not do ioctl commands properly (TU16 drives)
+Index: 	sys/dev/ht.c 2.9BSD
+Apparently-To: 2bsd-bugs
+
+Description:
+	ht.c seems to have either some TU77 features that are bugs to TU16's
+	or ?
+
+Repeat-By:
+	try an old known functional tar that was modified to use tape ioctl's
+	try writing a tar tape and first watch the process hang. tar c0 file.
+	Then try to update a tar tape and watch the drive rewind to the BOT
+	and write at the beginning opf the tape.
+
+Fix:
+	here's a diff
+	Note that a TU16 system only needs one controller to control
+	8 formatters and 64 slave drives NOTE as in the v7 driver
+	such addressing has never been tried.
+*** ../dev.distr/ht.c	Fri Aug  5 18:05:20 1983
+--- ht.c	Wed Aug  8 16:11:00 1984
+***************
+*** 57,66
+  htattach(addr, unit)
+  register struct htdevice *addr;
+  {
+! 	/*
+! 	 * This driver supports only one controller.
+! 	 */
+! 	if (unit != 0)
+  		return(0);
+  	if ((addr != (struct htdevice *) NULL) && (fioword(addr) != -1)) {
+  		HTADDR = addr;
+
+--- 57,63 -----
+  htattach(addr, unit)
+  register struct htdevice *addr;
+  {
+! 	if (unit >= NHT)
+  		return(0);
+  	if ((addr != (struct htdevice *) NULL) && (fioword(addr) != -1)) {
+  		HTADDR = addr;
+***************
+*** 82,88
+  	register struct tu_softc *sc = &tu_softc[htunit];
+  
+  	httab.b_flags |= B_TAPE;
+- 	htunit = minor(dev) & 077;
+  	if (HTADDR == (struct htdevice *) NULL || htunit >= NHT) {
+  		u.u_error = ENXIO;
+  		return;
+
+--- 79,84 -----
+  	register struct tu_softc *sc = &tu_softc[htunit];
+  
+  	httab.b_flags |= B_TAPE;
+  	if (HTADDR == (struct htdevice *) NULL || htunit >= NHT) {
+  		u.u_error = ENXIO;
+  		return;
+***************
+*** 127,133
+  
+  /*ARGSUSED*/
+  htcommand(dev, com, count)
+! u_short	count;
+  dev_t	dev;
+  {
+  	register s;
+
+--- 123,129 -----
+  
+  /*ARGSUSED*/
+  htcommand(dev, com, count)
+! unsigned	count;
+  dev_t	dev;
+  {
+  	register s;
+***************
+*** 136,141
+  	bp = &chtbuf;
+  	s = spl5();
+  	while(bp->b_flags & B_BUSY) {
+  		/*
+  		 * This special check is because B_BUSY never
+  		 * gets cleared in the non-waiting rewind case.
+
+--- 132,138 -----
+  	bp = &chtbuf;
+  	s = spl5();
+  	while(bp->b_flags & B_BUSY) {
++ #ifndef	SLU70
+  		/*
+  		 * This special check is because B_BUSY never
+  		 * gets cleared in the non-waiting rewind case.
+***************
+*** 142,147
+  		 */
+  		if (bp->b_repcnt == 0 && (bp->b_flags & B_DONE))
+  			break;
+  		bp->b_flags |= B_WANTED;
+  		sleep((caddr_t) bp, PRIBIO);
+  	}
+
+--- 139,145 -----
+  		 */
+  		if (bp->b_repcnt == 0 && (bp->b_flags & B_DONE))
+  			break;
++ #endif
+  		bp->b_flags |= B_WANTED;
+  		sleep((caddr_t) bp, PRIBIO);
+  	}
+***************
+*** 155,160
+  	bp->b_command = com;
+  	bp->b_blkno = (daddr_t) 0;
+  	htstrategy(bp);
+  	/*
+  	 * In case of rewind from close, don't wait.
+  	 * This is the only case where count can be 0.
+
+--- 153,159 -----
+  	bp->b_command = com;
+  	bp->b_blkno = (daddr_t) 0;
+  	htstrategy(bp);
++ #ifndef	SLU70
+  	/*
+  	 * In case of rewind from close, don't wait.
+  	 * This is the only case where count can be 0.
+***************
+*** 160,166
+  	 * This is the only case where count can be 0.
+  	 */
+  	if (count == 0)
+! 		return;
+  	iowait(bp);
+  	if(bp->b_flags & B_WANTED)
+  		wakeup((caddr_t)bp);
+
+--- 159,166 -----
+  	 * This is the only case where count can be 0.
+  	 */
+  	if (count == 0)
+! 		return(0);
+! #endif
+  	iowait(bp);
+  	if(bp->b_flags & B_WANTED)
+  		wakeup((caddr_t)bp);
+***************
+*** 243,248
+  			goto next;
+  		}
+  		httab.b_active = SCOM;
+  		HTADDR->htfc = 0;
+  		HTADDR->htcs1 = bp->b_command | HT_IE | HT_GO;
+  		return;
+
+--- 243,251 -----
+  			goto next;
+  		}
+  		httab.b_active = SCOM;
++ #ifdef	HT_IOCTL
++ 		HTADDR->htfc = -bp->b_bcount;
++ #else
+  		HTADDR->htfc = 0;
+  #endif
+  		HTADDR->htcs1 = bp->b_command | HT_IE | HT_GO;
+***************
+*** 244,249
+  		}
+  		httab.b_active = SCOM;
+  		HTADDR->htfc = 0;
+  		HTADDR->htcs1 = bp->b_command | HT_IE | HT_GO;
+  		return;
+  	}
+
+--- 247,253 -----
+  		HTADDR->htfc = -bp->b_bcount;
+  #else
+  		HTADDR->htfc = 0;
++ #endif
+  		HTADDR->htcs1 = bp->b_command | HT_IE | HT_GO;
+  		return;
+  	}
+***************
+*** 330,336
+  			else
+  				if (state && err == 0)
+  					state = SOK;
+! 		if (httab.b_errcnt > 4)
+  #ifdef	UCB_DEVERR
+  			printf("tu%d: hard error bn %D er=%b ds=%b\n",
+  			       htunit, bp->b_blkno,
+
+--- 334,340 -----
+  			else
+  				if (state && err == 0)
+  					state = SOK;
+! 		if (httab.b_errcnt > 6)
+  #ifdef	UCB_DEVERR
+  			printf("tu%d: hard error bn %D er=%b ds=%b\n",
+  			       htunit, bp->b_blkno,
+***************
+*** 414,420
+  register dev_t	dev;
+  {
+  	htphys(dev);
+! 	bphysio(htstrategy, &rhtbuf, dev, B_READ);
+  }
+  
+  htwrite(dev)
+
+--- 418,424 -----
+  register dev_t	dev;
+  {
+  	htphys(dev);
+! 	physio(htstrategy, &rhtbuf, dev, B_READ);
+  }
+  
+  htwrite(dev)
+***************
+*** 421,427
+  register dev_t	dev;
+  {
+  	htphys(dev);
+! 	bphysio(htstrategy, &rhtbuf, dev, B_WRITE);
+  }
+  
+  htphys(dev)
+
+--- 425,431 -----
+  register dev_t	dev;
+  {
+  	htphys(dev);
+! 	physio(htstrategy, &rhtbuf, dev, B_WRITE);
+  }
+  
+  htphys(dev)
+***************
+*** 430,436
+  	daddr_t a;
+  	register struct tu_softc *sc = &tu_softc[TUUNIT(dev)];
+  
+! 	a = dbtofsb(u.u_offset >> 9);
+  	sc->sc_blkno = a;
+  	sc->sc_nxrec = a + 1;
+  }
+
+--- 434,440 -----
+  	daddr_t a;
+  	register struct tu_softc *sc = &tu_softc[TUUNIT(dev)];
+  
+! 	a = dbtofsb(u.u_offset >> PGSHIFT);
+  	sc->sc_blkno = a;
+  	sc->sc_nxrec = a + 1;
+  }
+***************
+*** 443,449
+  caddr_t	addr;
+  {
+  	register struct buf *bp = &chtbuf;
+! 	register struct softc *sc = &tu_softc[minor(dev)&07];
+  	register callcount;
+  	int	fcount;
+  	struct	mtop mtop;
+
+--- 447,453 -----
+  caddr_t	addr;
+  {
+  	register struct buf *bp = &chtbuf;
+! 	register struct softc *sc = &tu_softc[TUUNIT(dev)];
+  	register callcount;
+  	int	fcount;
+  	struct	mtop mtop;

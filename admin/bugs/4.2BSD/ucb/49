@@ -1,0 +1,198 @@
+Return-Path: <chris@maryland>
+Date: Mon, 5 Nov 84 02:02:42 est
+From: chris@maryland (Chris Torek)
+Subject: pc doesn't allow an ``others'' clause in outputs
+Index: ucb/pc/src 4.2BSD Fix
+
+Description:
+	While not strictly a bug, the lack of a specifier for a
+	default case label can be quite a pain.  The changes included
+	here are straight from Cornell; though their changes were
+	for version 2.0, the code has been tested in version 3.0
+	and appears to work.
+
+Repeat-By:
+	program main (input, output);
+	var i : integer;
+	begin
+		read (i);
+		case i of
+			1 : writeln ('one');
+			2 : writeln ('two');
+			others : writeln ('neither one nor two');
+		end;
+	end.
+
+Fix:
+	Apply the appended diff listings.
+
+Miscellaneous-Header-Like-Field-In-Body-Of-Message:
+
+Comment:
+	You've probably already seen these, but it would be nice if
+	they were to appear on the next distribution tape (if any?).
+
+Chris
+
+RCS file: RCS/hash.c,v
+retrieving revision 1.1
+diff -c1 -r1.1 hash.c
+*** /tmp/,RCSt1004856	Mon Nov  5 01:52:22 1984
+--- hash.c	Mon Nov  5 01:18:54 1984
+***************
+*** 63,64
+  	"external",	YEXTERN,
+  	0
+
+--- 63,65 -----
+  	"external",	YEXTERN,
++ 	"others",	YOTHERS,
+  	0
+RCS file: RCS/pas.y,v
+retrieving revision 1.1
+diff -c1 -r1.1 pas.y
+*** /tmp/,RCSt1004861	Mon Nov  5 01:52:27 1984
+--- pas.y	Mon Nov  5 01:18:37 1984
+***************
+*** 67,68
+  	YCASELAB	YILLCH		YEXTERN		YLAST
+  
+
+--- 67,69 -----
+  	YCASELAB	YILLCH		YEXTERN		YLAST
++ 	YOTHERS
+  
+***************
+*** 542,543
+  		= $$ = tree4(T_CSTAT, lineof($1), NIL, $2);
+  		|
+
+--- 543,547 -----
+  		= $$ = tree4(T_CSTAT, lineof($1), NIL, $2);
++ 		|
++ 	YOTHERS ':' stat
++ 		= $$ = tree4(T_OTHERCASE, lineof($2), NIL, $3);
+  		|
+RCS file: RCS/pccaseop.c,v
+retrieving revision 1.1
+diff -c1 -r1.1 pccaseop.c
+*** /tmp/,RCSt1004866	Mon Nov  5 01:52:35 1984
+--- pccaseop.c	Mon Nov  5 01:18:46 1984
+***************
+*** 47,49
+       *		[3]	list of cased statements:
+!      *			cstat	[0]	T_CSTAT
+       *				[1]	lineof ":"
+
+--- 47,49 -----
+       *		[3]	list of cased statements:
+!      *			cstat	[0]	T_CSTAT  or  T_OTHERCASE
+       *				[1]	lineof ":"
+***************
+*** 68,69
+      long	*casep;
+      struct ct	*ctab;
+
+--- 68,70 -----
+      long	*casep;
++     long	*othercase;
+      struct ct	*ctab;
+***************
+*** 155,156
+      count = 0;
+      for ( cstatlp = tcase[3] ; cstatlp != NIL ; cstatlp = cstatlp[2] ) {
+
+--- 156,158 -----
+      count = 0;
++     othercase = NIL;
+      for ( cstatlp = tcase[3] ; cstatlp != NIL ; cstatlp = cstatlp[2] ) {
+***************
+*** 160,161
+  	}
+  	line = cstatp[1];
+
+--- 162,171 -----
+  	}
++ 	if ( cstatp[0] == T_OTHERCASE ) {
++ 	    if ( othercase != NIL ) {
++ 		error("Too many 'others' cases; only one allowed");
++ 	    } else {
++ 		othercase = cstatp;
++ 	    }
++ 	    continue;
++ 	}
+  	line = cstatp[1];
+***************
+*** 195,197
+      }
+-     noreach = nr;
+  	/*
+
+--- 205,206 -----
+      }
+  	/*
+***************
+*** 197,199
+  	/*
+! 	 *	default action is to call error
+  	 */
+
+--- 206,209 -----
+  	/*
+! 	 *	default action is to call error,
+! 	 *	unless there is an ``others:'' label.
+  	 */
+***************
+*** 200,206
+      putlab( ctab[0].clabel );
+!     putleaf( P2ICON , 0 , 0 , ADDTYPE( P2FTN | P2INT , P2PTR ) , "_CASERNG" );
+!     putRV( 0 , cbn , exprnlp -> value[ NL_OFFS ] ,
+! 		    exprnlp -> extra_flags , P2INT );
+!     putop( P2CALL , P2INT );
+!     putdot( filename , line );
+  	/*
+
+--- 210,226 -----
+      putlab( ctab[0].clabel );
+!     if ( othercase == NIL ) {
+! 	putleaf( P2ICON , 0 , 0 , ADDTYPE( P2FTN | P2INT , P2PTR ) , "_CASERNG" );
+! 	putRV( 0 , cbn , exprnlp -> value[ NL_OFFS ] ,
+! 			exprnlp -> extra_flags , P2INT );
+! 	putop( P2CALL , P2INT );
+! 	putdot( filename , line );
+!     } else {
+! 	level++;
+! 	statement( othercase[3] );
+! 	nr = (nr && noreach);
+! 	noreach = 0;
+! 	level--;
+! 	putjbr( endlabel );
+!     }
+!     noreach = nr;
+  	/*
+RCS file: RCS/tree.h,v
+retrieving revision 1.1
+diff -c1 -r1.1 tree.h
+*** /tmp/,RCSt1004871	Mon Nov  5 01:52:40 1984
+--- tree.h	Mon Nov  5 01:18:49 1984
+***************
+*** 84
+  #define T_LAST 81
+
+--- 84,85 -----
+  #define T_LAST 81
++ #define T_OTHERCASE 82
+
+===============================================================================
+From: mckusick (Kirk McKusick)
+Subject: Re: pascal, others clause (4.2BSD/ucb/49) 
+Date: Sat, 07 May 88 12:39:08 PDT
+Status: R
+
+Just cleaning out my mailbox and came across this. Pxp already converts
+non-standard `others' clauses to standard Pascal. One of Pascal's few
+virtues is that it is a portable standard. I rarely agree to extend it,
+and this request is no exception.
+
+	~Kirk
+

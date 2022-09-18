@@ -1,0 +1,103 @@
+Date: Fri, 20 Sep 85 18:12:36 PDT
+From: serge@monet.BERKELEY (Serge Granik)
+Subject: You can't copy files without filling in the holes
+Index: 	bin/cp.c 4.3BSD
+
+Description:
+	You can't copy files without filling in the holes (areas
+	occupying no physical storage and reading as all zeroes).
+Fix:
+16a17
+> int	hflag;
+42a44,47
+> 		case 'h':
+> 			hflag++;
+> 			break;
+> 
+71a77,78
+> 	int write(), hwrite();
+> 	register int (*writef)();
+145a153,157
+> 	if (hflag)
+> 		writef = hwrite;
+> 	else
+> 		writef = write;
+> 
+154c166
+< 		if (write(fnew, buf, n) != n) {
+---
+> 		if ((*writef)(fnew, buf, n) != n) {
+223a236,296
+> }
+> 
+> hwrite(fd, buf, bufsize)
+> 	int	fd;
+> 	char	*buf;
+> 	int	bufsize;
+> {
+> 	extern off_t lseek();
+> 	register int size;
+> 	register int hole;
+> 	register int data;
+> 
+> 	data = 0;
+> 	hole = 0;
+> 
+> 	for (size = bufsize; size >= DEV_BSIZE; size -= DEV_BSIZE) {
+> 		if (allzero(buf, DEV_BSIZE)) {
+> 			hole++;
+> 			if (data > 0) {
+> 				data *= DEV_BSIZE;
+> 				if (write(fd, buf - data, data) != data)
+> 					return (-1);
+> 			}
+> 			data = 0;
+> 		} else {
+> 			data++;
+> 			if (hole > 0) {
+> 				if (lseek(fd, (off_t)hole * DEV_BSIZE, 1) == -1)
+> 					return (-1);
+> 			}
+> 			hole = 0;
+> 		}
+> 
+> 		buf += DEV_BSIZE;
+> 	}
+> 
+> 	if (hole > 0) {
+> 		if (lseek(fd, (off_t)hole * DEV_BSIZE, 1) == -1)
+> 			return (-1);
+> 	}
+> 
+> 	if (size > 0 || data > 0) {
+> 		data *= DEV_BSIZE;
+> 		size += data;
+> 		buf -= data;
+> 		if (write(fd, buf, size) != size)
+> 			return (-1);
+> 	}
+> 
+> 	return (bufsize);
+> }
+> 
+> allzero(buf, bufsize)
+> 	register char *buf;
+> 	register int bufsize;
+> {
+> 	while (--bufsize >= 0)
+> 		if (*buf++ != 0)
+> 			return (0);
+> 
+> 	return (1);
+
+>>>>> Comment <<<<<
+
+This fix cannot be done without a fair amount of effort.
+First, tar(1), cp(1), cat(1), mv(1), rcp(1) etc. etc
+would all have to be changed.
+
+Secondly, and more importantly, the only way is to do
+a bcmp(3) on the read string to see if it's all null's.
+This would result in a significant slowdown of these
+programs as they typically read and write a buffer in
+a fairly small, tight loop.

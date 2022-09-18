@@ -1,0 +1,61 @@
+From sms@WLV.IMSD.CONTEL.COM  Tue Feb 20 15:35:30 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA15426; Tue, 20 Feb 90 15:35:30 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA04111; Tue, 20 Feb 90 15:35:37 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA03554; Tue, 20 Feb 90 15:35:19 -0800
+Date: Tue, 20 Feb 90 15:35:19 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9002202335.AA03554@WLV.IMSD.CONTEL.COM>
+Subject: ftpd free()'s data not malloc()'d
+Index: 	etc/ftpd/ftpcmd.y 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	If ftpd is passed an empty/null password he will issue a free()
+	on memory which is in the .data segment, not something which was 
+	malloc()'d.  This can lead to crashesand other odd behaviour.
+
+Repeat-By:
+	From a "ftp" client use the "user" command, and when asked for a 
+	password simply hit return.  If the servor side crashes, it 
+	defintely has the bug.
+
+	An alternate method is to read the sources.  In ftpcmd.y,
+	there is a section (~ line 113) which reads:
+
+		PASS SP passwd CRLF
+		= {
+			pass((char *) $3);
+			free((*char *) $3);
+		}
+
+	If an empty password is passed, the code around line 505
+	assigns "" to the password rather than a malloc'd null string
+	which can safely be freed later.
+
+Fix:
+
+	Apply the following patch to ftpcmd.y, it allocates a dynamic
+	null string which can be freed later.
+
+*** ftpcmd.y.old	Sun Nov 19 17:52:30 1989
+--- ftpcmd.y	Mon Feb 19 17:33:21 1990
+***************
+*** 504,510 ****
+  
+  password:	/* empty */
+  		= {
+! 			*(char **)&($$) = "";
+  		}
+  	|	STRING
+  	;
+--- 504,510 ----
+  
+  password:	/* empty */
+  		= {
+! 			*(char **)&($$) = (char *)calloc(1, sizeof (char));
+  		}
+  	|	STRING
+  	;

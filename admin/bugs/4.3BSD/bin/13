@@ -1,0 +1,334 @@
+Return-Path: <sun!gorodish!guy@ucbvax.berkeley.edu>
+Date: Fri, 13 Dec 85 13:32:26 PST
+From: sun!gorodish!guy@ucbvax.berkeley.edu (Guy Harris)
+Subject: Several "ftp" bugs
+Index: bin 4.3BSD
+
+Description:
+	1) If an FTP transfer fails after the data transfer has been
+	started, due to inability to open the file on the local side,
+	or is interrupted after it has been started, "ftp" doesn't
+	try to pick up the final reply code from the other side
+	and gets totally out of sync.  (Thanks to Rob Gingell for
+	finding and fixing this one.)
+
+	2) If the file can't be opened on the local side, the error
+	messages are sometimes garbled.  (Thanks to Rob for this one,
+	too.)
+
+	3) If the transfer is interrupted, you can get a worthless
+	transfer time statistics message, because it never got the
+	ending time of the transfer.
+
+	4) If your system's "longjmp" works System V-style, where an
+	argument of 0 is turned into 1, the "longjmp(toplevel, 0)"
+	gets treated as "longjmp(toplevel, 1)" and extra blank lines
+	get printed.  (Even if your system *doesn't* work System V-style,
+	using "longjmp" in this case is gross overkill.)
+Repeat-By:
+	1) Try interrupting a data transfer and watch "ftp" get
+	totally confused.
+Fix:
+
+*** ftp.c.orig	Fri Dec 13 12:52:25 1985
+--- ftp.c	Fri Dec 13 12:57:56 1985
+***************
+*** 206,211
+  	FILE *fin, *dout, *popen();
+  	int (*closefunc)(), pclose(), fclose(), (*oldintr)();
+  	char buf[BUFSIZ];
+  	long bytes = 0, hashbytes = sizeof (buf);
+  	register int c, d;
+  	struct stat st;
+
+--- 206,212 -----
+  	FILE *fin, *dout, *popen();
+  	int (*closefunc)(), pclose(), fclose(), (*oldintr)();
+  	char buf[BUFSIZ];
++ 	int expectingreply = 0;
+  	long bytes = 0, hashbytes = sizeof (buf);
+  	register int c, d;
+  	struct stat st;
+***************
+*** 218,224
+  	if (strcmp(local, "-") == 0)
+  		fin = stdin;
+  	else if (*local == '|') {
+! 		fin = popen(local + 1, "r");
+  		if (fin == NULL) {
+  			perror(local + 1);
+  			goto bad;
+
+--- 219,231 -----
+  	if (strcmp(local, "-") == 0)
+  		fin = stdin;
+  	else if (*local == '|') {
+! 		/*
+! 		 * Advance local so further uses just yield file name
+! 		 * thus later references for error messages need not check
+! 		 * for '|' special case.
+! 	 	 */
+! 		local += 1;
+! 		fin = popen(local, "r");
+  		if (fin == NULL) {
+  			perror(local);
+  			goto bad;
+***************
+*** 220,226
+  	else if (*local == '|') {
+  		fin = popen(local + 1, "r");
+  		if (fin == NULL) {
+! 			perror(local + 1);
+  			goto bad;
+  		}
+  		closefunc = pclose;
+
+--- 227,233 -----
+  		local += 1;
+  		fin = popen(local, "r");
+  		if (fin == NULL) {
+! 			perror(local);
+  			goto bad;
+  		}
+  		closefunc = pclose;
+***************
+*** 245,250
+  	} else
+  		if (command("%s", cmd) != PRELIM)
+  			goto bad;
+  	dout = dataconn("w");
+  	if (dout == NULL)
+  		goto bad;
+
+--- 252,258 -----
+  	} else
+  		if (command("%s", cmd) != PRELIM)
+  			goto bad;
++ 	expectingreply++;	/* got preliminary reply, expecting final reply */
+  	dout = dataconn("w");
+  	if (dout == NULL)
+  		goto bad;
+***************
+*** 307,313
+  	}
+  	gettimeofday(&stop, (struct timezone *)0);
+  	if (closefunc != NULL)
+! 		(*closefunc)(fin);
+  	(void) fclose(dout);
+  	(void) getreply(0);
+  done:
+
+--- 315,321 -----
+  	}
+  	gettimeofday(&stop, (struct timezone *)0);
+  	if (closefunc != NULL)
+! 		(*closefunc)(fin), closefunc = NULL;
+  	(void) fclose(dout);
+  done:
+  	if (expectingreply) {
+***************
+*** 309,315
+  	if (closefunc != NULL)
+  		(*closefunc)(fin);
+  	(void) fclose(dout);
+- 	(void) getreply(0);
+  done:
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+
+--- 317,322 -----
+  	if (closefunc != NULL)
+  		(*closefunc)(fin), closefunc = NULL;
+  	(void) fclose(dout);
+  done:
+  	if (expectingreply) {
+  		(void) getreply(0);
+***************
+*** 311,316
+  	(void) fclose(dout);
+  	(void) getreply(0);
+  done:
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+  		ptransfer("sent", bytes, &start, &stop);
+
+--- 318,327 -----
+  		(*closefunc)(fin), closefunc = NULL;
+  	(void) fclose(dout);
+  done:
++ 	if (expectingreply) {
++ 		(void) getreply(0);
++ 		expectingreply = 0;
++ 	}
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+  		ptransfer("sent", bytes, &start, &stop);
+***************
+*** 319,325
+  	if (data >= 0)
+  		(void) close(data), data = -1;
+  	if (closefunc != NULL && fin != NULL)
+! 		(*closefunc)(fin);
+  	goto done;
+  }
+  
+
+--- 330,337 -----
+  	if (data >= 0)
+  		(void) close(data), data = -1;
+  	if (closefunc != NULL && fin != NULL)
+! 		(*closefunc)(fin), closefunc = NULL;
+! 	bytes = 0;	/* so we don't print a message if the transfer was aborted */
+  	goto done;
+  }
+  
+***************
+*** 337,342
+  	FILE *fout, *din, *popen();
+  	int (*closefunc)(), pclose(), fclose(), (*oldintr)();
+  	char buf[BUFSIZ];
+  	long bytes = 0, hashbytes = sizeof (buf);
+  	register int c, d;
+  	struct timeval start, stop;
+
+--- 349,355 -----
+  	FILE *fout, *din, *popen();
+  	int (*closefunc)(), pclose(), fclose(), (*oldintr)();
+  	char buf[BUFSIZ];
++ 	int expectingreply = 0;
+  	long bytes = 0, hashbytes = sizeof (buf);
+  	register int c, d;
+  	struct timeval start, stop;
+***************
+*** 372,377
+  	} else
+  		if (command("%s", cmd) != PRELIM)
+  			goto bad;
+  	if (strcmp(local, "-") == 0)
+  		fout = stdout;
+  	else if (*local == '|') {
+
+--- 385,391 -----
+  	} else
+  		if (command("%s", cmd) != PRELIM)
+  			goto bad;
++ 	expectingreply++;	/* got preliminary reply, expecting final reply */
+  	if (strcmp(local, "-") == 0)
+  		fout = stdout;
+  	else if (*local == '|') {
+***************
+*** 375,381
+  	if (strcmp(local, "-") == 0)
+  		fout = stdout;
+  	else if (*local == '|') {
+! 		fout = popen(local + 1, "w");
+  		closefunc = pclose;
+  	} else {
+  		fout = fopen(local, mode);
+
+--- 389,400 -----
+  	if (strcmp(local, "-") == 0)
+  		fout = stdout;
+  	else if (*local == '|') {
+! 		/*
+! 		 * Advance local over '|' so don't need to check for
+! 		 * '|' special case any further.
+! 		 */
+! 		local += 1;
+! 		fout = popen(local, "w");
+  		closefunc = pclose;
+  	} else {
+  		fout = fopen(local, mode);
+***************
+*** 382,388
+  		closefunc = fclose;
+  	}
+  	if (fout == NULL) {
+! 		perror(local + 1);
+  		goto bad;
+  	}
+  	din = dataconn("r");
+
+--- 401,407 -----
+  		closefunc = fclose;
+  	}
+  	if (fout == NULL) {
+! 		perror(local);
+  		goto bad;
+  	}
+  	din = dataconn("r");
+***************
+*** 450,457
+  	gettimeofday(&stop, (struct timezone *)0);
+  	(void) fclose(din);
+  	if (closefunc != NULL)
+! 		(*closefunc)(fout);
+! 	(void) getreply(0);
+  done:
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+
+--- 469,475 -----
+  	gettimeofday(&stop, (struct timezone *)0);
+  	(void) fclose(din);
+  	if (closefunc != NULL)
+! 		(*closefunc)(fout), closefunc = NULL;
+  done:
+  	if (expectingreply) {
+  		(void) getreply(0);
+***************
+*** 453,458
+  		(*closefunc)(fout);
+  	(void) getreply(0);
+  done:
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+  		ptransfer("received", bytes, &start, &stop);
+
+--- 471,480 -----
+  	if (closefunc != NULL)
+  		(*closefunc)(fout), closefunc = NULL;
+  done:
++ 	if (expectingreply) {
++ 		(void) getreply(0);
++ 		expectingreply = 0;
++ 	}
+  	signal(SIGINT, oldintr);
+  	if (bytes > 0 && verbose)
+  		ptransfer("received", bytes, &start, &stop);
+***************
+*** 462,467
+  		(void) close(data), data = -1;
+  	if (closefunc != NULL && fout != NULL)
+  		(*closefunc)(fout);
+  	goto done;
+  }
+  
+
+--- 484,490 -----
+  		(void) close(data), data = -1;
+  	if (closefunc != NULL && fout != NULL)
+  		(*closefunc)(fout);
++ 	bytes = 0;	/* so we don't print a message if the transfer was aborted */
+  	goto done;
+  }
+  
+*** main.c.orig	Wed Jul 31 16:32:40 1985
+--- main.c	Fri Dec 13 12:33:57 1985
+***************
+*** 226,232
+  		if (c->c_handler != help)
+  			break;
+  	}
+- 	longjmp(toplevel, 0);
+  }
+  
+  struct cmd *
+
+--- 226,231 -----
+  		if (c->c_handler != help)
+  			break;
+  	}
+  }
+  
+  struct cmd *

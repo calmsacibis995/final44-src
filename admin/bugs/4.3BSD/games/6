@@ -1,0 +1,169 @@
+Date: Sat, 8 Nov 86 01:43:06 PST
+From: guy@sun.com (Guy Harris)
+Subject: "mille" isn't "lint"-clean and won't work on non-4.[23]BSD systems
+Index: games/mille/{Makefile,mille.c,mille.h,misc.c,move.c,varpush.c} 4.3BSD
+
+Description:
+	1) "mille" calls "setbuf" with a second argument of NULL; it should
+	cast this to "(char *)NULL", especially on machines where 0 and
+	(char *)0 aren't represented by the same number of bits or the
+	same bit pattern.
+
+	2) "mille" is set up to assume that it's either being built for
+	4.[23]BSD or System V; one might as well support older non-USG
+	systems (V7, 4.1BSD).
+
+	3) "mille" only flushes input properly on 4.[23]BSD.  It uses
+	"fflush"(!) on older systems; unfortunately, it doesn't do the
+	kind of flushing that's called for here.  System V (and System III)
+	have an "ioctl" that permits you to flush only the input; older
+	systems must resort to the "TIOCGETP"/"TIOCSETP" hack.
+
+Repeat-By:
+	Read the code, or try to bring it up on a machine with 1)
+	different size pointers and "int"s, 2) a System V or System
+	III machine, or 3) a V7 or 4.1BSD machine.
+Fix:
+*** /arch/4.3/usr/src/games/mille/Makefile	Thu May 15 07:01:10 1986
+--- ./Makefile	Sat Nov  8 01:34:46 1986
+***************
+*** 14,20 ****
+  # L=	-ltermlib
+  L=	-lcurses -ltermlib
+  LIBS=	${CRL} ${L}
+! DEFS=
+  CFLAGS=	-O ${DEFS}
+  LDFLAGS=
+  DESTDIR=
+--- 14,20 ----
+  # L=	-ltermlib
+  L=	-lcurses -ltermlib
+  LIBS=	${CRL} ${L}
+! DEFS=	-DBSD4_2
+  CFLAGS=	-O ${DEFS}
+  LDFLAGS=
+  DESTDIR=
+
+*** /arch/4.3/usr/src/games/mille/mille.c	Sat Jan 11 11:47:31 1986
+--- ./mille.c	Sat Nov  8 01:33:48 1986
+***************
+*** 21,27 ****
+  
+  	if (strcmp(av[0], "a.out") == 0) {
+  		outf = fopen("q", "w");
+! 		setbuf(outf, NULL);
+  		Debug = TRUE;
+  	}
+  	restore = FALSE;
+--- 21,27 ----
+  
+  	if (strcmp(av[0], "a.out") == 0) {
+  		outf = fopen("q", "w");
+! 		setbuf(outf, (char *)NULL);
+  		Debug = TRUE;
+  	}
+  	restore = FALSE;
+
+*** /arch/4.3/usr/src/games/mille/mille.h	Sat Jan 11 11:47:33 1986
+--- ./mille.h	Sat Nov  8 01:33:27 1986
+***************
+*** 114,123 ****
+  # define	EXTENSIONPROMPT		7
+  # define	OVERWRITEFILEPROMPT	8
+  
+! # ifdef	SYSV
+  # define	srandom(x)	srand(x)
+  # define	random()	rand()
+  
+  # ifndef	attron
+  #	define	erasechar()	_tty.c_cc[VERASE]
+  #	define	killchar()	_tty.c_cc[VKILL]
+--- 114,125 ----
+  # define	EXTENSIONPROMPT		7
+  # define	OVERWRITEFILEPROMPT	8
+  
+! # ifndef BSD4_2
+  # define	srandom(x)	srand(x)
+  # define	random()	rand()
++ # endif BSD4_2
+  
++ # ifdef	SYSV
+  # ifndef	attron
+  #	define	erasechar()	_tty.c_cc[VERASE]
+  #	define	killchar()	_tty.c_cc[VKILL]
+
+*** /arch/4.3/usr/src/games/mille/misc.c	Sat Jan 11 11:47:34 1986
+--- ./misc.c	Sat Nov  8 01:41:55 1986
+***************
+*** 214,224 ****
+  
+  flush_input()
+  {
+! # ifdef	TIOCFLUSH
+  	static int	ioctl_args = FREAD;
+  
+  	(void) ioctl(fileno(stdin), TIOCFLUSH, &ioctl_args);
+  # else
+! 	fflush(stdin);
+! # endif
+  }
+--- 214,231 ----
+  
+  flush_input()
+  {
+! # ifdef SYSV
+! 	(void) ioctl(fileno(stdin), TCFLSH, 0);
+! # else
+! # ifdef	BSD4_2
+  	static int	ioctl_args = FREAD;
+  
+  	(void) ioctl(fileno(stdin), TIOCFLUSH, &ioctl_args);
+  # else
+! 	static struct sgttyb sgtty_buf;
+! 
+! 	(void) ioctl(fileno(stdin), TIOCGETP, &sgtty_buf);
+! 	(void) ioctl(fileno(stdin), TIOCSETP, &sgtty_buf);
+! # endif BSD4_2
+! # endif SYSV
+  }
+
+*** /arch/4.3/usr/src/games/mille/move.c	Wed Jan 22 16:32:18 1986
+--- ./move.c	Sat Nov  8 01:32:42 1986
+***************
+*** 406,412 ****
+  					leaveok(Board, TRUE);
+  					if ((outf = fopen(buf, "w")) == NULL)
+  						perror(buf);
+! 					setbuf(outf, NULL);
+  				}
+  				Debug = !Debug;
+  				break;
+--- 406,412 ----
+  					leaveok(Board, TRUE);
+  					if ((outf = fopen(buf, "w")) == NULL)
+  						perror(buf);
+! 					setbuf(outf, (char *)NULL);
+  				}
+  				Debug = !Debug;
+  				break;
+
+*** /arch/4.3/usr/src/games/mille/varpush.c	Sat Jan 11 11:47:39 1986
+--- ./varpush.c	Sat Nov  8 01:29:58 1986
+***************
+*** 42,48 ****
+  				goto over;
+  			}
+  			if (strcmp(buf, "/dev/null") != 0)
+! 				setbuf(outf, NULL);
+  		}
+  	}
+  	else {
+--- 42,48 ----
+  				goto over;
+  			}
+  			if (strcmp(buf, "/dev/null") != 0)
+! 				setbuf(outf, (char *)NULL);
+  		}
+  	}
+  	else {
+

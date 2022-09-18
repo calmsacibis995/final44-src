@@ -1,0 +1,48 @@
+Return-Path: <jrs@Purdue.ARPA>
+Date: Fri, 25 May 84 13:39:33 est
+From: Jeff Schwab <jrs@Purdue.ARPA>
+Subject: Additional check needed for sticky directories
+Index: 	sys/sys/ufs_nami.c 4.2BSD
+
+Description:
+	It appears that some versions of the 4.2 kernel have re-implemented
+	the concept of "sticky" directories.  The existing code catches
+	the case where a user is attempting to delete a file he does not
+	own, but failes to catch the rename case.  Under many conditions,
+	a rename can cause many of the same problems as a delete.
+Repeat-By:
+	Create a file in a sticky directory that you don't own.  Then try
+	and rename it and you can!
+Fix:
+	The following diff adds the sticky check to the rename code
+	in namei().  Some context is provided.
+
+  		dp = iget(dp->i_dev, fs, u.u_dent.d_ino);
+  		if (dp == NULL) {
+  			iput(u.u_pdir);
+  			goto bad;
+  		}
++ #ifdef PUCC
++ 
++ 		/* if "sticky" directory, must own the file to rename */
++ 
++ 		if ((u.u_pdir->i_mode & ISVTX) != 0 && u.u_uid != 0
++ 				&& u.u_uid != u.u_pdir->i_uid
++ 				&& u.u_uid != dp->i_uid) {
++ 			if (dp == u.u_pdir) {
++ 				irele(u.u_pdir);
++ 			} else {
++ 				iput(u.u_pdir);
++ 			}
++ 			u.u_error = EPERM;
++ 			goto bad;
++ 		}
++ #endif
+  		brelse(nbp);
+  		return (dp);
+  	}
+  
+  	/*
+  	 * Check for symbolic link, which may require us to massage the
+  	 * name before we continue translation.  We do not `iput' the
+  	 * directory because we may need it again if the symbolic link

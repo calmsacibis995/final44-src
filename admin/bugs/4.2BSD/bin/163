@@ -1,0 +1,51 @@
+Return-Path: <vax-populi!gduncan@ucbvax.Berkeley.EDU>
+Date-Sent: Thu Sep 11 15:51:37 1986
+Date: Thu, 11 Sep 86 15:51:37 pdt
+From: Gary Duncan <vax-populi!gduncan@ucbvax.Berkeley.EDU>
+Subject: possible truncated /etc/passwd file
+Index: bin/passwd.c 4.2BSD
+
+Description:
+	The precautions taken by the passwd program (and also the ucb/chsh,
+	ucb/chfn programs) to prevent multiple update trashing of the passwd
+	file are not adequate enough.  (I believe the vipw program is fine
+	though).  The program works by creating a temporary copy of the
+	updated passwd file by opening /etc/ptmp in exclusive-use mode then
+	copying and modifying entries from the original.  No problem so far.
+	The program then:
+		1. renames the temporary file to /etc/passwd
+		2. closes the stream pointer for the file.
+	Unfortunately the exclusive-use mode is lost on rename before the
+	stream buffers have been flushed.  If a process switch occurs between
+	#1 and #2, another process could update the now truncated passwd file
+	and havoc may ensue.  Corruption is very unlikely to occur in
+	practice, but is possible.  Apologies if this has been posted before.
+Repeat-By:
+	Invoke passwd twice and be very lucky (or unlucky depending on how
+	you view it) with the timing of the processes.  You can simulate
+	the bug by extending the time between the rename and fclose (ie. with
+	a sleep or read from the terminal -- you may also want to remove
+	the SIGSTP ignore signal so you can ^Z) and starting up a second
+	passwd at this point.
+Fix:
+	Add a fflush(tf) immediately before the rename to flush the buffers.
+
+*** passwd.c.old	Sun Jul 10 17:55:46 1983
+--- passwd.c	Thu Sep 11 15:44:09 1986
+***************
+*** 166,171
+  			pwd->pw_shell);
+  	}
+  	endpwent();
+  	if (rename(temp, passwd) < 0) {
+  		fprintf(stderr, "passwd: "); perror("rename");
+  		unlink(temp);
+
+--- 166,172 -----
+  			pwd->pw_shell);
+  	}
+  	endpwent();
++ 	fflush(tf);
+  	if (rename(temp, passwd) < 0) {
+  		fprintf(stderr, "passwd: "); perror("rename");
+  		unlink(temp);

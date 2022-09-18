@@ -1,0 +1,95 @@
+Return-Path: <karels@monet.Berkeley.EDU>
+From: karels@monet.berkeley.edu (Mike Karels)
+To: tcp-ip@sri-nic.arpa
+Cc: 4bsd-bugs@ucbarpa.Berkeley.EDU, net-bugs-4bsd@ucbvax.berkeley.edu
+Subject: 4.3BSD network bug (#2, in_pcbconnect)
+Date: Wed, 22 Oct 86 17:17:01 PDT
+
+Index:	sys/netinet/in_pcb.c 4.3BSD FIX
+
+This is the second in a set of three bug reports with fixes for the
+network in 4.3BSD.  All 4.3 sites should install the modifications
+described in these reports.
+
+Description:
+
+There is a logic error in the code to assign a local address to a socket
+when it is unbound and is setting a destination address.  For a datagram
+socket, this may result in the use of a suboptimal return address.
+In the most serious case, the return address for a datagram could be
+the address used for the loopback interface (if the loopback address
+is set before the other interfaces).  The problem can result in failures
+of the name resolution routines that use datagrams to communicate with
+the name server.
+
+(Note: the "primary" address of a 4.3BSD host is the address set with
+the first "ifconfig" to set an internet address after boot time.
+The primary address is used when an address must be chosen without context;
+this is supposed to happen rarely, for example when no route exists yet
+at bind time.  In general, the loopback address should not be the first
+address set unless there is no hardware network interface.  Certain network
+interfaces do not receive their own packets, however, and either must have
+their addresses set by number, or have them set after some other interface.)
+
+The problem is in the code in in_pcbconnect (/sys/netinet/in_pcb.c)
+that checks the cached route held by the socket before routing the packet,
+then reroutes if necessary.  Part of the interface lookup procedure is done
+only if there is no correct cached route.  That part of the procedure
+should be done each time a local address is chosen.
+
+Fix:
+
+The fix is to move the interface lookup code outside of the conditional
+section which is run only to allocate a new route.  The diffs follow:
+
+*** /nbsd/sys/netinet/in_pcb.c	Thu Jun  5 00:26:13 1986
+--- netinet/in_pcb.c	Thu Sep  4 19:33:11 1986
+***************
+*** 5,7 ****
+   *
+!  *	@(#)in_pcb.c	7.1 (Berkeley) 6/5/86
+   */
+--- 5,7 ----
+   *
+!  *	@(#)in_pcb.c	7.2 (Berkeley) 9/4/86
+   */
+***************
+*** 154,156 ****
+  		    (ro->ro_rt == (struct rtentry *)0 ||
+! 		    (ifp = ro->ro_rt->rt_ifp) == (struct ifnet *)0)) {
+  			/* No route yet, so try to acquire one */
+--- 154,156 ----
+  		    (ro->ro_rt == (struct rtentry *)0 ||
+! 		    ro->ro_rt->rt_ifp == (struct ifnet *)0)) {
+  			/* No route yet, so try to acquire one */
+***************
+*** 160,173 ****
+  			rtalloc(ro);
+- 			/*
+- 			 * If we found a route, use the address
+- 			 * corresponding to the outgoing interface
+- 			 * unless it is the loopback (in case a route
+- 			 * to our address on another net goes to loopback).
+- 			 */
+- 			if (ro->ro_rt && (ifp = ro->ro_rt->rt_ifp) &&
+- 			    (ifp->if_flags & IFF_LOOPBACK) == 0)
+- 				for (ia = in_ifaddr; ia; ia = ia->ia_next)
+- 					if (ia->ia_ifp == ifp)
+- 						break;
+  		}
+  		if (ia == 0) {
+--- 160,173 ----
+  			rtalloc(ro);
+  		}
++ 		/*
++ 		 * If we found a route, use the address
++ 		 * corresponding to the outgoing interface
++ 		 * unless it is the loopback (in case a route
++ 		 * to our address on another net goes to loopback).
++ 		 */
++ 		if (ro->ro_rt && (ifp = ro->ro_rt->rt_ifp) &&
++ 		    (ifp->if_flags & IFF_LOOPBACK) == 0)
++ 			for (ia = in_ifaddr; ia; ia = ia->ia_next)
++ 				if (ia->ia_ifp == ifp)
++ 					break;
+  		if (ia == 0) {

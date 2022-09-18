@@ -1,0 +1,43 @@
+Return-Path: <dpk@BRL-VGR.ARPA>
+Date:     Wed, 4 Jul 84 7:14:43 EDT
+From: dpk@BRL-VGR.ARPA
+Subject:  Rwhod wastes resources, Fix
+Sender: dpk@BRL-VGR.ARPA
+
+Subject: Efficiency fix: Rwhod unnecessarily nlists the kernel
+Index:	 etc/rwhod/rwhod.c 4.2BSD FIX
+
+Description:
+	Rwhod was nlisting the kernel every 10*sleep_interval
+seconds whether it needed to or not.  This caused it to consume
+far more CPU and disk I/O than it should have.
+
+Repeat-By:
+	Run "sa" and look at the stats for "rwhod".
+
+Fix:
+	The following diff lists shows some code (~12 lines) which
+should be added to the top of getkmem().  This code will check to see
+when kernel file has been changed by stating the file and comparing the
+last inode change time with the current inode change time (it also
+checks the inode number).  This feature of looking for vmunix to change
+is so that rwhod can eventually get the load average information even if
+you boot up an alternate kernel.  The assumption is that you will copy
+or link the kernel you booted to /vmunix.  The line numbers will be offset
+by a few lines do to a header we add to the files.
+
+323a335,348
+> 	struct stat statb;
+> 	static time_t unixctime = 0L;
+> 	static ino_t unixinode;
+> 
+> 	if (stat ("/vmunix", &statb) < 0) {
+> 		if (unixctime != 0L)
+> 			return;		/* get new values later ... */
+> 	}
+> 	else if (unixctime != statb.st_ctime || unixinode != statb.st_ino) {
+> 		unixctime = statb.st_ctime;		/* we're updating */
+> 		unixinode = statb.st_ino;
+> 	}
+> 	else
+> 		return;

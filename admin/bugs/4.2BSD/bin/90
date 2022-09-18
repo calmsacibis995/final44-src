@@ -1,0 +1,103 @@
+Return-Path: <muller@nprdc>
+Date: Sat, 29 Jun 85 11:26:29 pdt
+From: muller@nprdc (Keith Muller)
+
+Subject: extracting files from a tar tape as root can corrupt the file system
+Index:	bin/tar.c 4.2BSD
+
+Description:
+	If a tar tape has a symbolic or hard link which has the same name as
+	as an exsisting nonempty directory, an extraction of the link from
+	the tape as root will unlink the directory from the system. This
+	causes all the files that were in that directory to still be allocated
+	but ureferenced. This corrupts the filesystem and require a fsck to
+	repair.
+Repeat-By:
+	1) cd /tmp
+	2) mkdir testdir1 testdir2
+	3) cd testdir1
+	4) cp /etc/passwd x
+	5) cd /tmp/testdir2
+	6) ln -s /tmp/testdir1 testdir1
+	7) cp /etc/group z
+	Now as ROOT do the following:
+	8) tar cf - . | (cd /tmp; tar xf -)
+	
+	Your filesystem is now corrupted. unmount it and run fsck to relink
+	the unreferenced directory testdir1 that tar unlinked (even though
+	testdir1 was nonempty).
+Fix:
+	There are two ways to fix this problem. Tar can be modified to refuse
+	to create links if there is already a nonempty directory with the same
+	name. Or the kernel can be modified to remove the historical (and very
+	dangerous) code that allows root to link and unlink directories. With
+	the addition of the rmdir amd mkdir syscalls, allowing root to unlink
+	and link to directories does not seem to be necessary anymore. The
+	kernel modification would prevent any other code from accidently
+	removing nonempty directories when run as root. The kernel mod requires
+	removing the call to suser() in the link() and unlink() routines in
+	sys/sys/ufs_syscalls.c Of course this is likely to break other programs
+	that remove empty directories with unlink(), however they can be
+	recoded to use rmdir() and/or mkdir().
+
+	Keith Muller
+	University of California
+	muller@nprdc
+
+	Changes to tar to prevent unlinking nonempty directories:
+
+RCS file: RCS/tar.c,v
+retrieving revision 1.2
+diff -c -r1.2 tar.c
+*** /tmp/,RCSt1026872	Sat Jun 29 10:24:48 1985
+--- tar.c	Fri Jun 28 16:23:31 1985
+***************
+*** 643,649
+  		if (checkdir(dblock.dbuf.name))
+  			continue;
+  		if (dblock.dbuf.linkflag == '2') {
+! 			unlink(dblock.dbuf.name);
+  			if (symlink(dblock.dbuf.linkname, dblock.dbuf.name)<0) {
+  				fprintf(stderr, "tar: %s: symbolic link failed\n",
+  				    dblock.dbuf.name);
+
+--- 643,656 -----
+  		if (checkdir(dblock.dbuf.name))
+  			continue;
+  		if (dblock.dbuf.linkflag == '2') {
+! 			/*
+! 			 * only unlink non directories or empty
+! 			 * directories
+! 			 */
+! 			if (rmdir(dblock.dbuf.name) < 0){
+! 				if (errno == ENOTDIR)
+! 					unlink(dblock.dbuf.name);
+! 			}
+  			if (symlink(dblock.dbuf.linkname, dblock.dbuf.name)<0) {
+  				fprintf(stderr, "tar: %s: symbolic link failed\n",
+  				    dblock.dbuf.name);
+***************
+*** 670,676
+  			continue;
+  		}
+  		if (dblock.dbuf.linkflag == '1') {
+! 			unlink(dblock.dbuf.name);
+  			if (link(dblock.dbuf.linkname, dblock.dbuf.name) < 0) {
+  				fprintf(stderr, "tar: %s: cannot link\n",
+  				    dblock.dbuf.name);
+
+--- 677,690 -----
+  			continue;
+  		}
+  		if (dblock.dbuf.linkflag == '1') {
+! 			/*
+! 			 * only unlink non directories or empty
+! 			 * directories
+! 			 */
+! 			if (rmdir(dblock.dbuf.name) < 0){
+! 				if (errno == ENOTDIR)
+! 					unlink(dblock.dbuf.name);
+! 			}
+  			if (link(dblock.dbuf.linkname, dblock.dbuf.name) < 0) {
+  				fprintf(stderr, "tar: %s: cannot link\n",
+  				    dblock.dbuf.name);

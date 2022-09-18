@@ -1,0 +1,56 @@
+Return-Path: <mjb%Brown@UDel-Relay>
+Date:     27 Sep 83 (Tuesday) 21:25 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  UBA reset crashes system (segmentation fault)
+
+Index:	sys/vaxuba/uba.c 4.1BSD Fix
+Description:
+	System crashes when UBA reset is attempted (panic: Segmentation
+	fault). This is because someone put in half a change to the
+	way the cdevsw table is searched; it used to end with a null open
+	routine pointer, but got changed to have its number of entries
+	defined instead (nchrdev). However ubareset() wasn't changed,
+	so it falls off the end of the table and calls random mung.
+Repeat-By:
+	Force a UBA reset somehow. Watch system crash.
+Fix:
+	Fix the search loop in ubareset():
+	*** /sys/vaxuba/uba.c.ucb	Wed Dec 22 19:48:55 1982
+	--- /sys/vaxuba/uba.c	Fri Sep 23 00:31:02 1983
+	***************
+	*** 308,313
+	  ubareset(uban)
+		int uban;
+	  {
+	! 	register struct cdevsw *cdp;
+		register struct uba_hd *uh = &uba_hd[uban];
+		int s;
+	--- 308,314 -----
+	  ubareset(uban)
+		int uban;
+	  {
+	! 	register int cdx;
+	! 	extern int nchrdev;
+		register struct uba_hd *uh = &uba_hd[uban];
+		int s;
+	***************
+	*** 324,331	
+		wakeup((caddr_t)&uh->uh_mrwant);
+		printf("uba%d: reset", uban);
+		ubainit(uh->uh_uba);
+	! 	for (cdp = cdevsw; cdp->d_open; cdp++)
+	! 		(*cdp->d_reset)(uban);
+	  #ifdef INET
+		ifubareset(uban);
+	  #endif
+	--- 325,332 -----
+		wakeup((caddr_t)&uh->uh_mrwant);
+		printf("uba%d: reset", uban);
+		ubainit(uh->uh_uba);
+	! 	for (cdx = 0; cdx < nchrdev; cdx++)
+	! 		(cdevsw[cdx].d_reset)(uban);
+	  #ifdef INET
+		ifubareset(uban);
+	  #endif
+	====END OF FIX====

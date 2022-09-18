@@ -1,0 +1,116 @@
+Return-Path: <rick@seismo.css.gov>
+Date: Fri, 15 Aug 86 16:08:20 EDT
+From: Rick Adams <rick@seismo.css.gov>
+Subject: telnet can infinite loop if eof on input
+Index: ucb/telnet.c 4.3BSD
+
+Description:
+	1) telnet should exit non-zero if connect failed
+		this is useful for shell scripts if you want to test if
+		a host is up
+	2) telnet can go into an infinite loop if stdin returns EOF
+Repeat-By:
+	1) grep exit() telnet.c
+	2) telnet localhosts </dev/null
+Fix:
+*** telnet.c.old	Fri Aug 15 16:03:39 1986
+--- telnet.c		Fri Aug 15 15:57:15 1986
+***************
+*** 98,104 ****
+  	int	needconnect;	/* Do we need to be connected to execute? */
+  };
+  
+! int	connected;
+  int	net;
+  int	tout;
+  int	showoptions = 0;
+--- 98,104 ----
+  	int	needconnect;	/* Do we need to be connected to execute? */
+  };
+  
+! int	connected, didconnect;
+  int	net;
+  int	tout;
+  int	showoptions = 0;
+***************
+*** 731,737 ****
+  
+  char	sibuf[BUFSIZ], *sbp;
+  char	tibuf[BUFSIZ], *tbp;
+! int	scc, tcc;
+  
+  
+  /*
+--- 731,737 ----
+  
+  char	sibuf[BUFSIZ], *sbp;
+  char	tibuf[BUFSIZ], *tbp;
+! int	scc, tcc, neofs;
+  
+  
+  /*
+***************
+*** 903,909 ****
+  					/* must be an EOF... */
+  					*tbp = ntc.t_eofc;
+  					c = 1;
+! 				}
+  				if (c <= 0) {
+  					tcc = c;
+  					break;
+--- 903,913 ----
+  					/* must be an EOF... */
+  					*tbp = ntc.t_eofc;
+  					c = 1;
+! 					if (neofs++ > 4)
+! 						quit();
+! 				} else
+! 					neofs = 0;
+! 
+  				if (c <= 0) {
+  					tcc = c;
+  					break;
+***************
+*** 1980,1986 ****
+  quit()
+  {
+  	(void) call(bye, "bye", 0);
+! 	exit(0);
+  	/*NOTREACHED*/
+  }
+  
+--- 1984,1990 ----
+  quit()
+  {
+  	(void) call(bye, "bye", 0);
+! 	exit(didconnect ? 0 : 1);
+  	/*NOTREACHED*/
+  }
+  
+***************
+*** 2115,2120 ****
+--- 2119,2125 ----
+  			return 0;
+  		}
+  		connected++;
++ 		didconnect++;
+  	} while (connected == 0);
+  	call(status, "status", "notmuch", 0);
+  	if (setjmp(peerdied) == 0)
+***************
+*** 2355,2361 ****
+  	}
+  	if (argc != 1) {
+  		if (setjmp(toplevel) != 0)
+! 			exit(0);
+  		tn(argc, argv);
+  	}
+  	setjmp(toplevel);
+--- 2360,2366 ----
+  	}
+  	if (argc != 1) {
+  		if (setjmp(toplevel) != 0)
+! 			exit(didconnect ? 0 : 1);
+  		tn(argc, argv);
+  	}
+  	setjmp(toplevel);

@@ -1,0 +1,69 @@
+Return-Path: <mazama!stew@Shasta>
+Date: Fri, 6 Jan 84 22:51:21 pst
+From: mazama!stew (Stewart Levin) <mazama!stew@Shasta>
+Subject: Severe bug in TU78 driver
+Index: sys/vaxmba/mt.c 4.2BSD
+
+Description:
+	These bugs were originally discovered in the 4.1BSD mt.c driver
+	and are still in the 4.2BSD version:
+
+	1) Reverse reads are handled improperly.  These are called for
+	   by the TU78 READOPP error retry sequences (i.e. when you
+	   see the tape drive wig/wagging back and forth over a dirty
+	   tape record.  What the tape driver is supposed to do in this
+	   case (and I even got a written letter from DEC detailing this!)
+	   is 
+
+	   a) Use record count from mtca (tape control) register to dequeue
+	      any records that were correctly transferred.  Load record count
+	      with 0.
+	   b) Byte count from mtbc (byte count) register is TM78's best
+	      guess of actual record length.  This value should be taken as
+	      gospel and loaded into the MBA byte count register (two's
+	      complemented).  If record does not fit in buffer, compute
+	      number of word for data channel to skip (mtca skip count) or
+	      give up and return I/O error.
+	   c) Load the MBA virtual address register with the map register
+	      pointer and starting memory address (physical byte offset).
+	      If the last operation was a reverse read then the TM78 has
+	      requested us to do a forward read and we load these just as
+	      for a normal forward read command.  If the last operation was a
+	      forward read then the TM78 has requested us to read reverse and
+	      the starting address is the read forward normal starting address
+	      PLUS THE NUMBER OF BYTES TO BE READ MINUS ONE.
+	   d) Load the starting (and successive) map register(s) with physical
+	      page address(es).
+	   e) Set MBA control register interrupt enable.
+	   f) Load the mtcs control register with the function code octal
+	      071 (MT_READ|MT_GO) for a forward read or octal 077 for a
+	      read reverse (MT_READREV|GO).
+
+	   As you may have guessed,  the present driver does NOT load
+	   the virtual address register correctly.  The result is that
+	   reverse reads store their data IN FRONT OF THE BUFFER FOR WHICH
+	   IT IS INTENDED.  This generally continues until offset 0 of
+	   the page mapping the beginning of the buffer is reached.
+	   In the worst case this overwrites critical data areas and crashes
+	   the system.  In more benign settings one gets erroneous data
+	   (dd exhibits "stuttering records" where some part of a record
+	   ends up repeated).
+
+	   The driver also mishandles read opposite requests by squirreling
+	   away the byte count from b) above in the buffer header and never
+	   retrieving it to compute the correct residual byte count to return
+	   to the user when the retry is successful.
+
+	2) The driver signals EOT on writes one record too early by returning
+	   EOF upon data transfer interrupt code 04 (Write operation success-
+	   fully completed beyond EOT marker) rather than on initiation of
+	   the next write operation.
+
+Repeat-By:
+	I wish I knew!  We found it by reading old tapes until the problem
+	occurred.  We finally found one tape that repeated the retry sequence
+	consistently on a few records.
+Fix:
+	We have kludged around the problem by commenting out the READOPP
+	dtint() case causing mt.c to fall through to signal the default
+	hard I/O error instead.

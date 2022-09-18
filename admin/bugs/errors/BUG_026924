@@ -1,0 +1,143 @@
+From jik@PIT-MANAGER.MIT.EDU  Wed Jun 20 07:32:10 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA26920; Wed, 20 Jun 90 07:32:10 -0700
+Received: from PIT-MANAGER.MIT.EDU by ucbvax.Berkeley.EDU (5.63/1.41)
+	id AA20438; Wed, 20 Jun 90 07:32:20 -0700
+Received:  by PIT-MANAGER.MIT.EDU (5.61/2.0JIK) id <AA23780@PIT-MANAGER.MIT.EDU>; Wed, 20 Jun 90 10:32:04 -0400
+Date: Wed, 20 Jun 90 10:32:04 -0400
+Message-Id: <9006201432.AA23780@PIT-MANAGER.MIT.EDU>
+From: "Jonathan I. Kamens" <jik@pit-manager.MIT.EDU>
+Sender: jik@PIT-MANAGER.MIT.EDU
+To: bugs@ucbvax.Berkeley.EDU
+Subject: ftpd anonymous in ftpusers
+Index: etc 4.3BSD-tahoe
+
+
+  NOTE: I sent a previous bug report, with a patch, to you guys.  That
+patch was WRONG.  In fact, it would prevent anonymous ftp from working
+at all.
+
+  Sorry about that -- the error got through two auditors here, at
+least partially because the changes were so "obvious" that they didn't
+bother to actually compile and test them.
+
+Description:
+	Even if you have "anonymous" or "ftp" or both in
+	/etc/ftpusers, anonymous ftp's are still possible if there is
+	an entry for "ftp" in /etc/passwd.
+
+Repeat-By:
+	Add anonymous or ftp to ftpusers.  Add ftp to /etc/passwd.
+	Try to anonymous ftp to the machine.
+
+Fix:
+	The patch below fixes this problem -- anonymous ftp is only
+	allowed when ftp is in the passwd file and when NEITHER
+	anonymous NOR ftp are in the ftpusers file.  Also, the error
+	message printed if either of them is in the ftpusers file is
+	"Anonymous ftp not allowdd", and if ftp is not in the passwd
+	file, then "User %s unknown" is printed.
+
+	Finally, I added another argument to the reply() function,
+	because there is one place in the sources that calls it with
+	more arguments than it currently has.
+
+	Credit for this patch goes to Jonathan Kamens
+	(jik@athena.mit.edu).
+
+Jonathan Kamens			              USnail:
+MIT Project Athena				11 Ashford Terrace
+jik@Athena.MIT.EDU				Allston, MA  02134
+Office: 617-253-8495			      Home: 617-782-0710
+
+642c642
+< reply(n, s, p0, p1, p2, p3, p4)
+---
+> reply(n, s, p0, p1, p2, p3, p4, p5)
+648c648
+< 	printf(s, p0, p1, p2, p3, p4);
+---
+> 	printf(s, p0, p1, p2, p3, p4, p5);
+653c653
+< 		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+---
+> 		syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4, p5);
+823a824
+> 
+824a826,852
+>  * Check to see if the specified name is in
+>  * the file FTPUSERS.  Return 1 if it is not (or
+>  * if FTPUSERS cannot be opened), or 0 if it is.
+>  */
+> checkftpusers(name)
+> 	char *name;
+> {
+> 	FILE *fd;
+> 	char line[BUFSIZ], *cp;
+> 	int found = 0;
+> 	
+> 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+> 		return (1);
+> 	while (fgets(line, sizeof (line), fd) != NULL) {
+> 		if ((cp = index(line, '\n')) != NULL)
+> 			*cp = '\0';
+> 		if (strcmp(line, name) == 0) {
+> 			found++;
+> 			break;
+> 		}
+> 	}
+> 	(void) fclose(fd);
+> 	return (!found);
+> }
+> 
+> 
+> /*
+828c856,857
+<  * Disallow anyone mentioned in the file FTPUSERS
+---
+>  * Then, call checkftpusers() to disallow anyone
+>  * mentioned in the file FTPUSERS,
+835d863
+< 	FILE *fd;
+838,839c866
+< 	int found = 0;
+< 	char line[BUFSIZ], *index(), *getusershell();
+---
+> 	char *getusershell();
+851,862c878
+< 	if ((fd = fopen(FTPUSERS, "r")) == NULL)
+< 		return (1);
+< 	while (fgets(line, sizeof (line), fd) != NULL) {
+< 		if ((cp = index(line, '\n')) != NULL)
+< 			*cp = '\0';
+< 		if (strcmp(line, name) == 0) {
+< 			found++;
+< 			break;
+< 		}
+< 	}
+< 	(void) fclose(fd);
+< 	return (!found);
+---
+> 	return (checkftpusers(name));
+107,114c107,118
+< 				if ((pw = sgetpwnam("ftp")) != NULL) {
+< 					guest = 1;
+< 					reply(331,
+< 				  "Guest login ok, send ident as password.");
+< 				}
+< 				else {
+< 					reply(530, "User %s unknown.", $3);
+< 				}
+---
+> 			     if (checkuser("ftp") &&
+> 				 checkftpusers("anonymous")) {
+> 				  if ((pw = sgetpwnam("ftp")) != NULL) {
+> 				       guest = 1;
+> 				       reply(331,
+> 				    "Guest login ok, send ident as password.");
+> 				  } else {
+> 				       reply(530, "User %s unknown.",$3);
+> 				  }
+> 			     } else {
+> 				  reply(530, "Anonymous ftp not allowed.");
+> 			     }

@@ -1,0 +1,44 @@
+Return-Path: <sun!glenn@ucbvax.Berkeley.EDU>
+Date: Tue, 5 Aug 86 10:01:27 PDT
+From: sun!glenn@ucbvax.Berkeley.EDU (Glenn C. Skinner)
+Subject: spl botch in MCLGET	FIX
+Index: 	sys/h/mbuf.h 4.3BSD
+
+Description:
+	The MCLGET macro defined in /sys/h/mbuf.h invokes the m_clalloc
+	routine defined in /sys/sys/uipc_mbuf.c.  This latter routine
+	expects to be called at splimp, but the macro makes no provisions
+	to do so.  Moreover, the macro is invoked in sosend(), defined in
+	/sys/sys/uipc_socket.c, while the processor level is at spl0.
+Repeat-By:
+	I haven't (yet) observed crashes due to this problem.  However,
+	one would expect to see it manifest during periods of intense
+	network activity when processes are sending sufficiently many
+	large packets back and forth to exceed the initial cluster mbuf
+	allocation.
+Fix:
+	An obvious patch is to modify MCLGET's definition to surround
+	to m_clalloc call with the proper spl calls:
+
+  #define	MCLGET(m) \
+  	{ struct mbuf *p; \
++ 	  int ms = splimp(); \
+  	  if (mclfree == 0) \
+  		(void)m_clalloc(1, MPG_CLUSTERS, M_DONTWAIT); \
++	  splx(ms); \
+  	  MCLALLOC(p, 1); \
+  	  if (p) { \
+  		(m)->m_off = (int)p - (int)(m); \
+  		(m)->m_len = CLBYTES; \
+  	  } \
+  	}
+
+	However, this fix isn't very satisfactory, because the MCLALLOC
+	macro is called immediately afterward, and the first thing it
+	does is to go to splimp.  Better would be to revise the definitions
+	of both macros to have MCLGET go to splimp immediately and not
+	splx until after the MCLALLOC invocation.  MCLALLOC itself then
+	would refrain from spl calls.  Other callers would have to take
+	this change into account.
+
+		-- Glenn Skinner, SMI

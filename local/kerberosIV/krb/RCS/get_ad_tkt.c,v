@@ -1,0 +1,934 @@
+head     4.16;
+branch   ;
+access   ;
+symbols  PATCH8:4.15 PATCH7:4.15 KPATCH6:4.15 ASRSNAP1001:4.15 PATCH5:4.15 KPATCH4:4.14 KPATCH3:4.14 KPATCH2:4.13 KREL1:4.13 BETA5/24/88:4.8;
+locks    ; strict;
+comment  @ * @;
+
+
+4.16
+date     90.06.25.20.55.44;  author kfall;  state Exp;
+branches ;
+next     4.15;
+
+4.15
+date     89.07.07.15.18.51;  author jtkohl;  state Exp;
+branches ;
+next     4.14;
+
+4.14
+date     89.05.18.21.30.10;  author jis;  state Exp;
+branches ;
+next     4.13;
+
+4.13
+date     89.01.23.09.24.44;  author jtkohl;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     89.01.17.22.00.12;  author wesommer;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     88.12.05.15.20.59;  author steiner;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     88.11.15.16.12.44;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.08.22.15.26.37;  author shanzer;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.02.24.18.11.39;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.01.12.21.19.29;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     87.12.06.11.22.11;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     87.10.28.16.03.32;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.28.15.42.21;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.20.17.08.12;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.20.24;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.46.25;  author steiner;  state Exp;
+branches ;
+next     3.2;
+
+3.2
+date     86.09.05.16.12.49;  author bcn;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.08.12.12.34.42;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@This routine gets additional tickets from the kdc using a
+ticket granting ticket.
+@
+
+
+4.16
+log
+@include des.h
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/src/lib/krb/RCS/get_ad_tkt.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ */
+
+#ifndef lint
+static char *rcsid_get_ad_tkt_c =
+"$Header: /usr/src/kerberosIV/src/lib/krb/RCS/get_ad_tkt.c,v 4.15 89/07/07 15:18:51 jtkohl Exp Locker: kfall $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+#include <des.h>
+#include <krb.h>
+#include <prot.h>
+#include <strings.h>
+
+#include <stdio.h>
+#include <errno.h>
+
+/* use the bsd time.h struct defs for PC too! */
+#include <sys/time.h>
+#include <sys/types.h>
+
+extern int krb_debug;
+
+struct timeval tt_local = { 0, 0 };
+
+int swap_bytes;
+unsigned long rep_err_code;
+
+/*
+ * get_ad_tkt obtains a new service ticket from Kerberos, using
+ * the ticket-granting ticket which must be in the ticket file.
+ * It is typically called by krb_mk_req() when the client side
+ * of an application is creating authentication information to be
+ * sent to the server side.
+ *
+ * get_ad_tkt takes four arguments: three pointers to strings which
+ * contain the name, instance, and realm of the service for which the
+ * ticket is to be obtained; and an integer indicating the desired
+ * lifetime of the ticket.
+ *
+ * It returns an error status if the ticket couldn't be obtained,
+ * or AD_OK if all went well.  The ticket is stored in the ticket
+ * cache.
+ *
+ * The request sent to the Kerberos ticket-granting service looks
+ * like this:
+ *
+ * pkt->dat
+ *
+ * TEXT			original contents of	authenticator+ticket
+ *			pkt->dat		built in krb_mk_req call
+ * 
+ * 4 bytes		time_ws			always 0 (?)
+ * char			lifetime		lifetime argument passed
+ * string		service			service name argument
+ * string		sinstance		service instance arg.
+ *
+ * See "prot.h" for the reply packet layout and definitions of the
+ * extraction macros like pkt_version(), pkt_msg_type(), etc.
+ */
+
+get_ad_tkt(service,sinstance,realm,lifetime)
+    char    *service;
+    char    *sinstance;
+    char    *realm;
+    int     lifetime;
+{
+    static KTEXT_ST pkt_st;
+    KTEXT pkt = & pkt_st;	/* Packet to KDC */
+    static KTEXT_ST rpkt_st;
+    KTEXT rpkt = &rpkt_st;	/* Returned packet */
+    static KTEXT_ST cip_st;
+    KTEXT cip = &cip_st;	/* Returned Ciphertext */
+    static KTEXT_ST tkt_st;
+    KTEXT tkt = &tkt_st;	/* Current ticket */
+    C_Block ses;                /* Session key for tkt */
+    CREDENTIALS cr;
+    int kvno;			/* Kvno for session key */
+    char lrealm[REALM_SZ];
+    C_Block key;		/* Key for decrypting cipher */
+    Key_schedule key_s;
+    long time_ws = 0;
+
+    char s_name[SNAME_SZ];
+    char s_instance[INST_SZ];
+    int msg_byte_order;
+    int kerror;
+    char rlm[REALM_SZ];
+    char *ptr;
+
+    unsigned long kdc_time;   /* KDC time */
+
+    if ((kerror = krb_get_tf_realm(TKT_FILE, lrealm)) != KSUCCESS)
+	return(kerror);
+
+    /* Create skeleton of packet to be sent */
+    (void) gettimeofday(&tt_local,(struct timezone *) 0);
+
+    pkt->length = 0;
+
+    /*
+     * Look for the session key (and other stuff we don't need)
+     * in the ticket file for krbtgt.realm@@lrealm where "realm" 
+     * is the service's realm (passed in "realm" argument) and 
+     * lrealm is the realm of our initial ticket.  If we don't 
+     * have this, we will try to get it.
+     */
+    
+    if ((kerror = krb_get_cred("krbtgt",realm,lrealm,&cr)) != KSUCCESS) {
+	/*
+	 * If realm == lrealm, we have no hope, so let's not even try.
+	 */
+	if ((strncmp(realm, lrealm, REALM_SZ)) == 0)
+	    return(AD_NOTGT);
+	else{
+	    if ((kerror = 
+		 get_ad_tkt("krbtgt",realm,lrealm,lifetime)) != KSUCCESS)
+		return(kerror);
+	    if ((kerror = krb_get_cred("krbtgt",realm,lrealm,&cr)) != KSUCCESS)
+		return(kerror);
+	}
+    }
+    
+    /*
+     * Make up a request packet to the "krbtgt.realm@@lrealm".
+     * Start by calling krb_mk_req() which puts ticket+authenticator
+     * into "pkt".  Then tack other stuff on the end.
+     */
+    
+    kerror = krb_mk_req(pkt,"krbtgt",realm,lrealm,0L);
+
+    if (kerror)
+	return(AD_NOTGT);
+
+    /* timestamp */
+    bcopy((char *) &time_ws,(char *) (pkt->dat+pkt->length),4);
+    pkt->length += 4;
+    *(pkt->dat+(pkt->length)++) = (char) lifetime;
+    (void) strcpy((char *) (pkt->dat+pkt->length),service);
+    pkt->length += 1 + strlen(service);
+    (void) strcpy((char *)(pkt->dat+pkt->length),sinstance);
+    pkt->length += 1 + strlen(sinstance);
+
+    rpkt->length = 0;
+
+    /* Send the request to the local ticket-granting server */
+    if (kerror = send_to_kdc(pkt, rpkt, realm)) return(kerror);
+
+    /* check packet version of the returned packet */
+    if (pkt_version(rpkt) != KRB_PROT_VERSION )
+        return(INTK_PROT);
+
+    /* Check byte order */
+    msg_byte_order = pkt_msg_type(rpkt) & 1;
+    swap_bytes = 0;
+    if (msg_byte_order != HOST_BYTE_ORDER)
+	swap_bytes++;
+
+    switch (pkt_msg_type(rpkt) & ~1) {
+    case AUTH_MSG_KDC_REPLY:
+	break;
+    case AUTH_MSG_ERR_REPLY:
+	bcopy(pkt_err_code(rpkt), (char *) &rep_err_code, 4);
+	if (swap_bytes)
+	    swap_u_long(rep_err_code);
+	return(rep_err_code);
+
+    default:
+	return(INTK_PROT);
+    }
+
+    /* Extract the ciphertext */
+    cip->length = pkt_clen(rpkt);       /* let clen do the swap */
+
+    bcopy((char *) pkt_cipher(rpkt),(char *) (cip->dat),cip->length);
+
+#ifndef NOENCRYPTION
+    /* Attempt to decrypt it */
+
+    key_sched(cr.session,key_s);
+    if (krb_debug)  printf("About to do decryption ...");
+    pcbc_encrypt((C_Block *)cip->dat,(C_Block *)cip->dat,
+                 (long) cip->length,key_s,cr.session,0);
+#endif /* !NOENCRYPTION */
+    /* Get rid of all traces of key */
+    bzero((char *) cr.session, sizeof(key));
+    bzero((char *) key_s, sizeof(key_s));
+
+    ptr = (char *) cip->dat;
+
+    bcopy(ptr,(char *)ses,8);
+    ptr += 8;
+
+    (void) strcpy(s_name,ptr);
+    ptr += strlen(s_name) + 1;
+
+    (void) strcpy(s_instance,ptr);
+    ptr += strlen(s_instance) + 1;
+
+    (void) strcpy(rlm,ptr);
+    ptr += strlen(rlm) + 1;
+
+    lifetime = (unsigned long) ptr[0];
+    kvno = (unsigned long) ptr[1];
+    tkt->length = (int) ptr[2];
+    ptr += 3;
+    bcopy(ptr,(char *)(tkt->dat),tkt->length);
+    ptr += tkt->length;
+
+    if (strcmp(s_name, service) || strcmp(s_instance, sinstance) ||
+        strcmp(rlm, realm))	/* not what we asked for */
+	return(INTK_ERR);	/* we need a better code here XXX */
+
+    /* check KDC time stamp */
+    bcopy(ptr,(char *)&kdc_time,4); /* Time (coarse) */
+    if (swap_bytes) swap_u_long(kdc_time);
+
+    ptr += 4;
+
+    (void) gettimeofday(&tt_local,(struct timezone *) 0);
+    if (abs((int)(tt_local.tv_sec - kdc_time)) > CLOCK_SKEW) {
+        return(RD_AP_TIME);		/* XXX should probably be better
+					   code */
+    }
+
+    if (kerror = save_credentials(s_name,s_instance,rlm,ses,lifetime,
+				  kvno,tkt,tt_local.tv_sec))
+	return(kerror);
+
+    return(AD_OK);
+}
+@
+
+
+4.15
+log
+@use ticket file's realm rather than local host's realm; this allows
+cross-realm kinit's to work properly.
+Programmer: Jay Berkenbilt
+Auditor: John Kohl
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/krb/RCS/get_ad_tkt.c,v $
+ * $Author: jis $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.14 89/05/18 21:30:10 jis Exp $";
+d18 1
+a19 1
+#include <des.h>
+@
+
+
+4.14
+log
+@Verify that the returned ticket is the one we asked for (correct service,
+instance and realm). Also verify that the timestamp supplied by the
+kdc is reasonable (prevent replay attacks).
+Programmer: jtkohl
+Auditor: jis
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.13 89/01/23 09:24:44 jtkohl Locked $";
+d101 1
+a101 1
+    if ((kerror = krb_get_lrealm(lrealm,1)) != KSUCCESS)
+d111 4
+a114 3
+     * in the ticket file, i.e. ticket for krbtgt.realm@@lrealm
+     * where "realm" is the service's realm (passed in "realm"
+     * argument) and "lrealm" is the local realm.
+d116 6
+a121 15
+     
+    kerror = krb_get_cred("krbtgt",realm,lrealm,&cr);
+
+    /* If that fails, and the server realm and local realm are
+     * the same thing, give up - no tgt available for local realm.
+     *
+     * If the server realm and local realm are different, though,
+     * try getting a ticket-granting ticket for the server's realm,
+     * i.e. a ticket for "krbtgt.alien@@lrealm", by calling get_ad_tkt().
+     * If that succeeds, the ticket will be in ticket cache, get it
+     * into the "cr" structure by calling krb_get_cred().
+     */
+
+    if (kerror) {
+        if (!strncmp(realm,lrealm,REALM_SZ))
+d123 7
+a129 6
+        kerror = get_ad_tkt("krbtgt",realm,lrealm,lifetime);
+        if (kerror)
+	    return(kerror);
+        kerror = krb_get_cred("krbtgt",realm,lrealm,&cr);
+        if (kerror)
+	    return(kerror);
+d131 1
+a131 1
+
+d137 1
+a137 1
+
+@
+
+
+4.13
+log
+@Programmer/Auditor: John Kohl
+changes: name changes to krb_xxx
+@
+text
+@d3 1
+a3 1
+ * $Author: wesommer $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.12 89/01/17 22:00:12 jtkohl Locked $";
+d99 1
+d224 16
+@
+
+
+4.12
+log
+@Remove declaration of C_Block_print().
+Programmer: John Kohl.
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.11 88/12/05 15:20:59 jtkohl Locked $";
+d100 1
+a100 1
+    if ((kerror = get_krbrlm(lrealm,1)) != KSUCCESS)
+@
+
+
+4.11
+log
+@Added #ifdef NOENCRYPTION code (to send stuff
+in the clear in case no DES library present).
+Programmer: jtkohl
+Auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.10 88/11/15 16:12:44 jtkohl Locked $";
+a30 1
+extern C_Block_print();
+@
+
+
+4.10
+log
+@Documentor: Jennifer Steiner
+Auditor: John Kohl
+changes: document the code
+@
+text
+@d3 1
+a3 1
+ * $Author: shanzer $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.9 88/08/22 15:26:37 steiner Locked $";
+d192 1
+d199 1
+@
+
+
+4.9
+log
+@Added a small workaround so the code compile on an apollo also.. 
+Programmer: wesommer
+Auditor: shanzer & raeburn
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.8 88/02/24 18:11:39 steiner Exp $";
+d39 13
+a51 3
+ * get_adtkt takes the name of the new ticket to be obtained
+ * and contacts kerberos to get it.  It makes use of a ticket
+ * granting ticket which must already be available in the ticket
+d53 16
+d70 1
+d109 7
+a115 1
+    /* Get the session key (and other stuff we don't need) */
+d117 11
+d139 6
+d161 1
+a161 1
+    /* Send the packet */
+@
+
+
+4.8
+log
+@Copyright notice, etc.
+@
+text
+@d14 1
+a14 1
+"$Header: get_ad_tkt.c,v 4.7 88/01/12 21:19:29 steiner Locked $";
+d166 4
+a169 4
+    lifetime = (unsigned long) *(ptr++);
+    kvno = (unsigned long) *(ptr++);
+    tkt->length = (int) *(ptr++);
+
+@
+
+
+4.7
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 3
+ *  $Source: /mit/kerberos/lib/krb/RCS/get_ad_tkt.c,v $
+ *  $Author: steiner $
+ *  $Locker:  $
+d5 2
+a6 1
+ * Copyright 1986 by the Massachusetts Institute of Technology
+d8 2
+d13 2
+a14 2
+static char *rcsid_get_adtkt_c =
+    "$Header: get_ad_tkt.c,v 4.6 87/12/06 11:22:11 steiner Exp $";
+d17 1
+@
+
+
+4.6
+log
+@Changed user routine names to krb_xxxxxxx
+@
+text
+@d1 1
+a1 1
+/* 
+d4 2
+a5 2
+ *  $Locker: steiner $
+ * 
+d12 2
+a13 2
+"$Header: get_ad_tkt.c,v 4.5 87/10/28 16:03:32 steiner Locked $";
+#endif  lint
+d23 1
+a23 1
+/* use the bsd time.h struct defs for PC too!                              */
+d27 2
+a28 2
+extern  int krb_debug;
+extern	C_Block_print();
+d30 1
+a30 1
+struct  	timeval tt_local = { 0, 0 };
+d32 2
+a33 2
+int		swap_bytes;
+unsigned long	rep_err_code;
+d35 1
+a35 1
+/* 
+d38 1
+a38 1
+ * granting ticket which must already be available in the ticket 
+d42 4
+a45 4
+char	*service;
+char	*sinstance;
+char	*realm;
+int     lifetime;
+a46 2
+
+
+d48 1
+a48 1
+    KTEXT           pkt = & pkt_st;	/* Packet to KDC	*/
+d50 1
+a50 1
+    KTEXT           rpkt = &rpkt_st;	/* Returned packet	*/
+d52 1
+a52 1
+    KTEXT           cip = &cip_st;	/* Returned Ciphertext	*/
+d54 8
+a61 8
+    KTEXT           tkt = &tkt_st;	/* Current ticket	*/
+    C_Block         ses;		/* Session key for tkt	*/
+    CREDENTIALS	    cr;
+    int             kvno;		/* Kvno for session key	*/
+    char	    lrealm[REALM_SZ];		
+    C_Block         key;	/* Key for decrypting cipher	*/
+    Key_schedule    key_s;	
+    long            time_ws = 0;
+d63 8
+a70 8
+    char    s_name[SNAME_SZ];
+    char    s_instance[INST_SZ];
+    int			msg_byte_order;
+    int			kerror;
+    char		rlm[REALM_SZ];
+    char		*ptr;
+    
+    
+d72 1
+a72 1
+	    return(kerror);
+d81 10
+a90 8
+    if(kerror)
+      {	
+	if(!strncmp(realm,lrealm,REALM_SZ)) return(AD_NOTGT);
+	kerror = get_ad_tkt("krbtgt",realm,lrealm,lifetime);
+	if(kerror) return(kerror);
+	kerror = krb_get_cred("krbtgt",realm,lrealm,&cr);
+	if (kerror) return(kerror);
+      }
+d94 2
+a95 2
+    if(kerror)
+      return(AD_NOTGT);
+d97 2
+a98 1
+    bcopy((char *) &time_ws,(char *) (pkt->dat+pkt->length),4); /* timestamp */
+d102 1
+a102 1
+    pkt->length += 1 + strlen(service);	
+d109 1
+a109 1
+    if (kerror = send_to_kdc(pkt, rpkt, realm)) return(kerror); 
+d113 2
+a114 2
+    	return(INTK_PROT);
+        
+d118 16
+a133 21
+	if (msg_byte_order != HOST_BYTE_ORDER )
+        {
+		swap_bytes++;
+	  	}
+	
+	switch (pkt_msg_type(rpkt) & ~1)
+		{
+		case AUTH_MSG_KDC_REPLY: break;
+		case AUTH_MSG_ERR_REPLY:
+			{
+			bcopy(pkt_err_code(rpkt),
+			      (char *) &rep_err_code,4);
+			if (swap_bytes) swap_u_long(rep_err_code);
+			return(rep_err_code);
+			}
+		
+		default:
+			return(INTK_PROT);
+		}
+	
+	
+d135 1
+a135 1
+    cip->length = pkt_clen(rpkt);	/* let clen do the swap */
+d144 1
+a144 1
+		 (long) cip->length,key_s,cr.session,0);
+d171 2
+a172 2
+		     kvno,tkt,tt_local.tv_sec))
+	    return(kerror); 
+a175 1
+
+@
+
+
+4.5
+log
+@Took out byteorder.h; that info is now in krb_conf.h.
+@
+text
+@d2 1
+a2 1
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/get_ad_tkt.c,v $
+d12 1
+a12 1
+"$Header: get_ad_tkt.c,v 4.4 87/10/28 15:42:21 steiner Locked $";
+d82 1
+a82 1
+    kerror = get_credentials("krbtgt",realm,lrealm,&cr);
+d88 1
+a88 1
+	kerror = get_credentials("krbtgt",realm,lrealm,&cr);
+d92 1
+a92 1
+    kerror = mk_ap_req(pkt,"krbtgt",realm,lrealm,0L);
+@
+
+
+4.4
+log
+@jtkohl's changes.
+@
+text
+@d3 2
+a4 2
+ *  $Author: jtkohl $
+ *  $Locker: jtkohl $
+d11 2
+a12 1
+static char *rcsid_get_adtkt_c = "$Header: get_ad_tkt.c,v 4.3 87/10/20 17:08:12 jtkohl Locked $";
+a14 1
+
+a17 1
+#include <byteorder.h>
+@
+
+
+4.3
+log
+@lint fixes
+@
+text
+@d3 1
+a3 1
+ *  $Author: steiner $
+d11 1
+a11 1
+static char *rcsid_get_adtkt_c = "$Header: get_ad_tkt.c,v 4.2 87/09/10 16:20:24 jtkohl Locked $";
+d28 1
+a28 1
+extern  debug;
+d128 1
+a128 1
+			bcopy((char *) pkt_err_code(rpkt),
+d147 1
+a147 1
+    if (debug)  printf("About to do decryption ...");
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d2 1
+a2 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/get_ad_tkt.c,v $
+d4 1
+a4 1
+ *  $Locker: steiner $
+d11 1
+a11 1
+static char *rcsid_get_adtkt_c = "$Header: get_ad_tkt.c,v 4.1 87/09/01 15:46:25 steiner Locked $";
+d18 2
+a31 1
+struct  	timezone ttz = { 0, 0 };
+a49 1
+    int             rlen;
+a65 2
+    FILE    *fopen(),*fp;
+    char    *tfile = CL_GTGT_INIT_FILE;
+a67 4
+    int     n = 0;
+    int     i = 0;
+    int     j =0;
+    int			nulltkts;
+d69 1
+a69 2
+    int			kerror, kerno;
+    unsigned long	junk;
+a72 1
+    unsigned long	exp_date;
+d74 2
+a75 1
+    get_krbrlm(lrealm,1);
+d78 1
+a78 1
+    gettimeofday(&tt_local,&ttz);
+d93 1
+a93 1
+    kerror = mk_ap_req(pkt,"krbtgt",realm,lrealm,0);
+d98 1
+a98 1
+    bcopy(&time_ws,pkt->dat+pkt->length,4);	/* timestamp 		*/
+d101 1
+a101 1
+    strcpy(pkt->dat+pkt->length,service);
+d103 1
+a103 1
+    strcpy(pkt->dat+pkt->length,sinstance);
+d128 2
+a129 1
+			bcopy(pkt_err_code(rpkt),&rep_err_code,4);
+d142 1
+a142 1
+    bcopy(pkt_cipher(rpkt),cip->dat,cip->length);
+d148 2
+a149 1
+    pcbc_encrypt(cip->dat,cip->dat,(long) cip->length,key_s,cr.session,0);
+d151 2
+a152 2
+    bzero(cr.session,sizeof(key));
+    bzero(key_s,sizeof(key_s));
+d156 1
+a156 1
+    bcopy(ptr,ses,8);
+d159 1
+a159 1
+    strcpy(s_name,ptr);
+d162 1
+a162 1
+    strcpy(s_instance,ptr);
+d165 1
+a165 1
+    strcpy(rlm,ptr);
+d172 1
+a172 1
+    bcopy(ptr,tkt->dat,tkt->length);
+d175 3
+a177 2
+    save_credentials(s_name,s_instance,rlm,ses,lifetime,
+		     kvno,tkt,tt_local.tv_sec); 
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d3 1
+a3 1
+ *  $Author: bcn $
+d11 1
+a11 1
+static char *rcsid_get_adtkt_c = "$Header: get_ad_tkt.c,v 3.2 86/09/05 16:12:49 steiner Locked $";
+d17 1
+a17 1
+#include "prot.h"
+@
+
+
+3.2
+log
+@get_ad_tkt now supports cross-realm authentication.
+@
+text
+@d2 1
+a2 1
+ *  $Source: /mit/projects/auth/src/lib/krb/RCS/get_ad_tkt.c,v $
+d4 1
+a4 1
+ *  $Locker: bcn $
+d11 1
+a11 1
+static char *rcsid_get_adtkt_c = "$Header: get_ad_tkt.c,v 3.1 86/08/12 12:34:42 bcn Exp $";
+@
+
+
+3.1
+log
+@*** empty log message ***
+@
+text
+@d2 3
+a4 3
+ *  $Source:  $
+ *  $Author:  $
+ *  $Locker:  $
+d11 1
+a11 1
+static char *rcsid_get_adtkt_c = "$Header: cl_get_tgt.c,v 3.5 86/05/23 13:22:02 spm Exp $";
+d61 1
+a61 1
+    char	    trealm[REALM_SZ];		
+d82 2
+d90 9
+a98 1
+    kerror = get_credentials("krbtgt","Athena","Athena",&cr);
+d100 1
+a100 1
+    kerror = mk_ap_req(pkt,"krbtgt","Athena","Athena",0);
+a112 2
+
+
+d116 1
+a116 1
+    if (kerror = send_to_kdc(pkt, rpkt)) return(kerror); 
+d180 2
+a181 1
+    save_credentials(s_name,s_instance,"",ses,lifetime,kvno,tkt,tt_local.tv_sec); 
+@

@@ -1,0 +1,402 @@
+.TH HASH 3
+.SH NAME
+hash \- hash table library
+.SH SYNOPSIS
+\f5#include <hash.h>\fP
+.SH DESCRIPTION
+The
+.I hash
+library manipulates generalized hash tables.
+Many different hash tables can be instantiated within a single program.
+.PP
+A hash table provides an association between a
+.I key
+and its
+.IR value .
+A
+.I key
+is a sequence of 
+.B char
+elements
+and the
+.I value
+is a user supplied pointer to the value.
+Each hash table has
+.I size
+slots,
+and each slot is a pointer to the head of a forward linked
+.I bucket
+chain.
+.PP
+Hashing occurs as follows:
+a
+.I "hash function"
+takes 
+.I key
+and 
+.I size
+as arguments and produces an index of a
+.I slot
+in the hash table.
+The 
+.I "bucket chain"
+corresponding to the slot
+is then sequentially searched until a
+match is found for
+.I key
+using the user supplied comparison routine.
+.PP
+Three basic types are defined in the header file
+.BR hash.h :
+.TP
+.B GENERIC
+This is the type of the
+.I value
+associated with each
+.I key
+in the hash.
+It is currently
+.B char*
+but will eventually become
+.BR void* .
+.TP
+.B TABLE
+A variable of this type points to a hash table structure.
+The public structure elements are:
+.RS
+.TP
+.B "unsigned int flags"
+The hash table flags.
+The flags are initialized by the
+.I mkhash
+call and may be modified after the table has been created.
+.TP
+.B "BUCKET lastbucket"
+A pointer to the most recent hash bucket used by either
+.I gethash
+or
+.IR puthash .
+.TP
+.B "int chains"
+The number of bucket chains.
+This number can be used to estimate the effectiveness of the hashing function.
+.PP
+If the
+.I hash
+library was compiled with the
+.B HASH_INFO
+compile option set then the following are also available:
+.TP
+.B "int accesses"
+The number of 
+.I gethash
+and
+.I puthash
+calls placed on the current table.
+.TP
+.B "int buckets"
+The number of hash buckets.
+.TP
+.B "int collisions"
+The number of failed key comparisons.
+.RE
+.TP
+.B BUCKET
+A variable of this type points to a 
+.IR "hash bucket" .
+The public structure elements are:
+.RS
+.TP
+.B "char *name"
+A pointer to the hash bucket key.
+.TP
+.B "GENERIC value"
+The value associated with the key.
+.RE
+.PP
+The hash routines are:
+.TP
+\f5TABLE mkhash(unsigned int size, int flags, unsigned int (*hash)(),\fP
+.PD 0
+.TP
+	\f5int (*compare)(), GENERIC error, char* name)\fP
+.I mkhash
+makes a new hash table and returns a pointer to the table.
+.I malloc (3)
+is used to allocate space for the table.
+NULL is returned if the table cannot be created.
+The arguments are:
+.RS
+.TP
+.B size
+The number of slots in the table.
+This is the maximum number of bucket chains for the table.
+.TP
+.B flags
+Specifies certain hash table properties.
+The flags may be 
+.IR or ed
+together.
+.B HASH_ALLOCATE
+specifies that the key names are null-terminated strings
+and that new keys entered by
+.I puthash
+are to be copied to data areas obtained from
+.IR malloc (3).
+.B HASH_DATA
+specifies that the key names are binary data and are
+not to be treated as null-terminated strings.
+.B HASH_POWER2
+specifies that the log base 2 of the table size is to be
+passed as the second argument to the hashing function.
+.B HASH_REMOVE
+specifies that 
+.I puthash
+is to delete table entries with the value
+.BR error .
+.TP
+.B hash
+A pointer to the hashing function for the table.
+If
+.I hash
+is NULL then a default null-terminated string hash algorithm is used.
+.TP
+.B compare
+A pointer to the hash key comparison function.
+The return value of
+.I compare
+should be the same as for
+.IR strcmp (3).
+The first argument is the 
+.I key
+form the current hash bucket on the 
+.I "collision chain"
+and the second argument is the user supplied 
+.IR key .
+If
+.I compare
+is NULL then a default null-terminated string comparison algorithm is used.
+.TP
+.B error
+The value returned by
+.I gethash
+for elements not found in the table.
+.TP
+.B name
+The hash table name that is used by
+.IR dumphash .
+.RE
+.TP
+\f5void rmhash(TABLE tab)\fP
+.I rmhash
+removes a hash table created by
+.IR mkhash .
+The caller is responsible for removing the
+.I values
+associated with each
+.IR key .
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer returned by
+.IR mkhash .
+.RE
+.TP
+\f5TABLE rehash(TABLE tab, unsigned int size)\fP
+.I rehash
+changes the size of hash table
+.I tab
+created by
+.IR mkhash .
+A pointer to the re-hashed table is returned.
+The old table is removed and a pointer to the new table is returned.
+NULL is returned if the new table could not be generated.
+The old table is removed only for successful return values.
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer of the old table.
+.TP
+.B size
+The new hash table size.
+.RE
+.TP
+\f5void exhash(TABLE tab, int (*examiner)())\fP
+.I exhash
+examines (walks through) a hash table and applies a user supplied
+function to each entry in the table.
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer.
+.TP
+.B examiner
+The function applied to each entry in the table.
+The function must return 0 on success, otherwise 
+.I exhash
+returns before all the table elements have been examined.
+.I examiner
+is declared as
+.nf
+    \f5int examiner(char *name, GENERIC value)\fP
+.fi
+where 
+.I name
+is the key name of the current hash table entry and
+.I value
+is the value associated with the key.
+.RE
+.TP
+\f5GENERIC gethash(TABLE tab, char* key)\fP
+.I gethash
+returns the value associated with
+.I key
+in table
+.IR tab .
+If no value is associated with 
+.I key
+then the argument
+.I error
+from the corresponding 
+.I mkhash
+call is returned.
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer.
+.TP
+.B key
+The key name.
+.RE
+.TP
+\f5char* puthash(TABLE tab, char* key, GENERIC value)\fP
+.I puthash
+associates
+the pointer
+.I value
+with
+.I key
+in the hash table
+.IR tab .
+If the 
+.B HASH_ALLOCATE
+flag is on and the
+.B HASH_DATA
+flag is off then the null-terminated string
+.I key
+is copied to a non-volatile area maintained by the
+.I hash
+library.
+A pointer to the possibly copied 
+.I key
+is returned.
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer.
+.TP
+.B key
+The key name.
+If
+.I key
+is NULL and the
+.B HASH_ALLOCATE
+flag is set then
+.I key
+is assumed to be the key from the most recent
+.I puthash
+call.
+This allows 
+.I gethash-puthash
+pairs to be optimized by retaining information from the
+.I gethash
+call.
+.TP
+.B value
+A pointer to the key value.
+If the
+.B HASH_REMOVE
+flag is set and
+.I value
+is equal to the value of the argument
+.I error
+to the 
+.I mkhash 
+call then
+.I key 
+is removed from the hash table.
+.RE
+.TP
+\f5void dumphash(TABLE tab, int flags)\fP
+If the
+.I hash
+library was compiled with
+.B HASH_INFO
+defined then
+.I dumphash
+dumps the hash table accounting on the standard error, otherwise
+a warning message is output.
+The arguments are:
+.RS
+.TP
+.B tab
+The hash table pointer.
+If
+.I tab
+is
+NULL then information on all tables generated by
+.I mkhash
+is dumped.
+.TP
+.B flags
+If 
+.I flags
+is 0 then only the
+.IR accesses ,
+.I buckets
+and
+.I collisions
+accounting is listed, otherwise all
+.I key-value
+pairs are listed for
+.IR tab .
+.RE
+.TP
+\f5unsigned int chash(char* key, unsigned int size)\fP
+.I chash
+hashes the character string
+.I key
+and returns an integer between 0 and 
+.IR size \-1
+inclusively.
+The arguments are:
+.RS
+.TP
+.B key
+The character string to be hashed.
+.TP
+.B size
+The size of the hash table.
+.RE
+.TP
+\f5unsigned int chash2(char* key, unsigned int log)\fP
+.I chash2
+is similar to 
+.I chash
+except that it is optimized for hash tables with size a power of 2.
+The arguments are:
+.RS
+.TP
+.B key
+The character string to be hashed.
+.TP
+.B log
+The log base 2 of the hash table size.
+.RE
+.SH "SEE ALSO"
+hsearch(3)

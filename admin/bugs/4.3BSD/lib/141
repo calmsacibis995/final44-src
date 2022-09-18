@@ -1,0 +1,85 @@
+From casey@lll-crg.llnl.gov  Sun Feb 12 14:24:37 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA02832; Sun, 12 Feb 89 14:24:37 -0800
+Received: from lll-crg.llnl.gov by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA18837; Sun, 12 Feb 89 14:24:01 -0800
+Received: by lll-crg.llnl.gov (5.61/1.14)
+	id AA00946; Sun, 12 Feb 89 14:25:15 -0800
+Date: Sun, 12 Feb 89 14:25:15 -0800
+From: casey@lll-crg.llnl.gov (Casey Leedom)
+Message-Id: <8902122225.AA00946@lll-crg.llnl.gov>
+Subject: ungetc will put characters back into an _IOSTRG input stream
+Index: 	lib/libc/stdio/ungetc.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Ungetc will put characters back into an _IOSTRG input stream.  This
+	will cause a segmentation violation if the string is in read only
+	memory (shared text segment).  For example:
+
+		if (!some_option) {
+			opt = getenv(...);
+			some_option = opt ? opt : "some_string";
+		}
+		...
+		sscanf(some_option, "some_format", ...);
+
+	In some cases, some_option will refer to the constant string
+	"some_string".  Since sscanf uses ungetc to back up over input
+	it decides it hadn't wanted to look at yet, we write into the
+	constant string "some_string".
+
+Repeat-By:
+	Use gcc to compile the following program without the
+	-fwritable-strings option:
+
+	main()
+	{
+		int i, j;
+	
+		sscanf("4x4", "%dx%d", &i, &j);
+		printf("%d %d\n", i, j);
+	}
+
+Fix:
+	Debatable.  I fixed ungetc, but who knows?  Maybe we do want to
+	be able to do ungetc's on a string argument.  Currently _IOSTRG
+	is only used internally for sscanf and sprintf, so changing ungetc
+	doesn't break anything now.
+
+	Another option would be to replace all uses of ungetc in doscan
+	with fseek(iop, -1L, 1) but I don't think fseek works on _IOSTRG
+	arguments and I think it's a lot more expensive to call.
+
+	Another option is to separate out the IO stream backup function
+	from putting a [possibly different] character back on the stream.
+	But this involves either defining a new interface, or extending
+	the definition of ungetc's interface to accept something like
+	ungetc(__IOS_BACKUP);
+
+	And Finally, we could have read only streams and simply have
+	sscanf set that flag in addition to _IOSTRG.  But this would add
+	extra processing for every putc, etc.
+
+	*** lib/libc/stdio/ungetc.c-dist	Wed Mar 26 18:08:43 1986
+	--- lib/libc/stdio/ungetc.c	Sun Feb 12 13:45:30 1989
+	***************
+	*** 18,24 ****
+	  			return (EOF);
+	  
+	  	iop->_cnt++;
+	! 	*--iop->_ptr = c;
+	  
+	  	return (c);
+	  }
+	--- 18,27 ----
+	  			return (EOF);
+	  
+	  	iop->_cnt++;
+	! 	if (iop->_flag & _IOSTRG)
+	! 		--iop->_ptr;
+	! 	else
+	! 		*--iop->_ptr = c;
+	  
+	  	return (c);
+	  }

@@ -1,0 +1,311 @@
+Date: 11 Feb 1983 1331-PST (Friday)
+From: mosher
+Subject: Bob try this malloc for xf77
+To: bugs, corbett
+
+Index: lib 4.2BSD
+
+------- Forwarded Message
+
+Date: 11 Feb 1983 0638-PST (Friday)
+From: se@decvax.UUCP
+Apparently-To: mosher
+
+	
+ Fri Feb 11 03:12:02 1983 remote from brl-bmd
+>From Dave.Engelbrecht Mon Feb  7 13:40:08 1983 remote from rochester
+Date: 7 Feb 1983 13:34:52-EST
+From: Dave.Engelbrecht
+To: brl-bmd!decvax!ucbvax!mosher
+Subject: new malloc
+
+Enclosed is a copy of Don Libes' new malloc. He stated that in a conversation
+with him at the lastest Unicom, you were interested in a copy.
+
+	dave, University of Rochester
+
+---------------------------
+
+/*
+
+Memory Allocator for Virtual VAX/UNIX
+Written by Don Libes (University of Rochester) 5/1/80
+Version 1.2 - last edited by don 2/3/83
+
+This allocator is specifically designed for a virtual paged environment.
+In practice, programs that previously spent a significant amount of time
+(>50%) in the allocator, spent less than 1% using this one.
+
+Basic ideas:
+1) Free list is a linked list of arrays.  Each array contains a bunch
+of ptrs (and sizes) to free blocks.
+2) No cells point to blocks in use.
+3) Search is required for coallescing during free.  It is performed very
+quickly since this information is stored very densely and is highly
+unlikely to be paged out.
+
+A nice benefit of this allocator over the old one is that if the user
+accidentally indexes past the end of an array (typical, typical...),
+the allocator will not fail later because its information is stored
+elsewhere.  However, the user's own data will be corrupted forcing the
+user to recognize immediately that they have a programming error.
+
+*/
+
+#define TRUE		1
+#define FALSE		0
+#define NULL		0
+#define	BIGBLOCK	4096
+#define ALIGN		int
+#define PTRS_PER_BLK	(63+3*64)     /* leave space for next/previous ptrs */
+#define align(x)	(x%sizeof(ALIGN)? x + sizeof(ALIGN) - x%sizeof(ALIGN) : x)
+
+char *sbrk();
+struct cell *findspace();
+
+struct memory {
+	int size;
+	char *user;
+};
+
+static struct array {
+	struct cell {
+		int size;
+		struct memory *memory;
+	} cells[PTRS_PER_BLK];
+	struct array *previous;
+	struct array *next;
+} beginning;
+
+	/* emptycell should always point to the first empty cell */
+static struct cell *emptycell = &beginning.cells[0];
+static struct array *lastblockinuse = &beginning;
+static struct cell *currentcell = &beginning.cells[0];
+	/* block where currentcell is */
+static struct array *currentblock = &beginning;
+static int firsttime = TRUE;
+static int min = BIGBLOCK;
+
+initmalloc()
+{
+	currentblock->previous = NULL;
+	currentblock->next = NULL;
+	firsttime = FALSE;
+}
+
+char *
+malloc(size)
+unsigned int size;
+{
+	register struct cell *oldspace;
+	register struct memory *memory;
+
+	if (firsttime) initmalloc();
+
+	size = align(size) + sizeof(size);
+
+	/* don't make tiny blocks that will never be used */
+	if (size<min) min = size;
+
+	if (oldspace = findspace(size)) {
+		if (oldspace->size > min + size) { /* too big? */
+			/* leave space at end */
+			memory = oldspace->memory;
+			memory->size = size;
+			/* cast so C doesn't bogusly scale */
+			/* (int)oldspace->memory += size; */
+			/* but since that statement doesn't compile, try... */
+			oldspace->memory = (struct memory *)
+				((int)oldspace->memory + size);
+			oldspace->size -= size;
+		} else { /* space was just right! */
+			memory = oldspace->memory;
+			if (emptycell == &lastblockinuse->cells[0]) {
+				/* just over break! */
+				lastblockinuse = lastblockinuse->previous;
+				emptycell = &lastblockinuse->cells[PTRS_PER_BLK-1];
+			} else emptycell--;
+			/* move last cell to where current is */
+			oldspace->memory = emptycell->memory;
+			oldspace->size = emptycell->size;
+		}
+	} else return(NULL);
+	/* get around size field */
+	return((char *)memory + sizeof(int));
+}
+
+free(x)
+char *x;
+{
+	register struct cell *cell;
+	struct memory *memory;
+	struct array *block;
+	int pre, post;		/* TRUE if this block is preceded or
+				post?ceded by an empty block and should
+				be coallesced */
+
+	memory = (struct memory *)(x - sizeof(memory->size));
+
+	pre = post = FALSE;
+	block = &beginning;
+	cell = &beginning.cells[0];
+
+	while (cell != emptycell) {
+		if (cell == &block->cells[PTRS_PER_BLK]) {
+			/* move to next block */
+			if (block->next == NULL) break;
+			block = block->next;
+			cell = &block->cells[0];
+			continue;
+		}
+		if ((!pre) && (int)cell->memory + cell->size == (int)memory) {
+			/* free block followed by this block */
+			cell->size += memory->size;
+			if (post) return;
+			pre = TRUE;
+		}
+		if ((!post) && (int)memory + memory->size == (int)cell->memory) {
+			/* this block followed by free block */
+			memory->size += cell->size;
+			if (pre) return;
+			post = TRUE;
+		}
+		cell++;
+	}
+	if (pre || post) return;
+
+	/* can't coalesce, so make new cell */
+	emptycell->memory = memory;
+	emptycell->size = memory->size;
+	if (emptycell == &lastblockinuse->cells[PTRS_PER_BLK-1]) {
+		/* end of block */
+		if (lastblockinuse->next == NULL) { /* create a new one */
+			lastblockinuse->next =
+				(struct array *)sbrk(sizeof(struct array));
+			lastblockinuse->next->previous = lastblockinuse;
+		}
+		lastblockinuse = lastblockinuse->next;
+		emptycell = &lastblockinuse->cells[0];
+	} else {
+		emptycell++;
+	}
+}
+
+char *
+realloc(old,size)
+char *old;
+unsigned int size;
+{
+	char *new;
+	unsigned int oldsize;
+	int i;
+
+	/* how do you say sizeof(struct memory.size) ? */
+	oldsize = *(old-sizeof(int));
+	free(old);
+	new = malloc(size);
+	if (new && new != old) {
+		for (i=0;i<oldsize;i++) {
+			*new++ = *old++;
+		}
+	}
+	return(new);
+}
+
+
+struct cell *
+findspace(size)
+unsigned int size;
+{
+	struct cell *oldcurrentcell;
+	struct memory *mem;
+	struct array *block;
+
+	oldcurrentcell = currentcell;
+	while (currentcell != emptycell) {
+		if (size <= currentcell->size) return(currentcell);
+		if (currentcell == &currentblock->cells[PTRS_PER_BLK-1]) {
+			currentblock = currentblock->next;
+			currentcell = &currentblock->cells[0];
+		} else currentcell++;
+	}
+	currentcell = &beginning.cells[0];
+	currentblock = &beginning;
+	while (currentcell != oldcurrentcell) {
+		if (size <= currentcell->size) return(currentcell);
+		if (currentcell == &currentblock->cells[PTRS_PER_BLK-1]) {
+			currentblock = currentblock->next;
+			currentcell = &currentblock->cells[0];
+		} else currentcell++;
+
+	}
+
+	if (!(mem = (struct memory *)sbrk(size))) return(NULL);
+	mem->size = size;
+	/* coalesce this with very last cell not in use, if possible */
+	if (emptycell == &lastblockinuse->cells[0]) {
+		if (lastblockinuse->previous == NULL) {
+			currentcell = emptycell;
+			emptycell++;
+			currentcell->memory = mem;
+			currentcell->size = size;
+			return(currentcell);
+		} else {
+			block = lastblockinuse->previous;
+			currentcell = &block->cells[PTRS_PER_BLK-1];
+		}
+	} else currentcell = emptycell - 1;
+	if ((struct memory *)((int)currentcell->memory + currentcell->size) == mem) {
+		currentcell->size += size;
+		return(currentcell);
+	}
+	currentcell = emptycell;
+	currentblock = lastblockinuse;
+	currentcell->memory = mem;
+	currentcell->size = size;
+	if (emptycell == &lastblockinuse->cells[PTRS_PER_BLK-1]) {
+		if (lastblockinuse->next == NULL) {
+			block = (struct array *)sbrk(sizeof (struct array));
+			if (block == NULL) return(NULL);
+			lastblockinuse->next = block;
+		} else {
+			lastblockinuse = lastblockinuse->next;
+			emptycell = &lastblockinuse->cells[0];
+		}
+	} else {
+		emptycell++;
+	}
+	return(currentcell);
+}
+
+
+#ifdef DEBUG
+/* print out the arrays of free space */
+pa()
+{
+%L}	struct cell *cell;
+	struct array *block;
+
+	cell = &beginning.cells[0];
+	block = &beginning;
+
+	while (cell != emptycell) {
+		printf("&=%d  size=%d  memory=%d\n",cell,cell->size,cell->memory);
+		fflush(stdout);
+		if (cell == &block->cells[PTRS_PER_BLK-1]) {
+			block = block->next;
+			cell = &block->cells[0];
+			printf("next block\n");
+		} else cell++;
+	}
+}
+#endif
+
+------------------------------
+
+
+
+
+
+------- End of Forwarded Message
+

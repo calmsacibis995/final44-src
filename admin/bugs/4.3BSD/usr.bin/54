@@ -1,0 +1,93 @@
+From elsie!ado@seismo.CSS.GOV Tue Apr 21 23:44:55 1987
+Date: Tue, 21 Apr 87 23:20:11 EDT
+From: elsie!ado@seismo.CSS.GOV (Arthur David Olson)
+Subject: lint boost--handling -lcurses (part 3--& light @ tunnel's end is near)
+Index: 	usr.bin/lint/lpass2.c 4.3BSD
+
+Description:
+	Now that we've got can successfully run
+		#include "curses.h"
+		main(){}
+	through "lint -p", let's cope with a bigger piece of code:
+		#include "curses.h"
+		main(){
+			(void) initscr();
+			(void) printw("Hello");
+			refresh();
+			sleep(1);
+			endwin();
+		}
+	which produces (among others) the error message:
+
+	wrefre, arg. 1 used inconsistently	llib-lcurses(146)  ::  try.c(5)
+
+	The problem *here* is that the lint library was compiled without the
+	while try.c was compiled with the -p option--so they use different
+	(int)s and (whatever *)s, as well as different alignment requirements.
+	This means that structures end up having different sizes, which
+	lint's second pass notices and warns about.  In this instance, the
+	warning is bogus.  The fix:
+	
+*** OLD/lpass2.c	Tue Apr 21 23:14:09 1987
+--- NEW/lpass2.c	Tue Apr 21 23:13:49 1987
+***************
+*** 279,285 ****
+--- 279,289 ----
+					}
+				}
+			for( i=0,qq=q->symty.next; i<r.l.nargs; ++i,qq=qq->next){
++ #ifdef ASWAS
+				if( chktype( &qq->t, &atyp[i] ) ){
++ #else /* !ASWAS */
++ 				if( chktype( &qq->t, &atyp[i], q->fno ) ){
++ #endif /* !ASWAS */
+  #ifndef FLEXNAMES
+					printf( "%.8s, arg. %d used inconsistently",
+  #else
+***************
+*** 293,299 ****
+--- 297,307 ----
+		}
+  
+	if( (q->decflag&(LDI|LIB|LUV|LST)) && r.l.decflag==LUV ){
++ #ifdef ASWAS
+		if( chktype( &r.l.type, &q->symty.t ) ){
++ #else /* !ASWAS */
++ 		if( chktype( &r.l.type, &q->symty.t, q->fno ) ){
++ #endif /* !ASWAS */
+  #ifndef FLEXNAMES
+			printf( "%.8s value used inconsistently", q->name );
+  #else
+***************
+*** 500,506 ****
+--- 508,518 ----
+		}
+	}
+  
++ #ifdef ASWAS
+  chktype( pt1, pt2 ) register ATYPE *pt1, *pt2; {
++ #else /* !ASWAS */
++ chktype( pt1, pt2, fno ) register ATYPE *pt1, *pt2; {
++ #endif /* !ASWAS */
+	TWORD t;
+  
+	/* check the two type words to see if they are compatible */
+***************
+*** 514,519 ****
+--- 526,539 ----
+		/* if -z then don't worry about undefined structures,
+		   as long as the names match */
+		if( zflag && (pt1->extra == 0 || pt2->extra == 0) ) return 0;
++ #ifndef ASWAS
++ 		/* if -p and pt1 is "too big" and
++ 		** pt1 came from a llib-l file, we can't pass judgment on it.
++ 		*/
++ 		if ( pflag && pt1->extra > pt2->extra &&
++ 			strncmp(fnm[fno], "llib-l", 6) == 0)
++ 				return 0;
++ #endif /* !ASWAS */
+		return pt1->extra != pt2->extra;
+		}
+
+			--ado
+

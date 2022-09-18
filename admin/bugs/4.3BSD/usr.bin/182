@@ -1,0 +1,186 @@
+From kupfer@orc.olivetti.com  Fri Sep  2 16:25:08 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.60/1.29)
+	id AA01148; Fri, 2 Sep 88 16:25:08 PDT
+Received: from NET.BIO.NET by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA15810; Fri, 2 Sep 88 16:18:05 PDT
+Received: from orc.olivetti.com by net.bio.net (5.59/1.15) with UUCP 
+	id AA11740; Fri, 2 Sep 88 16:13:37 PDT
+Received: from aosta.orc.olivetti.com by orc.olivetti.com (3.2/SMI-3.2)
+	id AA00994; Fri, 2 Sep 88 15:50:29 PDT
+Received: by aosta.orc.olivetti.com (3.2/SMI-3.2)
+	id AA00939; Fri, 2 Sep 88 15:52:25 PDT
+Date: Fri, 2 Sep 88 15:52:25 PDT
+From: kupfer@orc.olivetti.com (Mike Kupfer)
+Message-Id: <8809022252.AA00939@aosta.orc.olivetti.com>
+Subject: diff3 gags on long lines
+Index: 	usr.bin/diff3/diff3.c 4.3BSD
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+
+Description:
+	diff3 uses a 256-char array as an input buffer.  If the input
+	line doesn't fit, you lose.  Fortunately, at least in the case
+	I found, diff3 detects the error and kills itself.
+Repeat-By:
+	Try running diff3 with a file that has a line longer than 256
+	characters.  
+	The way I found it was via RCS, as follows:
+	-check in file foo.
+	-check out foo, edit it to contain a line with more than 256
+	characters, and check in the new version as a branch.
+	-check out foo, and check it in (unchanged) as a second
+	branch.
+	-do "co -l<second branch> -j<first branch> foo"
+Fix:
+	(The following context diff also contains some minor tweaks,
+	like spelling fixes...)
+	
+	*** /tmp/,RCSt1005265	Fri Sep  2 15:44:50 1988
+	--- diff3.c	Thu Sep  1 16:27:48 1988
+	***************
+	*** 1,9 ****
+	--- 1,12 ----
+	  #ifndef lint
+	  static char sccsid[] = "@(#)diff3.c	4.4 (Berkeley) 8/27/85";
+	+ static char rcsid[] = "$Header: diff3.c,v 1.2 88/09/01 16:27:24 kupfer Exp $";
+	  #endif
+	  
+	  #include <stdio.h>
+	  
+	+ char *malloc(), *realloc();
+	+ 
+	  /* diff3 - 3-way differential file comparison*/
+	  
+	  /* diff3 [-ex3EX] d13 d23 f1 f2 f3 [m1 m3]
+	***************
+	*** 39,45 ****
+	  char overlap[NC];
+	  int  overlapcnt =0;
+	  
+	! char line[256];
+	  FILE *fp[3];
+	  /*	the number of the last-read line in each file
+	   *	is kept in cline[0-2]
+	--- 42,53 ----
+	  char overlap[NC];
+	  int  overlapcnt =0;
+	  
+	! /* line is a variable-size input buffer. linesize is the number of chars
+	!  * currently allocated to it.
+	! */
+	! char *line = NULL;
+	! unsigned linesize = 0;
+	! 
+	  FILE *fp[3];
+	  /*	the number of the last-read line in each file
+	   *	is kept in cline[0-2]
+	***************
+	*** 101,112 ****
+	  	merge(m,n);
+	  }
+	  
+	! /*pick up the line numbers of allcahnges from
+	!  * one change file
+	!  * (this puts the numbers in a vector, which is not
+	!  * strictly necessary, since the vector is processed
+	!  * in one sequential pass. The vector could be optimized
+	!  * out of existence)
+	  */
+	  
+	  readin(name,dd)
+	--- 109,118 ----
+	  	merge(m,n);
+	  }
+	  
+	! /* pick up the line numbers of all changes from one change file (this
+	!  * puts the numbers in a vector, which is not strictly necessary,
+	!  * since the vector is processed in one sequential pass. The vector
+	!  * could be optimized out of existence.)
+	  */
+	  
+	  readin(name,dd)
+	***************
+	*** 176,193 ****
+	  	return(0);
+	  }
+	  
+	  getline(b)
+	  FILE *b;
+	  {
+	! 	register i, c;
+	! 	for(i=0;i<sizeof(line)-1;i++) {
+	  		c = getc(b);
+	  		if(c==EOF)
+	  			break;
+	! 		line[i] = c;
+	  		if(c=='\n') {
+	! 			line[++i] = 0;
+	! 			return(i);
+	  		}
+	  	}
+	  	return(0);
+	--- 182,225 ----
+	  	return(0);
+	  }
+	  
+	+ /* Return an input line as a null-terminated string (incl. the newline).
+	+  * Returns the strlen of "line".
+	+  * Note: all memory management for "line" is done here.
+	+ */
+	+ int
+	  getline(b)
+	  FILE *b;
+	  {
+	! 	register int c;
+	! 	register char *lp;
+	! 
+	! 	if (line == NULL) {
+	! 		line = malloc(256);
+	! 		linesize = 256;
+	! 		if (line == NULL) {
+	! 			fprintf(stderr, "diff3: out of memory\n");
+	! 			exit(1);
+	! 		}
+	! 	}
+	! 
+	! 	for(lp=line;;++lp) {
+	! 		/* if we're writing the last avail. char, make line bigger. */
+	! 		if (lp-line == linesize-1) {
+	! 			line = realloc(line, linesize+256);
+	! 			linesize += 256;
+	! 			if (line == NULL) {
+	! 				fprintf(stderr, "diff3: out of memory\n");
+	! 				exit(1);
+	! 			}
+	! 			lp = line + linesize-1;
+	! 		}
+	  		c = getc(b);
+	  		if(c==EOF)
+	  			break;
+	! 		*lp = c;
+	  		if(c=='\n') {
+	! 			*++lp = '\0';
+	! 			return(lp-line);
+	  		}
+	  	}
+	  	return(0);
+	***************
+	*** 349,357 ****
+	  	change(i,&trange,1);
+	  }
+	  
+	! /*	skip to just befor line number from in file i
+	   *	if "pr" is nonzero, print all skipped stuff
+	!  * w	with string pr as a prefix
+	  */
+	  skip(i,from,pr)
+	  char *pr;
+	--- 381,389 ----
+	  	change(i,&trange,1);
+	  }
+	  
+	! /*	skip to just before line number from in file i
+	   *	if "pr" is nonzero, print all skipped stuff
+	!  * 	with string pr as a prefix
+	  */
+	  skip(i,from,pr)
+	  char *pr;

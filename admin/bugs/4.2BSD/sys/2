@@ -1,0 +1,222 @@
+Return-Path: <cak@Purdue.ARPA>
+From: Christopher A Kent <cak@Purdue.ARPA>
+Date:  8 Jan 1984 2212-EST (Sunday)
+Subject: no way to force local ether traffic onto the wire
+Index: sys/netinet/if_ether.c 4.2BSD fix
+
+Description:
+ If it is desired, for testing or other purposes, to force ethernet traffic
+for the local host to go out onto the wire, it is not possible to do so.
+Changes to if_ether.c to follow that cause the ethernet traffic to use the
+loopback device only if it is marked IFF_UP; thus by "ifconfig lo0 down",
+one can force the packets to go onto the wire.
+
+Unfortunately, the ARP code must be changed, as well, since it is designed
+to ignore incoming packets from itself. A new type of entry, a "sticky"
+entry, is defined. The interface address definition routine calls the new
+routine arpinstall() to install a mapping entry for itself; this is a
+sticky entry that will not be timed out. Thus the resolution can always
+be done without broadcasting a packet. This feature may also be useful for
+networks that have simple-minded diskless stations that depend on someone
+knowing their IP address, using a modified ARP to do a "reverse query".
+
+Repeat-By:
+	On an ethernet host, rlogin `hostname`. Inspecting netstat -i will
+show the the lo packet counts are going up, not the ether device.
+
+Fix:
+	Apply the following diffs...
+
+*** if_ether.c.old
+--- if_ether.c.new
+***************
+*** 31,36
+  /* at_flags field values */
+  #define	ATF_INUSE	1		/* entry in use */
+  #define ATF_COM		2		/* completed entry (enaddr valid) */
+  
+  #define	ARPTAB_BSIZ	5		/* bucket size */
+  #define	ARPTAB_NB	19		/* number of buckets */
+
+--- 31,37 -----
+  /* at_flags field values */
+  #define	ATF_INUSE	1		/* entry in use */
+  #define ATF_COM		2		/* completed entry (enaddr valid) */
++ #define	ATF_STICKY	4		/* may not be timed out */
+  
+  #define	ARPTAB_BSIZ	5		/* bucket size */
+  #define	ARPTAB_NB	19		/* number of buckets */
+***************
+*** 124,129
+  		for (i = 0; i < ARPTAB_SIZE; i++, at++) {
+  			if (at->at_flags == 0)
+  				continue;
+  			if (++at->at_timer < ((at->at_flags&ATF_COM) ?
+  			    ARPT_KILLC : ARPT_KILLI))
+  				continue;
+
+--- 125,132 -----
+  		for (i = 0; i < ARPTAB_SIZE; i++, at++) {
+  			if (at->at_flags == 0)
+  				continue;
++ 			if (at->at_flags & ATF_STICKY)
++ 				continue;
+  			if (++at->at_timer < ((at->at_flags&ATF_COM) ?
+  			    ARPT_KILLC : ARPT_KILLI))
+  				continue;
+***************
+*** 198,206
+  		return (1);
+  	}
+  	ifp = &ac->ac_if;
+! 	/* if for us, then use software loopback driver */
+! 	if (destip->s_addr ==
+! 	    ((struct sockaddr_in *)&ifp->if_addr)-> sin_addr.s_addr) {
+  		sin.sin_family = AF_INET;
+  		sin.sin_addr = *destip;
+  		return (looutput(&loif, m, (struct sockaddr *)&sin));
+
+--- 201,210 -----
+  		return (1);
+  	}
+  	ifp = &ac->ac_if;
+! 	/* if for us, then use software loopback driver if available */
+! 	if ((destip->s_addr ==
+! 	    ((struct sockaddr_in *)&ifp->if_addr)-> sin_addr.s_addr) &&
+! 	    ((loif.if_flags & IFF_UP) != 0)) {
+  		sin.sin_family = AF_INET;
+  		sin.sin_addr = *destip;
+  		return (looutput(&loif, m, (struct sockaddr *)&sin));
+***************
+*** 378,384
+  	for (n = 0 ; n < ARPTAB_BSIZ ; n++,at++) {
+  		if (at->at_flags == 0)
+  			goto out;	 /* found an empty entry */
+! 		if (at->at_timer > oldest) {
+  			oldest = at->at_timer;
+  			ato = at;
+  		}
+
+--- 382,389 -----
+  	for (n = 0 ; n < ARPTAB_BSIZ ; n++,at++) {
+  		if (at->at_flags == 0)
+  			goto out;	 /* found an empty entry */
+! 		if ((at->at_timer > oldest) && 
+! 		    ((at->at_flags) & ATF_STICKY) == 0) {
+  			oldest = at->at_timer;
+  			ato = at;
+  		}
+***************
+*** 389,392
+  	at->at_iaddr = *addr;
+  	at->at_flags = ATF_INUSE;
+  	return (at);
+  }
+
+--- 394,427 -----
+  	at->at_iaddr = *addr;
+  	at->at_flags = ATF_INUSE;
+  	return (at);
++ }
++ 
++ /* 
++  * Install an ARP mapping. Called by device address routines to force
++  * a mapping in for themselves.
++  */
++ 
++ arpinstall(ipaddr, enaddr, sticky)
++ 	register struct in_addr *ipaddr;
++ 	u_char enaddr[6];
++ {
++ 	struct arptab *at = 0;
++ 	int s = splimp();
++ 
++ 	ARPTAB_LOOK(at, ipaddr->s_addr);
++ 	if(at){	/* already there! */
++ 		printf("duplicate IP address 0x%X!! overwriting ");
++ 		printf("%x %x %x %x %x %x with %x %x %x %x %x %x\n",
++ 		    at->at_enaddr[0]&0xff, at->at_enaddr[1]&0xff,
++ 		    at->at_enaddr[2]&0xff, at->at_enaddr[3]&0xff,
++ 		    at->at_enaddr[4]&0xff, at->at_enaddr[5]&0xff,
++ 		    enaddr[0]&0xff, enaddr[1]&0xff,
++ 		    enaddr[2]&0xff, enaddr[3]&0xff,
++ 		    enaddr[4]&0xff, enaddr[5]&0xff);
++ 	}else
++ 		at = arptnew(ipaddr);
++ 
++ 	bcopy((caddr_t)enaddr, (caddr_t)at->at_enaddr, sizeof(at->at_enaddr));
++ 	at->at_flags |= (ATF_COM | (sticky?ATF_STICKY:0));
++ 	splx(s);
+  }
+
+It is also necessary to modify the setaddr routine in the appropriate
+ethernet interface drivers. NOTE THAT SOME INTERFACES CAN'T HEAR THEIR OWN
+PACKETS, so this whole thing is useless for them. Notable among these are
+the 3Com 10Mb and the Xerox 3Mb ethers. We have Interlan hardware; the
+change for this follows:
+
+*** if_il.c.old
+--- if_il.c.new
+***************
+*** 642,647
+  	register struct ifnet *ifp;
+  	register struct sockaddr_in *sin;
+  {
+  
+  	ifp->if_addr = *(struct sockaddr *)sin;
+  	ifp->if_net = in_netof(sin->sin_addr);
+
+--- 644,650 -----
+  	register struct ifnet *ifp;
+  	register struct sockaddr_in *sin;
+  {
++ 	register struct il_softc *is = &il_softc[ifp->if_unit];
+  
+  	ifp->if_addr = *(struct sockaddr *)sin;
+  	ifp->if_net = in_netof(sin->sin_addr);
+***************
+*** 646,651
+  	ifp->if_addr = *(struct sockaddr *)sin;
+  	ifp->if_net = in_netof(sin->sin_addr);
+  	ifp->if_host[0] = in_lnaof(sin->sin_addr);
+  	sin = (struct sockaddr_in *)&ifp->if_broadaddr;
+  	sin->sin_family = AF_INET;
+  	sin->sin_addr = if_makeaddr(ifp->if_net, INADDR_ANY);
+
+--- 649,655 -----
+  	ifp->if_addr = *(struct sockaddr *)sin;
+  	ifp->if_net = in_netof(sin->sin_addr);
+  	ifp->if_host[0] = in_lnaof(sin->sin_addr);
++ 	arpinstall(&sin->sin_addr, is->is_stats.ils_addr, 1);
+  	sin = (struct sockaddr_in *)&ifp->if_broadaddr;
+  	sin->sin_family = AF_INET;
+  	sin->sin_addr = if_makeaddr(ifp->if_net, INADDR_ANY);
+
+----------
+========================================================================
+Return-Path: <croft%SU-SAFE.ARPA@SU-SCORE.ARPA>
+Received: from SAFE by Score with Pup; Fri 13 Jan 84 11:44:13-PST
+Date: Fri, 13 Jan 84 11:47 PST
+From: Bill Croft <croft%Safe@SU-Score>
+Subject: re: no way to force local ether traffic onto the wire
+
+Index: sys/netinet/if_ether.c 4.2BSD unfix
+
+Description:
+	Chris, is your fix here really necessary?  For testing
+	ethernet interfaces (the reason you claimed for your mod),
+	I think it would be more conclusive to run Mike Muess's
+	ICMP echo sender and bounce packets off of another host.
+	If this test fails it's time to swap the xcvr/board or
+	run a more exhaustive diagnostic.  Using your test
+	method (machine talking to itself on the ether)
+	would still be an intermediate step before running
+	the ICMP test, since I can imagine certain ether
+	failure modes (weak transmitter) that would pass
+	your test but fail the ICMP echo.
+
+Repeat-By:
+	NA
+
+Fix:
+	Unnecessary?

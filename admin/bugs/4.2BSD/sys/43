@@ -1,0 +1,66 @@
+Return-Path: <mogul@coyote>
+Date: Mon, 26 Mar 84 18:41:51 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: 4.2 Unibus RL02 driver doesn't configure an off-line drive
+Index: 	sys/vaxuba/rl.c 4.2BSD
+
+Description:
+	If your system includes an RL02 drive (not that they are
+	all that useful) but the drive is not loaded when the system
+	is booted, the configuration procedure does not recogniz the
+	drive and it cannot be used until the system is rebooted.
+	
+	Since the RL02 is a removable pack, and a darn small one at
+	that, it's unpleasant to have to have a pack loaded whenever
+	you boot the machine.
+	
+	The problem is that the distributed RL02 driver checks for
+	a ready-to-use, loaded pack instead of simply checking that
+	the drive is there.  This is probably being done because
+	(as a comment in the code notes) the "Get Status" operation
+	may return invalid data.  Presumably, the author felt that if
+	the status is "all set to use", then it's valid.
+	
+Repeat-By:
+	(You need a system with an RL02 that is NOT the root drive).
+	Unload the RL02, reboot your system.
+	Once it is running, load the RL02.  You won't be able to
+	use it for anything.
+Fix:
+	The fix involves (1) assuming that after 8 tries, either the
+	returned status is valid or if it isn't, we'll find out later
+	anyway; (2) checking not for "Drive Error" (which is not set
+	for either an off-line or a non-existant drive) but for "Composite
+	Error", i.e., any error at all.
+	
+*** rl.c.old	Fri Jul 29 07:33:38 1983
+--- rl.c	Mon Mar 26 18:13:05 1984
+***************
+*** 141,146
+  	} while ((rladdr->rlmp.getstat&RLMP_STATUS) != RLMP_STATOK && ++ctr<8);
+  	if ((rladdr->rlcs & RL_DE) || (ctr >= 8))
+  		return (0);
+  	if ((rladdr->rlmp.getstat & RLMP_DT) == 0 ) {
+  		printf("rl%d: rl01's not supported\n", ui->ui_slave);
+  		return(0);
+
+--- 147,165 -----
+  #ifdef	MUST_BE_ONLINE
+  	if ((rladdr->rlcs & RL_DE) || (ctr >= 8))
+  		return (0);
++ #else
++ 	/*
++ 	 * This code does NOT assume that the disk must be online
++ 	 * when the system boots.
++ 	 * 
++ 	 * We ignore the rlmp.getstat value; it only tells us if the pack
++ 	 * is loaded and online.  rlcs will show an OPI error if the drive
++ 	 * doesn't exist.  If an invalid status is returned on the eighth
++ 	 * try, we're erring on the side of optimism.
++ 	 */
++ 	if (rladdr->rlcs & RL_ERR)
++ 		return (0);
++ #endif	MUST_BE_ONLINE
+  	if ((rladdr->rlmp.getstat & RLMP_DT) == 0 ) {
+  		printf("rl%d: rl01's not supported\n", ui->ui_slave);
+  		return(0);

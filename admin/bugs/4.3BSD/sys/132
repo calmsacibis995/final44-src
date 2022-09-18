@@ -1,0 +1,131 @@
+From @relay.cs.net:richl%tektronix.tek.com@tektronix.tek.com  Tue Jun 23 04:14:11 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA27086; Tue, 23 Jun 87 04:14:11 PDT
+Received: by ucbvax.Berkeley.EDU (5.57/1.26)
+	id AA04019; Tue, 23 Jun 87 04:13:32 PDT
+Received: from relay2.cs.net by RELAY.CS.NET id ah22697; 23 Jun 87 6:49 EDT
+Received: from tektronix.tek.com by RELAY.CS.NET id ad04986; 23 Jun 87 6:43 EDT
+Received: by tektronix.TEK.COM (5.51/6.23)
+	id AA27536; Tue, 23 Jun 87 03:11:07 PDT
+Date: Tue, 23 Jun 87 03:11:07 PDT
+From: richl <@relay.cs.net,@tektronix.tek.com:richl@tektronix.tek.com (Rick Lindsley)>
+Message-Id: <8706231011.AA27536@tektronix.TEK.COM>
+Subject: Processes unexpectedly receive SIGKILL
+Index: 	sys/sys/kern_sig.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+Source-Info:  From (or Sender) name not authenticated.
+
+Description:
+	Processes receive a SIGKILL if they are orphans and receive a
+	SIGTSTP, SIGTTOU, or SIGTTIN and are not holding or ignoring
+	those signals.
+
+	A SIGKILL, of course, cannot be caught or ignored, and makes it
+	particularly annoying to discover the cause of a process just
+	"disappearing". To top it off, this behavior is not documented
+	anywhere -- tty(4) would seem a likely spot.
+
+	However, this bug is at its most insidious when it kills off an
+	entire chain of commands. In effect, it creates its own orphans
+	and then kills them!
+
+	Suppose you have 5 processes numbered 100-104, each a direct
+	descendant of the previous, and none are doing anything special
+	with SIGTTOU. Further suppose that process 100 is the process
+	group leader, and exits. If any of the processes 101 to 104 try
+	to write something to the terminal, ALL will die. What happens
+	is that the entire process group receives the SIGTTOU.  This
+	makes the current top dog (101) get a SIGKILL. He's an orphan
+	and has a SIGTTOU. But now his child, 102, is also an orphan,
+	and showing the same signal. Boom. And 103 .. and 104.  The
+	entire chain gone, without a sign.
+
+	This sort of thing is not so rare when testing new daemons. Folks
+	without source will be left scratching their heads.
+
+Repeat-By:
+	The following program creates the situation described above: 5
+	processes, with the leader exiting. Doing a ps after than should
+	show 4 processes sleeping, until the youngest one trys to say
+	something. Then they all disappear.
+
+#include <stdio.h>
+#include <signal.h>
+
+main()
+
+{
+    if (fork() == 0)
+	/* child */
+	if (fork() == 0)
+	    /* grandchild */
+	    if (fork() == 0)
+		/* great grandchild */
+		if (fork() == 0) {
+		    /*
+		     * great great grandchild -- when our top ancestor exits,
+		     * we should have four processes patiently waiting.
+		     * Watch them all die because the youngest tries to speak.
+		     */
+
+		    /*
+		     * wait for great great grandfather to exit
+		     */
+		    sleep(15);
+		    signal (SIGTTOU,SIG_IGN);
+		    printf("I want attention.\n");
+		    signal (SIGTTOU,SIG_DFL);
+		    printf("I want to be fed.\n");
+		    exit(0);
+		    }
+		else { sleep(120); exit(0); }
+	    else { sleep(120); exit(0); }
+	else { sleep(120); exit(0); }
+    else {
+	printf("Do a ps now -- you have 15 seconds.\n");
+	exit(0);
+	}
+}
+
+Fix:
+	Many and varied. I'm not convinced that a SIGKILL is the
+	correct response in the indicated situation, or indeed that any
+	response is required.  Perhaps SIGKILL should only be taken
+	if the process table fills up and the extra spaces are critical.
+
+	If a signal must be given, I prefer it be a SIGTERM, so that it
+	may be caught (or ignored).  Whether it is a TERM or KILL,
+	however, it clearly needs to be documented, and tty(4) seems to
+	be the logical place.
+
+	Alternatively, deleting the following lines in kern_sig.c (in
+	psignal()) will allow these processes to survive:
+
+		case SIGSTOP:
+		case SIGTSTP:
+		case SIGTTIN:
+		case SIGTTOU:
+			/*
+			 * These are the signals which by default
+			 * stop a process.
+			 */
+			if (action != SIG_DFL)
+				goto run;
+-			/*
+-			 * Don't clog system with children of init
+-			 * stopped from the keyboard.
+-			 */
+-			if (sig != SIGSTOP && p->p_pptr == &proc[1]) {
+-				psignal(p, SIGKILL);
+-				p->p_sig &= ~mask;
+-				splx(s);
+-				return;
+-			}
+			/*
+			 * If a child in vfork(), stopping could
+			 * cause deadlock.
+			 */
+	
+	Yet another possibility is to rethink how process groups get their
+	signals. I tried that, though, and it gave me a headache. Any change
+	along those lines is major and non-transparent.

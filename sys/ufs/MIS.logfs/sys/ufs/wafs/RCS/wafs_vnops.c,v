@@ -1,0 +1,1705 @@
+head	1.9;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	94.11.29.15.50.24;	author margo;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	94.10.04.17.02.38;	author margo;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	94.10.04.17.00.54;	author margo;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	94.09.01.12.58.29;	author margo;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	94.07.14.19.14.59;	author margo;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	94.05.13.13.57.03;	author margo;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	94.04.08.16.46.17;	author margo;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	94.04.08.16.40.06;	author margo;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.09.01.17.43.07;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@4.4BSD version
+@
+
+
+1.9
+log
+@Add wafs_lookup so that it can zero the vnode as well as returning an error.
+@
+text
+@#ifdef CLFS
+/*
+ * CLFS
+ * $Log: wafs_vnops.c,v $
+ * Revision 1.8  1994/10/04  17:02:38  margo
+ * Make 4.4Lite version compile under BSD4.4-Lite.
+ *
+ * Revision 1.3  1994/09/27  18:53:29  jat
+ * Fixed includes for alternate AIX/SPARC building.
+ *
+ * Revision 1.2  1994/09/26  19:48:30  jat
+ * Fixed arguments to uiomove calls for AIX.
+ *
+ * Revision 1.1  1994/09/26  18:47:44  jat
+ * Initial WAFS checkin.
+ *
+ */
+#endif
+/*
+ * Copyright (c) 1982, 1986, 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * Copyright (c) 1994
+ * 	The President and Fellows of Harvard University.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	$Id: wafs_vnops.c,v 1.8 1994/10/04 17:02:38 margo Exp margo $
+ * For version 1, we are going to make all the operations that we do
+ * not need EOPNOTSUP.  For version2, we can decide which ones we ultimately
+ * need to support.
+ */
+static char *rcsid = "$Id: wafs_vnops.c,v 1.8 1994/10/04 17:02:38 margo Exp margo $";
+
+#ifdef CLFS
+#include <sys/compat.h>
+#include <sys/bsd_types.h>
+#include <sys/bsd_param.h>
+#include <clfs_param.h>
+#include <sys/cdefs.h>
+#include <sys/ucred.h>
+#include <sys/intr.h>
+#include <sys/sleep.h>
+
+#include <sys/param.h>
+#include <sys/vnode.h>
+#include <sys/socket.h>
+#include <sys/mbuf.h>
+#include <sys/file.h>
+#include <sys/disklabel.h>
+#include <sys/filio.h>
+#include <sys/errno.h>
+#include <sys/malloc.h>
+
+#include <miscfs/specfs/specdev.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+
+#else /* CLFS */
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/resourcevar.h>
+#include <sys/kernel.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/buf.h>
+#include <sys/filedesc.h>
+#include <sys/proc.h>
+#include <sys/conf.h>
+#include <sys/mount.h>
+#include <sys/vnode.h>
+#include <sys/malloc.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
+
+#include <vm/vm.h>
+
+#include <miscfs/specfs/specdev.h>
+#include <miscfs/fifofs/fifo.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ufs/ufs_extern.h>
+#endif /* CLFS */
+
+#include <ufs/wafs/wafs.h>
+#include <ufs/wafs/wnode.h>
+#include <ufs/wafs/wafs_extern.h>
+#include <ufs/wafs/lffs.h>
+
+#ifdef AIX
+int vn_bwrite();
+extern struct timestruc_t tod;
+#endif
+
+/* Global vnode data structures for wafs. */
+int (**wafs_vnodeop_p)();
+struct vnodeopv_entry_desc wafs_vnodeop_entries[] = {
+	{ &vop_default_desc, vn_default_error },
+	{ &vop_lookup_desc, wafs_lookup },		/* lookup */
+	{ &vop_create_desc, vn_default_error },		/* create */
+	{ &vop_mknod_desc, vn_default_error },		/* mknod */
+	{ &vop_open_desc, wafs_open },			/* open */
+	{ &vop_close_desc, wafs_close },		/* close */
+	{ &vop_access_desc, wafs_access },		/* access */
+	{ &vop_getattr_desc, wafs_getattr },		/* getattr */
+	{ &vop_setattr_desc, vn_default_error },	/* setattr */
+	{ &vop_read_desc, wafs_read },			/* read */
+	{ &vop_write_desc, wafs_write },		/* write */
+	{ &vop_ioctl_desc, wafs_ioctl },		/* ioctl */
+	{ &vop_select_desc, vn_default_error },		/* select */
+	{ &vop_mmap_desc, vn_default_error },		/* mmap */
+	{ &vop_fsync_desc, wafs_fsync },		/* fsync */
+	{ &vop_seek_desc, vn_default_error },		/* seek */
+	{ &vop_remove_desc, vn_default_error },		/* remove */
+	{ &vop_link_desc, vn_default_error },		/* link */
+	{ &vop_rename_desc, vn_default_error },		/* rename */
+	{ &vop_mkdir_desc, vn_default_error },		/* mkdir */
+	{ &vop_rmdir_desc, vn_default_error },		/* rmdir */
+	{ &vop_symlink_desc, vn_default_error },	/* symlink */
+	{ &vop_readdir_desc, vn_default_error },	/* readdir */
+	{ &vop_readlink_desc, vn_default_error },	/* readlink */
+	{ &vop_abortop_desc, vn_default_error },	/* abortop */
+	{ &vop_inactive_desc, vn_default_error },	/* inactive */
+	{ &vop_reclaim_desc, wafs_reclaim },		/* reclaim */
+	{ &vop_lock_desc, wafs_lock },			/* lock */
+	{ &vop_unlock_desc, wafs_unlock },		/* unlock */
+	{ &vop_bmap_desc, wafs_bmap },			/* bmap */
+	{ &vop_strategy_desc, wafs_strategy },		/* strategy */
+	{ &vop_print_desc, vn_default_error },		/* print */
+	{ &vop_islocked_desc, vn_default_error },	/* islocked */
+	{ &vop_pathconf_desc, vn_default_error },	/* pathconf */
+	{ &vop_advlock_desc, vn_default_error },	/* advlock */
+	{ &vop_blkatoff_desc, vn_default_error },	/* blkatoff */
+	{ &vop_valloc_desc, vn_default_error },		/* valloc */
+	{ &vop_vfree_desc, vn_default_error },		/* vfree */
+	{ &vop_truncate_desc, vn_default_error },	/* truncate */
+	{ &vop_update_desc, wafs_update },		/* update */
+	{ &vop_bwrite_desc, vn_bwrite },
+	{ (struct vnodeop_desc*)NULL, (int(*)())NULL }
+};
+struct vnodeopv_desc wafs_vnodeop_opv_desc =
+	{ &wafs_vnodeop_p, wafs_vnodeop_entries };
+
+/*
+ * Vnode operation for open.  Enforce constraints that WAFS is append-only.
+ */
+/* ARGSUSED */
+int
+wafs_open(ap)
+	struct vop_open_args /* {
+		struct vnode *a_vp;
+		int  a_mode;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+
+	/*
+	 * Files must be opened READONLY or APPEND.
+	 */
+	if ((ap->a_mode & (FWRITE | O_APPEND)) == FWRITE)
+		return (EPERM);
+	return (0);
+}
+
+/*
+ * Close called,
+ * Nop for wafs.
+ */
+/* ARGSUNUSED */
+int
+wafs_close(ap)
+	struct vop_close_args /* {
+		struct vnode *a_vp;
+		int  a_fflag;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	return (0);
+}
+
+/*
+ * XXX
+ * Check mode permission on wnode pointer. For now, we are using
+ * WAFS only for file system logging.  I do not know what kind
+ * of permission checking to do, so I'm going to punt for now.
+ */
+int
+wafs_access(ap)
+	struct vop_access_args /* {
+		struct vnode *a_vp;
+		int  a_mode;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct ucred *cred = ap->a_cred;
+	mode_t mode = ap->a_mode;
+
+#ifdef DIAGNOSTIC
+	if (!VOP_ISLOCKED(vp)) {
+		vprint("ufs_access: not locked", vp);
+		panic("ufs_access: not locked");
+	}
+#endif
+	/*
+	 * If you're the super-user, you always get access.
+	 * XXX For now, we assume this is always the case.
+	 */
+	/* if (cred->cr_uid == 0) */
+		return (0);
+}
+
+/* ARGSUSED */
+int
+wafs_getattr(ap)
+	struct vop_getattr_args /* {
+		struct vnode *a_vp;
+		struct vattr *a_vap;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp = VTOW(vp);
+	register struct vattr *vap = ap->a_vap;
+
+	/*
+	 * Copy from wnode table
+	 */
+	vap->va_fsid = wp->w_dev;
+	vap->va_fileid = wp->w_ino;
+	vap->va_mode = 0;
+	vap->va_nlink = 0;
+	vap->va_uid = 0;
+	vap->va_gid = 0;
+	vap->va_rdev = wp->w_dev;
+	vap->va_size = wp->w_tail;
+	vap->va_atime = wp->w_atime;
+	vap->va_mtime = wp->w_mtime;
+	vap->va_ctime = wp->w_ctime;
+	vap->va_flags = wp->w_flag;
+	vap->va_gen = 0;
+	/* this doesn't belong here */
+#ifndef AIX
+	if (vp->v_type == VBLK)
+		vap->va_blocksize = BLKDEV_IOSIZE;
+	else if (vp->v_type == VCHR)
+		vap->va_blocksize = MAXBSIZE;
+	else
+#endif
+		vap->va_blocksize = vp->v_mount->mnt_stat.f_iosize;
+	vap->va_bytes = wp->w_head;
+	vap->va_type = vp->v_type;
+	vap->va_filerev = 0;
+	return (0);
+}
+
+/* ARGUSED */
+int
+wafs_ioctl(ap)
+	struct vop_ioctl_args /* {
+		struct vnode *a_vp;
+		int  a_command;
+		caddr_t  a_data;
+		int  a_fflag;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	struct wnode *wp;
+	struct lwrite_entry *lwp;
+	int error;
+	off_t *offp;
+
+	if (ap->a_command != FIOFSYNC && ap->a_command != FIOLOG)
+		return (ENOTTY);
+
+	wp = VTOW(ap->a_vp);
+	VOP_LOCK(ap->a_vp);
+	error = 0;
+	switch(ap->a_command) {
+	case FIOFSYNC:
+		offp = (off_t *)ap->a_data;
+		if (wp->w_lastlsn >= *offp)
+			break;
+		error = VOP_FSYNC(ap->a_vp, ap->a_cred, 1, ap->a_p);
+		if (!error)
+			*offp = wp->w_lastlsn;
+		break;
+
+	case FIOLOG:
+		lwp = (struct lwrite_entry *)ap->a_data;
+		lwp->logrec_begin = wp->w_head;
+		error = VOP_WRITE(ap->a_vp, lwp->uio, ap->a_fflag | IO_APPEND,
+		    ap->a_cred);
+		lwp->logrec_end = wp->w_head;
+		break;
+	}
+
+	VOP_UNLOCK(ap->a_vp);
+	return(error);
+}
+
+/*
+ * Synch an open file.
+ */
+/* ARGSUSED */
+int
+wafs_fsync(ap)
+	struct vop_fsync_args /* {
+		struct vnode *a_vp;
+		struct ucred *a_cred;
+		int a_waitfor;
+		struct proc *a_p;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	struct wnode *wp = VTOW(vp);
+	register struct buf *bp;
+	struct timeval tv;
+	struct buf *nbp;
+	int s;
+
+	/*
+	 * Flush all dirty buffers associated with a vnode.
+	 */
+loop:
+#ifdef AIX
+	s = i_disable(INTIODONE);
+#else
+	s = splbio();
+#endif
+	for (bp = vp->v_dirtyblkhd.lh_first; bp; bp = nbp) {
+		nbp = bp->b_vnbufs.le_next;
+		if ((bp->b_flags & B_BUSY))
+			continue;
+		if ((bp->b_flags & B_DELWRI) == 0)
+			panic("wafs_fsync: not dirty");
+		bremfree(bp);
+		bp->b_flags |= B_BUSY;
+#ifdef AIX
+		i_enable(s);
+#else
+		splx(s);
+#endif
+		/*
+		 * Wait for I/O associated with indirect blocks to complete,
+		 * since there is no way to quickly wait for them below.
+		 */
+		if (bp->b_vp == vp || ap->a_waitfor == MNT_NOWAIT)
+			(void) bawrite(bp);
+		else
+			(void) bwrite(bp);
+		goto loop;
+	}
+	if (ap->a_waitfor == MNT_WAIT) {
+		while (vp->v_numoutput) {
+			vp->v_flag |= VBWAIT;
+#ifdef AIX
+			e_sleep(&vp->v_event, EVENT_SHORT);
+#else
+			sleep((caddr_t)&vp->v_numoutput, PRIBIO + 1);
+#endif
+		}
+#ifdef DIAGNOSTIC
+		if (vp->v_dirtyblkhd.lh_first) {
+			vprint("wafs_fsync: dirty", vp);
+			goto loop;
+		}
+#endif
+	}
+#ifdef AIX
+	i_enable(s);
+	tv = *((struct timeval *)&tod);
+#else
+	splx(s);
+	tv = time;
+#endif
+	return (VOP_UPDATE(ap->a_vp, &tv, &tv, ap->a_waitfor == MNT_WAIT));
+}
+
+/*
+ * Lock a wnode. If its already locked, set the WANT bit and sleep.
+ */
+int
+wafs_lock(ap)
+	struct vop_lock_args /* {
+		struct vnode *a_vp;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp;
+#ifndef AIX
+	struct proc *p = curproc;	/* XXX */
+#endif
+
+start:
+	while (vp->v_flag & VXLOCK) {
+		vp->v_flag |= VXWANT;
+#ifdef AIX
+		e_sleep(&vp->v_event, EVENT_SHORT);
+#else
+		sleep((caddr_t)vp, PINOD);
+#endif
+	}
+	if (vp->v_tag == VT_NON)
+		return (ENOENT);
+	wp = VTOW(vp);
+	if (wp->w_flag & WLOCKED) {
+		wp->w_flag |= WWANT;
+#ifdef DIAGNOSTIC
+		if (p) {
+			if (p->p_pid == wp->w_lockholder)
+				panic("locking against myself");
+			wp->w_lockwaiter = p->p_pid;
+		} else
+			wp->w_lockwaiter = -1;
+#endif
+#ifdef AIX
+		e_sleep(&wp->w_event, EVENT_SHORT);
+#else
+		(void) sleep((caddr_t)wp, PINOD);
+#endif
+		goto start;
+	}
+#ifdef DIAGNOSTIC
+	wp->w_lockwaiter = 0;
+	if (wp->w_lockholder != 0)
+		panic("lockholder (%d) != 0", wp->w_lockholder);
+	if (p && p->p_pid == 0)
+		printf("locking by process 0\n");
+	if (p)
+		wp->w_lockholder = p->p_pid;
+	else
+		wp->w_lockholder = -1;
+#endif
+	wp->w_flag |= WLOCKED;
+	return (0);
+}
+
+/*
+ * Unlock an wnode.  If WANT bit is on, wakeup.
+ */
+int wafs_lockcount = 90;
+int
+wafs_unlock(ap)
+	struct vop_unlock_args /* {
+		struct vnode *a_vp;
+	} */ *ap;
+{
+	register struct wnode *wp = VTOW(ap->a_vp);
+#ifndef AIX
+	struct proc *p = curproc;	/* XXX */
+#endif
+#ifdef DIAGNOSTIC
+	if ((wp->w_flag & WLOCKED) == 0) {
+		vprint("wafs_unlock: unlocked inode", ap->a_vp);
+		panic("wafs_unlock NOT LOCKED");
+	}
+	if (p && p->p_pid != wp->w_lockholder && p->p_pid > -1 &&
+	    wp->w_lockholder > -1 && wafs_lockcount++ < 100)
+		panic("unlocker (%d) != lock holder (%d)",
+		    p->p_pid, wp->w_lockholder);
+	wp->w_lockholder = 0;
+#endif
+	wp->w_flag &= ~WLOCKED;
+	if (wp->w_flag & WWANT) {
+		wp->w_flag &= ~WWANT;
+#ifdef AIX
+		e_wakeup(&wp->w_event);
+#else
+		wakeup((caddr_t)wp);
+#endif
+	}
+	return (0);
+}
+
+/*
+ * Calculate the logical to physical mapping if not done already,
+ * then call the device strategy routine.
+ */
+int
+wafs_strategy(ap)
+	struct vop_strategy_args /* {
+		struct buf *a_bp;
+	} */ *ap;
+{
+	register struct buf *bp = ap->a_bp;
+	register struct vnode *vp = bp->b_vp;
+	register struct wnode *wp;
+	int error;
+
+	wp = VTOW(vp);
+	if (vp->v_type == VBLK || vp->v_type == VCHR)
+		panic("wafs_strategy: spec");
+	if (bp->b_blkno == bp->b_lblkno) {
+		if (error =
+		    VOP_BMAP(vp, bp->b_lblkno, NULL, &bp->b_blkno, NULL)) {
+			bp->b_error = error;
+			bp->b_flags |= B_ERROR;
+			biodone(bp);
+			return (error);
+		}
+		if ((long)bp->b_blkno == -1)
+			clrbuf(bp);
+	}
+	if ((long)bp->b_blkno == -1) {
+		biodone(bp);
+		return (0);
+	}
+	vp = wp->w_devvp;
+#ifdef AIX
+	bp->b_dev = VP_RDEV(vp);
+#else
+	bp->b_dev = vp->v_rdev;
+#endif
+	VOCALL (vp->v_op, VOFFSET(vop_strategy), ap);
+	return (0);
+}
+
+int
+wafs_lookup(ap)
+	struct vop_lookup_args /* {
+		struct vnode *a_dvp;
+		struct vnode **a_vpp;
+		struct componentname *a_cnp;
+	} */ *ap;
+{
+	*ap->a_vpp = NULL;
+	return(EOPNOTSUPP);
+}
+@
+
+
+1.8
+log
+@Make 4.4Lite version compile under BSD4.4-Lite.
+@
+text
+@d5 3
+d53 1
+a53 1
+ *	$Id$
+d55 1
+a55 1
+ * not need ENOTSUP.  For version2, we can decide which ones we ultimately
+d58 1
+a58 1
+static char *rcsid = "$Id$";
+d129 1
+a129 1
+	{ &vop_lookup_desc, vn_default_error },		/* lookup */
+d552 12
+@
+
+
+1.7
+log
+@4.4Lite modifications from CLAM/Jack Test
+@
+text
+@d1 1
+d15 1
+a15 2
+static char *rcsid = "$Id";
+
+d19 2
+d50 1
+a50 1
+ *	@@(#)wafs_vnops.c	8.1 (Berkeley) 6/11/93
+d55 1
+d100 1
+d172 1
+a172 1
+ * Open called.
+d413 1
+a413 1
+ * Lock an inode. If its already locked, set the WANT bit and sleep.
+d472 1
+a472 1
+ * Unlock an inode.  If WANT bit is on, wakeup.
+@
+
+
+1.6
+log
+@Add getattr call.
+@
+text
+@d2 15
+d54 10
+d65 18
+d106 1
+d111 1
+d113 6
+a118 1
+/* Global vfs data structures for ufs. */
+d168 1
+a168 2
+ * Vnode op for reading.  The offset is a log sequence number
+ * and should refer to the beginning of a log record.
+d171 3
+a173 2
+wafs_read(ap)
+	struct vop_read_args /* {
+d175 1
+a175 2
+		struct uio *a_uio;
+		int a_ioflag;
+d177 1
+a179 14
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp = VTOW(vp);
+	register struct uio *uio = ap->a_uio;
+	register struct wafs *wafs;
+	struct timeval tv;
+	struct wafs_header header;
+	struct buf *bp;
+	daddr_t lbn, bn;
+	off_t diff, record_end;
+	long onpage;
+	int error = 0;
+	int extra = 0;
+	long size, n, on, recbytes;
+	long rec_on;
+a180 8
+#ifdef DIAGNOSTIC
+	if (uio->uio_rw != UIO_READ)
+		panic("wafs_read mode");
+#endif
+	if (uio->uio_resid == 0)
+		return (0);
+	wafs = wp->w_fs;
+	header.rectype = wp->w_type;
+d182 1
+a182 4
+	 * Most file systems have to check to see if we are accessing
+	 * something that exceeds the maximum allowed file size.  Since
+	 * wafs is a circular structure, we never have to worry about
+	 * a maximum.
+d184 4
+a187 13
+	/*
+	 * lbn is the logical block currently being read.
+	 * on is the offset on the page where we will begin reading.
+	 * n is the maximum number of bytes we will read on this iteration.
+	 * diff is the number of bytes between the beginning of the read
+	 * and the end of the file/log.
+	 */
+	do {
+		lbn = lblkno(wafs, uio->uio_offset);
+		on = blkoff(wafs, uio->uio_offset);
+		diff = wp->w_head - uio->uio_offset;
+		if (diff <= 0)
+			return (0);
+d189 15
+a203 93
+		/* Clustering should be easy; need to figure out how to do it */
+		error = bread(vp, lbn, wafs->wafs_bsize, NOCRED, &bp);
+		if (error) {
+			brelse(bp);
+			return (error);
+		}
+
+		/*
+		 * Skip over any page headers.
+		 */
+		if (on == 0) {
+			on += sizeof(wafs_page_header_t);
+			uio->uio_offset += sizeof(wafs_page_header_t);
+			extra += sizeof(wafs_page_header_t);
+		}
+
+		/*
+		 * Figure out if we have a record header to examine.
+		 * There are two cases to check.  If we are reading
+		 * sequentially, then the last read will have left
+		 * the record offset and length of the previous record
+		 * and we can just check that.  If we are not reading
+		 * sequentially, then we have to check where records
+		 * begin on the new page.
+		 */
+		record_end = wp->w_lastrec + wp->w_lastlen;
+		recbytes = 0;
+		if (uio->uio_offset != record_end) {
+			rec_on = sizeof(wafs_page_header_t);
+			wp->w_lastrec = lbn << wafs->wafs_bshift;
+			while (rec_on < on) {
+				wp->w_lastrec += rec_on;
+				bcopy(bp->b_un.b_addr + rec_on, &header,
+		    		    sizeof(struct wafs_header));
+				rec_on += sizeof(struct wafs_header) +
+				    header.length;
+			}
+			recbytes = rec_on - on;
+			wp->w_type = header.rectype;
+			wp->w_lastlen = header.length;
+			
+		}
+		if (recbytes == 0) {
+			/*
+			 * If the only thing on this page is a
+			 * header, then we need to skip to the
+			 * next page.
+			 */
+			if ((onpage = wafs->wafs_bsize - on) <=
+			    sizeof(struct wafs_header)) {
+				uio->uio_offset += onpage;
+				extra += onpage;
+				brelse(bp);
+				header.rectype = WAFS_NORECORD;
+				continue;
+			}
+			wp->w_lastrec = uio->uio_offset;
+			bcopy(bp->b_un.b_addr + on, &header,
+			    sizeof(struct wafs_header));
+			uio->uio_offset += sizeof(struct wafs_header);
+			on += sizeof(struct wafs_header);
+			extra += sizeof(struct wafs_header);
+			recbytes = header.length;
+			wp->w_lastlen = recbytes + sizeof(struct wafs_header);
+			wp->w_type = header.rectype;
+		} 
+
+
+		/*
+		 * Figure out how many bytes we can actually read on this page.
+		 */
+		n = min((unsigned)(wafs->wafs_bsize - on), uio->uio_resid);
+		n = min(n, recbytes);
+		if (diff < n)
+			n = diff;
+
+		error = uiomove(bp->b_un.b_addr + on, (int)n, uio);
+		if (n + on == wafs->wafs_bsize)
+			bp->b_flags |= B_AGE;
+		brelse(bp);
+		/*
+		 * Stop looping if 1) we've read a full record. 2) we have
+		 * used up all of the buffer space provide by the user, or
+		 * 3) we have detected an error.
+		 */
+	} while (error == 0 && uio->uio_resid > 0 && n != 0 &&
+	    header.rectype != WAFS_ENDREC && header.rectype != WAFS_RECORD);
+	if (!error) {
+		tv = time;
+		VOP_UPDATE(vp, &tv, NULL, 0);
+	}
+	uio->uio_resid -= extra;
+	return (error);
+d207 4
+a210 3
+ * Vnode op for writing.  We return the LSN rather than the number of bytes
+ * written.  If you cannot write all the bytes, consider the record not
+ * written as partial writes do not help us in the least.
+d212 3
+a214 2
+wafs_write(ap)
+	struct vop_write_args /* {
+d216 1
+a216 2
+		struct uio *a_uio;
+		int a_ioflag;
+d218 1
+d222 2
+a223 5
+	register struct uio *uio = ap->a_uio;
+	register struct wnode *wp = VTOW(vp);
+	register struct wafs *wafs;
+	struct proc *p = uio->uio_procp;
+	int ioflag = ap->a_ioflag;
+a224 11
+	off_t this_lsn;
+
+	struct timeval tv;
+	struct buf *bp;
+	struct wafs_header header;
+	wafs_page_header_t page_header;
+	daddr_t lbn, bn;
+	int n, on, flags;
+	int size, resid, error = 0;
+	int current_size;
+
+d226 4
+a229 2
+	if (uio->uio_rw != UIO_WRITE)
+		panic("wafs_write mode");
+a230 3
+	/* We may not need this check; we can just enforce it. */
+	if (!(ioflag & IO_APPEND))
+		return(EINVAL);
+d232 2
+a233 3
+	 * XXX I think that we can avoid locking wnode for extended
+	 * periods of time if we first compute the final size, update
+	 * wp->w_head(lastlsn?), and unlock the wnode.
+d235 1
+a235 3
+
+	/* uio->uio_resid contains the length of the log record. */
+	if (uio->uio_resid == 0)
+d237 1
+d239 13
+a251 1
+	wafs = wp->w_fs;
+d254 1
+a254 2
+	 * Maybe this should be above the vnode op call, but so long as
+	 * file servers have no limits, i don't think it matters
+d256 27
+a282 10
+	resid = uio->uio_resid;
+	uio->uio_offset = wp->w_head;
+	header.rectype = WAFS_RECORD;
+	header.length = 0;
+	flags = 0;
+	if (ioflag & IO_SYNC)
+		flags = B_SYNC;
+	do {
+		lbn = lblkno(wafs, uio->uio_offset);
+		on = blkoff(wafs, uio->uio_offset);
+d284 16
+a299 12
+		/* Write record header: either WAFS_RECORD or WAFS_CONTINUE. */
+		if (wafs->wafs_bsize - on <= sizeof(struct wafs_header)) {
+			this_lsn = (lbn + 1) << wafs->wafs_bshift;
+			uio->uio_offset = this_lsn;
+			continue;
+		}
+		current_size = uio->uio_resid + sizeof(struct wafs_header);
+		n = min((unsigned)(wafs->wafs_bsize - on), current_size);
+		if (resid != uio->uio_resid)
+			header.rectype = WAFS_CONTINUE;
+		else if (n < current_size)
+			header.rectype = WAFS_BEGINREC;
+d301 2
+a302 4
+		if (n < wafs->wafs_bsize)
+			flags |= B_CLRBUF;
+		else
+			flags &= ~B_CLRBUF;
+d304 7
+a310 2
+		size = wafs->wafs_bsize;
+		if (bread(vp, lbn, size, ap->a_cred, &bp))
+d312 12
+a323 28
+		(void) vnode_pager_uncache(vp);
+		if (on == 0) {
+			/* This is a new page.  Write a timestamp. */
+			page_header = time;
+			bcopy(&page_header, bp->b_un.b_addr + on,
+			    sizeof(wafs_page_header_t));
+			on += sizeof(wafs_page_header_t);
+			uio->uio_offset += sizeof(wafs_page_header_t);
+		}
+		n = min(n, size - bp->b_resid) - sizeof(struct wafs_header);
+		header.length = n;
+		bcopy(&header, bp->b_un.b_addr + on, sizeof(struct wafs_header));
+		uio->uio_offset += sizeof(struct wafs_header);
+		on += sizeof(struct wafs_header);
+		error = uiomove(bp->b_un.b_addr + on, n, uio);
+		if (ioflag & IO_SYNC) {
+			(void) bwrite(bp);
+			wp->w_lastlsn = wp->w_head - 1;
+		} else if (n + on == wafs->wafs_bsize) {
+			bp->b_flags |= B_AGE;
+			bawrite(bp);
+		} else {
+			bdwrite(bp);
+		}
+	} while (error == 0 && uio->uio_resid > 0 && n != 0);
+	if (error && (ioflag & IO_UNIT)) {
+		uio->uio_offset = wp->w_head;
+		uio->uio_resid = resid;
+a324 6
+	wp->w_head = uio->uio_offset;
+	if (!error) {
+		tv = time;
+		error = VOP_UPDATE(vp, NULL, &tv, ioflag & IO_SYNC);
+	}
+	return (error);
+d326 2
+a327 2
+/* XXX BSD calculates the return value in file system independent code;
+   this is a problem for us since we want to return a different value. */
+d354 3
+d358 3
+a360 2
+	for (bp = vp->v_dirtyblkhd.le_next; bp; bp = nbp) {
+		nbp = bp->b_vnbufs.qe_next;
+d367 3
+d371 1
+d385 3
+d389 1
+d392 1
+a392 1
+		if (vp->v_dirtyblkhd.le_next) {
+d398 4
+d404 1
+a406 12
+int
+wafs_update(ap)
+	struct vop_update_args /* {
+		struct vnode *a_vp;
+		struct timeval *a_ta;
+		struct timeval *a_tm;
+		int a_waitfor;
+	} */ *ap;
+{
+	struct vnode *vp = ap->a_vp;
+	struct wnode *wp;
+	struct wafs *wafs;
+d408 3
+a410 35
+	if (vp->v_mount->mnt_flag & MNT_RDONLY)
+		return (0);
+
+	wp = VTOW(vp);
+	if (ap->a_ta != NULL)
+		wp->w_atime.ts_sec = ap->a_ta->tv_sec;
+	if (ap->a_tm != NULL) {
+		wp->w_mtime.ts_sec = ap->a_tm->tv_sec;
+		wp->w_ctime.ts_sec = time.tv_sec;
+	}
+
+	/*
+	 * If sync, push back the vnode and any dirty blocks it may have.
+	 * For now since there is only one vnode, we write the superblock.
+	 * If we add multiple vnodes then the contents of the wnode would
+	 * need to be written to disk.
+	 */
+	wafs = VFSTOUFS(vp->v_mount)->um_wafs;
+	if (wafs->wafs_lsn < wp->w_head) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_lsn = wafs->wafs_head = wp->w_head;
+	}
+	if (wafs->wafs_time < wp->w_ctime.ts_sec) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_time = wp->w_ctime.ts_sec;
+	}
+	if (wafs->wafs_rtime < wp->w_atime.ts_sec) {
+		wafs->wafs_flags |= WAFS_MOD;
+		wafs->wafs_rtime = wp->w_atime.ts_sec;
+	}
+	if (ap->a_waitfor)
+		return(wafs_sbupdate(VFSTOUFS(vp->v_mount), ap->a_waitfor));
+	else
+		return (0);
+}
+d419 1
+d421 1
+d426 3
+d430 1
+d445 3
+d449 1
+d467 3
+a469 1
+#ifdef DIAGNOSTIC
+a470 1
+#endif
+d478 1
+d480 1
+a480 1
+
+d495 3
+d499 1
+a502 11
+/*
+ * Reclaim an inode so that it can be used for other purposes.
+ */
+int
+wafs_reclaim(ap)
+	struct vop_reclaim_args /* {
+		struct vnode *a_vp;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp;
+a503 16
+	if (vp->v_usecount != 0)
+		vprint("wafs_reclaim: pushing active", vp);
+	wp = VTOW(vp);
+
+	/*
+	 * Purge old data structures associated with the inode.
+	 */
+	cache_purge(vp);
+	if (wp->w_devvp) {
+		vrele(wp->w_devvp);
+		wp->w_devvp = 0;
+	}
+	FREE(vp->v_data, M_WAFSNODE);
+	vp->v_data = NULL;
+	return (0);
+}
+a504 69
+ * Open called.
+ */
+/* ARGSUSED */
+int
+wafs_open(ap)
+	struct vop_open_args /* {
+		struct vnode *a_vp;
+		int  a_mode;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+
+	/*
+	 * Files must be opened READONLY or APPEND.
+	 */
+	if ((ap->a_mode & (FWRITE | O_APPEND)) == FWRITE)
+		return (EPERM);
+	return (0);
+}
+
+/*
+ * XXX
+ * Check mode permission on wnode pointer. For now, we are using
+ * WAFS only for file system logging.  I do not know what kind
+ * of permission checking to do, so I'm going to punt for now.
+ */
+int
+wafs_access(ap)
+	struct vop_access_args /* {
+		struct vnode *a_vp;
+		int  a_mode;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct ucred *cred = ap->a_cred;
+	mode_t mode = ap->a_mode;
+
+#ifdef DIAGNOSTIC
+	if (!VOP_ISLOCKED(vp)) {
+		vprint("ufs_access: not locked", vp);
+		panic("ufs_access: not locked");
+	}
+#endif
+	/*
+	 * If you're the super-user, you always get access.
+	 * XXX For now, we assume this is always the case.
+	 */
+	/* if (cred->cr_uid == 0) */
+		return (0);
+}
+
+/* Close is a nop for wafs */
+/* ARGSUNUSED */
+int
+wafs_close(ap)
+	struct vop_close_args /* {
+		struct vnode *a_vp;
+		int  a_fflag;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	return (0);
+}
+
+/*
+d538 3
+d542 1
+a543 41
+	return (0);
+}
+int
+wafs_getattr(ap)
+	struct vop_getattr_args /* {
+		struct vnode *a_vp;
+		struct vattr *a_vap;
+		struct ucred *a_cred;
+		struct proc *a_p;
+	} */ *ap;
+{
+	register struct vnode *vp = ap->a_vp;
+	register struct wnode *wp = VTOW(vp);
+	register struct vattr *vap = ap->a_vap;
+
+	/*
+	 * Copy from wnode table
+	 */
+	vap->va_fsid = wp->w_dev;
+	vap->va_fileid = wp->w_ino;
+	vap->va_mode = 0;
+	vap->va_nlink = 0;
+	vap->va_uid = 0;
+	vap->va_gid = 0;
+	vap->va_rdev = wp->w_dev;
+	vap->va_size = wp->w_tail;
+	vap->va_atime = wp->w_atime;
+	vap->va_mtime = wp->w_mtime;
+	vap->va_ctime = wp->w_ctime;
+	vap->va_flags = wp->w_flag;
+	vap->va_gen = 0;
+	/* this doesn't belong here */
+	if (vp->v_type == VBLK)
+		vap->va_blocksize = BLKDEV_IOSIZE;
+	else if (vp->v_type == VCHR)
+		vap->va_blocksize = MAXBSIZE;
+	else
+		vap->va_blocksize = vp->v_mount->mnt_stat.f_iosize;
+	vap->va_bytes = wp->w_head;
+	vap->va_type = vp->v_type;
+	vap->va_filerev = 0;
+@
+
+
+1.5
+log
+@Add wafs_ioctl to op array.  Call bread instead of getblk
+in wafs_write routine.
+@
+text
+@d78 1
+a78 1
+	{ &vop_getattr_desc, vn_default_error },	/* getattr */
+d711 41
+@
+
+
+1.4
+log
+@Fix special case handling:  1) record that would start on last 8 bytes
+of the page (no room for record, just header).  2) reading in the middle
+of a record (figure out how many bytes to return).
+@
+text
+@d82 1
+a82 1
+	{ &vop_ioctl_desc, vn_default_error },		/* ioctl */
+d325 1
+d350 3
+a352 1
+		if (!(bp = getblk(vp, lbn, wafs->wafs_bsize, 0, 0)))
+a353 2
+		bn = bp->b_blkno;
+		size = wafs->wafs_bsize;
+d371 1
+@
+
+
+1.3
+log
+@Mount/Unmount work!
+@
+text
+@a67 3
+/* Function declarations */
+int beginning_of_rec __P((int, caddr_t));
+
+d75 3
+a77 3
+	{ &vop_open_desc, vn_default_error },		/* open */
+	{ &vop_close_desc, vn_default_error },		/* close */
+	{ &vop_access_desc, vn_default_error },		/* access */
+d100 2
+a101 2
+	{ &vop_bmap_desc, vn_default_error },		/* bmap */
+	{ &vop_strategy_desc, vn_default_error },	/* strategy */
+d134 1
+d139 1
+d141 3
+a143 1
+	long size, n, on;
+d152 1
+d169 1
+a169 2
+		n = min((unsigned)(wafs->wafs_bsize - on), uio->uio_resid);
+		diff = wp->w_lastlsn - uio->uio_offset;
+a171 2
+		if (diff < n)
+			n = diff;
+d185 2
+a186 1
+			n -= sizeof(wafs_page_header_t);
+d188 1
+d199 31
+a229 4
+		if ((uio->uio_offset == record_end) ||
+		    ((uio->uio_offset < wp->w_lastrec ||
+		    uio->uio_offset > record_end) &&
+		    beginning_of_rec(on, bp->b_un.b_addr))) {
+d232 1
+d234 15
+a248 2
+			n = min(header.length, n - sizeof(struct wafs_header));
+		}
+d260 5
+d309 1
+a309 1
+	 * wp->w_lastlsn, and unlock the wnode.
+d333 1
+a333 1
+		if (wafs->wafs_bsize - on < sizeof(struct wafs_header)) {
+d368 1
+a368 1
+		if (ioflag & IO_SYNC)
+d370 1
+a370 1
+		else if (n + on == wafs->wafs_bsize) {
+d373 1
+a373 1
+		} else
+d375 1
+d382 1
+a382 1
+	if (!error && (ioflag & IO_SYNC)) {
+d384 1
+a384 1
+		error = VOP_UPDATE(vp, &tv, &tv, 1);
+d387 1
+a451 1
+
+a452 21
+beginning_of_rec(page_offset, page_start)
+	int	page_offset;
+	caddr_t page_start;
+{
+	struct wafs_header header;
+	int rec_offset;
+
+	rec_offset = sizeof(wafs_page_header_t);
+	while (rec_offset < page_offset) {
+		bcopy(page_start + rec_offset, &header,
+		    sizeof(struct wafs_header));
+		rec_offset += sizeof(struct wafs_header) + header.length;
+	}
+	if (rec_offset == page_offset)
+		return(1);
+	else
+		return(0);
+
+}
+
+int
+d483 1
+a483 1
+	if (wafs->wafs_lsn < wp->w_lastlsn) {
+d485 1
+a485 2
+		wafs->wafs_lsn = wp->w_lastlsn;
+		wafs->wafs_head = wp->w_head;
+d602 107
+@
+
+
+1.2
+log
+@Mount/Unmount pairs work!
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d33 4
+a36 1
+ *	@@(#)ffs_vnops.c	8.1 (Berkeley) 6/11/93
+d46 1
+d52 2
+a58 2
+
+#include <ufs/ufs/lockf.h>
+d60 1
+a61 1
+#include <ufs/ufs/dir.h>
+d64 3
+a66 2
+#include <ufs/ffs/fs.h>
+#include <ufs/ffs/ffs_extern.h>
+d68 3
+d72 2
+a73 2
+int (**ffs_vnodeop_p)();
+struct vnodeopv_entry_desc ffs_vnodeop_entries[] = {
+d75 39
+a113 39
+	{ &vop_lookup_desc, ufs_lookup },		/* lookup */
+	{ &vop_create_desc, ufs_create },		/* create */
+	{ &vop_mknod_desc, ufs_mknod },			/* mknod */
+	{ &vop_open_desc, ufs_open },			/* open */
+	{ &vop_close_desc, ufs_close },			/* close */
+	{ &vop_access_desc, ufs_access },		/* access */
+	{ &vop_getattr_desc, ufs_getattr },		/* getattr */
+	{ &vop_setattr_desc, ufs_setattr },		/* setattr */
+	{ &vop_read_desc, ffs_read },			/* read */
+	{ &vop_write_desc, ffs_write },			/* write */
+	{ &vop_ioctl_desc, ufs_ioctl },			/* ioctl */
+	{ &vop_select_desc, ufs_select },		/* select */
+	{ &vop_mmap_desc, ufs_mmap },			/* mmap */
+	{ &vop_fsync_desc, ffs_fsync },			/* fsync */
+	{ &vop_seek_desc, ufs_seek },			/* seek */
+	{ &vop_remove_desc, ufs_remove },		/* remove */
+	{ &vop_link_desc, ufs_link },			/* link */
+	{ &vop_rename_desc, ufs_rename },		/* rename */
+	{ &vop_mkdir_desc, ufs_mkdir },			/* mkdir */
+	{ &vop_rmdir_desc, ufs_rmdir },			/* rmdir */
+	{ &vop_symlink_desc, ufs_symlink },		/* symlink */
+	{ &vop_readdir_desc, ufs_readdir },		/* readdir */
+	{ &vop_readlink_desc, ufs_readlink },		/* readlink */
+	{ &vop_abortop_desc, ufs_abortop },		/* abortop */
+	{ &vop_inactive_desc, ufs_inactive },		/* inactive */
+	{ &vop_reclaim_desc, ufs_reclaim },		/* reclaim */
+	{ &vop_lock_desc, ufs_lock },			/* lock */
+	{ &vop_unlock_desc, ufs_unlock },		/* unlock */
+	{ &vop_bmap_desc, ufs_bmap },			/* bmap */
+	{ &vop_strategy_desc, ufs_strategy },		/* strategy */
+	{ &vop_print_desc, ufs_print },			/* print */
+	{ &vop_islocked_desc, ufs_islocked },		/* islocked */
+	{ &vop_pathconf_desc, ufs_pathconf },		/* pathconf */
+	{ &vop_advlock_desc, ufs_advlock },		/* advlock */
+	{ &vop_blkatoff_desc, ffs_blkatoff },		/* blkatoff */
+	{ &vop_valloc_desc, ffs_valloc },		/* valloc */
+	{ &vop_vfree_desc, ffs_vfree },			/* vfree */
+	{ &vop_truncate_desc, ffs_truncate },		/* truncate */
+	{ &vop_update_desc, ffs_update },		/* update */
+d117 2
+a118 2
+struct vnodeopv_desc ffs_vnodeop_opv_desc =
+	{ &ffs_vnodeop_p, ffs_vnodeop_entries };
+a119 98
+int (**ffs_specop_p)();
+struct vnodeopv_entry_desc ffs_specop_entries[] = {
+	{ &vop_default_desc, vn_default_error },
+	{ &vop_lookup_desc, spec_lookup },		/* lookup */
+	{ &vop_create_desc, spec_create },		/* create */
+	{ &vop_mknod_desc, spec_mknod },		/* mknod */
+	{ &vop_open_desc, spec_open },			/* open */
+	{ &vop_close_desc, ufsspec_close },		/* close */
+	{ &vop_access_desc, ufs_access },		/* access */
+	{ &vop_getattr_desc, ufs_getattr },		/* getattr */
+	{ &vop_setattr_desc, ufs_setattr },		/* setattr */
+	{ &vop_read_desc, ufsspec_read },		/* read */
+	{ &vop_write_desc, ufsspec_write },		/* write */
+	{ &vop_ioctl_desc, spec_ioctl },		/* ioctl */
+	{ &vop_select_desc, spec_select },		/* select */
+	{ &vop_mmap_desc, spec_mmap },			/* mmap */
+	{ &vop_fsync_desc, ffs_fsync },			/* fsync */
+	{ &vop_seek_desc, spec_seek },			/* seek */
+	{ &vop_remove_desc, spec_remove },		/* remove */
+	{ &vop_link_desc, spec_link },			/* link */
+	{ &vop_rename_desc, spec_rename },		/* rename */
+	{ &vop_mkdir_desc, spec_mkdir },		/* mkdir */
+	{ &vop_rmdir_desc, spec_rmdir },		/* rmdir */
+	{ &vop_symlink_desc, spec_symlink },		/* symlink */
+	{ &vop_readdir_desc, spec_readdir },		/* readdir */
+	{ &vop_readlink_desc, spec_readlink },		/* readlink */
+	{ &vop_abortop_desc, spec_abortop },		/* abortop */
+	{ &vop_inactive_desc, ufs_inactive },		/* inactive */
+	{ &vop_reclaim_desc, ufs_reclaim },		/* reclaim */
+	{ &vop_lock_desc, ufs_lock },			/* lock */
+	{ &vop_unlock_desc, ufs_unlock },		/* unlock */
+	{ &vop_bmap_desc, spec_bmap },			/* bmap */
+	{ &vop_strategy_desc, spec_strategy },		/* strategy */
+	{ &vop_print_desc, ufs_print },			/* print */
+	{ &vop_islocked_desc, ufs_islocked },		/* islocked */
+	{ &vop_pathconf_desc, spec_pathconf },		/* pathconf */
+	{ &vop_advlock_desc, spec_advlock },		/* advlock */
+	{ &vop_blkatoff_desc, spec_blkatoff },		/* blkatoff */
+	{ &vop_valloc_desc, spec_valloc },		/* valloc */
+	{ &vop_vfree_desc, ffs_vfree },			/* vfree */
+	{ &vop_truncate_desc, spec_truncate },		/* truncate */
+	{ &vop_update_desc, ffs_update },		/* update */
+	{ &vop_bwrite_desc, vn_bwrite },
+	{ (struct vnodeop_desc*)NULL, (int(*)())NULL }
+};
+struct vnodeopv_desc ffs_specop_opv_desc =
+	{ &ffs_specop_p, ffs_specop_entries };
+
+#ifdef FIFO
+int (**ffs_fifoop_p)();
+struct vnodeopv_entry_desc ffs_fifoop_entries[] = {
+	{ &vop_default_desc, vn_default_error },
+	{ &vop_lookup_desc, fifo_lookup },		/* lookup */
+	{ &vop_create_desc, fifo_create },		/* create */
+	{ &vop_mknod_desc, fifo_mknod },		/* mknod */
+	{ &vop_open_desc, fifo_open },			/* open */
+	{ &vop_close_desc, ufsfifo_close },		/* close */
+	{ &vop_access_desc, ufs_access },		/* access */
+	{ &vop_getattr_desc, ufs_getattr },		/* getattr */
+	{ &vop_setattr_desc, ufs_setattr },		/* setattr */
+	{ &vop_read_desc, ufsfifo_read },		/* read */
+	{ &vop_write_desc, ufsfifo_write },		/* write */
+	{ &vop_ioctl_desc, fifo_ioctl },		/* ioctl */
+	{ &vop_select_desc, fifo_select },		/* select */
+	{ &vop_mmap_desc, fifo_mmap },			/* mmap */
+	{ &vop_fsync_desc, ffs_fsync },			/* fsync */
+	{ &vop_seek_desc, fifo_seek },			/* seek */
+	{ &vop_remove_desc, fifo_remove },		/* remove */
+	{ &vop_link_desc, fifo_link },			/* link */
+	{ &vop_rename_desc, fifo_rename },		/* rename */
+	{ &vop_mkdir_desc, fifo_mkdir },		/* mkdir */
+	{ &vop_rmdir_desc, fifo_rmdir },		/* rmdir */
+	{ &vop_symlink_desc, fifo_symlink },		/* symlink */
+	{ &vop_readdir_desc, fifo_readdir },		/* readdir */
+	{ &vop_readlink_desc, fifo_readlink },		/* readlink */
+	{ &vop_abortop_desc, fifo_abortop },		/* abortop */
+	{ &vop_inactive_desc, ufs_inactive },		/* inactive */
+	{ &vop_reclaim_desc, ufs_reclaim },		/* reclaim */
+	{ &vop_lock_desc, ufs_lock },			/* lock */
+	{ &vop_unlock_desc, ufs_unlock },		/* unlock */
+	{ &vop_bmap_desc, fifo_bmap },			/* bmap */
+	{ &vop_strategy_desc, fifo_strategy },		/* strategy */
+	{ &vop_print_desc, ufs_print },			/* print */
+	{ &vop_islocked_desc, ufs_islocked },		/* islocked */
+	{ &vop_pathconf_desc, fifo_pathconf },		/* pathconf */
+	{ &vop_advlock_desc, fifo_advlock },		/* advlock */
+	{ &vop_blkatoff_desc, fifo_blkatoff },		/* blkatoff */
+	{ &vop_valloc_desc, fifo_valloc },		/* valloc */
+	{ &vop_vfree_desc, ffs_vfree },			/* vfree */
+	{ &vop_truncate_desc, fifo_truncate },		/* truncate */
+	{ &vop_update_desc, ffs_update },		/* update */
+	{ &vop_bwrite_desc, vn_bwrite },
+	{ (struct vnodeop_desc*)NULL, (int(*)())NULL }
+};
+struct vnodeopv_desc ffs_fifoop_opv_desc =
+	{ &ffs_fifoop_p, ffs_fifoop_entries };
+#endif /* FIFO */
+
+d121 2
+a122 1
+ * Enabling cluster read/write operations.
+a123 9
+#include <sys/sysctl.h>
+int doclusterread = 1;
+struct ctldebug debug11 = { "doclusterread", &doclusterread };
+int doclusterwrite = 1;
+struct ctldebug debug12 = { "doclusterwrite", &doclusterwrite };
+
+/*
+ * Vnode op for reading.
+ */
+d125 1
+a125 1
+ffs_read(ap)
+d134 1
+a134 1
+	register struct inode *ip = VTOI(vp);
+d136 2
+a137 1
+	register struct fs *fs;
+d139 3
+a141 3
+	daddr_t lbn, bn, rablock;
+	off_t diff;
+	int type, rasize, error = 0;
+a143 1
+	type = ip->i_mode & IFMT;
+d146 1
+a146 5
+		panic("ffs_read mode");
+	if (type != IFDIR && type != IFREG && type != IFLNK)
+		panic("ffs_read type");
+	if (type == IFLNK && (int)ip->i_size < vp->v_mount->mnt_maxsymlinklen)
+		panic("read short symlink");
+d150 14
+a163 4
+	fs = ip->i_fs;
+	if ((u_quad_t)uio->uio_offset > fs->fs_maxfilesize)
+		return (EFBIG);
+	ip->i_flag |= IACC;
+d165 4
+a168 4
+		lbn = lblkno(fs, uio->uio_offset);
+		on = blkoff(fs, uio->uio_offset);
+		n = min((unsigned)(fs->fs_bsize - on), uio->uio_resid);
+		diff = ip->i_size - uio->uio_offset;
+d173 3
+a175 14
+		size = blksize(fs, ip, lbn);
+		rablock = lbn + 1;
+		if (doclusterread && lblktosize(fs, rablock) <= ip->i_size) {
+			error = cluster_read(vp, ip->i_size, lbn, size,
+			    NOCRED, &bp);
+		} else if (vp->v_lastr + 1 == lbn &&
+		    lblktosize(fs, rablock) < ip->i_size) {
+			rasize = blksize(fs, ip, rablock);
+			error = breadn(vp, lbn, size, &rablock,
+				&rasize, 1, NOCRED, &bp);
+		} else
+			error = bread(vp, lbn, size, NOCRED, &bp);
+		vp->v_lastr = lbn;
+		n = min(n, size - bp->b_resid);
+d180 27
+d208 1
+a208 2
+		if (type == IFREG &&
+		    (n + on == fs->fs_bsize || uio->uio_offset == ip->i_size))
+d211 7
+a217 1
+	} while (error == 0 && uio->uio_resid > 0 && n != 0);
+d222 3
+a224 1
+ * Vnode op for writing.
+d226 1
+a226 1
+ffs_write(ap)
+d236 2
+a237 2
+	register struct inode *ip = VTOI(vp);
+	register struct fs *fs;
+d240 3
+d245 2
+a247 1
+	off_t osize;
+d250 1
+d254 1
+a254 1
+		panic("ffs_write mode");
+d256 8
+a263 9
+	switch (vp->v_type) {
+	case VREG:
+		if (ioflag & IO_APPEND)
+			uio->uio_offset = ip->i_size;
+		if ((ip->i_flags & APPEND) && uio->uio_offset != ip->i_size)
+			return (EPERM);
+		/* fall through */
+	case VLNK:
+		break;
+d265 1
+a265 8
+	case VDIR:
+		if ((ioflag & IO_SYNC) == 0)
+			panic("ffs_write nonsync dir write");
+		break;
+
+	default:
+		panic("ffs_write type");
+	}
+d268 3
+a270 4
+	fs = ip->i_fs;
+	if (uio->uio_offset < 0 ||
+	    (u_quad_t)uio->uio_offset + uio->uio_resid > fs->fs_maxfilesize)
+		return (EFBIG);
+a274 6
+	if (vp->v_type == VREG && p &&
+	    uio->uio_offset + uio->uio_resid >
+	      p->p_rlimit[RLIMIT_FSIZE].rlim_cur) {
+		psignal(p, SIGXFSZ);
+		return (EFBIG);
+	}
+d276 2
+a277 1
+	osize = ip->i_size;
+d282 17
+a298 4
+		lbn = lblkno(fs, uio->uio_offset);
+		on = blkoff(fs, uio->uio_offset);
+		n = min((unsigned)(fs->fs_bsize - on), uio->uio_resid);
+		if (n < fs->fs_bsize)
+d302 1
+a302 1
+		if (error = ffs_balloc(ip, lbn, on + n, ap->a_cred, &bp, flags))
+d305 9
+a313 3
+		if (uio->uio_offset + n > ip->i_size) {
+			ip->i_size = uio->uio_offset + n;
+			vnode_pager_setsize(vp, (u_long)ip->i_size);
+d315 5
+a319 3
+		size = blksize(fs, ip, lbn);
+		(void) vnode_pager_uncache(vp);
+		n = min(n, size - bp->b_resid);
+d323 3
+a325 7
+		else if (n + on == fs->fs_bsize) {
+			if (doclusterwrite) {
+				cluster_write(bp, ip->i_size);
+			} else {
+				bp->b_flags |= B_AGE;
+				bawrite(bp);
+			}
+a327 3
+		ip->i_flag |= IUPD|ICHG;
+		if (ap->a_cred && ap->a_cred->cr_uid != 0)
+			ip->i_mode &= ~(ISUID|ISGID);
+d330 1
+a330 3
+		(void)VOP_TRUNCATE(vp, osize, ioflag & IO_SYNC, ap->a_cred,
+		    uio->uio_procp);
+		uio->uio_offset -= resid - uio->uio_resid;
+d333 1
+d339 2
+d348 1
+a348 1
+ffs_fsync(ap)
+d357 1
+a357 1
+	struct inode *ip = VTOI(vp);
+d373 1
+a373 1
+			panic("ffs_fsync: not dirty");
+d394 1
+a394 1
+			vprint("ffs_fsync: dirty", vp);
+d404 174
+@

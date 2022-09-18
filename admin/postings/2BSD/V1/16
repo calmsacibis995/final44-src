@@ -1,0 +1,772 @@
+Subject: The DELAY macro is wrong
+Index: sys/pdp/machparam.h 2.10BSD
+
+Description:
+	The DELAY macro doesn't handle ints correctly for the faster
+	PDP's.
+Repeat-By:
+	Trying doing a "DELAY(20000)" on an 11/73 and notice that
+	it returns immediately.
+Fix:
+	There are two ways.  First, change the DELAY macro to take
+	the number it's passed, and force it to type long *before*
+	it does the shift.
+
+	The second method isn't any more difficult, it just takes
+	longer.  If you view macros as being "just like" functions,
+	you expect them not to have to handle both integers and
+	longs as arguments.  So, the attached patches basically change
+	every occurrence of DELAY(NUMBER) to explicitly make NUMBER
+	a long.
+
+	The attached patches provide both fixes.  If you just want to
+	do the first fix, only apply the patches for sys/machparam.h.
+
+
+*** cnauto.c.orig	Wed Nov  4 16:25:59 1987
+--- cnauto.c	Wed Nov  4 16:41:59 1987
+***************
+*** 14,21 ****
+  struct dldevice *addr;
+  {
+  	stuff(grab(&(addr->dlxcsr)) | DLXCSR_TIE, &(addr->dlxcsr));
+! 	DELAY(35000);
+! 	DELAY(35000);
+  	/*
+  	 *  Leave TIE enabled; cons.c never turns it off
+  	 *  (and this could be the console).
+--- 14,21 ----
+  struct dldevice *addr;
+  {
+  	stuff(grab(&(addr->dlxcsr)) | DLXCSR_TIE, &(addr->dlxcsr));
+! 	DELAY(35000L);
+! 	DELAY(35000L);
+  	/*
+  	 *  Leave TIE enabled; cons.c never turns it off
+  	 *  (and this could be the console).
+
+
+*** machparam.h.orig	Wed Nov  4 16:26:00 1987
+--- machparam.h	Wed Nov  4 16:41:59 1987
+***************
+*** 88,96 ****
+   * processors.
+   */
+  #ifdef PDP==44 || PDP==53 || PDP==70 || PDP==73 || PDP==83 || PDP==84
+! #define	DELAY(n)	{ register long N = (n)<<1; while (--N > 0); }
+  #else
+! #define	DELAY(n)	{ register long N = (n); while (--N > 0); }
+  #endif
+  
+  /*
+--- 88,96 ----
+   * processors.
+   */
+  #ifdef PDP==44 || PDP==53 || PDP==70 || PDP==73 || PDP==83 || PDP==84
+! #define	DELAY(n)	{ long N = ((long)(n))<<1; while (--N > 0); }
+  #else
+! #define	DELAY(n)	{ long N = (n); while (--N > 0); }
+  #endif
+  
+  /*
+
+
+*** dhauto.c.orig	Wed Nov  4 16:26:00 1987
+--- dhauto.c	Wed Nov  4 16:41:59 1987
+***************
+*** 18,30 ****
+  	struct dhdevice *addr;
+  {
+  	stuff(DH_TIE, &(addr->un.dhcsr));
+! 	DELAY(5);
+  	stuff((B9600 << 10) | (B9600 << 6) | BITS7|PENABLE, &(addr->dhlpr));
+  	stuff(-1, &(addr->dhbcr));
+  	stuff(0, &(addr->dhcar));
+  	stuff(1, &(addr->dhbar));
+! 	DELAY(35000);		/* wait 1/10'th of a sec for interrupt */
+! 	DELAY(35000);
+  	stuff(0, &(addr->un.dhcsr));
+  	return(ACP_IFINTR);
+  }
+--- 18,30 ----
+  	struct dhdevice *addr;
+  {
+  	stuff(DH_TIE, &(addr->un.dhcsr));
+! 	DELAY(5L);
+  	stuff((B9600 << 10) | (B9600 << 6) | BITS7|PENABLE, &(addr->dhlpr));
+  	stuff(-1, &(addr->dhbcr));
+  	stuff(0, &(addr->dhcar));
+  	stuff(1, &(addr->dhbar));
+! 	DELAY(35000L);		/* wait 1/10'th of a sec for interrupt */
+! 	DELAY(35000L);
+  	stuff(0, &(addr->un.dhcsr));
+  	return(ACP_IFINTR);
+  }
+***************
+*** 33,39 ****
+  	struct dmdevice *addr;
+  {
+  	stuff(grab(&(addr->dmcsr)) | DM_DONE | DM_IE, &(addr->dmcsr));
+! 	DELAY(20);
+  	stuff(0, &(addr->dmcsr));
+  	return(ACP_IFINTR);
+  }
+--- 33,39 ----
+  	struct dmdevice *addr;
+  {
+  	stuff(grab(&(addr->dmcsr)) | DM_DONE | DM_IE, &(addr->dmcsr));
+! 	DELAY(20L);
+  	stuff(0, &(addr->dmcsr));
+  	return(ACP_IFINTR);
+  }
+
+
+*** dzauto.c.orig	Wed Nov  4 16:26:00 1987
+--- dzauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 17,24 ****
+  {
+  	stuff(grab(&(addr->dzcsr)) | DZ_TIE | DZ_MSE, &(addr->dzcsr));
+  	stuff(1, &(addr->dztcr));
+! 	DELAY(35000);
+! 	DELAY(35000);
+  	stuff(DZ_CLR, &(addr->dzcsr));
+  	return(ACP_IFINTR);
+  }
+--- 17,24 ----
+  {
+  	stuff(grab(&(addr->dzcsr)) | DZ_TIE | DZ_MSE, &(addr->dzcsr));
+  	stuff(1, &(addr->dztcr));
+! 	DELAY(35000L);
+! 	DELAY(35000L);
+  	stuff(DZ_CLR, &(addr->dzcsr));
+  	return(ACP_IFINTR);
+  }
+
+
+*** hkauto.c.orig	Wed Nov  4 16:26:00 1987
+--- hkauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 16,22 ****
+  	struct hkdevice *addr;
+  {
+  	stuff(HK_CDT | HK_IE | HK_CRDY, (&(addr->hkcs1)));
+! 	DELAY(10);
+  	stuff(HK_CDT, (&(addr->hkcs1)));
+  	return(ACP_IFINTR);
+  }
+--- 16,22 ----
+  	struct hkdevice *addr;
+  {
+  	stuff(HK_CDT | HK_IE | HK_CRDY, (&(addr->hkcs1)));
+! 	DELAY(10L);
+  	stuff(HK_CDT, (&(addr->hkcs1)));
+  	return(ACP_IFINTR);
+  }
+
+
+*** htauto.c.orig	Wed Nov  4 16:26:00 1987
+--- htauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 16,22 ****
+  	struct htdevice *addr;
+  {
+  	stuff(HT_SENSE | HT_IE | HT_GO, (&(addr->htcs1)));
+! 	DELAY(10);
+  	stuff(0, (&(addr->htcs1)));
+  	/*
+  	 * clear error condition, or driver will report an error first
+--- 16,22 ----
+  	struct htdevice *addr;
+  {
+  	stuff(HT_SENSE | HT_IE | HT_GO, (&(addr->htcs1)));
+! 	DELAY(10L);
+  	stuff(0, (&(addr->htcs1)));
+  	/*
+  	 * clear error condition, or driver will report an error first
+
+
+*** lpauto.c.orig	Wed Nov  4 16:26:00 1987
+--- lpauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 24,30 ****
+  	struct lpdevice	*addr;
+  {
+  	stuff(grab(&(addr->lpcs)) | LP_IE, &(addr->lpcs));
+! 	DELAY(10);
+  	stuff(0, &(addr->lpcs));
+  	return(ACP_IFINTR);
+  }
+--- 24,30 ----
+  	struct lpdevice	*addr;
+  {
+  	stuff(grab(&(addr->lpcs)) | LP_IE, &(addr->lpcs));
+! 	DELAY(10L);
+  	stuff(0, &(addr->lpcs));
+  	return(ACP_IFINTR);
+  }
+
+
+*** rkauto.c.orig	Wed Nov  4 16:26:01 1987
+--- rkauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 16,22 ****
+  	struct rkdevice *addr;
+  {
+  	stuff(RKCS_IDE | RKCS_DRESET | RKCS_GO, (&(addr->rkcs)));
+! 	DELAY(10);
+  	stuff(0, (&(addr->rkcs)));
+  	return(ACP_IFINTR);
+  }
+--- 16,22 ----
+  	struct rkdevice *addr;
+  {
+  	stuff(RKCS_IDE | RKCS_DRESET | RKCS_GO, (&(addr->rkcs)));
+! 	DELAY(10L);
+  	stuff(0, (&(addr->rkcs)));
+  	return(ACP_IFINTR);
+  }
+
+
+*** rlauto.c.orig	Wed Nov  4 16:26:01 1987
+--- rlauto.c	Wed Nov  4 16:42:00 1987
+***************
+*** 16,22 ****
+  	struct rldevice *addr;
+  {
+  	stuff(RL_NOP | RL_IE, (&(addr->rlcs)));
+! 	DELAY(10);
+  	stuff(RL_CRDY, (&(addr->rlcs)));
+  	return(ACP_IFINTR);
+  }
+--- 16,22 ----
+  	struct rldevice *addr;
+  {
+  	stuff(RL_NOP | RL_IE, (&(addr->rlcs)));
+! 	DELAY(10L);
+  	stuff(RL_CRDY, (&(addr->rlcs)));
+  	return(ACP_IFINTR);
+  }
+
+
+*** rxauto.c.orig	Wed Nov  4 16:26:01 1987
+--- rxauto.c	Wed Nov  4 16:42:01 1987
+***************
+*** 19,25 ****
+  	struct rxdevice *addr;
+  {
+  	stuff(RX_INIT | RX_IE, (&(addr)->rxcs));
+! 	DELAY(1000);
+  	stuff(0, (&(addr)->rxcs));
+  	return(ACP_IFINTR);
+  }
+--- 19,25 ----
+  	struct rxdevice *addr;
+  {
+  	stuff(RX_INIT | RX_IE, (&(addr)->rxcs));
+! 	DELAY(1000L);
+  	stuff(0, (&(addr)->rxcs));
+  	return(ACP_IFINTR);
+  }
+
+
+*** siauto.c.orig	Wed Nov  4 16:26:01 1987
+--- siauto.c	Wed Nov  4 16:42:01 1987
+***************
+*** 17,23 ****
+  {
+  	stuff(SI_IE | SI_READ, &(addr->sicnr));
+  	stuff(SI_IE | SI_READ | SI_DONE, &(addr->sicnr));
+! 	DELAY(10);
+  	stuff(0, &(addr->sicnr));
+  	return(0);
+  }
+--- 17,23 ----
+  {
+  	stuff(SI_IE | SI_READ, &(addr->sicnr));
+  	stuff(SI_IE | SI_READ | SI_DONE, &(addr->sicnr));
+! 	DELAY(10L);
+  	stuff(0, &(addr->sicnr));
+  	return(0);
+  }
+
+
+*** xpauto.c.orig	Wed Nov  4 16:26:01 1987
+--- xpauto.c	Wed Nov  4 16:42:01 1987
+***************
+*** 23,29 ****
+  	struct hpdevice *addr;
+  {
+  	stuff(HP_IE | HP_RDY, &(addr->hpcs1.w));
+! 	DELAY(10);
+  	stuff(0, &(addr->hpcs1.w));
+  	return(ACP_IFINTR);
+  }
+--- 23,29 ----
+  	struct hpdevice *addr;
+  {
+  	stuff(HP_IE | HP_RDY, &(addr->hpcs1.w));
+! 	DELAY(10L);
+  	stuff(0, &(addr->hpcs1.w));
+  	return(ACP_IFINTR);
+  }
+
+
+*** if_acc.c.orig	Wed Nov  4 16:26:02 1987
+--- if_acc.c	Wed Nov  4 16:42:01 1987
+***************
+*** 83,93 ****
+  	br = 0; cvec = br; br = cvec;
+  	accrint(0); accxint(0);
+  #endif
+! 	addr->icsr = ACC_RESET; DELAY(5000);
+! 	addr->ocsr = ACC_RESET; DELAY(5000);
+! 	addr->ocsr = OUT_BBACK; DELAY(5000);
+  	addr->owc = 0;
+! 	addr->ocsr = ACC_IE | ACC_GO; DELAY(5000);
+  	addr->ocsr = 0;
+  	if (cvec && cvec != 0x200)	/* transmit -> receive */
+  		cvec -= 4;
+--- 83,93 ----
+  	br = 0; cvec = br; br = cvec;
+  	accrint(0); accxint(0);
+  #endif
+! 	addr->icsr = ACC_RESET; DELAY(5000L);
+! 	addr->ocsr = ACC_RESET; DELAY(5000L);
+! 	addr->ocsr = OUT_BBACK; DELAY(5000L);
+  	addr->owc = 0;
+! 	addr->ocsr = ACC_IE | ACC_GO; DELAY(5000L);
+  	addr->ocsr = 0;
+  	if (cvec && cvec != 0x200)	/* transmit -> receive */
+  		cvec -= 4;
+***************
+*** 184,191 ****
+  	 * Reset the imp interface;
+  	 * the delays are pure guesswork.
+  	 */
+!         addr->ocsr = ACC_RESET; DELAY(5000);
+! 	addr->ocsr = OUT_BBACK;	DELAY(5000);	/* reset host master ready */
+  	addr->ocsr = 0;
+  	if (accinputreset(addr, unit) == 0) {
+  		ui->ui_alive = 0;
+--- 184,191 ----
+  	 * Reset the imp interface;
+  	 * the delays are pure guesswork.
+  	 */
+!         addr->ocsr = ACC_RESET; DELAY(5000L);
+! 	addr->ocsr = OUT_BBACK;	DELAY(5000L);	/* reset host master ready */
+  	addr->ocsr = 0;
+  	if (accinputreset(addr, unit) == 0) {
+  		ui->ui_alive = 0;
+***************
+*** 215,229 ****
+  {
+  	register int i;
+  
+! 	addr->icsr = ACC_RESET; DELAY(5000);
+  	addr->icsr = IN_MRDY | IN_WEN;		/* close the relay */
+! 	DELAY(10000);
+  	/* YECH!!! */
+  	for (i = 0; i < 500; i++) {
+  		if ((addr->icsr & IN_HRDY) ||
+  		    (addr->icsr & (IN_RMR | IN_IMPBSY)) == 0)
+  			return (1);
+! 		addr->icsr = IN_MRDY | IN_WEN; DELAY(10000);
+  		/* keep turning IN_RMR off */
+  	}
+  	printf("acc%d: imp doesn't respond, icsr=%b\n", unit,
+--- 215,229 ----
+  {
+  	register int i;
+  
+! 	addr->icsr = ACC_RESET; DELAY(5000L);
+  	addr->icsr = IN_MRDY | IN_WEN;		/* close the relay */
+! 	DELAY(10000L);
+  	/* YECH!!! */
+  	for (i = 0; i < 500; i++) {
+  		if ((addr->icsr & IN_HRDY) ||
+  		    (addr->icsr & (IN_RMR | IN_IMPBSY)) == 0)
+  			return (1);
+! 		addr->icsr = IN_MRDY | IN_WEN; DELAY(10000L);
+  		/* keep turning IN_RMR off */
+  	}
+  	printf("acc%d: imp doesn't respond, icsr=%b\n", unit,
+
+
+*** if_css.c.orig	Wed Nov  4 16:26:02 1987
+--- if_css.c	Wed Nov  4 16:42:01 1987
+***************
+*** 106,120 ****
+  
+  	addr->css_icsr = CSS_CLR;
+  	addr->css_ocsr = CSS_CLR;
+! 	DELAY(50000);
+  	addr->css_icsr = 0;
+  	addr->css_ocsr = 0;
+! 	DELAY(50000);
+  
+  	addr->css_oba = 0;
+  	addr->css_owc = -1;
+  	addr->css_ocsr = CSS_IE | CSS_GO;	/* enable interrupts */
+! 	DELAY(50000);
+  	addr->css_ocsr = 0;
+  
+  	return (1);
+--- 106,120 ----
+  
+  	addr->css_icsr = CSS_CLR;
+  	addr->css_ocsr = CSS_CLR;
+! 	DELAY(50000L);
+  	addr->css_icsr = 0;
+  	addr->css_ocsr = 0;
+! 	DELAY(50000L);
+  
+  	addr->css_oba = 0;
+  	addr->css_owc = -1;
+  	addr->css_ocsr = CSS_IE | CSS_GO;	/* enable interrupts */
+! 	DELAY(50000L);
+  	addr->css_ocsr = 0;
+  
+  	return (1);
+***************
+*** 205,215 ****
+  	x = spl5();
+  	addr->css_icsr = CSS_CLR;
+  	addr->css_ocsr = CSS_CLR;
+! 	DELAY(100);
+  	addr->css_icsr = 0;
+  	addr->css_ocsr = 0;
+  	addr->css_icsr = IN_HRDY;       /* close the relay */
+! 	DELAY(5000);
+  	splx(x);
+  
+  	/*
+--- 205,215 ----
+  	x = spl5();
+  	addr->css_icsr = CSS_CLR;
+  	addr->css_ocsr = CSS_CLR;
+! 	DELAY(100L);
+  	addr->css_icsr = 0;
+  	addr->css_ocsr = 0;
+  	addr->css_icsr = IN_HRDY;       /* close the relay */
+! 	DELAY(5000L);
+  	splx(x);
+  
+  	/*
+***************
+*** 222,228 ****
+  		if ((addr->css_icsr & (IN_HRDY|IN_IMPNR)) == IN_HRDY) 
+  			break;
+  		addr->css_icsr = IN_HRDY;	/* close the relay */
+! 		DELAY(5000);
+  	}
+  
+  	if (x <= 0) {
+--- 222,228 ----
+  		if ((addr->css_icsr & (IN_HRDY|IN_IMPNR)) == IN_HRDY) 
+  			break;
+  		addr->css_icsr = IN_HRDY;	/* close the relay */
+! 		DELAY(5000L);
+  	}
+  
+  	if (x <= 0) {
+
+
+*** if_de.c.orig	Wed Nov  4 16:26:02 1987
+--- if_de.c	Wed Nov  4 16:42:02 1987
+***************
+*** 173,179 ****
+  	addr->pcsr2 = 0;
+  	addr->pcsr3 = 0;
+  	addr->pcsr0 = PCSR0_INTE|CMD_GETPCBB;
+! 	DELAY(100000);
+  #endif
+  	return(1);
+  }
+--- 173,179 ----
+  	addr->pcsr2 = 0;
+  	addr->pcsr3 = 0;
+  	addr->pcsr0 = PCSR0_INTE|CMD_GETPCBB;
+! 	DELAY(100000L);
+  #endif
+  	return(1);
+  }
+
+
+*** if_dmc.c.orig	Wed Nov  4 16:26:02 1987
+--- if_dmc.c	Wed Nov  4 16:42:02 1987
+***************
+*** 98,104 ****
+  		return (0);
+  	addr->bsel1 &= ~DMC_MCLR;
+  	addr->bsel0 = DMC_RQI|DMC_IEI;
+! 	DELAY(100000);
+  	addr->bsel1 = DMC_MCLR;
+  	for (i = 100000; i && (addr->bsel1 & DMC_RUN) == 0; i--)
+  		;
+--- 98,104 ----
+  		return (0);
+  	addr->bsel1 &= ~DMC_MCLR;
+  	addr->bsel0 = DMC_RQI|DMC_IEI;
+! 	DELAY(100000L);
+  	addr->bsel1 = DMC_MCLR;
+  	for (i = 100000; i && (addr->bsel1 & DMC_RUN) == 0; i--)
+  		;
+
+
+*** if_ec.c.orig	Thu Nov  5 16:00:00 1987
+--- if_ec.c	Thu Nov  5 16:00:33 1987
+***************
+*** 131,137 ****
+  	*(u_short *)ecbuf = (u_short) 03777;
+  	ecbuf[03777] = '\0';
+  	addr->ec_xcr = EC_XINTEN|EC_XWBN;
+! 	DELAY(100000);
+  	addr->ec_xcr = EC_XCLR;
+  	if (cvec > 0 && cvec != 0x200) {
+  		if (cvec & 04) {	/* collision interrupt */
+--- 131,137 ----
+  	*(u_short *)ecbuf = (u_short) 03777;
+  	ecbuf[03777] = '\0';
+  	addr->ec_xcr = EC_XINTEN|EC_XWBN;
+! 	DELAY(100000L);
+  	addr->ec_xcr = EC_XCLR;
+  	if (cvec > 0 && cvec != 0x200) {
+  		if (cvec & 04) {	/* collision interrupt */
+***************
+*** 370,376 ****
+  	 */
+  	es->es_mask <<= 1;
+  	delay = mfpr(ICR) &~ es->es_mask;
+! 	DELAY(delay * 51);
+  	/*
+  	 * Clear the controller's collision flag, thus enabling retransmit.
+  	 */
+--- 370,376 ----
+  	 */
+  	es->es_mask <<= 1;
+  	delay = mfpr(ICR) &~ es->es_mask;
+! 	DELAY((long)delay * 51);
+  	/*
+  	 * Clear the controller's collision flag, thus enabling retransmit.
+  	 */
+
+
+*** if_en.c.orig	Wed Nov  4 16:26:03 1987
+--- if_en.c	Wed Nov  4 16:42:03 1987
+***************
+*** 86,92 ****
+  	addr->en_owc = -1;
+  	addr->en_oba = 0;
+  	addr->en_ostat = EN_IEN|EN_GO;
+! 	DELAY(100000);
+  	addr->en_ostat = 0;
+  #ifdef ECHACK
+  	br = 0x16;
+--- 86,92 ----
+  	addr->en_owc = -1;
+  	addr->en_oba = 0;
+  	addr->en_ostat = EN_IEN|EN_GO;
+! 	DELAY(100000L);
+  	addr->en_ostat = 0;
+  #ifdef ECHACK
+  	br = 0x16;
+
+
+*** if_il.c.orig	Wed Nov  4 16:26:03 1987
+--- if_il.c	Wed Nov  4 16:42:03 1987
+***************
+*** 100,106 ****
+  #endif
+  
+  	addr->il_csr = ILC_OFFLINE|IL_CIE;
+! 	DELAY(100000);
+  	i = addr->il_csr;		/* clear CDONE */
+  	if (cvec > 0 && cvec != 0x200)
+  		cvec -= 4;
+--- 100,106 ----
+  #endif
+  
+  	addr->il_csr = ILC_OFFLINE|IL_CIE;
+! 	DELAY(100000L);
+  	i = addr->il_csr;		/* clear CDONE */
+  	if (cvec > 0 && cvec != 0x200)
+  		cvec -= 4;
+
+
+*** if_sri.c.orig	Wed Nov  4 16:26:04 1987
+--- if_sri.c	Wed Nov  4 16:42:03 1987
+***************
+*** 99,108 ****
+  #endif
+  	addr->csr = 0;
+  	addr->obf = OUT_HRDY;
+! 	DELAY(100000);
+  	addr->csr = SRI_OINT|SRI_OENB;
+  	addr->obf = OUT_LAST;
+! 	DELAY(100000);
+  	addr->csr = 0;
+  	addr->obf = OUT_HNRDY;
+  	if(cvec && cvec != 0x200)
+--- 99,108 ----
+  #endif
+  	addr->csr = 0;
+  	addr->obf = OUT_HRDY;
+! 	DELAY(100000L);
+  	addr->csr = SRI_OINT|SRI_OENB;
+  	addr->obf = OUT_LAST;
+! 	DELAY(100000L);
+  	addr->csr = 0;
+  	addr->obf = OUT_HNRDY;
+  	if(cvec && cvec != 0x200)
+***************
+*** 109,115 ****
+  		return(1);
+  	addr->csr = SRI_IINT|SRI_IENB;
+  	i = addr->ibf;
+! 	DELAY(100000);
+  	addr->csr = 0;
+  	if(cvec && cvec != 0x200)
+  		cvec -= 4;              /* report as xmit intr */
+--- 109,115 ----
+  		return(1);
+  	addr->csr = SRI_IINT|SRI_IENB;
+  	i = addr->ibf;
+! 	DELAY(100000L);
+  	addr->csr = 0;
+  	if(cvec && cvec != 0x200)
+  		cvec -= 4;              /* report as xmit intr */
+***************
+*** 204,212 ****
+  	 * Reset the imp interface;
+  	 * the delays are pure guesswork.
+  	 */
+! 	addr->csr = 0; DELAY(5000);
+  	addr->obf = OUT_HRDY;           /* close the relay */
+! 	DELAY(10000);
+  	addr->obf = 0;
+  	/* YECH!!! */
+  	x = 5;				/* was 500 before rdy line code!!! */
+--- 204,212 ----
+  	 * Reset the imp interface;
+  	 * the delays are pure guesswork.
+  	 */
+! 	addr->csr = 0; DELAY(5000L);
+  	addr->obf = OUT_HRDY;           /* close the relay */
+! 	DELAY(10000L);
+  	addr->obf = 0;
+  	/* YECH!!! */
+  	x = 5;				/* was 500 before rdy line code!!! */
+***************
+*** 213,219 ****
+  	while (x-- > 0) {
+  		if ((addr->ibf & IN_INRDY) == 0 )
+  			break;
+! 		DELAY(10000);
+  	}
+  	if (x <= 0) {
+  /*		printf("sri%d: imp doesn't respond, ibf=%b\n", unit,
+--- 213,219 ----
+  	while (x-- > 0) {
+  		if ((addr->ibf & IN_INRDY) == 0 )
+  			break;
+! 		DELAY(10000L);
+  	}
+  	if (x <= 0) {
+  /*		printf("sri%d: imp doesn't respond, ibf=%b\n", unit,
+
+
+*** if_vv.c.orig	Wed Nov  4 16:26:04 1987
+--- if_vv.c	Wed Nov  4 16:42:03 1987
+***************
+*** 122,128 ****
+  	/* reset interface, enable, and wait till dust settles */
+  	addr->vvicsr = VV_RST;
+  	addr->vvocsr = VV_RST;
+! 	DELAY(100000);
+  	/* generate interrupt by doing 1 word DMA from 0 in uba space!! */
+  	addr->vvocsr = VV_IEN;		/* enable interrupt */
+  	addr->vvoba = 0;		/* low 16 bits */
+--- 122,128 ----
+  	/* reset interface, enable, and wait till dust settles */
+  	addr->vvicsr = VV_RST;
+  	addr->vvocsr = VV_RST;
+! 	DELAY(100000L);
+  	/* generate interrupt by doing 1 word DMA from 0 in uba space!! */
+  	addr->vvocsr = VV_IEN;		/* enable interrupt */
+  	addr->vvoba = 0;		/* low 16 bits */
+***************
+*** 129,135 ****
+  	addr->vvoea = 0;		/* extended bits */
+  	addr->vvowc = -1;		/* for 1 word */
+  	addr->vvocsr |= VV_DEN;		/* start the DMA */
+! 	DELAY(100000);
+  	addr->vvocsr = 0;
+  	if (cvec && cvec != 0x200)
+  		cvec -= 4;		/* backup so vector => receive */
+--- 129,135 ----
+  	addr->vvoea = 0;		/* extended bits */
+  	addr->vvowc = -1;		/* for 1 word */
+  	addr->vvocsr |= VV_DEN;		/* start the DMA */
+! 	DELAY(100000L);
+  	addr->vvocsr = 0;
+  	if (cvec && cvec != 0x200)
+  		cvec -= 4;		/* backup so vector => receive */
+***************
+*** 249,255 ****
+  	 */
+  	addr->vvocsr = VV_RST | VV_CPB;		/* clear packet buffer */
+  	addr->vvicsr = VV_RST | VV_CONF;	/* close logical relay */
+! 	DELAY(500000);				/* let contacts settle */
+  	vs->vs_init = 0;
+  	vs->vs_nottaken = 0;
+  	vs->vs_timeouts = 0;
+--- 249,255 ----
+  	 */
+  	addr->vvocsr = VV_RST | VV_CPB;		/* clear packet buffer */
+  	addr->vvicsr = VV_RST | VV_CONF;	/* close logical relay */
+! 	DELAY(500000L);				/* let contacts settle */
+  	vs->vs_init = 0;
+  	vs->vs_nottaken = 0;
+  	vs->vs_timeouts = 0;
+***************
+*** 333,339 ****
+  	addr->vvicsr = VV_STE | VV_DEN | VV_ENB | VV_LPB;
+  
+  	/* let flag timers fire so ring will initialize */
+! 	DELAY(2000000);			/* about 2 SECONDS on a 780!! */
+  
+  	addr->vvocsr = VV_RST | VV_CPB;	/* clear packet buffer */
+  	ubainfo = vs->vs_ifuba.ifu_w.ifrw_info;
+--- 333,339 ----
+  	addr->vvicsr = VV_STE | VV_DEN | VV_ENB | VV_LPB;
+  
+  	/* let flag timers fire so ring will initialize */
+! 	DELAY(2000000L);		/* about 2 SECONDS on a 780!! */
+  
+  	addr->vvocsr = VV_RST | VV_CPB;	/* clear packet buffer */
+  	ubainfo = vs->vs_ifuba.ifu_w.ifrw_info;
+***************
+*** 346,355 ****
+  	 * Extract source address (which will be our own),
+  	 * and post to interface structure.
+  	 */
+! 	DELAY(10000);
+  	for (waitcount = 0; (addr->vvicsr & VV_RDY) == 0; waitcount++) {
+  		if (waitcount < 10) {
+! 			DELAY(1000);
+  			continue;
+  		}
+  		if (attempts++ < VVIDENTRETRY)
+--- 346,355 ----
+  	 * Extract source address (which will be our own),
+  	 * and post to interface structure.
+  	 */
+! 	DELAY(10000L);
+  	for (waitcount = 0; (addr->vvicsr & VV_RDY) == 0; waitcount++) {
+  		if (waitcount < 10) {
+! 			DELAY(1000L);
+  			continue;
+  		}
+  		if (attempts++ < VVIDENTRETRY)
+

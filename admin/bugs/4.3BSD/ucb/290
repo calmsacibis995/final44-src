@@ -1,0 +1,1320 @@
+From rob@violet.berkeley.edu  Tue Apr 17 10:53:32 1990
+Date: Tue, 17 Apr 90 10:53:34 PDT
+From: rob@violet.berkeley.edu (Rob Robertson)
+Subject: rdist expands ~'s for hard links locally instead of remotely+FIX.
+Index:  ucb/rdist 4.3BSD
+
+Description: 
+	rdist expands ~'s for hard links locally instead of remotely.
+	when rdist notices a file is a hard link to a file previously
+	sent, rdist issues a link command to the remote server 
+	(ie k filename newfilename).  the problem is that if
+	"filename" was given in the rdist file as a ~ prefixed file,
+	the expansion is done on the local server.
+
+	also fixed some bogus "free(h), h = h->next;" statements.
+	made the source files go through "gcc -Wall", and made a
+	couple of changes to get it to compile under ultrix 3.0.
+
+Repeat-By:
+	try this [this assumes that the local expansion of ~ != the
+	remote expansion of ~, ie /violet_u/rob and /garnet_e/rob].
+	this should generate six file not found error messages when
+	trying to link  the files in s2 to s1.  the following should
+	describe what happens:
+
+cd ${HOME}
+mkdir test test/s1 test/s2
+echo a > test/s1/a
+echo b > test/s1/b
+echo c > test/s1/c
+ln test/s1/a test/s2/a
+ln test/s1/b test/s2/b
+ln test/s1/c test/s2/c
+cat > distfile << "Funky_Stuff"
+FILES = ( ~/test/s1
+          ~/test/s2 )
+
+${FILES} -> garnet
+        install -R ;
+
+${FILES} -> garnet
+        install -R -w /tmp;
+
+"Funky_Stuff"
+rdist
+
+Fix:
+
+basically i changed the link buffer  so it keeps an accurate
+track of what the links are on the remote system (either in tilde
+form, or with the destination directory prepended), and made the
+remote end expand the tilde's [this is a small but incompatible
+change]. 
+
+the patches follow:
+
+------- defs.h -------
+*** /tmp/d14176	Mon Apr 16 16:00:27 1990
+--- defs.h	Fri Apr 13 15:11:46 1990
+***************
+*** 10,15 ****
+--- 10,17 ----
+   * is provided ``as is'' without express or implied warranty.
+   *
+   *	@(#)defs.h	5.3 (Berkeley) 2/1/88
++  * 	@(#)defs.h	1.2	(CCS)	4/13/90	
++  *
+   */
+  
+  #include <stdio.h>
+***************
+*** 106,112 ****
+  	dev_t	devnum;
+  	int	count;
+  	char	pathname[BUFSIZ];
+- 	char	target[BUFSIZ];
+  	struct	linkbuf *nextp;
+  };
+  
+--- 108,113 ----
+***************
+*** 118,124 ****
+  extern int nerrs;		/* number of errors seen */
+  extern int rem;			/* remote file descriptor */
+  extern int iamremote;		/* acting as remote server */
+! extern char tmpfile[];		/* file name for logging changes */
+  extern struct linkbuf *ihead;	/* list of files with more than one link */
+  extern struct passwd *pw;	/* pointer to static area used by getpwent */
+  extern struct group *gr;	/* pointer to static area used by getgrent */
+--- 119,125 ----
+  extern int nerrs;		/* number of errors seen */
+  extern int rem;			/* remote file descriptor */
+  extern int iamremote;		/* acting as remote server */
+! extern char tempfile[];		/* file name for logging changes */
+  extern struct linkbuf *ihead;	/* list of files with more than one link */
+  extern struct passwd *pw;	/* pointer to static area used by getpwent */
+  extern struct group *gr;	/* pointer to static area used by getgrent */
+
+------- docmd.c -------
+*** /tmp/d14181	Mon Apr 16 16:00:28 1990
+--- docmd.c	Mon Apr 16 15:58:05 1990
+***************
+*** 12,17 ****
+--- 12,18 ----
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)docmd.c	5.2 (Berkeley) 2/1/88";
++ static char	_ [] =	"@(#)docmd.c	1.3	(CCS)	4/16/90	";
+  #endif /* not lint */
+  
+  #include "defs.h"
+***************
+*** 26,37 ****
+  struct	subcmd *subcmds;	/* list of sub-commands for current cmd */
+  jmp_buf	env;
+  
+  int	cleanup();
+! int	lostconn();
+  
+  /*
+   * Do the commands in cmds (initialized by yyparse).
+   */
+  docmds(dhosts, argc, argv)
+  	char **dhosts;
+  	int argc;
+--- 27,59 ----
+  struct	subcmd *subcmds;	/* list of sub-commands for current cmd */
+  jmp_buf	env;
+  
++ char	*colon();
++ void 	closeconn(), cmptime(), doarrow(), dodcolon(), lostconn();
++ void  	notify(), rcmptime();
++ int 	except(), inlist(), makeconn(), okname();
++ 
++ /* from server.c */
+  int	cleanup();
+! void	error(), fatal(), install(), log();
+  
++ /* from main.c */
++ void	prnames();
++ 
++ /* from gram.y */
++ int	any();
++ 
++ int	access(), close(), exit(), fclose(), fflush(), fprintf(), free();
++ int     fwrite(), gettimeofday(), open(), pclose(), printf();
++ int 	rcmd(), re_exec(), read(), setreuid(), stat(), fstat(), strcmp();
++ int	strlen(), setjmp(), unlink(), utimes(), write();
++ 
++ char *re_comp();
++ char *strncpy();
++ 
+  /*
+   * Do the commands in cmds (initialized by yyparse).
+   */
++ void
+  docmds(dhosts, argc, argv)
+  	char **dhosts;
+  	int argc;
+***************
+*** 87,92 ****
+--- 109,115 ----
+  /*
+   * Process commands for sending files to other machines.
+   */
++ void
+  doarrow(filev, files, rhost, cmds)
+  	char **filev;
+  	struct namelist *files;
+***************
+*** 116,123 ****
+  		signal(SIGPIPE, lostconn);
+  		if (!makeconn(rhost))
+  			return;
+! 		if ((lfp = fopen(tmpfile, "w")) == NULL) {
+! 			fatal("cannot open %s\n", tmpfile);
+  			exit(1);
+  		}
+  	}
+--- 139,146 ----
+  		signal(SIGPIPE, lostconn);
+  		if (!makeconn(rhost))
+  			return;
+! 		if ((lfp = fopen(tempfile, "w")) == NULL) {
+! 			fatal("cannot open %s\n", tempfile);
+  			exit(1);
+  		}
+  	}
+***************
+*** 151,166 ****
+  	}
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tmpfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
+! 		(void) unlink(tmpfile);
+! 		for (; ihead != NULL; ihead = ihead->nextp) {
+! 			free(ihead);
+! 			if ((opts & IGNLNKS) || ihead->count == 0)
+! 				continue;
+! 			log(lfp, "%s: Warning: missing links\n",
+! 				ihead->pathname);
+! 		}
+  	}
+  }
+  
+--- 174,189 ----
+  	}
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tempfile, rhost, sc->sc_args, 0);
+  	if (!nflag) {
+! 	     struct linkbuf *thead;
+! 
+! 	     (void) unlink(tempfile);
+! 
+! 	     for (; ihead != NULL; thead = ihead, ihead = ihead->nextp, free(thead)) 
+! 	       if (!(opts & IGNLNKS) && ihead->count != 0)
+! 		 log(lfp, "%s: Warning: missing links\n",
+! 		     ihead->pathname);
+  	}
+  }
+  
+***************
+*** 167,172 ****
+--- 190,196 ----
+  /*
+   * Create a connection to the rdist server on the machine rhost.
+   */
++ int
+  makeconn(rhost)
+  	char *rhost;
+  {
+***************
+*** 249,254 ****
+--- 273,279 ----
+  /*
+   * Signal end of previous connection.
+   */
++ void
+  closeconn()
+  {
+  	if (debug)
+***************
+*** 261,266 ****
+--- 286,292 ----
+  	}
+  }
+  
++ void
+  lostconn()
+  {
+  	if (iamremote)
+***************
+*** 269,274 ****
+--- 295,301 ----
+  	longjmp(env, 1);
+  }
+  
++ int
+  okname(name)
+  	register char *name;
+  {
+***************
+*** 296,301 ****
+--- 323,329 ----
+  /*
+   * Process commands for comparing files to time stamp files.
+   */
++ void
+  dodcolon(filev, files, stamp, cmds)
+  	char **filev;
+  	struct namelist *files;
+***************
+*** 328,334 ****
+  	if (nflag || (options & VERIFY))
+  		tfp = NULL;
+  	else {
+! 		if ((tfp = fopen(tmpfile, "w")) == NULL) {
+  			error("%s: %s\n", stamp, sys_errlist[errno]);
+  			return;
+  		}
+--- 356,362 ----
+  	if (nflag || (options & VERIFY))
+  		tfp = NULL;
+  	else {
+! 		if ((tfp = fopen(tempfile, "w")) == NULL) {
+  			error("%s: %s\n", stamp, sys_errlist[errno]);
+  			return;
+  		}
+***************
+*** 353,366 ****
+  		(void) fclose(tfp);
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tmpfile, NULL, sc->sc_args, lastmod);
+  	if (!nflag && !(options & VERIFY))
+! 		(void) unlink(tmpfile);
+  }
+  
+  /*
+   * Compare the mtime of file to the list of time stamps.
+   */
+  cmptime(name)
+  	char *name;
+  {
+--- 381,395 ----
+  		(void) fclose(tfp);
+  	for (sc = cmds; sc != NULL; sc = sc->sc_next)
+  		if (sc->sc_type == NOTIFY)
+! 			notify(tempfile, NULL, sc->sc_args, lastmod);
+  	if (!nflag && !(options & VERIFY))
+! 		(void) unlink(tempfile);
+  }
+  
+  /*
+   * Compare the mtime of file to the list of time stamps.
+   */
++ void
+  cmptime(name)
+  	char *name;
+  {
+***************
+*** 409,414 ****
+--- 438,444 ----
+  		log(tfp, "new: %s\n", name);
+  }
+  
++ void
+  rcmptime(st)
+  	struct stat *st;
+  {
+***************
+*** 452,457 ****
+--- 482,488 ----
+   * rhost == NULL if we are mailing a list of changes compared to at time
+   * stamp file.
+   */
++ void
+  notify(file, rhost, to, lmod)
+  	char *file, *rhost;
+  	register struct namelist *to;
+***************
+*** 528,533 ****
+--- 559,565 ----
+  /*
+   * Return true if name is in the list.
+   */
++ int
+  inlist(list, file)
+  	struct namelist *list;
+  	char *file;
+***************
+*** 543,548 ****
+--- 575,581 ----
+  /*
+   * Return TRUE if file is in the exception list.
+   */
++ int
+  except(file)
+  	char *file;
+  {
+
+------- expand.c -------
+*** /tmp/d14183	Mon Apr 16 16:00:30 1990
+--- expand.c	Fri Apr 13 15:11:47 1990
+***************
+*** 12,17 ****
+--- 12,19 ----
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)expand.c	5.3 (Berkeley) 2/1/88";
++ static char	_ [] =	"@(#)expand.c	1.2	(CCS)	4/13/90	";
++ 
+  #endif /* not lint */
+  
+  #include "defs.h"
+***************
+*** 36,43 ****
+  char	*entp;
+  char	**sortbase;
+  
+  char	*index();
+! int	argcmp();
+  
+  #define sort()	qsort((char *)sortbase, &eargv[eargc] - sortbase, \
+  		      sizeof(*sortbase), argcmp), sortbase = &eargv[eargc]
+--- 38,58 ----
+  char	*entp;
+  char	**sortbase;
+  
++ int	argcmp(), amatch(), execbrc(), match(), smatch();
++ void	addpath(), Cat(), expsh(), expstr(), matchdir();
++ 
++ /* from gram.y */
++ int	any(), yyerror();
++ 
++ /* from main.c */
++ void prnames();
++ 
++ /* from server.c */
++ void fatal(), error();
++ 
+  char	*index();
+! int	fstat(), printf(), qsort(), stat(), strcmp(), strlen();
+! char 	*strcat(), *strcpy();
+  
+  #define sort()	qsort((char *)sortbase, &eargv[eargc] - sortbase, \
+  		      sizeof(*sortbase), argcmp), sortbase = &eargv[eargc]
+***************
+*** 110,115 ****
+--- 125,131 ----
+  	return(list);
+  }
+  
++ void
+  expstr(s)
+  	char *s;
+  {
+***************
+*** 210,216 ****
+  	sort();
+  }
+  
+! static
+  argcmp(a1, a2)
+  	char **a1, **a2;
+  {
+--- 226,232 ----
+  	sort();
+  }
+  
+! static int
+  argcmp(a1, a2)
+  	char **a1, **a2;
+  {
+***************
+*** 222,227 ****
+--- 238,244 ----
+   * If there are any Shell meta characters in the name,
+   * expand into a list, after searching directory
+   */
++ void
+  expsh(s)
+  	char *s;
+  {
+***************
+*** 259,264 ****
+--- 276,282 ----
+  	*pathp = '\0';
+  }
+  
++ void
+  matchdir(pattern)
+  	char *pattern;
+  {
+***************
+*** 299,304 ****
+--- 317,323 ----
+  	yyerror(path);
+  }
+  
++ int
+  execbrc(p, s)
+  	char *p, *s;
+  {
+***************
+*** 378,383 ****
+--- 397,403 ----
+  	return (0);
+  }
+  
++ int
+  match(s, p)
+  	char *s, *p;
+  {
+***************
+*** 395,400 ****
+--- 415,421 ----
+  	return (c);
+  }
+  
++ int
+  amatch(s, p)
+  	register char *s, *p;
+  {
+***************
+*** 483,488 ****
+--- 504,510 ----
+  	}
+  }
+  
++ int
+  smatch(s, p)
+  	register char *s, *p;
+  {
+***************
+*** 541,546 ****
+--- 563,569 ----
+  	}
+  }
+  
++ void
+  Cat(s1, s2)
+  	register char *s1, *s2;
+  {
+***************
+*** 561,566 ****
+--- 584,590 ----
+  		;
+  }
+  
++ void
+  addpath(c)
+  	char c;
+  {
+***************
+*** 585,593 ****
+--- 609,620 ----
+  {
+  	register char *s1, *s2, *s3;
+  	extern char homedir[];
++ 	char *dfile = file;
+  
+  	if (*file != '~') {
+  		strcpy(buf, file);
++ 		if (debug)
++ 		  printf("exptilde(buf = file = ret = %s)\n", buf);
+  		return(buf);
+  	}
+  	if (*++file == '\0') {
+***************
+*** 624,628 ****
+--- 651,659 ----
+  		while (*s1++ = *s3++)
+  			;
+  	}
++ 
++ 	if (debug)
++ 	  printf("exptilde(buf = %s file = %s ret = %s)\n", buf, dfile, s2);
++ 
+  	return(s2);
+  }
+
+------- lookup.c -------
+*** /tmp/d14188	Mon Apr 16 16:00:31 1990
+--- lookup.c	Fri Apr 13 15:11:47 1990
+***************
+*** 12,17 ****
+--- 12,18 ----
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)lookup.c	5.3 (Berkeley) 2/1/88";
++ static char	_ [] =	"@(#)lookup.c	1.2	(CCS)	4/13/90	";
+  #endif /* not lint */
+  
+  #include "defs.h"
+***************
+*** 29,37 ****
+--- 30,46 ----
+  
+  static struct syment *hashtab[HASHSIZE];
+  
++ void	define();
++ 
++ /* from server.c */
++ void fatal();
++ 
++ int 	printf(), strcmp(), yyerror();
++ 
+  /*
+   * Define a variable from a command line argument.
+   */
++ void
+  define(name)
+  	char *name;
+  {
+
+------- main.c -------
+*** /tmp/d14191	Mon Apr 16 16:00:32 1990
+--- main.c	Fri Apr 13 15:11:47 1990
+***************
+*** 14,19 ****
+--- 14,20 ----
+  char copyright[] =
+  "@(#) Copyright (c) 1983 Regents of the University of California.\n\
+   All rights reserved.\n";
++ static char	_ [] =	"@(#)main.c	1.2	(CCS)	4/13/90	";
+  #endif /* not lint */
+  
+  #ifndef lint
+***************
+*** 29,36 ****
+   */
+  
+  char	*distfile = NULL;
+! char	tmpfile[] = "/tmp/rdistXXXXXX";
+! char	*tmpname = &tmpfile[5];
+  
+  int	debug;		/* debugging flag */
+  int	nflag;		/* NOP flag, just print commands without executing */
+--- 30,37 ----
+   */
+  
+  char	*distfile = NULL;
+! char	tempfile[] = "/tmp/rdistXXXXXX";
+! char	*tmpname = &tempfile[5];
+  
+  int	debug;		/* debugging flag */
+  int	nflag;		/* NOP flag, just print commands without executing */
+***************
+*** 50,55 ****
+--- 51,77 ----
+  struct	passwd *pw;	/* pointer to static area used by getpwent */
+  struct	group *gr;	/* pointer to static area used by getgrent */
+  
++ void 	docmdargs(), prnames(), usage(), warn();
++ int 	main();
++ 
++ /* from docmd.c */
++ void	docmds();
++ 
++ /* from gram.y */
++ void 	insert();
++ 
++ /* from lookup.c */
++ void	define();
++ 
++ /* from server.c */
++ void	server();
++ 
++ char 	*mktemp(), *strcpy();
++ int 	exit(), fprintf(), fputc(), gethostname(), getuid(), perror();
++ int	printf(), strcmp(), setreuid();
++ void	yyparse();
++ 
++ int
+  main(argc, argv)
+  	int argc;
+  	char *argv[];
+***************
+*** 158,164 ****
+  	*hp = NULL;
+  
+  	setreuid(0, userid);
+! 	mktemp(tmpfile);
+  
+  	if (iamremote) {
+  		server();
+--- 180,186 ----
+  	*hp = NULL;
+  
+  	setreuid(0, userid);
+! 	mktemp(tempfile);
+  
+  	if (iamremote) {
+  		server();
+***************
+*** 187,192 ****
+--- 209,215 ----
+  	exit(nerrs != 0);
+  }
+  
++ void
+  usage()
+  {
+  	printf("Usage: rdist [-nqbhirvwyD] [-f distfile] [-d var=value] [-m host] [file ...]\n");
+***************
+*** 197,202 ****
+--- 220,226 ----
+  /*
+   * rcp like interface for distributing files.
+   */
++ void
+  docmdargs(nargs, args)
+  	int nargs;
+  	char *args[];
+***************
+*** 252,257 ****
+--- 276,282 ----
+  /*
+   * Print a list of NAME blocks (mostly for debugging).
+   */
++ void
+  prnames(nl)
+  	register struct namelist *nl;
+  {
+***************
+*** 264,271 ****
+--- 289,298 ----
+  }
+  
+  /*VARARGS*/
++ void
+  warn(fmt, a1, a2,a3)
+  	char *fmt;
++ 	int a1, a2, a3;
+  {
+  	extern int yylineno;
+  
+
+------- server.c -------
+*** /tmp/d14195	Mon Apr 16 16:00:33 1990
+--- server.c	Mon Apr 16 15:58:05 1990
+***************
+*** 17,22 ****
+--- 17,23 ----
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)server.c	5.10 (Berkeley) 5/24/89";
++ static char	_[] =	"@(#)server.c	1.3	(CCS)	4/16/90	";
+  #endif /* not lint */
+  
+  #include "defs.h"
+***************
+*** 29,35 ****
+--- 30,38 ----
+  struct	linkbuf *ihead;		/* list of files with more than one link */
+  char	buf[BUFSIZ];		/* general purpose buffer */
+  char	target[BUFSIZ];		/* target/source directory name */
++ char	rtarget[BUFSIZ];	/* destination (untildefied) directory name */
+  char	*tp;			/* pointer to end of target name */
++ char	*rtp;			/* pointer to end of target name */
+  char	*Tdest;			/* pointer to last T dest*/
+  int	catname;		/* cat name to target name */
+  char	*stp[32];		/* stack of saved tp's for directories */
+***************
+*** 37,45 ****
+  
+  extern	FILE *lfp;		/* log file for mailing changes */
+  
+! int	cleanup();
+  struct	linkbuf *savelink();
+  
+  /*
+   * Server routine to read requests and process them.
+   * Commands are:
+--- 40,66 ----
+  
+  extern	FILE *lfp;		/* log file for mailing changes */
+  
+! 
+  struct	linkbuf *savelink();
+  
++ void 	clean(), cleanup(), comment(), dospecial(), error(), hardlink();
++ void	log(), note(),	query(), recvf(), remove(), rmchk(), sendf();
++ void	 server();
++ 
++ int 	chkparent(), chog(), response(), update();
++ 
++ /* from docmd.c */
++ int	except(), inlist();
++ void	lostconn();
++ 
++ int	utimes(), unlink(), write(), wait(), symlink(), strlen(), strcmp();
++ int	strncmp(), stat(), setuid(), setreuid(), setgid(), rmdir();
++ int	rename(), readlink(), read(), printf(), pipe(), open(); 
++ int	mkdir(), lstat(), link(), fwrite(), fprintf();
++ int	fork(), fflush(), fclose(), _exit(), exit(), execl();
++ int	dup(),	creat(), close(), chown(), chmod(), atoi();
++ char 	*strcpy();
++ 
+  /*
+   * Server routine to read requests and process them.
+   * Commands are:
+***************
+*** 47,52 ****
+--- 68,74 ----
+   *	Vname	- Verify if file out of date or not
+   *	Qname	- Query if file exists. Return mtime & size if it does.
+   */
++ void
+  server()
+  {
+  	char cmdbuf[BUFSIZ];
+***************
+*** 195,200 ****
+--- 217,223 ----
+   * destdir = 1 if destination should be a directory
+   * (i.e., more than one source is being copied to the same destination).
+   */
++ void
+  install(src, dest, destdir, opts)
+  	char *src, *dest;
+  	int destdir, opts;
+***************
+*** 248,260 ****
+  	if (debug)
+  		printf("buf = %s", buf);
+  	(void) write(rem, buf, strlen(buf));
+  	if (response() < 0)
+  		return;
+! 
+  	if (destdir) {
+  		strcpy(destcopy, dest);
+  		Tdest = destcopy;
+! 	}
+  	sendf(rname, opts);
+  	Tdest = 0;
+  }
+--- 271,292 ----
+  	if (debug)
+  		printf("buf = %s", buf);
+  	(void) write(rem, buf, strlen(buf));
++ 
+  	if (response() < 0)
+  		return;
+! 	
+  	if (destdir) {
+  		strcpy(destcopy, dest);
+  		Tdest = destcopy;
+! 		sprintf(rtarget, "%s/%s", dest, rname);
+! 	}  else
+! 	  strcpy(rtarget, dest);
+! 
+! 	rtp = rtarget;
+! 	while(*rtp)
+! 	  rtp++;
+! 	   
+! 
+  	sendf(rname, opts);
+  	Tdest = 0;
+  }
+***************
+*** 265,270 ****
+--- 297,303 ----
+   * Transfer the file or directory in target[].
+   * rname is the name of the file on the remote host.
+   */
++ void
+  sendf(rname, opts)
+  	char *rname;
+  	int opts;
+***************
+*** 271,281 ****
+  {
+  	register struct subcmd *sc;
+  	struct stat stb;
+! 	int sizerr, f, u, len;
+  	off_t i;
+  	DIR *d;
+  	struct direct *dp;
+  	char *otp, *cp;
+  	extern struct subcmd *subcmds;
+  	static char user[15], group[15];
+  
+--- 304,315 ----
+  {
+  	register struct subcmd *sc;
+  	struct stat stb;
+! 	int sizerr, f, u, len, rlen;
+  	off_t i;
+  	DIR *d;
+  	struct direct *dp;
+  	char *otp, *cp;
++ 	char *ortp;
+  	extern struct subcmd *subcmds;
+  	static char user[15], group[15];
+  
+***************
+*** 337,343 ****
+--- 371,379 ----
+  			rmchk(opts);
+  
+  		otp = tp;
++ 		ortp = rtp;
+  		len = tp - target;
++ 		rlen = rtp - rtarget;
+  		while (dp = readdir(d)) {
+  			if (!strcmp(dp->d_name, ".") ||
+  			    !strcmp(dp->d_name, ".."))
+***************
+*** 347,358 ****
+  					dp->d_name);
+  				continue;
+  			}
+  			tp = otp;
+! 			*tp++ = '/';
+  			cp = dp->d_name;
+! 			while (*tp++ = *cp++)
+! 				;
+! 			tp--;
+  			sendf(dp->d_name, opts);
+  		}
+  		closedir(d);
+--- 383,399 ----
+  					dp->d_name);
+  				continue;
+  			}
++ 			if (rlen + 1 + strlen(dp->d_name) >= BUFSIZ - 1) {
++ 				error("%s/%s: Remot name too long\n", rtarget,
++ 					dp->d_name);
++ 				continue;
++ 			}
+  			tp = otp;
+! 			rtp = ortp;
+! 			*tp++ = '/'; *rtp++ = '/';
+  			cp = dp->d_name;
+! 			while (*tp++ = *rtp++ = *cp++);
+! 			tp--; rtp--;
+  			sendf(dp->d_name, opts);
+  		}
+  		closedir(d);
+***************
+*** 359,365 ****
+  		(void) write(rem, "E\n", 2);
+  		(void) response();
+  		tp = otp;
+! 		*tp = '\0';
+  		return;
+  
+  	case S_IFLNK:
+--- 400,407 ----
+  		(void) write(rem, "E\n", 2);
+  		(void) response();
+  		tp = otp;
+! 		rtp = ortp;
+! 		*tp = *rtp = '\0';
+  		return;
+  
+  	case S_IFLNK:
+***************
+*** 370,381 ****
+  
+  			if ((lp = savelink(&stb)) != NULL) {
+  				/* install link */
+! 				if (*lp->target == 0)
+! 				(void) sprintf(buf, "k%o %s %s\n", opts,
+! 					lp->pathname, rname);
+! 				else
+! 				(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+! 					lp->target, lp->pathname, rname);
+  				if (debug)
+  					printf("buf = %s", buf);
+  				(void) write(rem, buf, strlen(buf));
+--- 412,419 ----
+  
+  			if ((lp = savelink(&stb)) != NULL) {
+  				/* install link */
+! 			        (void) sprintf(buf, "k%o %s %s\n", opts,
+! 				        lp->pathname, rname);
+  				if (debug)
+  					printf("buf = %s", buf);
+  				(void) write(rem, buf, strlen(buf));
+***************
+*** 418,429 ****
+  
+  		if ((lp = savelink(&stb)) != NULL) {
+  			/* install link */
+- 			if (*lp->target == 0)
+  			(void) sprintf(buf, "k%o %s %s\n", opts,
+  				lp->pathname, rname);
+- 			else
+- 			(void) sprintf(buf, "k%o %s/%s %s\n", opts,
+- 				lp->target, lp->pathname, rname);
+  			if (debug)
+  				printf("buf = %s", buf);
+  			(void) write(rem, buf, strlen(buf));
+--- 456,463 ----
+***************
+*** 488,494 ****
+  	struct stat *stp;
+  {
+  	struct linkbuf *lp;
+- 	int found = 0;
+  
+  	for (lp = ihead; lp != NULL; lp = lp->nextp)
+  		if (lp->inum == stp->st_ino && lp->devnum == stp->st_dev) {
+--- 522,527 ----
+***************
+*** 504,514 ****
+  		lp->inum = stp->st_ino;
+  		lp->devnum = stp->st_dev;
+  		lp->count = stp->st_nlink - 1;
+! 		strcpy(lp->pathname, target);
+! 		if (Tdest)
+! 			strcpy(lp->target, Tdest);
+! 		else
+! 			*lp->target = 0;
+  	}
+  	return(NULL);
+  }
+--- 537,543 ----
+  		lp->inum = stp->st_ino;
+  		lp->devnum = stp->st_dev;
+  		lp->count = stp->st_nlink - 1;
+! 		strcpy(lp->pathname, rtarget);
+  	}
+  	return(NULL);
+  }
+***************
+*** 518,523 ****
+--- 547,553 ----
+   * Returns 0 if no update, 1 if remote doesn't exist, 2 if out of date
+   * and 3 if comparing binaries to determine if out of date.
+   */
++ int
+  update(rname, opts, stp)
+  	char *rname;
+  	int opts;
+***************
+*** 617,622 ****
+--- 647,653 ----
+   *	Y\n		- exists and its a directory or symbolic link
+   *	^Aerror message\n
+   */
++ void
+  query(name)
+  	char *name;
+  {
+***************
+*** 652,657 ****
+--- 683,689 ----
+  	*tp = '\0';
+  }
+  
++ void
+  recvf(cmd, type)
+  	char *cmd;
+  	int type;
+***************
+*** 912,917 ****
+--- 944,950 ----
+  /*
+   * Creat a hard link to existing file.
+   */
++ void
+  hardlink(cmd)
+  	char *cmd;
+  {
+***************
+*** 958,966 ****
+  			host, target, sys_errlist[errno]);
+  		return;
+  	}
+! 	if (link(oldname, target) < 0) {
+  		error("%s:can't link %s to %s\n",
+! 			host, target, oldname);
+  		return;
+  	}
+  	ack();
+--- 991,1012 ----
+  			host, target, sys_errlist[errno]);
+  		return;
+  	}
+! 	(void) exptilde(buf, oldname);
+! 
+! /* this is just some error checking.  i accidentally linked a couple of
+!  * directories together, and decided that rdist should probably not propogate
+!  * any file system anamolies...
+!  */
+! 
+! 	if (lstat(buf, &stb) == 0)  
+! 	  if ((stb.st_mode & S_IFMT) == S_IFDIR)  {
+! 	       error("%s: cannot link %s to directory %s\n", host, buf, target);
+! 	       return;
+! 	  }
+! 
+! 	if (link(buf, target) < 0) {
+  		error("%s:can't link %s to %s\n",
+! 			host, target, buf);
+  		return;
+  	}
+  	ack();
+***************
+*** 969,974 ****
+--- 1015,1021 ----
+  /*
+   * Check to see if parent directory exists and create one if not.
+   */
++ int
+  chkparent(name)
+  	char *name;
+  {
+***************
+*** 996,1001 ****
+--- 1043,1049 ----
+  /*
+   * Change owner, group and mode of file.
+   */
++ int
+  chog(file, owner, group, mode)
+  	char *file, *owner, *group;
+  	int mode;
+***************
+*** 1063,1068 ****
+--- 1111,1117 ----
+   * Check for files on the machine being updated that are not on the master
+   * machine and remove them.
+   */
++ void
+  rmchk(opts)
+  	int opts;
+  {
+***************
+*** 1144,1149 ****
+--- 1193,1199 ----
+   * Check the current directory (initialized by the 'T' command to server())
+   * for extraneous files and remove them.
+   */
++ void
+  clean(cp)
+  	register char *cp;
+  {
+***************
+*** 1216,1221 ****
+--- 1266,1272 ----
+   * Remove a file or directory (recursively) and send back an acknowledge
+   * or an error message.
+   */
++ void
+  remove(stp)
+  	struct stat *stp;
+  {
+***************
+*** 1284,1289 ****
+--- 1335,1341 ----
+  /*
+   * Execute a shell command to handle special cases.
+   */
++ void
+  dospecial(cmd)
+  	char *cmd;
+  {
+***************
+*** 1352,1357 ****
+--- 1404,1410 ----
+  }
+  
+  /*VARARGS2*/
++ void
+  log(fp, fmt, a1, a2, a3)
+  	FILE *fp;
+  	char *fmt;
+***************
+*** 1367,1372 ****
+--- 1420,1426 ----
+  }
+  
+  /*VARARGS1*/
++ void
+  error(fmt, a1, a2, a3)
+  	char *fmt;
+  	int a1, a2, a3;
+***************
+*** 1395,1400 ****
+--- 1449,1455 ----
+  }
+  
+  /*VARARGS1*/
++ void
+  fatal(fmt, a1, a2,a3)
+  	char *fmt;
+  	int a1, a2, a3;
+***************
+*** 1423,1428 ****
+--- 1478,1484 ----
+  	cleanup();
+  }
+  
++ int
+  response()
+  {
+  	char *cp, *s;
+***************
+*** 1473,1485 ****
+  /*
+   * Remove temporary files and do any cleanup operations before exiting.
+   */
+  cleanup()
+  {
+! 	(void) unlink(tmpfile);
+  	exit(1);
+  }
+  
+  note(fmt, a1, a2, a3)
+  {
+  	static char buf[BUFSIZ];
+  	sprintf(buf, fmt, a1, a2, a3);
+--- 1529,1545 ----
+  /*
+   * Remove temporary files and do any cleanup operations before exiting.
+   */
++ void
+  cleanup()
+  {
+! 	(void) unlink(tempfile);
+  	exit(1);
+  }
+  
++ void
+  note(fmt, a1, a2, a3)
++ char *fmt;
++ int a1, a2, a3;
+  {
+  	static char buf[BUFSIZ];
+  	sprintf(buf, fmt, a1, a2, a3);
+***************
+*** 1486,1491 ****
+--- 1546,1552 ----
+  	comment(buf);
+  }
+  
++ void
+  comment(s)
+  char *s;
+  {
+
+------- gram.y -------
+*** /tmp/d14200	Mon Apr 16 16:00:38 1990
+--- gram.y	Mon Apr 16 15:21:29 1990
+***************
+*** 13,18 ****
+--- 13,19 ----
+  
+  #ifndef lint
+  static char sccsid[] = "@(#)gram.y	5.3 (Berkeley) 2/1/88";
++ static char	_ [] =	"@(#)gram.y	1.2	(CCS)	4/16/90	";
+  #endif /* not lint */
+  
+  #include "defs.h"
+***************
+*** 22,27 ****
+--- 23,36 ----
+  struct	namelist *last_n;
+  struct	subcmd *last_sc;
+  
++ int	any();
++ void	append();
++ 
++ /* from server.c */
++ void fatal();
++ 
++ int 	fflush(), fprintf(), free(), strcmp(), strlen(), ungetc(), yyerror();
++ 
+  %}
+  
+  %term EQUAL	1
+***************
+*** 174,179 ****
+--- 183,189 ----
+  int	yylineno = 1;
+  extern	FILE *fin;
+  
++ int
+  yylex()
+  {
+  	static char yytext[INMAX];
+***************
+*** 324,329 ****
+--- 334,340 ----
+  	return(c);
+  }
+  
++ int
+  any(c, str)
+  	register int c;
+  	register char *str;
+***************
+*** 337,342 ****
+--- 348,354 ----
+  /*
+   * Insert or append ARROW command to list of hosts to be updated.
+   */
++ void
+  insert(label, files, hosts, subcmds)
+  	char *label;
+  	struct namelist *files, *hosts;
+***************
+*** 343,353 ****
+  	struct subcmd *subcmds;
+  {
+  	register struct cmd *c, *prev, *nc;
+! 	register struct namelist *h;
+  
+  	files = expand(files, E_VARS|E_SHELL);
+  	hosts = expand(hosts, E_ALL);
+! 	for (h = hosts; h != NULL; free(h), h = h->n_next) {
+  		/*
+  		 * Search command list for an update to the same host.
+  		 */
+--- 355,365 ----
+  	struct subcmd *subcmds;
+  {
+  	register struct cmd *c, *prev, *nc;
+! 	register struct namelist *h, *temp_h;
+  
+  	files = expand(files, E_VARS|E_SHELL);
+  	hosts = expand(hosts, E_ALL);
+! 	for (h = hosts; h != NULL; temp_h = h, h = h->n_next, free(temp_h)) {
+  		/*
+  		 * Search command list for an update to the same host.
+  		 */
+***************
+*** 387,392 ****
+--- 399,405 ----
+   * Append DCOLON command to the end of the command list since these are always
+   * executed in the order they appear in the distfile.
+   */
++ void
+  append(label, files, stamp, subcmds)
+  	char *label;
+  	struct namelist *files;
+***************
+*** 467,473 ****
+  	int type;
+  	register char *name;
+  {
+! 	register char *cp;
+  	register struct subcmd *sc;
+  
+  	sc = ALLOC(subcmd);
+--- 480,486 ----
+  	int type;
+  	register char *name;
+  {
+! /*	register char *cp;*/
+  	register struct subcmd *sc;
+  
+  	sc = ALLOC(subcmd);

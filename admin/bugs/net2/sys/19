@@ -1,0 +1,103 @@
+From yval@cs.huji.ac.il  Sun Feb  7 15:47:22 1993
+Date: Sun, 7 Feb 93 13:47:22 +0200
+From: Yuval Yarom <yval@CS.HUJI.AC.IL>
+To: 4bsd-bugs@okeeffe.CS.Berkeley.EDU
+Subject: Various bugs in Network Release 2
+Index: sys/kern/kern_sig.c net2
+
+Shalom,
+  I am working on BSDI's BSD/386, and found several bugs in sections of
+the code that are from the Network Release 2.  I heard you might be
+interested in those bug reports, so I compiled them all, and put here.
+I do not have the time needed for going through all of them, sorting
+them and checking if they really appear in the Nework Release 2, so
+I just concatenated all those that seem to belong here.  Sorry about that.
+
+				Yuval
+
+
+Three bugs in signal handling.
+
+1. When a process catches SIGTERM its priority is raised to 0.  Useful
+in functions like:
+
+void nasty()
+{
+	void (*f)();
+
+	if ((f = signal(SIGTERM, nasty)) != nasty) {
+		kill(getpid(),SIGTERM);
+		signal(SIGTERM,f);
+	}
+}
+
+2. SIGCONT sent to a process sleeping at interruptible priority wakes the
+process up, even when the process ignores the signal.  This does not conform
+to the POSIX standard.  The only problem I found with this is that sigpause
+terminates.
+This behaviour is wrong even if the system is not POSIX compliant, because
+it is inconsistent with the effect of SIGCONT on stopped sleeping processes.
+
+3. sigreturn unmasks SIGCONT.  While correct on 4.3BSD it is not the
+correct behaviour in POSIX, where SIGCONT can be masked, and agin, it
+introduces inconsistencies in SIGCON behaviour.
+
+fix:
+-------------------------------------------------------------------
+*** kern/kern_sig.c.orig	Thu Feb 20 23:55:35 1992
+--- kern/kern_sig.c	Mon Oct 26 22:31:36 1992
+***************
+*** 610,616 ****
+  	}
+  
+  	if (p->p_nice > NZERO && (sig == SIGKILL ||
+! 	    sig == SIGTERM && (p->p_flag&STRC || action != SIG_DFL)))
+  		p->p_nice = NZERO;
+  
+  	if (prop & SA_CONT)
+--- 610,616 ----
+  	}
+  
+  	if (p->p_nice > NZERO && (sig == SIGKILL ||
+! 	    sig == SIGTERM && !(p->p_flag&STRC || action != SIG_DFL)))
+  		p->p_nice = NZERO;
+  
+  	if (prop & SA_CONT)
+***************
+*** 655,660 ****
+--- 655,668 ----
+  		 */
+  		if (p->p_flag&STRC)
+  			goto run;
++ 		/*
++ 		 * SIGCONT should have no effect if it is not
++ 		 * caught.
++ 		 */
++ 		if ((prop & SA_CONT) && action == SIG_DFL) {
++ 			p->p_sig &= ~mask;
++ 			goto out;
++ 		}
+  		/*
+  		 * When a sleeping process receives a stop
+  		 * signal, process immediately if possible.
+*** i386/i386/machdep.c.orig	Thu Oct 22 19:47:29 1992
+--- i386/i386/machdep.c	Mon Oct 26 22:32:30 1992
+***************
+*** 412,419 ****
+  	}
+  #endif
+          p->p_sigacts->ps_onstack = scp->sc_onstack & 01;
+! 	p->p_sigmask = scp->sc_mask &~
+! 	    (sigmask(SIGKILL)|sigmask(SIGCONT)|sigmask(SIGSTOP));
+  	regs[sEBP] = scp->sc_fp;
+  	regs[sESP] = scp->sc_sp;
+  	regs[sEIP] = scp->sc_pc;
+--- 412,418 ----
+  	}
+  #endif
+          p->p_sigacts->ps_onstack = scp->sc_onstack & 01;
+! 	p->p_sigmask = scp->sc_mask &~ sigcantmask;
+  	regs[sEBP] = scp->sc_fp;
+  	regs[sESP] = scp->sc_sp;
+  	regs[sEIP] = scp->sc_pc;
+

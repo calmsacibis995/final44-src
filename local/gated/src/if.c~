@@ -1,0 +1,1940 @@
+/*
+ *  $Header: /users/jch/src/gated/src/RCS/if.c,v 2.0.1.1 90/04/23 22:58:23 jch Exp Locker: jch $
+ */
+
+/*%Copyright%*/
+
+/* XXX - When should the if_with* routines look at subnetmask of a P2P interface? */
+
+/*
+ * if.c
+ *
+ */
+
+#define	INCLUDE_IOCTL
+#define	INCLUDE_CTYPE
+#define	INCLUDE_IF
+
+#include "include.h"
+
+/* Some systems (SunOS 3.x where x > 2) do not define ifr_broadaddr */
+#if	defined(SIOCGIFBRDADDR) && !defined(ifr_broadaddr)
+#define	ifr_broadaddr	ifr_addr
+#endif				/* defined(SIOCGIFBRDADDR) && !defined(ifr_broadaddr) */
+
+#define	IF_TIMER_CHECK	0	/* For checking interface status */
+#define	IF_TIMER_MAX	1
+
+task *if_task = (task *) 0;
+if_entry if_list = { (if_info *) &if_list, (if_info *) &if_list };	/* List of active interfaces */
+int n_interfaces;			/* # internet interfaces */
+#ifdef	DYNAMIC_INTERFACES
+if_info if_config = { &if_config, &if_config };	/* List of configured interfaces */
+if_link if_plist = { &if_plist, &if_plist };	/* List of physical interfaces */
+static int int_link_block_index;	/* Allocation index for	if_link */
+#else	/* DYNAMIC_INTERFACES */
+int int_index_max = 0;			/* Maximum interface index */
+#endif	/* DYNAMIC_INTERFACES */
+flag_t int_flags;			/* Global interface flags */
+mtu_t int_mtu_min = 65535;		/* Minimum interface MTU */
+mtu_t int_mtu_max = 0;			/* Maximum interface MTU */
+adv_entry *int_control;			/* Interface control info */
+static int int_block_index;		/* Allocation index for if_entry */
+static int int_info_block_index;	/* Allocation index for if_info */
+rt_parms int_rtparms = RTPARMS_INIT(1,
+				    (metric_t) 0,
+				    (flag_t) 0,
+				    (pref_t) 0);
+
+bits if_state_bits[] =
+{
+    {IFS_UP,		"Up"},
+    {IFS_BROADCAST,	"Broadcast"},
+    {IFS_POINTOPOINT,	"PointToPoint"},
+    {IFS_SUBNET,	"Subnet"},
+    {IFS_LOOPBACK,	"Loopback"},
+    {IFS_INTERFACE,	"Interface"},
+    {IFS_NOAGE,		"NoAge"},
+    {IFS_NORIPOUT,	"NoRipOut"},
+    {IFS_NORIPIN,	"NoRipIn"},
+    {IFS_NOHELLOOUT,	"NoHelloOut"},
+    {IFS_NOHELLOIN,	"NoHelloIn"},
+    {IFS_NOICMPIN,	"NoIcmpIn"},
+    {IFS_MULTICAST,	"Multicast"},
+    {IFS_SIMPLEX,	"Simplex"},
+    {IFS_CHANGE,	"Change"},
+    {IFS_REFRESH,	"Refresh"},
+    {0}
+};
+
+
+/* Find the subnetmask for the specified address and return it in host byte */
+/* order. If this system does not support variable subnet masks, the assumption */
+/* is made that the subnet mask is the same throughout the network.  If variable */
+/* subnet masks are supported, we will only match the specified interface */
+sockaddr_un *
+if_subnetmask __PF1(addr, struct in_addr)
+{
+    if_entry *ifp;
+
+    IF_LIST(ifp) {
+	if (socktype(ifp->int_addr) == AF_INET &&
+	    BIT_MATCH(ifp->int_state, IFS_UP|IFS_SUBNET)) {
+	    switch (socktype(ifp->int_addr)) {
+	    case AF_INET:
+		if (
+#ifndef	VARIABLE_MASKS
+		    (sock2ip(ifp->int_netmask) & addr.s_addr) == sock2ip(ifp->int_net)
+#else	/* VARIABLE_MASKS */
+		    (sock2ip(ifp->int_subnetmask) & addr.s_addr) == sock2ip(ifp->int_subnet)
+#endif	/* VARIABLE_MASKS */
+		    ) {
+		    goto Return;
+		}
+		break;
+
+	    default:
+		continue;
+	    }
+	}
+    } IF_LIST_END(ifp) ;
+
+ Return:
+    return ifp ? ifp->int_subnetmask : (sockaddr_un *) 0;
+}
+
+
+/*
+ * Find the interface with specified address.  Matches the destination address
+ * of P2P interfaces.
+ */
+if_info *
+ifi_withaddr __PF3(addr, sockaddr_un *,
+		   broad_ok, int,
+		   list, if_info *)
+{
+    register if_info *ifi;
+
+    IF_INFO(ifi, list) {
+	if (socktype(ifi->ifi_addr) == socktype(addr) &&
+	    BIT_TEST(ifi->ifi_state, IFS_UP)) {
+	    if (sockaddrcmp(ifi->ifi_addr, addr)) {
+		break;
+	    }
+	    if (broad_ok &&
+		BIT_TEST(ifi->ifi_state, IFS_BROADCAST) &&
+		sockaddrcmp(ifi->ifi_broadaddr, addr)) {
+		break;
+	    }
+	}
+    } IF_INFO_END(ifi, list) ;
+
+    return ifi;
+}
+
+/*
+ * Find the interface with the specified address.  Matches the local address
+ * of P2P interfaces
+ */
+if_info *
+ifi_withlcladdr __PF3(addr, sockaddr_un *,
+		      broad_ok, int,
+		      list, if_info *)
+{
+    register if_info *ifi;
+
+    IF_INFO(ifi, list) {
+	if (socktype(ifi->ifi_addr) == socktype(addr) &&
+	    BIT_TEST(ifi->ifi_state, IFS_UP)) {
+	    if (sockaddrcmp(ifi->ifi_lcladdr, addr)) {
+		break;
+	    }
+	    if (broad_ok &&
+		BIT_TEST(ifi->ifi_state, IFS_BROADCAST) &&
+		sockaddrcmp(ifi->ifi_broadaddr, addr)) {
+		break;
+	    }
+	}
+    } IF_INFO_END(ifi, list) ;
+
+    return ifi;
+}
+
+
+/*
+ * Find the POINTOPOINT or LOOPBACK interface with the specified address.
+ */
+if_info *
+ifi_withdstaddr __PF2(addr, sockaddr_un *,
+		      list, if_info *)
+{
+    register if_info *ifi;
+
+    IF_INFO(ifi, list) {
+	if (socktype(ifi->ifi_addr) == socktype(addr)  &&
+	    BIT_TEST(ifi->ifi_state, IFS_UP) &&
+	    BIT_TEST(ifi->ifi_state, IFS_POINTOPOINT|IFS_LOOPBACK) &&
+	    sockaddrcmp(ifi->ifi_addr, addr)) {
+	    /* Found it */
+	    break;
+	}
+    } IF_INFO_END(ifi, list) ;
+
+    return ifi;
+}
+
+
+/*
+ * Find interface on whole network of a possibly subnetted address.
+ */
+if_entry *
+if_withnet __PF1(dstaddr, sockaddr_un *)
+{
+    int af = socktype(dstaddr);
+    register if_entry *ifp = (if_entry *) 0;
+
+    switch (socktype(dstaddr)) {
+#ifdef	AF_APPLETALK
+    case AF_APPLETALK:
+	/* XXX - do range comparison */
+	break;
+#endif	/* AF_APPLETALK */
+
+#ifdef	notdef
+    case AF_INET:
+	/* Optimize the IP case */
+	IF_LIST(ifp) {
+	    if (af == socktype(ifp->int_addr) &&
+		BIT_TEST(ifp->int_state, IFS_UP) &&
+		!BIT_TEST(ifp->int_state, IFS_POINTOPOINT) &&
+		!((sock2ip(dstaddr) ^ sock2ip(ifp->int_addr)) & sock2ip(ifp->int_netmask))) {
+		return ifp;
+	    }
+	} IF_LIST_END(ifp) ;
+	break;
+#endif	/* notdef */
+	    
+    default:
+	/* General netmask case */
+	IF_LIST(ifp) {
+	    if (af == socktype(ifp->int_addr) &&
+		BIT_TEST(ifp->int_state, IFS_UP) &&
+		!BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+		register byte *dp = (byte *) dstaddr->a.sa_data;
+		register byte *ap = (byte *) ifp->int_addr->a.sa_data;
+		register byte *mp = (byte *) ifp->int_netmask->a.sa_data;
+		register byte *lp = (byte *) ifp->int_netmask + socksize(ifp->int_netmask);
+
+		for (; mp < lp; mp++) {
+		    if ((*dp++ ^ *ap++) & *mp) {
+			/* Match failure */
+			goto Continue;
+		    }
+		}
+
+		if (mp == lp) {
+		    return ifp;
+		}
+	    }
+	Continue:
+	    ;
+	} IF_LIST_END(ifp) ;
+	break;
+    }
+
+    return ifp;
+}
+
+
+/*
+ * Find interface on a specific subnet of a possibly subnetted network
+ */
+if_info *
+ifi_withsubnet __PF2(dstaddr, sockaddr_un *,
+		     list, if_info *)
+{
+    int af = socktype(dstaddr);
+    register if_info *ifi, *ifi2 = (if_info *) 0;
+
+    switch (socktype(dstaddr)) {
+#ifdef	AF_APPLETALK
+    case AF_APPLETALK:
+	/* XXX - do range comparison */
+	break;
+#endif	/* AF_APPLETALK */
+
+#ifdef	notyet
+    case AF_INET:
+	/* Optimize the IP case */
+	IF_INFO(ifi, list) {
+	    if (socktype(ifi->ifi_addr) == af &&
+		BIT_TEST(ifi->ifi_state, IFS_UP) &&
+		!BIT_TEST(ifi->ifi_state, IFS_POINTOPOINT|IFS_LOOPBACK) &&
+		!((sock2ip(dstaddr) ^ sock2ip(ifi->ifi_addr)) & sock2ip(ifi->int_subnetmask)) &&
+		(!ifi2 ||
+		 ifi->ifi_subnetmask > ifi2->ifi_subnetmask)) {
+		ifi2 = ifi;
+	    }
+	} IF_INFO_END(ifi, list) ;
+	break;
+#endif	/* notyet */
+	    
+    default:
+	/* General netmask case */
+
+	IF_INFO(ifi, list) {
+	    if (socktype(ifi->ifi_addr) == af &&
+		BIT_TEST(ifi->ifi_state, IFS_UP) &&
+		!BIT_TEST(ifi->ifi_state, IFS_POINTOPOINT|IFS_LOOPBACK)) {
+		register byte *dp = (byte *) dstaddr->a.sa_data;
+		register byte *ap = (byte *) ifi->ifi_addr->a.sa_data;
+		register byte *mp = (byte *) ifi->ifi_subnetmask->a.sa_data;
+		register byte *lp = (byte *) ifi->ifi_subnetmask + socksize(ifi->ifi_subnetmask);
+
+		for (; mp < lp; mp++) {
+		    if ((*dp++ ^ *ap++) & *mp) {
+			/* Match failure */
+			goto Continue;
+		    }
+		}
+
+		if (!ifi2 ||
+		     socksize(ifi->ifi_subnetmask) > socksize(ifi2->ifi_subnetmask) ||
+		     (socksize(ifi->ifi_subnetmask) == socksize(ifi2->ifi_subnetmask) &&
+		      *mp > *((byte *) ifi2->ifi_subnetmask + socksize(ifi2->ifi_subnetmask) - 1))) {
+		    /* XXX - Need something like kernel rn_refines() */
+		    /* Better than the last match */
+		    ifi2 = ifi;
+		}
+	    }
+	Continue:
+	    ;
+	} IF_INFO_END(ifi, list);
+	break;
+    }
+
+    return ifi2;
+}
+
+
+/*
+ * Find the interface for the specified gateway.  First try to find a P2P interface
+ * with the specified address, then find out if we are on the attached network of
+ * any multi-access interfaces.
+ */
+if_info *
+ifi_withdst __PF2(dstaddr, sockaddr_un *,
+		  list, if_info *)
+{
+    register if_info *ifi = 0;
+
+    ifi = ifi_withdstaddr(dstaddr, (if_info *) &if_list);
+    if (!ifi) {
+	ifi = ifi_withsubnet(dstaddr, (if_info *) &if_list);
+    }
+
+    return ifi;
+}
+
+
+/*
+ * Find the interface with the specified local address or net/subnet address
+ */
+if_entry *
+if_withmyaddr __PF1(addr, sockaddr_un *)
+{
+    register if_entry *ifp;
+    int af = socktype(addr);
+    
+    IF_LIST(ifp) {
+	if (socktype(ifp->int_addr) == af &&
+	    BIT_TEST(ifp->int_state, IFS_UP)) {
+	    if (sockaddrcmp(ifp->int_addr, addr)) {
+		/* My address */
+		break;
+	    }
+	    if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+		if (sockaddrcmp(ifp->int_lcladdr, addr)) {
+		    /* My local address */
+		    break;
+		}
+	    } else {
+		if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+		    if (sockaddrcmp(ifp->int_broadaddr, addr)) {
+			/* My broadcast address */
+			break;
+		    }
+		}
+		if ((BIT_TEST(ifp->int_state, IFS_SUBNET) &&
+		     sockaddrcmp(ifp->int_subnet, addr)) ||
+		    sockaddrcmp(ifp->int_net, addr)) {
+		    /* My network address */
+		    break;
+		}
+	    }
+	}
+    } IF_LIST_END(ifp) ;
+
+    return ifp;
+}
+
+
+/*
+ *	if_display():
+ *		Log the configuration of the interface
+ */
+static void
+if_display __PF3(ifp, if_entry *,
+		 name, const char *,
+		 pri, int)
+{
+
+    trace(TR_INT, pri, "%s: interface %s: %s  addr %A  metric %d  index %d",
+	  name,
+	  ifp->int_name,
+	  BIT_TEST(ifp->int_state, IFS_UP) ? "up" : "down",
+	  ifp->int_addr,
+	  ifp->int_metric,
+	  ifp->int_index);
+    trace(TR_INT, pri, "%s: interface %s: preference: %d  down: %d",
+	  name,
+	  ifp->int_name,
+	  ifp->int_preference,
+	  ifp->int_preference_down);
+	  
+    if (BIT_TEST(ifp->int_state, IFS_BROADCAST|IFS_POINTOPOINT)) {
+	if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+	    tracef("%s: interface %s: broadaddr %A",
+		   name,
+		   ifp->int_name,
+		   ifp->int_broadaddr);
+	}
+	if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    tracef("%s: interface %s: lcladdr %A",
+		   name,
+		   ifp->int_name,
+		   ifp->int_lcladdr);
+	}
+	trace(TR_INT, pri, NULL);
+    }
+    trace(TR_INT, pri, "%s: interface %s: net %A  netmask %A",
+	  name,
+	  ifp->int_name,
+	  ifp->int_net,
+	  ifp->int_netmask);
+
+    if (BIT_TEST(ifp->int_state, IFS_SUBNET)) {
+	trace(TR_INT, pri, "%s: interface %s: subnet %A  subnetmask %A",
+	      name,
+	      ifp->int_name,
+	      ifp->int_subnet,
+	      ifp->int_subnetmask);
+    } else if (ifp->int_subnetmask) {
+	trace(TR_INT, pri, "%s: interface %s: subnetmask %A",
+	      name,
+	      ifp->int_name,
+	      ifp->int_subnetmask);
+    }
+
+    trace(TR_INT, pri, "%s: interface %s: refcount %d  mtu %d  flags <%s>",
+	  name,
+	  ifp->int_name,
+	  ifp->int_refcount,
+	  ifp->int_mtu,
+	  trace_bits(if_state_bits, ifp->int_state));
+
+    trace(TR_INT, pri, "%s: interface %s: route: %sinstalled",
+	  name,
+	  ifp->int_name,
+	  ifp->int_rt ? "" : "not ");
+    
+    trace(TR_INT, pri, NULL);
+}
+
+
+static void
+if_print __PF0(void)
+{
+    if_entry *ifp;
+#ifdef	DYNAMIC_INTERFACES
+    if_link *iflp;
+
+    IF_LINK(iflp) {
+	trace(TR_INT, 0, "if_print: %#A\tState: <%s>",
+		       iflp->ifl_dl,
+		       trace_bits(if_state_bits, iflp->ifl_state));
+	trace(TR_INT, 0, "if_print: Refcount: %d\tMetric: %d\t MTU: %d\tUp->downs: %u",
+		       iflp->ifl_refcount,
+		       iflp->ifl_metric,
+		       iflp->ifl_mtu,
+		       iflp->ifl_transitions);
+	trace(TR_INT, 0, NULL);
+    } IF_LINK_END(iflp) ;
+#endif	/* DYNAMIC_INTERFACES */
+
+    IF_LIST(ifp) {
+	if_display(ifp, "if_print", 0);
+    } IF_LIST_END(ifp) ;
+}
+
+
+/*	if_flags():
+ *		Convert kernel interface flags to gated interface flags
+ */
+flag_t
+if_flags __PF1(k_flags, int)
+{
+    flag_t flags = 0;
+
+    if (BIT_TEST(k_flags, IFF_UP)) {
+	BIT_SET(flags, IFS_UP);
+    }
+    if (BIT_TEST(k_flags, IFF_BROADCAST)) {
+	BIT_SET(flags, IFS_BROADCAST);
+    }
+    if (BIT_TEST(k_flags, IFF_POINTOPOINT)) {
+	BIT_SET(flags, IFS_POINTOPOINT);
+    }
+#ifdef	IFF_LOOPBACK
+    if (BIT_TEST(k_flags, IFF_LOOPBACK)) {
+	BIT_SET(flags, IFS_LOOPBACK);
+    }
+#endif	/* IFF_LOOPBACK */
+
+#ifdef	HAVE_MULTICAST
+    if (BIT_TEST(k_flags, IFF_MULTICAST)) {
+	BIT_SET(flags, IFS_MULTICAST);
+    }
+    BIT_SET(int_flags, IFS_MULTICAST);	/* Indicate system supports multicast */
+#endif	/* HAVE_MULTICAST */
+
+#ifdef	IFF_SIMPLEX
+    if (BIT_TEST(k_flags, IFF_SIMPLEX)) {
+	BIT_SET(flags, IFS_SIMPLEX);
+    }
+#endif	/* IFF_SIMPLEX */
+    return flags;
+}
+
+
+/* Verify that no two non-POINTOPOINT interfaces have the same address and */
+/* that no two interfaces have the same destination route */
+static void
+if_dupcheck __PF0(void)
+{
+    if_entry *ifp, *ifp2;
+
+    IF_LIST(ifp) {
+#ifdef	SOCKADDR_DL
+	if (socktype(ifp->int_addr) == AF_LINK) {
+	    continue;
+	}
+#endif	/* SOCKADDR_DL */
+	if (BIT_TEST(ifp->int_state, IFS_UP)) {
+	    IF_LIST(ifp2) {
+		if (ifp != ifp2 &&
+		    socktype(ifp->int_addr) == socktype(ifp2->int_addr) &&
+		    BIT_TEST(ifp2->int_state, IFS_UP)) {
+		    if (sockaddrcmp(ifp->int_addr, ifp2->int_addr)) {
+			/* Make sure the addresses of these interfaces are unique */
+			break;
+		    }
+		    /* Make sure we only have one interface for the given net/subnet */
+		    if (!BIT_TEST(ifp->int_state, IFS_POINTOPOINT|IFS_LOOPBACK) &&
+			!BIT_TEST(ifp2->int_state, IFS_POINTOPOINT|IFS_LOOPBACK) &&
+			sockaddrcmp(ifp->int_subnet, ifp2->int_subnet)) {
+			/* XXX - This is supposedly legal */
+			break;
+		    }
+		}
+	    } IF_LIST_END(ifp2) ;
+	    if (ifp2) {
+		tracef("if_dupcheck: address/destination conflicts between %s %A",
+		       ifp->int_name,
+		       ifp->int_addr);
+		if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+		    tracef(" lcladdr %A",
+			   ifp->int_lcladdr);
+		}
+		tracef(" and %s %A",
+		       ifp2->int_name,
+		       ifp2->int_addr);
+		if (BIT_TEST(ifp2->int_state, IFS_POINTOPOINT)) {
+		    tracef(" lcladdr %A",
+			   ifp->int_lcladdr);
+		}
+		trace(TR_ALL, LOG_CRIT, NULL);
+		if_display(ifp, "if_dupcheck", LOG_CRIT);
+		if_display(ifp2, "if_dupcheck", LOG_CRIT);
+	    }
+	}
+    } IF_LIST_END(ifp) ;
+}
+
+
+/*
+ *	Match an IFN
+ */
+int
+if_namematch __PF2(ifp, if_entry *,
+		   cp1, register char *)
+{
+    register char *cp2 = ifp->int_name;
+
+    /* Compare alpha portion */
+    while (isalpha(*cp1)) {
+	if (!*cp2 || tolower(*cp1) != tolower(*cp2)) {
+	    /* Interface name is shorter or alpha part did not match */
+	    return FALSE;
+	}
+	cp1++;
+	cp2++;
+    }
+
+    if (*cp1) {
+	/* Compare numeric portion */
+
+	while (*cp1) {
+	    if (!*cp2 || *cp1++ != *cp2++) {
+		/* Interface name is shorter or numeric part did not match */
+
+		return FALSE;
+	    }
+	}
+
+	if (!*cp2) {
+	    /* Match successful */
+	    return TRUE;
+	}
+    } else {
+	/* Make sure we matched the complete alpha part */
+	if (!*cp2 || isdigit(*cp2)) {
+	    return TRUE;
+	}
+    }
+
+    return FALSE;
+}
+
+
+/*
+ * Process any control info about this interface
+ */
+static int
+if_control __PF2(ifp, if_entry *,
+		 whom, const char *)
+{
+    int change = FALSE;
+    adv_entry *adv;
+
+    /* Reset old policy */
+    ifp->int_metric = ifp->int_metric_kernel;
+    ifp->int_preference = RTPREF_DIRECT;
+    ifp->int_preference_down = RTPREF_DIRECT_DOWN;
+    BIT_RESET(ifp->int_state, ifp->int_state_policy);
+
+    /* Look for new policy */
+    ADV_LIST(int_control, adv) {
+	int match = FALSE;
+
+	switch (adv->adv_flag & ADVF_TYPE) {
+		
+	case ADVFT_ANY:
+	    match = TRUE;
+	    break;
+
+	case ADVFT_IFP:
+	    if (ifp == adv->adv_ifp) {
+		match = TRUE;
+	    }
+	    break;
+
+	case ADVFT_IFN:
+	    if (if_namematch(ifp, adv->adv_ifn)) {
+		match = TRUE;
+	    }
+	    break;
+
+	default:
+	    trace(TR_ALL, LOG_ERR, "if_control: Invalid type on control list");
+	}
+
+	if (match) {
+	    if (BIT_TEST(adv->adv_flag, ADVFOT_METRIC)) {
+		ifp->int_metric = adv->adv_result.res_metric;
+		change = TRUE;
+	    }
+	    if (BIT_TEST(adv->adv_flag, ADVFOT_PREFERENCE)) {
+		ifp->int_preference = adv->adv_result.res_preference;
+		change = TRUE;
+	    }
+	    if (BIT_TEST(adv->adv_flag, ADVFOT_FLAG)) {
+		BIT_SET(ifp->int_state_policy, (ifp->int_state ^ adv->adv_result.res_flag) & adv->adv_result.res_flag);
+		BIT_SET(ifp->int_state, adv->adv_result.res_flag);
+		change = TRUE;
+	    }
+	}
+	
+    } ADV_LIST_END(int_control, adv) ;
+
+    /* This interface is marked passive so that its route can not time out if */
+    /*	 -  It can not hear it's own packets */
+    /*   -  No IGPs are running or allowed on this interface */
+    /*   -  There is only one interface */
+    if (!BIT_TEST(ifp->int_state, IFS_NOAGE) &&
+	(BIT_TEST(ifp->int_state, IFS_SIMPLEX) ||
+	 (BIT_TEST(ifp->int_state, IFS_NORIPIN|IFS_NORIPOUT) && BIT_TEST(ifp->int_state, IFS_NOHELLOIN|IFS_NOHELLOOUT)) ||
+	 !if_rtactive ||
+	 n_interfaces < 2)) {
+	BIT_SET(ifp->int_state_policy, IFS_NOAGE);
+	BIT_SET(ifp->int_state, IFS_NOAGE);
+	change = TRUE;
+	trace(TR_INT, 0, "if_control: interface %s: %A marked passive",
+	      ifp->int_name,
+	      ifp->int_addr);
+    }
+
+    if (change) {
+	if_display(ifp, whom, 0);
+    }
+    return change;
+}
+
+
+/**/
+
+static if_entry *
+if_create __PF0(void)
+{
+    if_entry *ifp;
+    
+    ifp = (if_entry *) task_block_alloc(int_block_index);
+
+    n_interfaces++;
+
+    /* XXX - Policy should be stored on a list which is searched now to find the policy associated with this interface */
+
+    return ifp;
+}
+
+
+/*
+ *	Insert on list in int_index order
+ */
+static void
+if_insert __PF1(new_ifp, if_entry *)
+{
+    register if_entry *ifp = (if_entry *) if_list.int_forw;
+
+    if (ifp == &if_list) {
+	/* First interface */
+
+	ifp = (if_entry *) if_list.int_back;
+    } else {
+	/* Insert in order by index, address family, and finally protocol address */
+
+	do {
+	    if (new_ifp->int_index > ifp->int_index) {
+		continue;
+	    }
+	    if (new_ifp->int_index == ifp->int_index &&
+		 sockaddrcmp2(new_ifp->int_addr, ifp->int_addr) < 0) {
+		/* Insert before this one */
+
+		break;
+	    }
+	} while ((ifp = (if_entry *) ifp->int_forw) != &if_list) ;
+
+	ifp = (if_entry *) ifp->int_back;
+    }
+
+    insque((struct qelem *) new_ifp,
+	   (struct qelem *) ifp);
+}
+
+
+#ifdef	DYNAMIC_INTERFACES
+if_entry *
+if_alloc __PF1(ifp, if_entry *)
+{
+    if (ifp) {
+	ifp->int_refcount++;
+    }
+
+    return ifp;
+}
+
+
+/*
+ *	Release an interface reference
+ */
+if_entry *
+if_release __PF1(ifp, if_entry *)
+{
+    if_entry *prev_ifp = (if_entry *) ifp->int_back;
+
+    trace(TR_INT, 0, "if_release: RELEASE %A/%s",
+	  ifp->int_addr,
+	  ifp->int_name);
+    
+    /* Release the addresses */
+    if (ifp->int_addr) {
+	sockfree(ifp->int_addr);
+	if (ifp->int_addr == ifp->int_lcladdr) {
+	    ifp->int_lcladdr = (sockaddr_un *) 0;
+	}
+	ifp->int_addr = (sockaddr_un *) 0;
+    }
+    if (ifp->int_lcladdr) {
+	sockfree(ifp->int_lcladdr);
+	ifp->int_lcladdr = (sockaddr_un *) 0;
+    }
+    if (ifp->int_subnet && ifp->int_subnet != ifp->int_net) {
+	sockfree(ifp->int_subnet);
+	ifp->int_subnet = (sockaddr_un *) 0;
+    }
+    if (ifp->int_net) {
+	sockfree(ifp->int_net);
+	ifp->int_net = (sockaddr_un *) 0;
+    }
+
+    if (!--ifp->int_link->ifl_refcount) {
+
+	trace(TR_INT, 0, "if_release: RELEASE %#A",
+	      ifp->int_link->ifl_dl);
+	
+	remque((struct qelem *) ifp->int_link);
+	
+	task_block_free(int_link_block_index, (struct qelem *) ifp->int_link);
+    }
+
+    /* XXX - free policy lists */
+    
+    /* XXX - What if this was the routerid? */
+
+    n_interfaces--;
+    
+    remque((struct qelem *) ifp);
+
+    task_block_free(int_block_index, (void_t) ifp);
+
+    return prev_ifp;
+}
+
+static task *if_conf_task;	/* Task that is configuring the interfaces */
+
+/* XXX - MTU should be for the protocol */
+
+void
+if_conf_open __PF2(tp, task *,
+		   all, int)
+{
+    register if_entry *ifp;
+
+    assert(!if_conf_task);
+    if_conf_task = tp;
+    trace(TR_INT, 0, "if_conf_open: OPEN by %s",
+	  task_name(if_conf_task));
+    
+    if (all) {
+	IF_LIST(ifp) {
+	    BIT_RESET(ifp->int_state, IFS_CHANGE);
+	} IF_LIST_END(ifp) ;
+    }
+}
+
+void
+if_conf_close __PF2(tp, task *,
+		    all, int)
+{
+    register if_entry *ifp;
+
+    assert(tp == if_conf_task);
+    trace(TR_INT, 0, "if_conf_close: CLOSE by %s",
+	  task_name(if_conf_task));
+    
+    if (all) {
+	/* Scan for down interfaces */
+
+	IF_LIST(ifp) {
+	    if (!BIT_TEST(ifp->int_state, IFS_CHANGE|IFS_REFRESH)) {
+		/* No longer present, mark it down */
+
+		BIT_RESET(ifp->int_state, IFS_UP);
+		BIT_SET(ifp->int_state, IFS_CHANGE);
+	    }
+	} IF_LIST_END(ifp) ;
+    }
+
+    if_dupcheck();
+
+    /* Reset MTU */
+    int_mtu_min = 65535;
+    int_mtu_max = 0;
+
+    IF_LIST(ifp) {
+	if (BIT_TEST(ifp->int_state, IFS_CHANGE)) {
+	    BIT_RESET(ifp->int_state, IFS_CHANGE|IFS_REFRESH);
+	    task_ifchange(ifp, BIT_TEST(ifp->int_state, IFS_UP) ? IFC_ADD : IFC_DELETE);
+	    if (!BIT_TEST(ifp->int_state, IFS_UP)) {
+		assert(ifp->int_refcount > 0);
+		if (!--ifp->int_refcount) {
+		    ifp = if_release(ifp);
+		}
+	    }
+	} else {
+	    BIT_RESET(ifp->int_state, IFS_REFRESH);
+	}
+	if (BIT_TEST(ifp->int_state, IFS_UP)) {
+	    /* Remember the minimum and maximum MTU's */
+	    if (int_mtu_min > ifp->int_mtu) {
+		int_mtu_min = ifp->int_mtu;
+	    }
+	    if (int_mtu_max < ifp->int_mtu) {
+		int_mtu_max = ifp->int_mtu;
+	    }
+	}
+    } IF_LIST_END(ifp) ;
+
+    if_print();    /* XXX - DEBUG */
+
+    if_conf_task = (task *) 0;
+}
+
+void
+if_conf_addaddr __PF2(tp, task *,
+		      ifi, if_info *)
+{
+    register if_entry *ifp;
+
+    assert(tp == if_conf_task);
+    trace(TR_INT, 0, "if_conf_addaddr: ADD by %s",
+	  task_name(tp));
+
+    /* Add in the physical interface characteristics */
+    ifi->ifi_metric += ifi->ifi_link->ifl_metric;
+    ifi->ifi_state |= ifi->ifi_link->ifl_state;
+
+    trace(TR_INT, 0, "if_conf_addaddr: %s: index %d state %x<%s> metric %d",
+	  ifi->ifi_link->ifl_name,
+	  ifi->ifi_link->ifl_index,
+	  ifi->ifi_state,
+	  trace_bits(if_state_bits, ifi->ifi_state),
+	  ifi->ifi_metric);
+
+    trace(TR_INT, 0, "if_conf_addaddr: %s: addr %-15A netmask %-15A lcladdr %-15A broadaddr %A",
+	  ifi->ifi_link->ifl_name,
+	  ifi->ifi_addr,
+	  ifi->ifi_subnetmask,
+	  ifi->ifi_lcladdr,
+	  ifi->ifi_broadaddr);
+
+    IF_LIST(ifp) {
+	if (sockaddrcmp(ifp->int_addr, ifi->ifi_addr) &&
+	    !((ifp->int_state ^ ifi->ifi_state) & IFS_POINTOPOINT|IFS_LOOPBACK|IFS_BROADCAST)) {
+	    /* Old address */
+
+	    /* XXX - Check for changes */
+
+	    BIT_SET(ifp->int_state, IFS_REFRESH);
+
+	    trace(TR_INT, 0, "if_conf_addaddr: %A/%s matches %A/%s",
+		  ifp->int_addr,
+		  ifp->int_name,
+		  ifi->ifi_addr,
+		  ifi->ifi_link->ifl_name);
+
+	    /* XXX - Error if configured twice */
+
+	    if (ifi->ifi_addr) {
+		sockfree(ifi->ifi_addr);
+		if (ifi->ifi_addr == ifi->ifi_lcladdr) {
+		    ifi->ifi_lcladdr = (sockaddr_un *) 0;
+		}
+		ifi->ifi_addr = (sockaddr_un *) 0;
+	    }
+	    if (ifi->ifi_lcladdr) {
+		sockfree(ifi->ifi_lcladdr);
+		ifi->ifi_lcladdr = (sockaddr_un *) 0;
+	    }
+	    if (ifi->ifi_broadaddr) {
+		sockfree(ifi->ifi_broadaddr);
+		ifi->ifi_broadaddr = (sockaddr_un *) 0;
+	    }
+
+	    goto Return;
+	}
+    } IF_LIST_END(ifp) ;
+
+    /* New address */
+    trace(TR_INT, 0, "if_conf_addaddr: new interface %A/%s",
+	  ifi->ifi_addr,
+	  ifi->ifi_link->ifl_name);
+
+    ifp = if_alloc(if_create());
+
+    ifp->int_info = *ifi;	/* struct copy */
+    ifi->ifi_addr = (sockaddr_un *) 0;
+    ifi->ifi_lcladdr = (sockaddr_un *) 0;
+    ifi->ifi_broadaddr = (sockaddr_un *) 0;
+
+    /* Count this reference to the link level interface */
+    ifp->int_link->ifl_refcount++;
+
+    /* Flag it as changed */
+    BIT_SET(ifp->int_state, IFS_CHANGE);
+
+    /* Set default preferences */
+    ifp->int_preference = RTPREF_DIRECT;
+    ifp->int_preference_down = RTPREF_DIRECT_DOWN;
+
+    if (BIT_TEST(ifp->int_state, IFS_LOOPBACK) ||
+	sockaddrcmp(ifp->int_addr, inet_addr_loopback)) {
+	/* Loopback net is never aged and is not counted towards total interfaces */
+	BIT_SET(ifp->int_state, IFS_NOAGE | IFS_LOOPBACK);
+	n_interfaces--;
+    }
+
+    switch (socktype(ifp->int_addr)) {
+    case AF_INET:
+	/* Set the router id if this is not the loopback interface */
+	if (!rt_inet_routerid &&
+	    BIT_COMPARE(ifp->int_state, IFS_UP|IFS_LOOPBACK, IFS_UP)) {
+	    rt_inet_routerid = sockdup(ifp->int_lcladdr);
+	}
+
+	/* Calculate the natural netmask */
+	ifp->int_net = sockdup(ifp->int_addr);
+	ifp->int_netmask = inet_mask_natural(ifp->int_net);
+	if (!ifp->int_netmask) {
+	    trace(TR_ALL, LOG_ERR, "if_conf_addaddr: Unknown class for interface %A(%s)",
+		  ifp->int_addr,
+		  ifp->int_name);
+	    task_quit(EINVAL);
+	}
+	sockaddrmask_in(ifp->int_net, ifp->int_netmask);
+
+	/* Calculate the subnet */
+	if (BIT_TEST(ifp->int_state, IFS_LOOPBACK)) {
+	    /* Loopback host */
+
+	    if (sockaddrcmp(ifp->int_addr, inet_addr_loopback)) {
+		/* The 127.0.0.1 host needs to generate the 127/255 reject network */
+
+		ifp->int_subnet = ifp->int_net;
+		ifp->int_subnetmask = ifp->int_netmask;
+	    } else {
+		/* Just a host route */
+		
+		ifp->int_subnet = (sockaddr_un *) 0;
+		ifp->int_subnetmask = inet_mask_host;
+	    }
+	} else if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    /* Check the mask to see if it looks valid */
+
+	    if (ifp->int_subnetmask == ifp->int_netmask ||
+		ifp->int_subnetmask == inet_mask_host) {
+		/* Mask is not valid, assume host mask */
+
+		ifp->int_subnet = (sockaddr_un *) 0;
+		ifp->int_subnetmask = inet_mask_host;
+	    }
+	} else if (ifp->int_subnetmask != ifp->int_netmask) {
+	    /* This net is subnetted */
+
+	    /* XXX - This needs thought for supernetting */
+	    BIT_SET(ifp->int_state, IFS_SUBNET);
+	    ifp->int_subnet = sockdup(ifp->int_addr);
+	    sockmask(ifp->int_subnet, ifp->int_subnetmask);
+	} else {
+	    /* This net is not subnetted */
+	    
+	    ifp->int_subnet = ifp->int_net;
+	}
+	break;
+    }
+
+    if_insert(ifp);
+	
+    if_display(ifp, "if_conf_addaddr", 0);
+    
+ Return:
+    ifi->ifi_subnetmask = (sockaddr_un *) 0;
+
+    trace(TR_INT, 0, NULL);
+    
+}
+
+
+void
+if_conf_deladdr __PF2(tp, task *,
+		      ifi, if_info *)
+{
+    register if_entry *ifp;
+
+    assert(tp == if_conf_task);
+    trace(TR_INT, 0, "if_conf_deladdr: DELETE by %s",
+	  task_name(tp));
+    
+    IF_LIST(ifp) {
+	if (sockaddrcmp(ifp->int_addr, ifi->ifi_addr) &&
+	    ifp->int_index == ifi->ifi_link->ifl_index) {
+	    if (BIT_TEST(ifp->int_state, IFS_UP)) {
+		/* Up - mark it down */
+
+		trace(TR_INT, 0, "if_conf_deladdr: deleting %A/%s",
+		      ifp->int_addr,
+		      ifp->int_name);
+		BIT_RESET(ifp->int_state, IFS_UP);
+		BIT_SET(ifp->int_state, IFS_CHANGE);
+	    } else {
+		/* Already marked down - indicate we saw it */
+
+		BIT_SET(ifp->int_state, IFS_REFRESH);
+	    }
+	    return;
+	}
+    } IF_LIST_END(ifp) ;
+
+    trace(TR_INT, 0, "if_conf_deladdr: %A/%s not found",
+	  ifi->ifi_addr,
+	  ifi->ifi_link->ifl_name);
+}
+
+/**/
+/* Support for pre-configured interfaces */
+
+int
+if_parse_add __PF2(ifi2, if_info *,
+		   parse_error, char *)
+{
+    if_info *ifi = (if_info *) task_block_alloc(int_info_block_index);
+
+    /* XXX - Check for duplicates */
+
+    *ifi = *ifi2;	/* struct copy */
+
+    /* Mark it up so ifi_with*() routines don't ignore it */
+    BIT_SET(ifi->ifi_state, IFS_UP);
+
+    insque((struct qelem *) ifi,
+	   (struct qelem *) if_config.ifi_back);
+
+    return FALSE;
+}
+
+
+/* Remove all preconfigured interfaces */
+static void
+if_parse_clear __PF0(void)
+{
+    if_info *ifi;
+    
+    IF_INFO(ifi, &if_config) {
+	if_info *ifi2 = ifi->ifi_back;
+
+	remque((struct qelem *) ifi);
+
+	task_block_free(int_info_block_index, (void_t) ifi);
+
+	ifi = ifi2;
+    } IF_INFO_END(ifi, &if_config) ;
+}
+
+/**/
+
+/* Code for dealing with physical interfaces */
+
+static void
+ifl_insert __PF1(new_iflp, if_link *)
+{
+    register if_link *iflp = if_plist.ifl_forw;
+
+    if (iflp == &if_plist) {
+	/* First interface */
+
+	iflp = if_plist.ifl_back;
+    } else {
+	/* Insert in order by index */
+
+	do {
+	    if (new_iflp->ifl_index < iflp->ifl_index) {
+		break;
+	    }
+	} while ((iflp = iflp->ifl_forw) != &if_plist) ;
+
+	iflp = iflp->ifl_back;
+    }
+
+    insque((struct qelem *) new_iflp,
+	   (struct qelem *) iflp);
+}
+
+if_link *
+ifl_locate __PF1(indx, int)
+{
+    if_link *iflp;
+
+    IF_LINK(iflp) {
+	if (iflp->ifl_index == indx) {
+	    return iflp;
+	}
+    } IF_LINK_END(iflp) ;
+
+    return (if_link *) 0;
+}
+
+
+if_link *
+ifl_addup __PF5(tp, task *,
+		state, flag_t,
+		metric, metric_t,
+		mtu, mtu_t,
+		addr, sockaddr_un *)
+{
+    if_link *iflp;
+    const char *msg = (char *) 0;
+
+    assert(tp == if_conf_task);
+
+    if (iflp = ifl_locate(addr->dl.sdl_index)) {
+	assert(!strncmp(addr->dl.sdl_data, iflp->ifl_name, addr->dl.sdl_nlen));
+
+	if (!BIT_MASK_MATCH(iflp->ifl_state, state, IFS_UP)) {
+	    if_entry *ifp;
+	    
+	    msg = "CHANGE";
+
+	    if (BIT_TEST(iflp->ifl_state, IFS_UP)) {
+		/* Up to down */
+
+		iflp->ifl_transitions++;
+
+		IF_LIST(ifp) {
+		    if (ifp->int_link == iflp) {
+			BIT_RESET(ifp->int_state, IFS_UP);
+			BIT_SET(ifp->int_state, IFS_CHANGE);
+		    }
+		} IF_LIST_END(ifp) ;
+	    } else {
+		/* Down to up */
+
+		IF_LIST(ifp) {
+		    if (ifp->int_link == iflp) {
+			BIT_SET(ifp->int_state, IFS_UP|IFS_CHANGE);
+		    }
+		} IF_LIST_END(ifp) ;
+	    }
+	    
+	}
+	sockfree(iflp->ifl_dl);
+	iflp->ifl_dl = sockdup(addr);
+	goto Copy;
+    }
+
+    iflp = (if_link *) task_block_alloc(int_link_block_index);
+
+    iflp->ifl_dl = sockdup(addr);
+    ifl_insert(iflp);
+
+    msg = "ADD";
+
+Copy:
+    iflp->ifl_state = state | IFS_INTERFACE;
+    iflp->ifl_metric = metric;
+    iflp->ifl_mtu = mtu;
+    strncpy(iflp->ifl_name, iflp->ifl_dl->dl.sdl_data, iflp->ifl_dl->dl.sdl_nlen);
+    iflp->ifl_name[IFNAMSIZ] = (char) 0;
+    iflp->ifl_addr = (byte *) iflp->ifl_dl->dl.sdl_data + iflp->ifl_dl->dl.sdl_nlen;
+    iflp->ifl_sel = iflp->ifl_addr + iflp->ifl_dl->dl.sdl_alen;
+
+    if (msg) {
+	trace(TR_INT, 0, "ifl_addup: %-5s %#A state <%s> metric %d mtu %d",
+	      msg,
+	      iflp->ifl_dl,
+	      trace_bits(if_state_bits, iflp->ifl_state),
+	      iflp->ifl_metric,
+	      iflp->ifl_mtu);
+	trace(TR_INT, 0, NULL);
+    }
+
+    return iflp;
+}
+
+
+#else	/* DYNAMIC_INTERFACES */
+
+
+/**/
+/* Shared routine to get interface info.  Shared by if_ifread() and */
+/* by if_check() */
+static void
+if_getinfo __PF3(tp, task *,
+		 ifp, if_entry *,
+		 ifrp, struct ifreq *)
+{
+    /* get interface metric */
+#if	defined(SIOCGIFMETRIC) && defined(ifr_metric)
+    if (task_ioctl(tp->task_socket, SIOCGIFMETRIC, (caddr_t) ifrp, sizeof (*ifrp)) < 0) {
+	trace(TR_ALL, LOG_ERR, "if_getinfo: %s: ioctl SIOCGIFMETRIC: %m",
+	      ifp->int_name);
+	task_quit(errno);
+    }
+    ifp->int_metric_kernel = ifp->int_metric = (ifrp->ifr_metric >= 0) ? ifrp->ifr_metric : 0;
+#else	/* defined(SIOCGIFMETRIC) && defined(ifr_metric) */
+    ifp->int_metric_kernel = ifp->int_metric = 0;
+#endif	/* defined(SIOCGIFMETRIC) && defined(ifr_metric) */
+
+    /* Get the destination address for point-to-point interfaces */
+    if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	if (task_ioctl(tp->task_socket, SIOCGIFDSTADDR, (caddr_t) ifrp, sizeof (*ifrp)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "if_getinfo: %s: ioctl SIOCGIFDSTADDR: %m",
+		  ifp->int_name);
+	    task_quit(errno);
+	}
+	ifp->int_addr = sockdup(sock2gated(&ifrp->ifr_dstaddr, unix_socksize(&ifrp->ifr_dstaddr)));
+    }
+
+    /* Calculate the natural netmask */
+    ifp->int_net = sockdup(ifp->int_addr);
+    ifp->int_netmask = inet_mask_natural(ifp->int_net);
+    if (!ifp->int_netmask) {
+	trace(TR_ALL, LOG_ERR, "if_getinfo: Unknown class for interface %A(%s)",
+	      ifp->int_addr,
+	      ifp->int_name);
+	task_quit(EINVAL);
+    }
+    sockaddrmask_in(ifp->int_net, ifp->int_netmask);
+
+    /* Calculate or get the subnetmask */
+    if (BIT_TEST(ifp->int_state, IFS_LOOPBACK)) {
+	/* Loopback host */
+	    
+	if (sockaddrcmp(ifp->int_addr, inet_addr_loopback)) {
+	    /* The 127.0.0.1 host needs to generate the 127/255 network */
+
+	    ifp->int_subnet = ifp->int_net;
+	    ifp->int_subnetmask = ifp->int_netmask;
+	} else {
+	    /* Just a host route */
+
+	    ifp->int_subnet = (sockaddr_un *) 0;
+	    ifp->int_subnetmask = inet_mask_host;
+	}
+    } else {
+	/* Not the loopback */
+
+#ifdef	SIOCGIFNETMASK
+	if (task_ioctl(tp->task_socket, SIOCGIFNETMASK, (caddr_t) ifrp, sizeof (*ifrp)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "if_getinfo: %s: ioctl SIOGIFNETMASK: %m",
+		  ifp->int_name);
+	    task_quit(errno);
+	}
+#ifdef	SOCKET_LENGTHS
+	/* Masks don't have an address family specified */
+	if (ifrp->ifr_addr.sa_family == AF_UNSPEC) {
+	    ifrp->ifr_addr.sa_family = socktype(ifp->int_addr);
+	}
+#endif	/* SOCKET_LENGTHS */
+	ifp->int_subnetmask = mask_locate(sock2gated(&ifrp->ifr_addr, unix_socksize(&ifrp->ifr_addr)));
+	if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    if (ifp->int_subnetmask == ifp->int_netmask ||
+		ifp->int_subnetmask == inet_mask_host) {
+		/* Just a host route */
+
+		ifp->int_subnet = (sockaddr_un *) 0;
+		ifp->int_subnetmask = inet_mask_host;
+	    }
+	} else if (ifp->int_subnetmask == ifp->int_netmask ||
+		   (BIT_TEST(ifp->int_state, IFS_POINTOPOINT) &&
+		    !sockaddrcmp_mask(ifp->int_addr, ifp->int_lcladdr, ifp->int_subnetmask))) {
+	    /* Not subnetted */
+
+	    ifp->int_subnet = ifp->int_net;
+	} else {
+	    /* Subnetted */
+
+	    BIT_SET(ifp->int_state, IFS_SUBNET);
+	    ifp->int_subnet = sockdup(ifp->int_addr);
+	    sockaddrmask_in(ifp->int_subnet, ifp->int_subnetmask);
+	}
+#else	/* SIOCGIFNETMASK */
+	if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    /* Just a host route */
+
+	    ifp->int_subnet = (sockaddr_un *) 0;
+	    ifp->int_subnetmask = inet_mask_host;
+	} else {
+	    /* No subnetting */
+
+	    ifp->int_subnetmask = ifp->int_netmask;
+	    ifp->int_subnet = ifp->int_net;
+	}
+#endif	/* SIOCGIFNETMASK */
+    }
+
+    /* Get the broadcast address for broadcast interfaces */
+    if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+#ifdef SIOCGIFBRDADDR
+	if (task_ioctl(tp->task_socket, SIOCGIFBRDADDR, (caddr_t) ifrp, sizeof (*ifrp)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "if_getinfo: %s: ioctl SIOGIFBRDADDR: %m",
+		  ifp->int_name);
+	    task_quit(errno);
+	}
+	ifp->int_broadaddr = sockdup(sock2gated(&ifrp->ifr_broadaddr, unix_socksize(&ifrp->ifr_broadaddr)));
+#else	/* !SIOCGIFBRDADDR */
+	/* Assume a 4.2 based system with a zeros broadcast */
+	ifp->int_broadaddr = ifp->int_net;
+#endif	/* SIOCGIFBRDADDR */
+    }
+}
+
+
+/* if_ifread() determines addresses and names of internet interfaces configured.
+ * Results returned in global linked list of interface tables.
+ * The interface names are required for later ioctl calls re interface status.
+ *
+ */
+
+/*ARGSUSED*/
+static void
+if_ifread __PF1(tp, task *)
+{
+    int if_index = 0;
+#ifndef	SOCKADDR_DL
+    char *last_name = 0;
+#endif	/* SOCKADDR_DL */
+    caddr_t limit;
+    struct ifconf *ifconf_req;
+    if_entry *ifp;
+    struct ifreq *ifrp;
+
+    /*
+     * get interface configuration.
+     */
+#define	IFCONF_BUFSIZE	(40 * sizeof(struct ifreq) + 1)		/* ioctl assumes > size ifreq */
+    ifconf_req = (struct ifconf *) task_block_malloc(IFCONF_BUFSIZE + sizeof (struct ifconf));
+    ifconf_req->ifc_buf = (caddr_t) (ifconf_req + 1);
+    ifconf_req->ifc_len = IFCONF_BUFSIZE;
+
+    if (task_ioctl(tp->task_socket,
+		   SIOCGIFCONF,
+#ifdef	SYSVR4
+		   (caddr_t) ifconf_req->ifc_buf,
+#else	/* SYSVR4 */
+		   (caddr_t) ifconf_req,
+#endif	/* SYSVR4 */
+		   ifconf_req->ifc_len) < 0) {
+	trace(TR_ALL, LOG_ERR, "if_ifread: ioctl SIOCGIFCONF: %m");
+	task_quit(errno);
+    }
+
+#define	ifrpsize(x) ((unix_socksize(&(x)->ifr_addr) > sizeof((x)->ifr_addr)) ? \
+    	sizeof(*(x)) + unix_socksize(&(x)->ifr_addr) - sizeof((x)->ifr_addr) : sizeof(*(x)))
+
+    limit = ifconf_req->ifc_buf + ifconf_req->ifc_len;
+    n_interfaces = 0;
+    for (ifrp = ifconf_req->ifc_req;
+	 (caddr_t) ifrp < limit;
+	 ifrp = (struct ifreq *) ((void_t) ((caddr_t) ifrp + ifrpsize(ifrp)))) {
+
+#ifdef	SYSVR4
+	if (!*ifrp->ifr_name) {
+	    continue;
+	}
+#endif	/* SYSVR4 */
+	
+	tracef("if_ifread: interface name %s",
+	      ifrp->ifr_name);
+	if (unix_socksize(&ifrp->ifr_addr)) {
+	    tracef(" address %A",
+		  sock2gated(&ifrp->ifr_addr, unix_socksize(&ifrp->ifr_addr)));
+	}
+	trace(TR_INT, 0, NULL);
+	trace(TR_INT, 0, NULL);
+
+#ifndef	SOCKADDR_DL
+	/* If this is a new interface, bump the index */
+	if (!last_name || strcmp(ifrp->ifr_name, last_name)) {
+	    if_index++;
+	    last_name = ifrp->ifr_name;
+	}
+#else	/* SOCKADDR_DL */
+	if (ifrp->ifr_addr.sa_family == AF_LINK) {
+	    if_index = ((struct sockaddr_dl *) ((void_t) &ifrp->ifr_addr))->sdl_index;
+	}
+#endif	/* SOCKADDR_DL */
+
+	if (ifrp->ifr_addr.sa_family != AF_INET) {
+	    continue;
+	}
+	ifp = if_alloc(if_create());
+
+	ifp->int_index = if_index;
+	if (if_index > int_index_max) {
+	    int_index_max = if_index;
+	}
+
+	/* Copy the interface address */
+	ifp->int_lcladdr = ifp->int_addr = sockdup(sock2gated(&ifrp->ifr_addr, unix_socksize(&ifrp->ifr_addr)));
+
+	/* save name for future ioctl calls */
+	(void) strncpy(ifp->int_name, ifrp->ifr_name, IFNAMSIZ);
+	ifp->int_name[IFNAMSIZ] = (char) 0;
+
+	/* Get interface flags */
+	if (task_ioctl(tp->task_socket, SIOCGIFFLAGS, (char *) ifrp, sizeof (*ifrp)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "if_ifread: %s: ioctl SIOCGIFFLAGS: %m",
+		  ifp->int_name);
+	    task_quit(errno);
+	}
+	/*
+         * Mask off flags that we don't understand as some systems use
+         * them differently than we do.
+         */
+	ifp->int_state = IFS_INTERFACE | if_flags(ifrp->ifr_flags);
+	if (BIT_TEST(ifp->int_state, IFS_LOOPBACK) || sockaddrcmp(ifp->int_addr, inet_addr_loopback)) {
+	    /* Loopback net is never aged and is not counted towards total interfaces */
+	    BIT_SET(ifp->int_state, IFS_NOAGE | IFS_LOOPBACK);
+	    n_interfaces--;
+	}
+
+	/* Set the default interface preferences */
+	ifp->int_preference = RTPREF_DIRECT;
+	ifp->int_preference_down = RTPREF_DIRECT_DOWN;
+
+	/*
+         * if interface is marked down, we will include it and try again
+         * later.
+         */
+
+	/* get interface mtu - first make an assumption, then see if the system can tell us more */
+	if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    /* Compressed SLIP interfaces use 256, it can't really hurt to specify it */
+	    /* too low. */
+	    ifp->int_mtu = 256;
+	} else if (BIT_TEST(ifp->int_state, IFS_LOOPBACK)) {
+	    /* Loopback interfaces use more */
+	    ifp->int_mtu = 1536;
+	} else if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+	    /* Assume an Ethernet */
+	    ifp->int_mtu = 1500;
+	} else {
+	    /* Assume something safe */
+	    ifp->int_mtu = 576;
+	}
+#ifdef	SIOCGIFMTU
+#ifndef	ifr_mtu
+#define	ifr_mtu	ifr_metric
+#endif
+	if (task_ioctl(tp->task_socket, SIOCGIFMTU, (char *) ifrp, sizeof (*ifrp)) < 0) {
+	    trace(TR_ALL, 0, "if_ifread: %s: ioctl SIOCGIFMTU: %m",
+		  ifp->int_name);
+	} else {
+	    ifp->int_mtu = ifrp->ifr_mtu;
+	}
+#endif	/* SIOCGIFMTU */
+	/* Remember the minimum and maximum MTU's */
+	if (int_mtu_min > ifp->int_mtu) {
+	    int_mtu_min = ifp->int_mtu;
+	}
+	if (int_mtu_max < ifp->int_mtu) {
+	    int_mtu_max = ifp->int_mtu;
+	}
+
+	/* Get the rest of the interface info */
+	if_getinfo(tp, ifp, ifrp);
+
+	/* Set the router id if this is not the loopback interface */
+	if (BIT_TEST(ifp->int_state, IFS_UP) &&
+	    !BIT_TEST(ifp->int_state, IFS_LOOPBACK) &&
+	    !rt_inet_routerid) {
+	    rt_inet_routerid = sockdup(ifp->int_lcladdr);
+	}
+	
+	/* Add new interface to the end of the interface list */
+	if_insert(ifp);
+
+	if_display(ifp, "if_ifread", 0);
+    }
+
+    if (!n_interfaces) {
+	trace(TR_ALL, LOG_ERR, "if_ifread: Exit no interfaces");
+	task_quit(ENOENT);
+    }
+    task_block_reclaim(IFCONF_BUFSIZE + sizeof (struct ifconf), (caddr_t) ifconf_req);
+
+    if_dupcheck();
+
+    rt_close(tp, (gw_entry *) 0, 0, NULL);
+}
+
+
+/*
+ * if_check() checks the current status of all interfaces
+ * If any interface has changed status, then the interface values
+ * are re-read from the kernel and re-set.
+ */
+
+/*ARGSUSED*/
+void
+if_check __PF1(tp, task *)
+{
+    register if_entry *ifp;
+    struct ifreq ifrequest;
+
+    rt_open(tp);
+
+    IF_LIST(ifp) {
+	(void) strncpy(ifrequest.ifr_name, ifp->int_name, IFNAMSIZ);
+
+	/* get interface status flags */
+	if (task_ioctl(tp->task_socket, SIOCGIFFLAGS, (char *) &ifrequest, sizeof (ifrequest)) < 0) {
+	    trace(TR_ALL, LOG_ERR, "if_check: %s: ioctl SIOCGIFFLAGS: %m",
+		  ifp->int_name);
+	    switch (errno) {
+	    case ENXIO:
+		if (BIT_TEST(ifp->int_state, IFS_UP)) {
+		    BIT_RESET(ifp->int_state, IFS_UP);
+		    BIT_SET(ifp->int_state, IFS_CHANGE);
+		}
+		break;
+
+	    default:
+		task_quit(errno);
+	    }
+	} else if (BIT_MATCH(ifrequest.ifr_flags, IFF_UP) == BIT_MATCH(ifp->int_state, IFS_UP)){
+	    /* No change, check for timeout */
+
+	    if (BIT_TEST(ifp->int_state, IFS_UP) &&
+		!BIT_TEST(ifp->int_state, IFS_NOAGE) &&
+		ifp->int_rt->rt_timer >= ifp->int_rt->rt_gwp->gw_timer_max) {
+		/* Declare the interface down */
+
+		if_rtdown(ifp);
+	    }
+	} else {
+	    /* State transition */
+
+	    ifp->int_state = if_flags(ifrequest.ifr_flags) | BIT_TEST(ifp->int_state, IFS_KEEPMASK) | IFS_CHANGE;;
+	}
+
+	if (!BIT_TEST(ifp->int_state, IFS_CHANGE)) {
+	    continue;
+	}
+
+	if (BIT_TEST(ifrequest.ifr_flags, IFF_UP)) {
+	    /* Transition to up */
+
+	    /* Free the old addresses */
+	    if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+		if (ifp->int_broadaddr
+#ifndef SIOCGIFBRDADDR
+		    && ifp->int_broadaddr != ifp->int_net
+#endif	/* SIOCGIFBRDADDR */
+		    ) {
+		    sockfree(ifp->int_broadaddr);
+		    ifp->int_broadaddr = (sockaddr_un *) 0;
+		}
+	    } else if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+		if (ifp->int_lcladdr) {
+		    sockfree(ifp->int_lcladdr);
+		    ifp->int_lcladdr = (sockaddr_un *) 0;
+		}
+	    }
+	    if (ifp->int_subnet &&
+		ifp->int_subnet != ifp->int_net) {
+		sockfree(ifp->int_subnet);
+		ifp->int_subnet = (sockaddr_un *) 0;
+	    }
+	    if (ifp->int_net) {
+		sockfree(ifp->int_net);
+		ifp->int_net = (sockaddr_un *) 0;
+	    }
+	    /* Masks are referenced, not allocated */
+	    ifp->int_subnetmask = ifp->int_netmask = (sockaddr_un *) 0;
+
+	    /* Get the interface address */
+	    if (task_ioctl(tp->task_socket, SIOCGIFADDR, (char *) &ifrequest, sizeof (ifrequest)) < 0) {
+		trace(TR_ALL, LOG_ERR, "if_check: %s: ioctl SIOCGIFADDR: %m",
+		      ifp->int_name);
+		task_quit(errno);
+	    }
+	    ifp->int_lcladdr = ifp->int_addr = sockdup(sock2gated(&ifrequest.ifr_addr, unix_socksize(&ifrequest.ifr_addr)));
+
+	    /* Get the rest of the interface info */
+	    if_getinfo(tp, ifp, &ifrequest);
+
+	    trace(TR_INT, LOG_NOTICE, "if_check: %s, address %A up",
+		  ifp->int_name,
+		  ifp->int_addr);
+	    if_display(ifp, "if_check", 0);
+	} else {
+	    /* Transition to down */
+
+	    trace(TR_INT, LOG_NOTICE, "if_check: %s, address %A down",
+		  ifp->int_name,
+		  ifp->int_addr);
+	}
+    } IF_LIST_END(ifp) ;
+
+    rt_close(tp, (gw_entry *) 0, 0, NULL);
+    
+    if_dupcheck();
+
+    IF_LIST(ifp) {
+	if (BIT_TEST(ifp->int_state, IFS_CHANGE)) {
+	    BIT_RESET(ifp->int_state, IFS_CHANGE);
+	    task_ifchange(ifp, BIT_TEST(ifp->int_state, IFS_UP) ? IFC_ADD : IFC_DELETE);
+	}
+    } IF_LIST_END(ifp) ;
+    
+    return;
+}
+
+
+/* Periodic interface job, call if_check */
+static void
+if_job __PF2(tip, timer *,
+	     interval, time_t)
+{
+    if_check(tip->timer_task);
+}
+#endif	/* DYNAMIC_INTERFACES */
+
+
+/*
+ *	Dump the interface list
+ */
+static void
+if_dump __PF2(tp, task *,
+	      fd, FILE *)
+{
+#ifdef	DYNAMIC_INTERFACES
+    if_link *iflp;
+#endif	/* DYNAMIC_INTERFACES */
+    if_entry *ifp;
+
+    /*
+     * Print out all of the interface stuff.
+     */
+    (void) fprintf(fd,
+		   "\tInterfaces: %d (does not include loopback interface)\n",
+		   n_interfaces);
+    (void) fprintf(fd,
+		   "\t\tMinimum MTU %d\tMaximum MTU %d\n",
+		   int_mtu_min,
+		   int_mtu_max);
+    if (if_rtactive) {
+	int i = RTPROTO_MAX;
+
+	(void) fprintf(fd,
+		       "\t\tRouting protocols active:");
+	while (i--) {
+	    if (BIT_TEST(if_rtactive, RTPROTO_BIT(i))) {
+		(void) fprintf(fd,
+			       " %s",
+			       trace_state(rt_proto_bits, i));
+	    }
+	} ;
+	(void) fprintf(fd,
+		       "\n");
+    }
+#ifdef	DYNAMIC_INTERFACES
+    (void) fprintf(fd,
+		   "\n\tPhysical interfaces:\n\n");
+
+    IF_LINK(iflp) {
+	(void) fprintf(fd, "\t%#A\tState: <%s>\n",
+		       iflp->ifl_dl,
+		       trace_bits(if_state_bits, iflp->ifl_state));
+	(void) fprintf(fd, "\t\tRefcount: %d\tMetric: %d\t MTU: %d\tUp-down transitions: %u\n",
+		       iflp->ifl_refcount,
+		       iflp->ifl_metric,
+		       iflp->ifl_mtu,
+		       iflp->ifl_transitions);
+	(void) fprintf(fd, "\n");
+    } IF_LINK_END(iflp) ;
+
+    (void) fprintf(fd, "\n\tProtocol Addresses:\n\n");
+#else	/* DYNAMIC_INTERFACES */
+    (void) fprintf(fd, "\n");
+#endif	/* DYNAMIC_INTERFACES */
+
+    IF_LIST(ifp) {
+	(void) fprintf(fd, "\t%A\n\t\tName: %s\tMetric: %d\tMTU: %d\n",
+		       ifp->int_addr,
+		       ifp->int_name,
+		       ifp->int_metric,
+		       ifp->int_mtu);
+	(void) fprintf(fd, "\t\tRefcount: %d\tPreference: %d\tDown: %d\n",
+		       ifp->int_refcount,
+		       ifp->int_preference,
+		       ifp->int_preference_down);
+	(void) fprintf(fd, "\t\tFlags: <%s>\n", trace_bits(if_state_bits, ifp->int_state));
+	if (BIT_TEST(ifp->int_state, IFS_BROADCAST)) {
+	    (void) fprintf(fd, "\t\tBroadcast Address:   %A\n",
+			   ifp->int_broadaddr);
+	}
+	if (BIT_TEST(ifp->int_state, IFS_POINTOPOINT)) {
+	    (void) fprintf(fd, "\t\tLocal Address: %A\n",
+			   ifp->int_lcladdr);
+	}
+	(void) fprintf(fd, "\t\tNet Number:    %A\t\tNet Mask:    %A\n",
+		       ifp->int_net,
+		       ifp->int_netmask);
+
+	if (BIT_TEST(ifp->int_state, IFS_SUBNET)) {
+	    (void) fprintf(fd, "\t\tSubnet Number: %A\t\tSubnet Mask: %A\n",
+			   ifp->int_subnet,
+			   ifp->int_subnetmask);
+	} else if (ifp->int_subnetmask) {
+	    (void) fprintf(fd, "\t\tSubnet Mask: %A\n",
+			   ifp->int_subnetmask);
+	}
+	(void) fprintf(fd, "\n");
+    } IF_LIST_END(ifp) ;
+
+    /* Dump policy */
+    if (int_control) {
+	(void) fprintf(fd,
+		       "\tInterface policy:\n");
+	control_interface_dump(fd, 2, int_control);
+    }
+}
+
+
+static void
+if_reinit __PF1(tp, task *)
+{
+    static int init = TRUE;
+    if_entry *ifp;
+
+    if (init) {
+	/* First time through, add routes to the interfaces */
+	trace(TR_RT, 0, NULL);
+	trace(TR_RT, 0, "if_reinit: interface routes:");
+    }
+
+    rt_open(tp);
+    
+    IF_LIST(ifp) {
+	if (BIT_TEST(ifp->int_state, IFS_UP)) {
+	    if (if_control(ifp, "if_reinit policy") || init) {
+		/* Policy changes */
+
+		if_rtup(ifp);
+	    }
+	}
+    } IF_LIST_END(ifp) ;
+
+    rt_close(if_task, (gw_entry *) 0, n_interfaces + 1, NULL);
+
+    /* Only init the first time */
+    init = FALSE;
+}
+
+
+static void
+if_cleanup __PF1(tp, task *)
+{
+    /* Release policy list */
+    adv_free_list(int_control);
+    int_control = (adv_entry *) 0;
+
+#ifdef	DYNAMIC_INTERFACES
+    /* Remove the preconfigured interfaces */
+    if_parse_clear();
+#endif	/* DYNAMIC_INTERFACES */
+}
+
+
+static void
+if_ifchange __PF3(tp, task *,
+		  ifp, if_entry *,
+		  code, int)
+{
+
+    rt_open(tp);
+
+    switch (code) {
+    case IFC_ADD:
+	if (!BIT_TEST(task_state, TASKS_INIT)) {
+	    /* If we are already running, evaluate policy */
+
+	    if_control(ifp, "if_ifchange");
+	}
+	if_rtup(ifp);
+	break;
+	
+    case IFC_DELETE:
+	if_rtdelete(ifp);
+	break;
+
+    case IFC_UP:
+    case IFC_DOWN:
+	break;
+	
+    }
+
+    rt_close(tp, (gw_entry *) 0, 0, NULL);
+}
+
+
+/*
+ *	Initialize task for interface check
+ */
+void
+if_init __PF0(void)
+{
+    int save_task_state = task_state;
+
+    /* Normal state so we will actually get a socket */
+
+    if_task = task_alloc("IF", TASKPRI_INTERFACE);
+    if_task->task_rtproto = RTPROTO_DIRECT;
+
+    BIT_RESET(task_state, TASKS_INIT|TASKS_TEST);
+    if_task->task_socket = task_get_socket(PF_INET, SOCK_DGRAM, 0);
+    if (if_task->task_socket < 0) {
+	task_quit(errno);
+    }
+    task_state = save_task_state;
+
+    if_task->task_dump = if_dump;
+    if_task->task_cleanup = if_cleanup;
+    if_task->task_reinit = if_reinit;
+    if_task->task_n_timers = IF_TIMER_MAX;
+    if_task->task_ifchange = if_ifchange;
+
+    if (!task_create(if_task)) {
+	task_quit(EINVAL);
+    }
+
+    int_rtparms.rtp_gwp = gw_init((gw_entry *) 0,
+			      if_task->task_rtproto,
+			      if_task,
+			      (as_t) 0,
+			      (as_t) 0,
+			      IF_T_TIMEOUT,
+			      (sockaddr_un *) 0);
+    
+    int_block_index = task_block_init(sizeof (if_entry));
+    int_info_block_index = task_block_init(sizeof (if_info));
+#ifdef	DYNAMIC_INTERFACES
+    int_link_block_index = task_block_init(sizeof (if_link));
+
+#else	/* DYNAMIC_INTERFACES */
+
+    (void) timer_create(if_task,
+			IF_TIMER_CHECK,
+			"Check",
+			0,
+			(time_t) IF_T_CHECK,
+			(time_t) 0,
+			if_job,
+			(void_t) 0);
+
+    if_ifread(if_task);
+#endif	/* DYNAMIC_INTERFACES */
+}

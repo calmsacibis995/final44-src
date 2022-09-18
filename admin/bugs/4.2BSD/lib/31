@@ -1,0 +1,81 @@
+Return-Path: <kwlalonde%waterloo.csnet@csnet-relay.arpa>
+Date: Fri, 11 Apr 86 00:39:25 est
+From: Ken Lalonde <kwlalonde%waterloo.csnet@csnet-relay.arpa>
+Subject: C optimizer can generate incorrect code for "*p++ & 1"
+Index: 	lib/c2/c21.c 4.2BSD Fix
+
+Description:
+	The optimizer tries to replace a single bit AND operation
+	followed by a jump with a jump-on-bit-set, that is
+
+		bitb power-of-2,x	=>	jbc log2(p2),x,Label
+		jxx Label
+	
+	C2 also checks for the special case p2 == 1, and replaces
+
+		jbc $0,x,Label	=>	jlbc x,Label
+	
+	Now, bitb and jbc consider "x" to be a byte quantity,
+	but "jlbc" wants a longword.  If "x" involves autoincrement
+	or autodecrement, the second optimization is wrong.
+
+Repeat-By:
+	Compile this with and without the optimizer:
+	
+	main()
+	{
+		register char *p = "01234";
+
+		if (*p++ & 1)
+			;
+		if (*p != '1')
+			printf("p = %c, should be 1\n", *p);
+	}
+
+Fix:
+	Don't apply the jlbc replacement if autoincrement/decrement is
+	used.  The autoid() function below is from a previous
+	bug fix by chris@maryland.
+
+*** /usr/distr/4.2/usr/src/lib/c2/c21.c	Tue Jun  8 23:59:06 1982
+--- ./c21.c	Thu Apr 10 23:48:51 1986
+***************
+*** 740,746
+  	if (cp1=p->forw->code) {/* destination is not an internal label */
+  		cp2=regs[RT3]; while (*cp2++= *cp1++);
+  	}
+! 	if (b==0 && (p->subop==LONG || !indexa(regs[RT2]))) {/* JLB optimization, ala BLISS */
+  		cp2=regs[RT1]; cp1=regs[RT2]; while (*cp2++= *cp1++);
+  		cp2=regs[RT2]; cp1=regs[RT3]; while (*cp2++= *cp1++);
+  		*(regs[RT3])=0; p->forw->subop += JLBC-JBC;
+
+--- 744,750 -----
+  	if (cp1=p->forw->code) {/* destination is not an internal label */
+  		cp2=regs[RT3]; while (*cp2++= *cp1++);
+  	}
+! 	if (b==0 && (p->subop==LONG || !autoid(regs[RT2]) && !indexa(regs[RT2]))) {/* JLB optimization, ala BLISS */
+  		cp2=regs[RT1]; cp1=regs[RT2]; while (*cp2++= *cp1++);
+  		cp2=regs[RT2]; cp1=regs[RT3]; while (*cp2++= *cp1++);
+  		*(regs[RT3])=0; p->forw->subop += JLBC-JBC;
+***************
+*** 1361,1366
+  
+  indexa(p) register char *p; {/* 1-> uses [r] addressing mode; 0->doesn't */
+  	while (*p) if (*p++=='[') return(1);
+  	return(0);
+  }
+  
+
+--- 1392,1404 -----
+  
+  indexa(p) register char *p; {/* 1-> uses [r] addressing mode; 0->doesn't */
+  	while (*p) if (*p++=='[') return(1);
++ 	return(0);
++ }
++ 
++ autoid(p) register char *p; {/* 1-> uses autoincrement/autodecrement; 0->doesn't */
++ 	if (*p == '-' && *(p+1) == '(') return(1);
++ 	while (*p) p++;
++ 	if (*--p == '+' && *--p == ')') return(1);
+  	return(0);
+  }

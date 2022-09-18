@@ -1,0 +1,63 @@
+From forys@cs.utah.edu  Mon Oct 24 17:41:53 1988
+Date: Mon, 24 Oct 88 18:42:01 MDT
+From: forys@cs.utah.edu (Jeff Forys)
+Subject: munged sendmail syslog entries
+Index: 	usr.lib/sendmail/src/deliver.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+
+	Sendmail 5.59 generates incorrect "to=" syslog messages when given
+	multiple users on the same machine.  For example, a "to=" line that
+	should read "to=haas@snake,swanson@snake" is displayed as follows:
+
+		Oct 17 23:21:57 jaguar sendmail[14785]: AA14783:
+			to=haas@snakeakeanson@snake, delay=00:00:03, stat=Sent
+
+	The "to=" strings is created in deliver(), in a character buffer
+	called `tobuf'.  Between 5.54 and 5.59, code which used to do a
+	strcat(tobuf,user) for each local user was made more efficient.
+	A variable (register char *t) was initialized to `tobuf' and used
+	to keep track of where the next user should go.  Unfortunately,
+	the definition of this register variable (and initialization to
+	`tobuf') takes place inside the loop that iterates thru each user.
+	As a result, `tobuf' gets trashed.
+
+Repeat-By:
+
+	Send mail to a list of people on the same machine and check the
+	"to=" line in the syslog file.
+
+Fix:
+
+	The fix is to move the definition of `tobuf' outside the loop.
+	A context diff follows...
+
+*** /tmp/,RCSt1011129	Mon Oct 24 17:52:11 1988
+--- deliver.c	Mon Oct 17 23:55:23 1988
+***************
+*** 386,396 ****
+  			message(Arpa_Info, "Connecting to %s (%s)...",
+  			    MxHosts[0], m->m_name);
+  			if ((rcode = smtpinit(m, pv)) == EX_OK) {
+  				/* send the recipient list */
+  				tobuf[0] = '\0';
+  				for (to = tochain; to; to = to->q_tchain) {
+  					register int i;
+- 					register char *t = tobuf;
+  
+  					e->e_to = to->q_paddr;
+  					if ((i = smtprcpt(to, m)) != EX_OK) {
+--- 386,397 ----
+  			message(Arpa_Info, "Connecting to %s (%s)...",
+  			    MxHosts[0], m->m_name);
+  			if ((rcode = smtpinit(m, pv)) == EX_OK) {
++ 				register char *t = tobuf;
++ 
+  				/* send the recipient list */
+  				tobuf[0] = '\0';
+  				for (to = tochain; to; to = to->q_tchain) {
+  					register int i;
+  
+  					e->e_to = to->q_paddr;
+  					if ((i = smtprcpt(to, m)) != EX_OK) {

@@ -1,0 +1,129 @@
+From serge@ucbarpa.berkeley.edu  Wed Jul  8 21:42:24 1987
+Date: Wed, 8 Jul 87 21:20:00 PDT
+From: serge@ucbarpa.berkeley.edu (serge)
+Subject: touch does too much work
+Index: usr.bin 4.3BSD +FIX
+
+Description:
+	+ touch uses stat+open+read+lseek+write instead of utimes.
+	+ touch exits with an undefined exit code.
+	+ touch doesn't say anything when invoked without arguments.
+Fix:
+#ifndef lint
+static	char sccsid[] = "%W% (Berkeley) %G%";
+#endif
+
+/*
+ *	attempt to set the modify date of a file to the current date.
+ *	if the file doesn't exist, create it, unless -c option prevents it.
+ */
+
+#include <sys/types.h>
+#include <sys/time.h>
+
+#include <errno.h>
+
+#include <stdio.h>
+#include <string.h>
+
+#define OK	0
+#define ERR	(-1)
+
+#define CMASK	0666
+
+#define EXIT_USAGE	255
+
+int	dontcreate;	/* set if -c option */
+
+char *whoami;
+
+main(argc,argv)
+	int	argc;
+	char	*argv[];
+{
+	extern int	optind;
+	int		argerr;
+	int		errors;
+	int		ch;
+
+	whoami = rindex(argv[0], '/');
+	if (whoami == (char *)0)
+		whoami = argv[0];
+	else
+		whoami++;
+
+	dontcreate = 0;
+	argerr = 0;
+
+	while ((ch = getopt(argc, argv, "cf")) != EOF)
+		switch(ch) {
+		case 'c':
+			dontcreate = 1;
+			break;
+		case 'f':
+			/* backward compatibility */
+			break;
+		case '?':
+		default:
+			argerr = 1;
+			break;
+		}
+
+	if (argerr || optind >= argc) {
+		(void) fprintf(stderr, "usage: %s [-cf] file ...\n", whoami);
+		exit(EXIT_USAGE);
+	}
+
+	errors = 0;
+	for (argv += optind; optind < argc; optind++)
+		if (touch(*argv++) != OK)
+			errors++;
+
+	exit(errors);
+}
+
+int
+touch(filename)
+	char	*filename;
+{
+	extern int	errno;
+	struct timeval	times[2];
+	int		fd;
+
+	/*
+	 * Must get the current time, since bsd utimes() doesn't
+	 * interpret (struct timeval *)0 as the current time.
+	 */
+	if (gettimeofday(&times[0], (struct timezone *)0) == ERR) {
+		fprintf(stderr, "%s: Can't get current ", whoami);
+		perror("time");
+		return (ERR);
+	}
+
+	times[1] = times[0];
+
+	if (utimes(filename, times) == OK) {
+		return (OK);
+	} else if (errno != ENOENT || dontcreate) {
+		/*
+		 * File exists, but can't be changed,
+		 * OR file doesn't exit and we were told NOT to create it.
+		 */
+		(void) fprintf(stderr, "%s: Can't touch ", whoami);
+		(void) perror(filename);
+		return (ERR);
+	} else {
+		/*
+		 * File doesn't exist, create it
+		 */
+		fd = creat(filename, CMASK);
+		if (fd == ERR) {
+			(void) fprintf(stderr, "%s: Can't create ", whoami);
+			(void) perror(filename);
+			return (ERR);
+		} else {
+			(void) close(fd);
+			return (OK);
+		}
+	}
+}

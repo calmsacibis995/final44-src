@@ -1,0 +1,91 @@
+From donn@cs.utah.edu Thu Jan  5 20:21:31 1989
+Date: Thu, 5 Jan 89 21:20:52 MST
+From: donn@cs.utah.edu (Donn Seeley)
+Subject: Bug in VAX serial line driver attach routines causes crashes
+Index: sys/vaxuba 4.3BSD-tahoe
+
+Description:
+	A simple coding error in the attach routines for the dh, dhu,
+	dmf and dmz drivers in sys/vaxuba can cause systems to die with
+	kernel segmentation violations if a system has several serial
+	boards of a particular type.
+
+Repeat-By:
+	The bug is obvious by inspection, but if you really want to test
+	it:
+
+		Configure a VAX system with one UBA, at least 4 dmfs
+		and no other Unibus serial cards.
+
+		Enable ports on the first dmf in /etc/ttys.
+
+		Build and install the kernel, boot and go multi-user.
+
+	When init sets up a dmf port on the first dmf, the system dies.
+
+Fix:
+	The problem is that the drivers maintain an array xx_uballoc
+	for each UBA (normally indexed by ui->ui_ubanum), but in the
+	attach routine xx_uballoc[ui->ui_unit] is set to -1.  If you
+	have more units than you have UBAs, you lose -- data structures
+	after xx_uballoc get clobbered.  In the case of the dmf example
+	above, the value of dmfinfo[0] is set to -1, and at dmfopen()
+	time this pointer is dereferenced and the kernel croaks.  To
+	fix the bugs, go into the dh, dhu, dmf and dmz attach routines
+	and change the line that looks like
+
+		xx_uballoc[ui->ui_unit] = -1;
+
+	to
+
+		xx_uballoc[ui->ui_ubanum] = -1;
+
+	Donn
+
+=======================================================================
+I just re-read my prose in the 'Fix' section of that bug report.
+Blech.  Let me try again, maybe it'll be understandable this time.
+
+Each of the drivers (dmf, dmz, dh, dhu) defines an array to keep track
+of uba resources.  The names of these arrays are similar: they all end
+in '_uballoc'.  In the dmf driver, the array is called 'dmf_uballoc'.
+Naturally dmf_uballoc is defined to have NUBA elements, and it is
+normally indexed by a uba number such as the value contained in the
+member 'ui_ubanum' in a uba_device structure.  The actual contents of
+dmf_uballoc is a list of controller numbers, one for each uba
+indicating the controller on whose behalf the driver mapped the clists;
+at attach time, no clists are mapped for any dmf on a particular uba,
+so the corresponding element is supposed to be set to -1.  But the
+actual code in dmfattach() does this:
+
+	dmf_uballoc[ui->ui_unit] = -1;
+
+'ui_unit' is the number of the controller, not the number of the uba.
+If there are more controllers than there are ubas, this code will stomp
+on random data in memory following dmf_uballoc.  In topdog's case,
+dmf_uballoc was one element long (NUBA == 1), and it was followed by
+an array 'cbase' whose unused entries are fortuitously initialized to
+-1, and this in turn was followed by the array 'dmfinfo'.  (Aside: for
+some reason 'cbase' is 2 words in size despite the fact that it is
+declared as being NUBA elements long -- I presume code somewhere else
+must define 'cbase' at a larger size, but I can't find it.) Anyway,
+dmfinfo is a list of pointers to uba_device structures and it's
+initialized by the autoconfigure code.  When the fourth dmf is
+attached, the dmfinfo entry for the first dmf gets clobbered (set to
+-1) by the bug.  Subsequently, when a port on the first dmf is opened,
+the uba_device pointer obtained from dmfinfo is discovered to be
+nonzero, hence it's 'valid', but indirecting through the bogus value
+leads to a segmentation violation.  Of course the correct code in
+dmfattach() should be:
+
+	dmf_uballoc[ui->ui_ubanum] = -1;
+
+The fix for the other drivers (dmz, dh, dhu) is analogous.
+
+Offhand it looks like the broken code might be left over from a time
+when dmf_uballoc listed the uba number for each controller rather
+than the controller number for each uba...
+
+Hope this makes more sense,
+
+Donn

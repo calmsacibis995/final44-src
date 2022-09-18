@@ -1,0 +1,96 @@
+From jb%cs.brown.edu@relay.cs.net  Tue Mar  3 15:42:53 1987
+Date: Tue, 3 Mar 87 17:43:06 EST
+From: Jim Bloom <jb%cs.brown.edu@relay.cs.net>
+Subject: timed may hog mbufs (with fix)
+Index: etc/timed/timed.c 4.3BSD
+
+Description:
+    (This bug was originally reported by Mike Muss on Unix-Wizards.  His
+     report is included below.)
+
+    When timed is started with the "-M" flag (may be master) and is
+    not running as master at the moment, it receives all ICMP packets
+    sent to the host.  This can use a large number of mbuf if a ping is
+    run for a long period of time.
+
+    Mike's complaint:
+
+	Did anybody knkw:that on 4.3 BSD, when timed is started with the -M
+	flag, but it is not running as the master, that it holds open a
+	socket listening for ICMP messages, yet it neglects to read them?
+
+	On a system that uses PING for testing, etc, this can result in
+	a great many MBUFs being nailed down and ignored (several hundred
+	in this afternoon's debacle)?  This isn't enormously harmful, unless
+	you are running low on MBUFs, but can be a surprising bit of behavior.
+
+Repeat-By:
+    I'm not positive this will work as a test, but should.  Find a machine
+    with timed started using the "-M" flag and not being master.  Ping this
+    machine and watch the number of mbufs in use increase using netstat.
+
+Fix:
+    I have not tested this fix as I do not have access to a 4.3 machine.
+
+*** timed.c.orig	Tue Mar  3 16:42:28 1987
+--- timed.c	Tue Mar  3 17:21:37 1987
+***************
+*** 24,30 ****
+  
+  int id;
+  int trace;
+! int sock, sock_raw;
+  int status = 0;
+  int backoff;
+  int slvcount;				/* no. of slaves controlled by master */
+--- 24,30 ----
+  
+  int id;
+  int trace;
+! int sock, sock_raw = -1;
+  int status = 0;
+  int backoff;
+  int slvcount;				/* no. of slaves controlled by master */
+***************
+*** 333,345 ****
+  	delay2 = casual((long)MINTOUT, (long)MAXTOUT);
+  
+  	if (Mflag) {
+- 		/* open raw socket used to measure time differences */
+- 		sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP); 
+- 		if (sock_raw < 0)  {
+- 			syslog(LOG_ERR, "opening raw socket: %m");
+- 			exit (1);
+- 		}
+- 
+  		/*
+  		 * number (increased by 1) of slaves controlled by master: 
+  		 * used in master.c, candidate.c, networkdelta.c, and 
+--- 333,338 ----
+***************
+*** 387,392 ****
+--- 380,402 ----
+  			break;
+  		}
+  			
++ 		if (status & MASTER) {
++ 			/* open raw socket used to measure time differences */
++ 			if (sock_raw == -1) {
++ 			    sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP); 
++ 			    if (sock_raw < 0)  {
++ 				    syslog(LOG_ERR, "opening raw socket: %m");
++ 				    exit (1);
++ 			    }
++ 			}
++ 		} else {
++ 			/* sock_raw is not being used now */
++ 			if (sock_raw != -1) {
++ 			    (void)close(sock_raw);
++ 			    sock_raw = -1;
++ 			}
++ 		}
++ 
+  		if (status == MASTER) 
+  			master();
+  		else 
+

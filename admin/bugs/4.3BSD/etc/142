@@ -1,0 +1,366 @@
+From ray@j.cc.purdue.edu  Fri Aug  5 17:05:47 1988
+Date: Fri, 5 Aug 88 18:56:24 EST
+From: ray@j.cc.purdue.edu (Ray Moody)
+Subject: Suggested improvement for /etc/savecore
+Index: 	etc/savecore 4.3BSD
+
+Description:
+	Here at Purdue, we have been running an improved version of
+	/etc/savecore for some time now.  When savecore finds that there is
+	a core image to save, it sends mail to a mail alias ("crash-dumps").
+	The message contains the reason for the panic so that only the people
+	concerned with the part of the kernel that died have to look at the
+	crash dump.
+
+	This improvement allows us to fix kernel bugs much faster than before,
+	and it also allows us to fix more of them.  (Often kernel bugs would
+	not be fixed because the "guilty" kernel person would not know that
+	there even was a crash.)
+
+	It also allows us to run a find-and-remove-old-files-from-usr-crash
+	out of crontab.  There is never a question of removing something before
+	everybody has had a chance to look at it.
+
+Repeat-By:
+	I will be glad to crash your system for you...       :=)    :=)   :=)
+Fix:
+	I will send the diffs if you are interested.
+++++++++++++++++++++++++++++++++++++++++++++++++++
+From ray@j.cc.purdue.edu Tue Aug  9 15:32:08 1988
+From: ray@j.cc.purdue.edu (Ray Moody)
+To: bostic@okeeffe.berkeley.edu (Keith Bostic)
+Subject: Re: etc/savecore 4.3BSD 
+Date: Tue, 09 Aug 88 17:30:09 -0500
+
+
+>	Ummm, could you send me a diff -c, instead?
+
+    Ummm, sure.  (Don't know why I didn't in the first place.  Stupid me.)
+
+
+								Ray
+-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+***************
+*** 28,33 ****
+--- 28,34 ----
+  #include <sys/file.h>
+  #include <sys/syslog.h>
+  
++ #define MAILTO	"crash-dumps"
+  #define	DAY	(60L*60L*24L)
+  #define	LEEWAY	(3*DAY)
+  
+***************
+*** 121,126 ****
+--- 122,128 ----
+  		int oerrno = errno;
+  
+  		perror(dirname);
++ 		nerror(dirname);
+  		errno = oerrno;
+  		syslog(LOG_ERR, "%s: %m", dirname);
+  		exit(1);
+***************
+*** 181,186 ****
+--- 183,189 ----
+  	struct stat statb;
+  	static char devname[MAXPATHLEN + 1];
+  	char *dp;
++ 	char message[256];
+  
+  	strcpy(devname, "/dev/");
+  	while ((dir = readdir(dfd))) {
+***************
+*** 187,192 ****
+--- 190,196 ----
+  		strcpy(devname + 5, dir->d_name);
+  		if (stat(devname, &statb)) {
+  			perror(devname);
++ 			nerror(devname);
+  			continue;
+  		}
+  		if ((statb.st_mode&S_IFMT) != type)
+***************
+*** 201,206 ****
+--- 205,213 ----
+  	closedir(dfd);
+  	fprintf(stderr, "Can't find device %d/%d\n", major(dev), minor(dev));
+  	syslog(LOG_ERR, "Can't find device %d/%d\n", major(dev), minor(dev));
++ 	(void) sprintf(message, "Can't find device %d/%d\n",
++ 		major(dev), minor(dev));
++ 	notify(message);
+  	exit(1);
+  	/*NOTREACHED*/
+  }
+***************
+*** 215,220 ****
+--- 222,228 ----
+  	FILE *fp;
+  	char *dump_sys;
+  	int kmem, i;
++ 	char message[256];
+  	
+  	dump_sys = system ? system : "/vmunix";
+  	nlist("/vmunix", current_nl);
+***************
+*** 233,238 ****
+--- 241,249 ----
+  			    current_nl[cursyms[i]].n_name);
+  			syslog(LOG_ERR, "/vmunix: %s not in namelist",
+  			    current_nl[cursyms[i]].n_name);
++ 			(void) sprintf(message, "/vmunix: %s not in namelist\n",
++ 			    current_nl[cursyms[i]].n_name);
++ 			notify(message);
+  			exit(1);
+  		}
+  	for (i = 0; dumpsyms[i] != -1; i++)
+***************
+*** 241,246 ****
+--- 252,260 ----
+  			    dump_nl[dumpsyms[i]].n_name);
+  			syslog(LOG_ERR, "%s: %s not in namelist", dump_sys,
+  			    dump_nl[dumpsyms[i]].n_name);
++ 			(void) sprintf(message, "%s: %s not in namelist\n",
++ 			    dump_sys, dump_nl[dumpsyms[i]].n_name);
++ 			notify(message);
+  			exit(1);
+  		}
+  	kmem = Open("/dev/kmem", O_RDONLY);
+***************
+*** 255,260 ****
+--- 269,275 ----
+  	fp = fdopen(kmem, "r");
+  	if (fp == NULL) {
+  		syslog(LOG_ERR, "Couldn't fdopen kmem");
++ 		notify("Couldn't fdopen kmem\n");
+  		exit(1);
+  	}
+  	if (system)
+***************
+*** 268,273 ****
+--- 283,289 ----
+  {
+  	FILE *fp;
+  	register char *cp;
++ 	char message[256];
+  
+  	fp = fopen(ddname, "r");
+  	if (fp == NULL) {
+***************
+*** 274,279 ****
+--- 290,296 ----
+  		int oerrno = errno;
+  
+  		perror(ddname);
++ 		nerror(ddname);
+  		errno = oerrno;
+  		syslog(LOG_ERR, "%s: %m", ddname);
+  		exit(1);
+***************
+*** 281,287 ****
+  	fseek(fp, (off_t)(dumplo+ok(dump_nl[X_VERSION].n_value)), L_SET);
+  	fgets(core_vers, sizeof (core_vers), fp);
+  	fclose(fp);
+! 	if (!eq(vers, core_vers) && system == 0)
+  		fprintf(stderr,
+  		   "Warning: vmunix version mismatch:\n\t%sand\n\t%s",
+  		   vers, core_vers);
+--- 298,304 ----
+  	fseek(fp, (off_t)(dumplo+ok(dump_nl[X_VERSION].n_value)), L_SET);
+  	fgets(core_vers, sizeof (core_vers), fp);
+  	fclose(fp);
+! 	if (!eq(vers, core_vers) && system == 0) {
+  		fprintf(stderr,
+  		   "Warning: vmunix version mismatch:\n\t%sand\n\t%s",
+  		   vers, core_vers);
+***************
+*** 288,293 ****
+--- 305,315 ----
+  		syslog(LOG_WARNING,
+  		   "Warning: vmunix version mismatch: %s and %s",
+  		   vers, core_vers);
++ 		(void) sprintf(message,
++ 		   "Warning: vmunix version mismatch: %s and %s\n",
++ 		   vers, core_vers);
++ 		notify(message);
++ 	}
+  	fp = fopen(ddname, "r");
+  	fseek(fp, (off_t)(dumplo + ok(dump_nl[X_PANICSTR].n_value)), L_SET);
+  	fread((char *)&panicstr, sizeof (panicstr), 1, fp);
+***************
+*** 346,351 ****
+--- 368,374 ----
+  		int oerrno = errno;
+  
+  		perror(dirname);
++ 		nerror(dirname);
+  		errno = oerrno;
+  		syslog(LOG_ERR, "%s: %m", dirname);
+  		exit(1);
+***************
+*** 359,364 ****
+--- 382,388 ----
+   	if (spacefree < read_number("minfree")) {
+  		printf("Dump omitted, not enough space on device");
+  		syslog(LOG_WARNING, "Dump omitted, not enough space on device");
++ 		notify("Dump omitted, not enough space on device\n");
+  		return (0);
+  	}
+  	if (freespace(&fs, fs.fs_minfree) < 0) {
+***************
+*** 365,370 ****
+--- 389,395 ----
+  		printf("Dump performed, but free space threshold crossed");
+  		syslog(LOG_WARNING,
+  		    "Dump performed, but free space threshold crossed");
++ 		notify("Dump performed, but free space threshold crossed\n");
+  	}
+  	return (1);
+  }
+***************
+*** 394,403 ****
+--- 419,430 ----
+  	register char *cp;
+  	register int ifd, ofd, bounds;
+  	register FILE *fp;
++ 	char message[256];
+  
+  	cp = malloc(BUFPAGES*NBPG);
+  	if (cp == 0) {
+  		fprintf(stderr, "savecore: Can't allocate i/o buffer.\n");
++ 		notify("Can't allocate i/o buffer.\n");
+  		return;
+  	}
+  	bounds = read_number("bounds");
+***************
+*** 418,423 ****
+--- 445,453 ----
+  		bounds);
+  	syslog(LOG_NOTICE, "Saving %d bytes of image in vmcore.%d\n",
+  		NBPG*dumpsize, bounds);
++ 	(void) sprintf(message,"Saving %d bytes of image in vmcore.%d\n",
++ 		NBPG*dumpsize, bounds);
++ 	notify(message);
+  	while (dumpsize > 0) {
+  		n = Read(ifd, cp,
+  		    (dumpsize > BUFPAGES ? BUFPAGES : dumpsize) * NBPG);
+***************
+*** 425,430 ****
+--- 455,461 ----
+  			syslog(LOG_WARNING,
+  			    "WARNING: vmcore may be incomplete\n");
+  			printf("WARNING: vmcore may be incomplete\n");
++ 			notify("WARNING: vmcore may be incomplete\n");
+  			break;
+  		}
+  		Write(ofd, cp, n);
+***************
+*** 452,457 ****
+--- 483,489 ----
+  		int oerrno = errno;
+  
+  		perror(name);
++ 		nerror(name);
+  		errno = oerrno;
+  		syslog(LOG_ERR, "%s: %m", name);
+  		exit(1);
+***************
+*** 470,475 ****
+--- 502,508 ----
+  		int oerrno = errno;
+  
+  		perror("read");
++ 		nerror("read");
+  		errno = oerrno;
+  		syslog(LOG_ERR, "read: %m");
+  		exit(1);
+***************
+*** 489,494 ****
+--- 522,528 ----
+  		int oerrno = errno;
+  
+  		perror("lseek");
++ 		nerror("lseek");
+  		errno = oerrno;
+  		syslog(LOG_ERR, "lseek: %m");
+  		exit(1);
+***************
+*** 507,512 ****
+--- 541,547 ----
+  		int oerrno = errno;
+  
+  		perror(file);
++ 		nerror(file);
+  		errno = oerrno;
+  		syslog(LOG_ERR, "%s: %m", file);
+  		exit(1);
+***************
+*** 523,530 ****
+--- 558,623 ----
+  		int oerrno = errno;
+  
+  		perror("write");
++ 		nerror("write");
+  		errno = oerrno;
+  		syslog(LOG_ERR, "write: %m");
+  		exit(1);
+  	}
++ }
++ 
++ /*
++  * This routine formates a error message in perror style and sends it to
++  * the mail alias defined above. (MAILTO)
++  */
++ nerror(phrase)
++ 	char *phrase;
++ {
++ 	extern char *sys_errlist[];
++ 	extern int sys_nerr;
++ 	char message[256];
++ 
++ 	if (errno > sys_nerr) {
++ 		(void) sprintf(message, "%s: Unknown error\n", phrase);
++ 	} else {
++ 		(void) sprintf(message, "%s: %s\n", phrase, sys_errlist[errno]);
++ 	}
++ 
++ 	notify(message);
++ }
++ 
++ /*
++  * This routine mails a message to the mail alias define above. (MAITO)
++  *
++  * If possible, the crash time and panic string are included in the message
++  */
++ 
++ notify(message)
++ 	char *message;
++ {
++ 	static FILE *sendmail = NULL;
++ 	char host[MAXHOSTNAMELEN];
++ 
++ 	if (sendmail == NULL) {
++ 		if ((sendmail = popen("/usr/lib/sendmail -t", "w")) == NULL) {
++ 			fprintf(stderr, "Can't run /usr/lib/sendmail\n");
++ 			return;
++ 		}
++ 
++ 		fprintf(sendmail, "To: %s\n", MAILTO);
++ 
++ 		if (panicstr) {
++ 			fprintf(sendmail, "Subject: panic: %s\n", panic_mesg);
++ 		}
++ 		fprintf(sendmail, "\n");
++ 
++ 		(void) gethostname(host, sizeof(host));
++ 		if (dumptime) {
++ 			fprintf(sendmail, "%s went down at %s",
++ 				host, ctime(&dumptime));
++ 		} else {
++ 			fprintf(sendmail, "%s went down\n", host);
++ 		}
++ 	}
++ 
++ 	fprintf(sendmail, "%s", message);
+  }
+

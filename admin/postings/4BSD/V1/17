@@ -1,0 +1,656 @@
+Subject: V7 directory reading routines
+Index: lib/libc/gen
+
+Description:
+	There is a bug in the directory reading compatibility
+	routines as originally distributed by Berkeley; readdir
+	fails if you have more than one directory open at a
+	time.
+Repeat-By:
+	Run the program bug.c, provided in the attached shar, in
+	any directory containing several files.
+Fix:
+	Unshar and install the attached; make sure you read the
+	README.
+
+... cut here ...
+
+echo x - Makefile
+sed 's/^X//' >Makefile << 'END-of-Makefile'
+X# @(#)Makefile	4.8 (Berkeley) 3/21/83
+X
+XDESTDIR	=
+XCFLAGS=	-O
+X
+XOBJS=	closedir.o opendir.o readdir.o scandir.o seekdir.o telldir.o
+XDIST=	README Makefile dir.h closedir.c opendir.c readdir.c \
+X	scandir.c seekdir.c telldir.c directory.3 scandir.3
+X
+X.c.o:
+X	${CC} ${CFLAGS} -I. -c $*.c
+X	-ld -x -r $*.o
+X	mv a.out $*.o
+X
+Xlibndir: ${OBJS}
+X	ar cru libndir.a ${OBJS}
+X	ranlib libndir.a
+X
+Xinstall: libndir
+X	cp ndir.h ${DESTDIR}/usr/include/ndir.h
+X	cp libndir.a ${DESTDIR}/usr/lib/libndir.a
+X	ranlib ${DESTDIR}/usr/lib/libndir.a
+X	cp directory.3 /usr/man/man3/directory.3
+X	cp scandir.3 /usr/man/man3/scandir.3
+X
+Xclean:
+X	rm -f libndir.a ${OBJS}
+END-of-Makefile
+echo x - README
+sed 's/^X//' >README << 'END-of-README'
+X	The purpose of this library is to simulate the new, flexible
+Xlength directory names on top of the V7 style directory format, as well
+Xas to provide compatibility routines for systems that do not intend to
+Xconvert to the new directory format.
+X	These are copies of Kirk McKusick's original routines, with the
+Xaddition of scandir(3), a major fix to readdir(3), and minor hacks.  We
+Xhave also added a define for the V7 directory structure, "struct v7direct"
+Xso that both the old and new directory structures can coexist.  You can
+Xreplace your current system "dir.h" with "ndir.h", if you want to,
+Xas long as you change every instance of "struct direct" in your current
+Xsystem to "struct v7direct".  This is a pain, but desirable if you want
+Xthe directory reading routines to be a part of your standard library and
+Xnot require special effort to access.
+X	There are a couple of fairly interesting situations you can get
+Xinto with this package; if you are having difficulties, check to make
+Xsure you're using the correct "dir.h" include file and that you're using
+Xthe "DIRSIZ" macro correctly, since it changed in meaning in the new file
+Xsystem.  The simplest way to deal with the "DIRSIZ" problem is to change
+Xevery occurrence in your system to "MAXNAMLEN"; this is compatible with
+X4.3BSD.
+X	This package also requires that you have an entry of the form
+X"typedef long	u_long;" in your sys/types.h file.
+X	In any case, if you have problems using or installing this
+Xpackage, contact me.
+X	Oh, yes, "bug.c" demonstrates the bug in the old readdir(3)
+Xroutine.
+X
+X	Keith Bostic			3/27/87
+X	seismo!keith			+1 415 642 4948
+X	ucbvax!bostic
+X	bostic@ucbvax.berkeley.edu
+END-of-README
+echo x - bug.c
+sed 's/^X//' >bug.c << 'END-of-bug.c'
+X#include <sys/types.h>
+X#include <ndir.h>
+X
+Xmain()
+X{
+X	DIR	*one,*two;
+X	struct direct	*e_one;
+X
+X	one = opendir(".");
+X	two = opendir(".");
+X	(void)readdir(one);
+X	(void)readdir(one);
+X	do {
+X		e_one = readdir(one);
+X	}
+X	while (!e_one->d_ino);
+X	printf("one -- %ld %s\n",e_one->d_ino,e_one->d_name);
+X	(void)readdir(two);
+X	puts("should be identical to the last print...");
+X	printf("one -- %ld %s\n",e_one->d_ino,e_one->d_name);
+X}
+END-of-bug.c
+echo x - closedir.c
+sed 's/^X//' >closedir.c << 'END-of-closedir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#include <sys/types.h>
+X#include <ndir.h>
+X
+X/*
+X * close a directory.
+X */
+Xclosedir(dirp)
+X	register DIR *dirp;
+X{
+X	close(dirp->dd_fd);
+X	dirp->dd_fd = -1;
+X	dirp->dd_loc = 0;
+X	free(dirp);
+X}
+END-of-closedir.c
+echo x - directory.3
+sed 's/^X//' >directory.3 << 'END-of-directory.3'
+X.\" Copyright (c) 1983 Regents of the University of California.
+X.\" All rights reserved.  The Berkeley software License Agreement
+X.\" specifies the terms and conditions for redistribution.
+X.\"
+X.\"	@(#)directory.3	6.3 (Berkeley) 12/22/86
+X.\"
+X.TH DIRECTORY 3 "December 22, 1986"
+X.UC 5
+X.SH NAME
+Xopendir, readdir, telldir, seekdir, rewinddir, closedir, dirfd \- directory operations
+X.SH SYNOPSIS
+X.B #include <sys/types.h>
+X.br
+X.B #include <sys/dir.h>
+X.PP
+X.SM
+X.B DIR
+X.B *opendir(filename)
+X.br
+X.B char *filename;
+X.PP
+X.B struct direct
+X.B *readdir(dirp)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.PP
+X.B long
+X.B telldir(dirp)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.PP
+X.B seekdir(dirp, loc)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.br
+X.B long loc;
+X.PP
+X.B rewinddir(dirp)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.PP
+X.B closedir(dirp)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.PP
+X.B dirfd(dirp)
+X.br
+X.SM
+X.B DIR
+X.B *dirp;
+X.SH DESCRIPTION
+X.I Opendir
+Xopens the directory named by
+X.I filename
+Xand associates a
+X.I directory stream
+Xwith it.
+X.I Opendir
+Xreturns a pointer to be used to identify the
+X.I directory stream
+Xin subsequent operations.  The pointer
+X.SM
+X.B NULL
+Xis returned if
+X.I filename
+Xcannot be accessed, or if it cannot
+X.IR malloc (3)
+Xenough memory to hold the whole thing.
+X.PP
+X.I Readdir
+Xreturns a pointer to the next directory entry.  It returns
+X.B NULL
+Xupon reaching the end of the directory or detecting an invalid
+X.I seekdir
+Xoperation.
+X.PP
+X.I Telldir
+Xreturns the current location associated with the named
+X.I directory stream.
+X.PP
+X.I Seekdir
+Xsets the position of the next
+X.I readdir
+Xoperation on the
+X.I directory stream.
+XThe new position reverts to the one associated with the
+X.I directory stream
+Xwhen the
+X.I telldir
+Xoperation was performed.  Values returned by
+X.I telldir
+Xare good only for the lifetime of the DIR pointer from which they are derived.
+XIf the directory is closed and then reopened, the 
+X.I telldir
+Xvalue may be invalidated due to undetected directory compaction.
+XIt is safe to use a previous
+X.I telldir
+Xvalue immediately after a call to
+X.I opendir
+Xand before any calls to
+X.I readdir.
+X.PP
+X.I Rewinddir
+Xresets the position of the named
+X.I directory stream
+Xto the beginning of the directory.
+X.PP
+X.I Closedir
+Xcloses the named
+X.I directory stream
+Xand frees the structure associated with the DIR pointer.
+X.PP
+X.I Dirfd
+Xreturns the integer file descriptor associated with the named
+X.I directory stream,
+Xsee open(2).
+X.PP
+XSample code which searchs a directory for entry ``name'' is:
+X.PP
+X.br
+X	len = strlen(name);
+X.br
+X	dirp = opendir(".");
+X.br
+X	for (dp = readdir(dirp); dp != NULL; dp = readdir(dirp))
+X.br
+X		if (dp->d_namlen == len && !strcmp(dp->d_name, name)) {
+X.br
+X			closedir(dirp);
+X.br
+X			return FOUND;
+X.br
+X		}
+X.br
+X	closedir(dirp);
+X.br
+X	return NOT_FOUND;
+X.SH "SEE ALSO"
+Xopen(2),
+Xclose(2),
+Xread(2),
+Xlseek(2),
+Xdir(5)
+END-of-directory.3
+echo x - ndir.h
+sed 's/^X//' >ndir.h << 'END-of-ndir.h'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#ifndef MAXNAMLEN
+X#define MAXNAMLEN	14
+X#endif
+X
+X/*
+X * Actual directory structure as it appears on disk.  For use by programs
+X * and routines which need to know what a directory really looks like.
+X * Don't use it unless you absolutely have to.
+X */
+Xstruct	v7direct {
+X	ino_t	d_ino;
+X	char	d_name[MAXNAMLEN];
+X};
+X
+X#ifndef KERNEL
+X#define DIRBLKSIZ	512
+X
+Xstruct	direct {
+X	u_long	d_ino;			/* inode number of entry */
+X	u_short	d_reclen;		/* length of this record */
+X	u_short	d_namlen;		/* length of string in d_name */
+X	char	d_name[MAXNAMLEN+1];	/* name must be no longer than this */
+X};
+X
+X/*
+X * The DIRSIZ macro gives the minimum record length which will hold
+X * the directory entry.  This requires the amount of space in struct direct
+X * without the d_name field, plus enough space for the name with a terminating
+X * null byte (dp->d_namlen+1), rounded up to a 4 byte boundary.
+X */
+X#undef DIRSIZ
+X#define DIRSIZ(dp) \
+X    ((sizeof (struct direct) - (MAXNAMLEN+1)) + (((dp)->d_namlen+1 + 3) &~ 3))
+X
+X/*
+X * Definitions for library routines operating on directories.
+X */
+Xtypedef struct _dirdesc {
+X	int	dd_fd;
+X	long	dd_loc;
+X	long	dd_size;
+X	char	dd_buf[DIRBLKSIZ];
+X	struct direct	dd_cur;
+X} DIR;
+X#ifndef NULL
+X#define NULL 0
+X#endif
+Xextern	DIR *opendir();
+Xextern	struct direct *readdir();
+Xextern	long telldir();
+X#define rewinddir(dirp)	seekdir((dirp), (long)0)
+X#define dirfd(dirp)	((dirp)->dd_fd)
+X#endif
+END-of-ndir.h
+echo x - opendir.c
+sed 's/^X//' >opendir.c << 'END-of-opendir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#include <sys/param.h>
+X#include <ndir.h>
+X
+Xextern char *malloc();
+X
+X/*
+X * open a directory.
+X */
+XDIR *
+Xopendir(name)
+X	char *name;
+X{
+X	register DIR *dirp;
+X	register int fd;
+X	char	*malloc();
+X
+X	if ((fd = open(name, 0)) == -1)
+X		return NULL;
+X	if ((dirp = (DIR *)malloc(sizeof(DIR))) == NULL) {
+X		close (fd);
+X		return NULL;
+X	}
+X	dirp->dd_fd = fd;
+X	dirp->dd_loc = 0;
+X	return dirp;
+X}
+END-of-opendir.c
+echo x - readdir.c
+sed 's/^X//' >readdir.c << 'END-of-readdir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#include <sys/param.h>
+X#include <ndir.h>
+X
+X/*
+X * read a V7 directory entry and present it as a BSD4.X entry.
+X */
+X
+X/*
+X * get next entry in a directory.
+X */
+Xstruct direct *
+Xreaddir(dirp)
+X	register DIR *dirp;
+X{
+X	register struct v7direct *dp;
+X
+X	for (;;) {
+X		if (dirp->dd_loc == 0) {
+X			dirp->dd_size = read(dirp->dd_fd, dirp->dd_buf, 
+X			    DIRBLKSIZ);
+X			if (dirp->dd_size <= 0)
+X				return NULL;
+X		}
+X		if (dirp->dd_loc >= dirp->dd_size) {
+X			dirp->dd_loc = 0;
+X			continue;
+X		}
+X		dp = (struct v7direct *)(dirp->dd_buf + dirp->dd_loc);
+X		dirp->dd_loc += sizeof(struct v7direct);
+X		if (dp->d_ino == 0)
+X			continue;
+X		/*
+X		 * format V7 directory structure into BSD4.X
+X		 */
+X		dirp->dd_cur.d_ino = dp->d_ino;
+X		bcopy(dp->d_name, dirp->dd_cur.d_name, MAXNAMLEN);
+X						/* insure null termination */
+X		dirp->dd_cur.d_name[MAXNAMLEN] = '\0';
+X		dirp->dd_cur.d_namlen = strlen(dirp->dd_cur.d_name);
+X		dirp->dd_cur.d_reclen = DIRBLKSIZ;
+X		return (&dirp->dd_cur);
+X	}
+X}
+END-of-readdir.c
+echo x - scandir.3
+sed 's/^X//' >scandir.3 << 'END-of-scandir.3'
+X.\" Copyright (c) 1983 Regents of the University of California.
+X.\" All rights reserved.  The Berkeley software License Agreement
+X.\" specifies the terms and conditions for redistribution.
+X.\"
+X.\"	@(#)scandir.3	6.2 (Berkeley) 9/17/85
+X.\"
+X.TH SCANDIR 3  "September 17, 1985"
+X.UC 5
+X.SH NAME
+Xscandir, alphasort \- scan a directory
+X.SH SYNOPSIS
+X.nf
+X.B #include <sys/types.h>
+X.B #include <sys/dir.h>
+X.PP
+X.B scandir(dirname, namelist, select, compar)
+X.B char *dirname;
+X.B struct direct *(*namelist[]);
+X.B int (*select)();
+X.B int (*compar)();
+X.PP
+X.B alphasort(d1, d2)
+X.B struct direct **d1, **d2;
+X.fi
+X.SH DESCRIPTION
+X.I Scandir
+Xreads the directory
+X.I dirname
+Xand builds an array of pointers to directory
+Xentries using
+X.IR malloc (3).
+XIt returns the number of entries in the array and a pointer to the
+Xarray through
+X.IR namelist .
+X.PP
+XThe
+X.I select
+Xparameter is a pointer to a user supplied subroutine which is called by
+X.I scandir
+Xto select which entries are to be included in the array.
+XThe select routine is passed a
+Xpointer to a directory entry and should return a non-zero
+Xvalue if the directory entry is to be included in the array.
+XIf
+X.I select
+Xis null, then all the directory entries will be included.
+X.PP
+XThe
+X.I compar
+Xparameter is a pointer to a user supplied subroutine which is passed to
+X.IR qsort (3)
+Xto sort the completed array. If this pointer is null, the array is not sorted.
+X.I Alphasort
+Xis a routine which can be used for the
+X.I compar
+Xparameter to sort the array alphabetically.
+X.PP
+XThe memory allocated for the array can be deallocated with
+X.I free
+X(see
+X.IR malloc (3))
+Xby freeing each pointer in the array and the array itself.
+X.SH "SEE ALSO"
+Xdirectory(3),
+Xmalloc(3),
+Xqsort(3),
+Xdir(5)
+X.SH DIAGNOSTICS
+XReturns \-1 if the directory cannot be opened for reading or if
+X.IR malloc (3)
+Xcannot allocate enough memory to hold all the data structures.
+END-of-scandir.3
+echo x - scandir.c
+sed 's/^X//' >scandir.c << 'END-of-scandir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X/*
+X * Scan the directory dirname calling select to make a list of selected
+X * directory entries then sort using qsort and compare routine dcomp.
+X * Returns the number of entries and a pointer to a list of pointers to
+X * struct direct (through namelist). Returns -1 if there were any errors.
+X */
+X
+X#include <sys/types.h>
+X#include <sys/stat.h>
+X#include <ndir.h>
+X
+Xscandir(dirname, namelist, select, dcomp)
+X	char *dirname;
+X	struct direct *(*namelist[]);
+X	int (*select)(), (*dcomp)();
+X{
+X	register struct direct *d, *p, **names;
+X	register int nitems;
+X	register char *cp1, *cp2;
+X	struct stat stb;
+X	int arraysz;
+X	DIR *dirp;
+X
+X	if ((dirp = opendir(dirname)) == NULL)
+X		return(-1);
+X	if (fstat(dirp->dd_fd, &stb) < 0)
+X		return(-1);
+X
+X	/*
+X	 * estimate the array size by taking the size of the directory file
+X	 * and dividing it by a multiple of the minimum size entry. 
+X	 */
+X	arraysz = (stb.st_size / 24);
+X	names = (struct direct **)malloc(arraysz * sizeof(struct direct *));
+X	if (names == NULL)
+X		return(-1);
+X
+X	nitems = 0;
+X	while ((d = readdir(dirp)) != NULL) {
+X		if (select != NULL && !(*select)(d))
+X			continue;	/* just selected names */
+X		/*
+X		 * Make a minimum size copy of the data
+X		 */
+X		p = (struct direct *)malloc(DIRSIZ(d));
+X		if (p == NULL)
+X			return(-1);
+X		p->d_ino = d->d_ino;
+X		p->d_reclen = d->d_reclen;
+X		p->d_namlen = d->d_namlen;
+X		for (cp1 = p->d_name, cp2 = d->d_name; *cp1++ = *cp2++; );
+X		/*
+X		 * Check to make sure the array has space left and
+X		 * realloc the maximum size.
+X		 */
+X		if (++nitems >= arraysz) {
+X			if (fstat(dirp->dd_fd, &stb) < 0)
+X				return(-1);	/* just might have grown */
+X			arraysz = stb.st_size / 12;
+X			names = (struct direct **)realloc((char *)names,
+X				arraysz * sizeof(struct direct *));
+X			if (names == NULL)
+X				return(-1);
+X		}
+X		names[nitems-1] = p;
+X	}
+X	closedir(dirp);
+X	if (nitems && dcomp != NULL)
+X		qsort(names, nitems, sizeof(struct direct *), dcomp);
+X	*namelist = names;
+X	return(nitems);
+X}
+X
+X/*
+X * Alphabetic order comparison routine for those who want it.
+X */
+Xalphasort(d1, d2)
+X	struct direct **d1, **d2;
+X{
+X	return(strcmp((*d1)->d_name, (*d2)->d_name));
+X}
+END-of-scandir.c
+echo x - seekdir.c
+sed 's/^X//' >seekdir.c << 'END-of-seekdir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#include <sys/param.h>
+X#include <ndir.h>
+X
+X/*
+X * seek to an entry in a directory.
+X * Only values returned by "telldir" should be passed to seekdir.
+X */
+Xseekdir(dirp, loc)
+X	register DIR *dirp;
+X	long loc;
+X{
+X	long curloc, base, offset;
+X	struct direct *dp;
+X	extern long lseek();
+X
+X	curloc = telldir(dirp);
+X	if (loc == curloc)
+X		return;
+X	base = loc & ~(DIRBLKSIZ - 1);
+X	offset = loc & (DIRBLKSIZ - 1);
+X	lseek(dirp->dd_fd, base, 0);
+X	dirp->dd_loc = 0;
+X	while (dirp->dd_loc < offset) {
+X		dp = readdir(dirp);
+X		if (dp == NULL)
+X			return;
+X	}
+X}
+END-of-seekdir.c
+echo x - telldir.c
+sed 's/^X//' >telldir.c << 'END-of-telldir.c'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * This file may be freely redistributed provided that this
+X * notice remains attached.
+X */
+X
+X#include <sys/types.h>
+X#include <ndir.h>
+X
+X/*
+X * return a pointer into a directory
+X */
+Xlong
+Xtelldir(dirp)
+X	DIR *dirp;
+X{
+X	return (lseek(dirp->dd_fd, 0L, 1) - dirp->dd_size + dirp->dd_loc);
+X}
+END-of-telldir.c
+exit

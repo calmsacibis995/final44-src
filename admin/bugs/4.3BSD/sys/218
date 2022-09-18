@@ -1,0 +1,60 @@
+From hplabs!oblio!kent@ucbvax.berkeley.edu  Mon Jul 25 16:27:16 1988
+From: hplabs!oblio!kent@ucbvax.berkeley.edu
+Date: Mon, 25 Jul 88 11:17:41 PST
+Index: sys/netinet/tcp_timer.c 4.3BSD
+Subject: bug in timeout close of 4.3 TCP connection
+
+Description:
+	One end of a TCP socket can stay open even when the other end has gone
+	away. There is a bug in tcp_timers (in netinet/tcp_timer.c) in the
+	keepalive timer case which causes the socket to stay open.
+
+How to reproduce:
+	1) rlogin from a client machine to a host machine over ethernet,
+	2) unplug the ethernet from the client machine and hit some carriage
+	   returns,
+	3) after the local socket times out, reconnect the ethernet cable,
+	4) the host end of the connection will never timeout and close.
+
+Problem cause:
+	The cause of the problem is that the probe from the host to the client
+	when the keepalive timer goes off causes an RST response which resets
+	the idle timer, but the RST is ignored because the sequence number is
+	bad. Since the client end of the connection is closed, the sequence
+	number used on the RST is the ack sent on the probe message, which is
+	outside the receive window. Therefore, the fix is to send an ack which
+	is in the window so the RST comes back with a good sequence number.
+	This is easily accomplished by sending tp->rcv_nxt rather than
+	tp->rcv_nxt-1.
+	
+Context diff:
+
+*** netinet/tcp_timer.c	Fri Jul 22 12:52:31 1988
+--- netinet/tcp_timer.c	Fri Jul 22 12:55:34 1988
+***************
+*** 208,214
+  			 * a one-way stream!)
+  			 */
+  			tcp_respond(tp,
+! 			    tp->t_template, tp->rcv_nxt-1, tp->snd_una-1, 0);
+  		}
+  		tp->t_timer[TCPT_KEEP] = TCPTV_KEEP;
+  		break;
+
+--- 208,222 -----
+  			 * a one-way stream!)
+  			 */
+  			tcp_respond(tp,
+! 			    /*
+! 			     * Using tp->rcv_nxt-1 for the ack doesn't work
+! 			     * when the other end of the connection is gone,
+! 			     * since when it sends us a RST, we ignore it
+! 			     * because the seq is outside the receive window.
+! 			     * Sending the single byte at tp->snd_una is enough
+! 			     * to cause a response from the other side.
+! 			     */
+! 			    tp->t_template, tp->rcv_nxt, tp->snd_una-1, 0);
+  		}
+  		tp->t_timer[TCPT_KEEP] = TCPTV_KEEP;
+  		break;
+

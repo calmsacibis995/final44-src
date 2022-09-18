@@ -1,0 +1,84 @@
+From yval@cs.huji.ac.il  Sun Feb  7 15:47:22 1993
+Date: Sun, 7 Feb 93 13:47:22 +0200
+From: Yuval Yarom <yval@CS.HUJI.AC.IL>
+To: 4bsd-bugs@okeeffe.CS.Berkeley.EDU
+Subject: Various bugs in Network Release 2
+Index: sys/netinet/in_pcb.c net2
+
+Shalom,
+  I am working on BSDI's BSD/386, and found several bugs in sections of
+the code that are from the Network Release 2.  I heard you might be
+interested in those bug reports, so I compiled them all, and put here.
+I do not have the time needed for going through all of them, sorting
+them and checking if they really appear in the Nework Release 2, so
+I just concatenated all those that seem to belong here.  Sorry about that.
+
+				Yuval
+
+
+When doing an implicit bind in_pcbbind will assign used ports
+if the port is bound on specific interface, and not on INADDR_ANY.
+Effects of the bug range from connection drops to machine hangs.
+
+fix:
+------------------------------------------------------------------
+*** in_pcb.c.orig	Wed Jan  1 23:06:25 1992
+--- in_pcb.c	Mon Aug 17 12:19:47 1992
+***************
+*** 79,89 ****
+--- 79,96 ----
+  	register struct inpcb *head = inp->inp_head;
+  	register struct sockaddr_in *sin;
+  	u_short lport = 0;
++ 	int wild = 0;
+  
+  	if (in_ifaddr == 0)
+  		return (EADDRNOTAVAIL);
+  	if (inp->inp_lport || inp->inp_laddr.s_addr != INADDR_ANY)
+  		return (EINVAL);
++ 	
++ 	if ((so->so_options & SO_REUSEADDR) == 0 &&
++ 	    ((so->so_proto->pr_flags & PR_CONNREQUIRED) == 0 ||
++ 	     (so->so_options & SO_ACCEPTCONN) == 0))
++ 		wild = INPLOOKUP_WILDCARD;
++ 
+  	if (nam == 0)
+  		goto noname;
+  	sin = mtod(nam, struct sockaddr_in *);
+***************
+*** 100,115 ****
+  	lport = sin->sin_port;
+  	if (lport) {
+  		u_short aport = ntohs(lport);
+- 		int wild = 0;
+  
+  		/* GROSS */
+  		if (aport < IPPORT_RESERVED && (so->so_state & SS_PRIV) == 0)
+  			return (EACCES);
+- 		/* even GROSSER, but this is the Internet */
+- 		if ((so->so_options & SO_REUSEADDR) == 0 &&
+- 		    ((so->so_proto->pr_flags & PR_CONNREQUIRED) == 0 ||
+- 		     (so->so_options & SO_ACCEPTCONN) == 0))
+- 			wild = INPLOOKUP_WILDCARD;
+  		if (in_pcblookup(head,
+  		    zeroin_addr, 0, sin->sin_addr, lport, wild))
+  			return (EADDRINUSE);
+--- 107,116 ----
+***************
+*** 123,129 ****
+  				head->inp_lport = IPPORT_RESERVED;
+  			lport = htons(head->inp_lport);
+  		} while (in_pcblookup(head,
+! 			    zeroin_addr, 0, inp->inp_laddr, lport, 0));
+  	inp->inp_lport = lport;
+  	return (0);
+  }
+--- 124,130 ----
+  				head->inp_lport = IPPORT_RESERVED;
+  			lport = htons(head->inp_lport);
+  		} while (in_pcblookup(head,
+! 			    zeroin_addr, 0, inp->inp_laddr, lport, wild));
+  	inp->inp_lport = lport;
+  	return (0);
+  }
+

@@ -1,0 +1,109 @@
+Subject: IP kernel bug fix
+Index: sys/netinet/in_pcb.c 4.3BSD
+
+Note 50  (*)  IP kernel bug fix (4.3/utx2.0)         1 response 
+kane@mycroft                                 9:32 pm  Nov 12, 1986
+
+From: George Goble <ghg%ei.ecn.purdue.arpa@BRL.ARPA>
+
+Subject: IP kernel loop bug fixed (in 4.3BSD/utx2.0)
+
+Over the last several months at Purdue we have noticed Vaxen hanging
+at splnet() which were running 4.3BSD kernels.  Around once/week
+one vax would hang (out of 17) and would loop in a large loop with
+ip_intr() as the base.  This fall, when we wound up ei.ecn.purdue.edu
+with 100-160 users (a Max config Gould-PN9080) this same bug caused a
+crash every day or two. 3 other lesser loaded 9080's never crashed.
+
+Jeff Schwab (jrs@ee.ecn.purdue.edu, pur-ee!jrs) spent much time tracking
+this network bug down.  He found that it appeared that a socket was
+getting connected to itself.  The IP code would get a packet, and
+forward it to itself via the loopback device, which resulted
+in a kernel loop as the IP queue could never be cleared at this point,
+effectivly crashing the system.  Jeff also came up with a simple
+user mode program which would demonstrate this bug 100% of the time.
+Compile and run as root to see if you have this bug.  He theorizes
+that rsh (and a locally written service similar to rsh), may 
+have ended up getting sockets allocated in such a way where it
+could connect to itself.  This bug affects heavily loaded Gould's
+much more than Vaxen; cpu speed probably has something to do with that.
+Below is a user program to test for the bug (crashes system if present)
+and a fix Jeff came up with for /sys/netinet/in_pcb.c.  Many thanks
+to Jeff for finding this elusive bug which has been lurking 
+around for at least a year  I believe.
+--ghg
+
+----- CUT HERE ------
+#include <sys/param.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+main() {
+	struct sockaddr_in sin;
+	int s;
+	int port = 1000;
+
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = INADDR_ANY;
+
+	if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		printf("socket failed\n");
+		exit(0);
+	}
+
+	sin.sin_port = htons((u_short) port);
+	if (bind(s, (caddr_t)&sin, sizeof (sin)) < 0) {
+		printf("bind failed\n");
+		exit(0);
+
+	}
+
+	if (connect(s, (caddr_t)&sin, sizeof (sin), 0) < 0) {
+		printf("connect failed\n");
+		exit(0);
+	}
+}
+
+----- diffs of fix to /sys/netinet/in_pcb.c ------
+----- Applies to 4.3BSD (for Vaxen) and Gould Utx 2.0 -------
+*** 192,215 ****
+--- 192,223 ----
+  			if (ia == 0)
+  				return (EADDRNOTAVAIL);
+  		}
+  		ifaddr = (struct sockaddr_in *)&ia->ia_addr;
+  	}
+  	if (in_pcblookup(inp->inp_head,
+  	    sin->sin_addr,
+  	    sin->sin_port,
+  	    inp->inp_laddr.s_addr ? inp->inp_laddr : ifaddr->sin_addr,
+  	    inp->inp_lport,
+  	    0))
+  		return (EADDRINUSE);
++ 	/* try and prevent kernel from looping when a socket
++ 	   is connected to itself */
++ 	if (sin->sin_port == inp->inp_lport
++ 			&& ((inp->inp_laddr.s_addr == INADDR_ANY)?
++ 			ifaddr->sin_addr.s_addr: inp->inp_laddr.s_addr)
++ 			== sin->sin_addr.s_addr) {
++ 		return(ECONNREFUSED);
++ 	}
+  	if (inp->inp_laddr.s_addr == INADDR_ANY) {
+  		if (inp->inp_lport == 0)
+  			(void)in_pcbbind(inp, (struct mbuf *)0);
+  		inp->inp_laddr = ifaddr->sin_addr;
+  	}
+  	inp->inp_faddr = sin->sin_addr;
+  	inp->inp_fport = sin->sin_port;
+  	return (0);
+  }
+
+  in_pcbdisconnect(inp)
+  	struct inpcb *inp;
+
+==== ==== ====
+Response 1    to Note 50  
+	kane@mycroft                            9:29 am  Nov 29, 1986  
+
+installed on the 750 (claudius)
+

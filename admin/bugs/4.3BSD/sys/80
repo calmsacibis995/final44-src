@@ -1,0 +1,84 @@
+Date: Fri, 9 Jan 87 19:44:36 MST
+From: donn@utah-cs.arpa (Donn Seeley)
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: RAW mode and REMOTE mode on a pty will wedge it
+
+Subject: RAW mode and REMOTE mode on a pty will wedge it
+Index:	sys/tty_pty.c 4.3BSD
+
+Description:
+	If the program on the master side of a pty sets 'remote' mode
+	with TIOCREMOTE and the program on the slave side sets RAW mode
+	with TIOCSETP, data will stop propagating from the master to
+	the slave.
+
+Repeat-By:
+	An example would be pretty tedious to cook up for such an
+	obvious problem...  In our case, we were dealing with a
+	connection daemon for the X.25 package from UBC when we hit
+	this.  One of the ways to communicate with the daemon is to use
+	'tip' to connect to a reserved pty.  The daemon sets 'remote'
+	mode on the pty and 'tip' sets raw mode; when you examine the
+	pty with 'pstat' you see that the initial connection message
+	printed by the daemon is in the canq but 'tip' is blocked
+	waiting for input.  I don't know why this apparently worked on
+	UBC's system (perhaps they changed 'tip'?).
+
+Fix:
+	Clearly the problem is that 'remote' pty mode causes data from
+	the master to be entered in the canq, while 'raw' mode causes
+	the slave to check for data in the rawq, and never the twain
+	shall meet.  I made a crude change to ptyioctl() in tty_pty.c
+	which forces RAW mode off whenever REMOTE mode is used:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1022579	Fri Jan  9 19:35:43 1987
+	--- tty_pty.c	Wed Jan  7 04:05:16 1987
+	***************
+	*** 570,578 ****
+				return (0);
+	  
+			case TIOCREMOTE:
+	! 			if (*(int *)data)
+					pti->pt_flags |= PF_REMOTE;
+	! 			else
+					pti->pt_flags &= ~PF_REMOTE;
+				ttyflush(tp, FREAD|FWRITE);
+				return (0);
+	--- 570,579 ----
+				return (0);
+	  
+			case TIOCREMOTE:
+	! 			if (*(int *)data) {
+					pti->pt_flags |= PF_REMOTE;
+	! 				tp->t_flags &= ~RAW;
+	! 			} else
+					pti->pt_flags &= ~PF_REMOTE;
+				ttyflush(tp, FREAD|FWRITE);
+				return (0);
+	***************
+	*** 586,591 ****
+	--- 587,597 ----
+	  
+			case TIOCSETP:
+			case TIOCSETN:
+	+ 			if (pti->pt_flags & PF_REMOTE) {
+	+ 				register struct sgttyb *sg = (struct sgttyb *)data;
+	+ 				if (sg->sg_flags & RAW)
+	+ 					sg->sg_flags &= ~RAW;
+	+ 			}
+			case TIOCSETD:
+				while (getc(&tp->t_outq) >= 0)
+					;
+	----------------------------------------------------------------
+
+	This works, but if someone has a more elegant solution, I won't
+	hesitate to use it...
+
+	Donn Seeley    University of Utah CS Dept    donn@cs.utah.edu
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    utah-cs!donn
+
+	PS -- Yes, of course we're running 4.3 beta.  Groan.  I looked
+	on okeeffe and this problem still appears to be in the 4.3
+	release.
+

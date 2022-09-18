@@ -1,0 +1,61 @@
+Return-Path: <jss@asc.purdue.edu>
+Date: Thu, 28 Aug 86 13:26:01 est
+From: James S. Schoner <jss@asc.purdue.edu>
+Subject: Correction to my previous report of a C compiler bug.
+Index: lib/pcc/table.c 4.2BSD
+
+Description:
+	In a bug report a couple of weeks ago, I described a fix for code
+	generation for nested bit-field assignments, which involved making 
+	changes to local2.c and table.c.  Well, it turns out that my previous 
+	fix is unsatisfactory in certain cases.  I have the correct fix
+	below.
+Repeat-By:
+	Try compiling and executing both programs:
+
+	/* program 1 */
+	struct { int f:2; } y;
+	main () {
+		y.f = 1;
+		if (++y.f != 0)
+			printf ("No error.\n");
+	}
+
+	/* program 2 */
+	struct { int f:2; } y;
+	int x, z;
+	main () {
+		z = 8;
+		x = y.f = z;
+		if (x == z)
+			printf ("Error: x should be 0, not %d\n", x);
+	}
+	
+Fix:
+
+	If you modified local2.c as per my previous fix, restore it to
+	original form (i.e., remove the `SFLD' shape specification from
+	the second initializer line for the respref[] structure).
+
+	Now, modify table.c so that the template which looks like:
+
+	ASSIGN,		INAREG|FOREFF,
+		SFLD,	TANY,
+		SAREG|AWD,	TWORD,
+		0,	RLEFT,			<--- note RLEFT was RRIGHT
+		"	insv	AR,$H,$S,AL\n",
+
+	is replaced by the following *two* templates:
+
+	ASSIGN,		FOREFF,
+		SFLD,	TANY,
+		SAREG|AWD,	TWORD,
+		0,	RNOP,
+		"	insv	AR,$H,$S,AL\n",
+		
+
+	ASSIGN,		INAREG,
+		SFLD,	TANY,
+		SAREG|AWD,	TWORD,
+		NAREG,	RESC1,
+		"	insv	AR,$H,$S,AL\n	extv	$H,$S,AL,A1\n",

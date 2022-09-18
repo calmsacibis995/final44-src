@@ -1,0 +1,98 @@
+From serge@okeeffe.Berkeley.EDU  Wed Jul  8 23:20:44 1987
+Date: Wed, 8 Jul 87 23:20:29 PDT
+From: serge@okeeffe.Berkeley.EDU (serge)
+Subject: sendbug doesn't have a user interface
+Index: ucb 4.3BSD +FIX
+
+Description:
+	Sendbug lacks such rudimentary facilities as aborting a posting,
+	or reediting the bug report.
+Fix:
+#! /bin/sh -
+#
+# Copyright (c) 1983 Regents of the University of California.
+# All rights reserved.  The Berkeley software License Agreement
+# specifies the terms and conditions for redistribution.
+#
+#	%W% (Berkeley) %G%
+#
+# Create a bug report and mail to '4bsd-bugs'.
+#
+
+# uucp sites should use ": ${BUGADDR=ucbvax!4bsd-bugs}" with a suitable path.
+: ${BUGADDR=4bsd-bugs@BERKELEY.EDU}
+
+deadfile="${HOME-$LOGDIR}/dead.letter"
+formatfile=/usr/lib/bugformat
+tmpfile="/tmp/bug$$"
+
+mailer="/usr/lib/sendmail -t -oi"
+editor="${VISUAL-${EDITOR-vi}}"
+pager="${PAGER-more}"
+
+abort='if cmp -s "$formatfile" "$tmpfile"; then
+		:;
+	else
+		cat "$tmpfile" >> "$deadfile";
+		echo "Bug report appended to $deadfile";
+	fi'
+
+trap "$abort; rm -f '$tmpfile'; exit 1" 1 2 3 13 14 15
+
+cp "$formatfile" "$tmpfile"
+
+state=edit
+while : true; do
+	case "$state" in
+	edit)
+		if $editor "$tmpfile"; then
+			state=ask
+		else
+			state=abort
+		fi
+		;;
+	ask)
+		echo -n "Send, abort, quit, edit, or list? "
+		read answer
+		case "$answer" in
+		[Ss]*)
+			state=send
+			;;
+		[AaQq]*)
+			state=abort
+			;;
+		[Ee]*)
+			state=edit
+			;;
+		[Ll]*)
+			state=list
+			;;
+		*)
+			echo "$answer: Invalid command"
+			state=ask
+			;;
+		esac
+		;;
+	list)
+		$pager "$tmpfile"
+		state=ask
+		;;
+	abort)
+		eval "$abort"
+		break
+		;;
+	send)
+		if cmp -s "$formatfile" "$tmpfile"; then
+			echo "File not changed"
+			state=ask
+		elif $mailer "${@-$BUGADDR}" < "$tmpfile"; then
+			break
+		else
+			echo "Mailer error"
+			state=abort
+		fi
+		;;
+	esac
+done
+
+rm -f "$tmpfile"

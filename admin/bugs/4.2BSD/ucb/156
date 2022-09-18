@@ -1,0 +1,278 @@
+Return-Path: <smoot@ut-sally.ARPA>
+Date: Tue, 27 Mar 84 16:02:29 cst
+From: smoot@ut-sally.ARPA (Smoot Carl-Mitchell)
+Subject: Short summary of the problem
+Index: ucb/Mail 4.2BSD
+
+Description: file locking using 4.2 flock
+
+Fix:	The following mods to /bin/mail and /usr/ucb/Mail do the
+	mail spool file locking using the 4.2 BSD flock system call.
+
+	Note that the release version of Mail was not doing locking
+	when reading the spool file.  This is wrong and can result in
+	lost or mangled mail under some circumstances.
+
+	This fix also allows /usr/spool/mail to be protected 755.
+	The only side effect of this is that user mail boxes are truncated
+	to zero length, rather than being deleted.
+
+**** lex.c.1.1 -> lex.c.1.4 ****
+*** old.lex.c	Tue Mar 27 15:41:54 1984
+--- new.lex.c	Tue Mar 27 15:41:56 1984
+***************
+*** 28,34
+  	static char efile[128];
+  	extern char tempMesg[];
+  
+! 	if ((ibuf = fopen(name, "r")) == NULL)
+  		return(-1);
+  
+  	/*
+
+--- 28,34 -----
+  	static char efile[128];
+  	extern char tempMesg[];
+  
++	/* add check for zero length file */
+! 	if ((ibuf = fopen(name, "r")) == NULL || fsize(ibuf) == 0)
+  		return(-1);
+  
+  	/*
+***************
+*** 66,71
+  	editfile = efile;
+  	if (name != mailname)
+  		strcpy(mailname, name);
+  	mailsize = fsize(ibuf);
+  	if ((otf = fopen(tempMesg, "w")) == NULL) {
+  		perror(tempMesg);
+
+--- 66,74 -----
+  	editfile = efile;
+  	if (name != mailname)
+  		strcpy(mailname, name);
++ 	/* lock the file if we are reading our mail */
++ 	if (!isedit)
++ 		lock(mailname);
+  	mailsize = fsize(ibuf);
+  	if ((otf = fopen(tempMesg, "w")) == NULL) {
+  		perror(tempMesg);
+***************
+*** 79,84
+  	setptr(ibuf);
+  	setmsize(msgCount);
+  	fclose(ibuf);
+  	relsesigs();
+  	sawcom = 0;
+  	return(0);
+
+--- 82,89 -----
+  	setptr(ibuf);
+  	setmsize(msgCount);
+  	fclose(ibuf);
++ 	if (!isedit)
++ 		unlock();
+  	relsesigs();
+  	sawcom = 0;
+  	return(0);
+**** lock.c.1.1 -> lock.c.1.4 ****
+*** old.lock.c	Tue Mar 27 15:44:30 1984
+--- new.lock.c	Tue Mar 27 15:44:31 1984
+***************
+*** 2,7
+  static char sccsid[] = "@(#)lock.c	2.4 (Berkeley) 8/11/83";
+  #endif
+  
+  /*
+   * A mailing program.
+   *
+
+--- 2,48 -----
+  static char sccsid[] = "@(#)lock.c	2.4 (Berkeley) 8/11/83";
+  #endif
+  
++ #ifdef FLOCK
++ 
++ /* 
++  * Use the flock system call available in 4.2 BSD.  Since
++  * flock uses file descriptors, the file to lock is opened
++  * for reading and then locked.
++  *
++  * Only one file may be locked at a time.  This is consistent
++  * with the old locking algorithm.
++  */
++ 
++ #include <sys/file.h>
++ #include <stdio.h>
++ 
++ int	lockd;	/* file descriptor of locked file */
++ int	locked;	/* note that we locked it */
++ 
++ lock(file)
++ char *file;
++ {
++ 
++ 	if (locked)
++ 		return;
++ 	if ((lockd = open(file, O_RDONLY)) == -1 &&
++ 	    (lockd = open(file, O_CREAT, 0600)) == -1) {
++ 		/* this is very unlikely, but... */
++ 		perror ("lock");
++ 		_exit(1);
++ 	}
++ 	flock(lockd, LOCK_EX);
++ 	locked = 1;
++ }
++ 
++ unlock()
++ {
++ 	close(lockd);
++ 	locked = 0;
++ }
++ 
++ #else
++ 
+  /*
+   * A mailing program.
+   *
+***************
+*** 94,96
+  	remove(tempfile);
+  	return(0);
+  }
+
+--- 135,138 -----
+  	remove(tempfile);
+  	return(0);
+  }
++ #endif
+**** Makefile.1.1 -> Makefile.1.3 ****
+*** old.Makefile	Tue Mar 27 15:47:30 1984
+--- new.Makefile	Tue Mar 27 15:47:38 1984
+***************
+*** 2,8
+  #
+  # Berkeley Mail
+  #
+! CFLAGS=	-O -DVMUNIX -DV7
+  XSTR=	/usr/ucb/xstr
+  DESTDIR=
+  CTAGS=	/usr/ucb/ctags -w
+
+--- 2,8 -----
+  #
+  # Berkeley Mail
+  #
+! CFLAGS=	-O -DVMUNIX -DV7 -DFLOCK
+  XSTR=	/usr/ucb/xstr
+  DESTDIR=
+  CTAGS=	/usr/ucb/ctags -w
+**** mail.c.1.3 -> mail.c.1.4 ****
+*** old.mail.c	Tue Mar 27 15:54:50 1984
+--- new.mail.c	Tue Mar 27 15:54:54 1984
+***************
+*** 708,713
+  	done();
+  }
+  
+  /*
+   * Lock the specified mail file by setting the file mailfile.lock.
+   * We must, of course, be careful to unlink the lock file by a call
+
+--- 708,751 -----
+  	done();
+  }
+  
++ #ifdef FLOCK
++ 
++ /* 
++  * Use the flock system call available in 4.2 BSD.  Since
++  * flock uses file descriptors, the file to lock is opened
++  * for reading and then locked.
++  *
++  * Only one file may be locked at a time.  This is consistent
++  * with the old locking algorithm.
++  */
++ 
++ #include <sys/file.h>
++ 
++ int	lockd;	/* file descriptor of locked file */
++ int	locked = 0;	/* note that we locked it */
++ 
++ lock(file)
++ char *file;
++ {
++ 
++ 	if (locked || flgf)
++ 		return;
++ 	if ((lockd = open(file, O_RDONLY)) == -1 &&
++ 	    (lockd = open(file, O_CREAT, ~MAILMODE)) == -1)
++ 		return;
++ 	flock(lockd, LOCK_EX);
++ 	locked = 1;
++ }
++ 
++ unlock()
++ {
++ 	flock(lockd, LOCK_UN);
++ 	close(lockd);
++ 	locked = 0;
++ }
++ 
++ #else
++ 
+  /*
+   * Lock the specified mail file by setting the file mailfile.lock.
+   * We must, of course, be careful to unlink the lock file by a call
+***************
+*** 794,799
+  	unlink(tempfile);
+  	return(0);
+  }
+  
+  done()
+  {
+
+--- 832,838 -----
+  	unlink(tempfile);
+  	return(0);
+  }
++ #endif
+  
+  done()
+  {
+***************
+*** 800,805
+  	if(locked)
+  		unlock();
+  	unlink(lettmp);
+  	unlink(locktmp);
+  	exit(error);
+  }
+
+--- 839,845 -----
+  	if(locked)
+  		unlock();
+  	unlink(lettmp);
++ #ifndef FLOCK
+  	unlink(locktmp);
+  #endif
+  	exit(error);
+***************
+*** 801,806
+  		unlock();
+  	unlink(lettmp);
+  	unlink(locktmp);
+  	exit(error);
+  }
+  
+
+--- 841,847 -----
+  	unlink(lettmp);
+  #ifndef FLOCK
+  	unlink(locktmp);
++ #endif
+  	exit(error);
+  }
+  

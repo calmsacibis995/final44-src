@@ -1,0 +1,66 @@
+Return-Path: <rws@mit-bold>
+Date: Tue, 22 Nov 83 15:29:22 est
+From: rws@mit-bold (Robert W. Scheifler)
+Subject: host vs. net redirects not distinguished
+Index: 	sys/net/route.c 4.2BSD
+
+Description:
+	ICMP host-specific redirects are treated the same as network redirects.
+Repeat-By:
+	Go through a gateway that uses ICMP_REDIRECT_HOST and then do a
+	netstat -r.
+Fix:
+	In /sys/netinet/ip_icmp.c, in icmp_input(), change
+		rtredirect((struct sockaddr *)&icmpsrc,
+		  (struct sockaddr *)&icmpdst);
+	to be
+		rtredirect((struct sockaddr *)&icmpsrc,
+			   (struct sockaddr *)&icmpdst,
+			   (((code == ICMP_REDIRECT_NET) ||
+			     (code == ICMP_REDIRECT_TOSNET)) ?
+			   RTF_GATEWAY : (RTF_GATEWAY|RTF_HOST)));
+
+	In /sys/net/route.c, in rtredirect(), change
+		rtredirect(dst, gateway)
+			struct sockaddr *dst, *gateway;
+	to be
+		rtredirect(dst, gateway, flags)
+			struct sockaddr *dst, *gateway;
+			int flags;
+	and change
+		/*
+		 * Don't listen to the redirect if it's
+		 * for a route to an interface. 
+		 */
+		if (rt->rt_flags & RTF_GATEWAY) {
+			/*
+			 * Smash the current notion of the gateway to
+			 * this destination.  This is probably not right,
+			 * as it's conceivable a flurry of redirects could
+			 * cause the gateway value to fluctuate wildly during
+			 * dynamic routing reconfiguration.
+			 */
+			rt->rt_gateway = *gateway;
+			rtfree(rt);
+			rtstat.rts_newgateway++;
+			return;
+		}
+	to be
+		if ((rt->rt_flags & (RTF_HOST|RTF_GATEWAY)) != flags) {
+			rtfree(rt);
+			if (flags & RTF_HOST) {
+				rtinit(dst, gateway, flags);
+				rtstat.rts_newgateway++;
+			}
+			return;
+		}
+		/*
+		 * Smash the current notion of the gateway to
+		 * this destination.  This is probably not right,
+		 * as it's conceivable a flurry of redirects could
+		 * cause the gateway value to fluctuate wildly during
+		 * dynamic routing reconfiguration.
+		 */
+		rt->rt_gateway = *gateway;
+		rtfree(rt);
+		rtstat.rts_newgateway++;

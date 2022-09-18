@@ -1,0 +1,82 @@
+From allegra!jpl@ucbvax.Berkeley.EDU  Wed Jul 15 22:03:50 1987
+From: allegra!jpl@ucbvax.berkeley.edu
+Date: Wed, 15 Jul 87 13:33:43 edt
+Subject: Re: schain botch bug followup
+Cc: seismo!mimsy!chris, ulysses!utah-cs!donn
+
+Index:	lib/mip/pftn.c 4.3BSD
+
+Description:
+	This is a followup to the bug report I filed on 14 July about
+	the failure of /usr/src/lib/mip/pftn.c to tidy up the schain
+	lists when relook() caused a symbol table entry to be moved.
+	I have since exchanged mail with Donn Seeley (utah-cs!donn)
+	who says he has seen the same problem, and confirmed the
+	existence of the schain list bug.  This fix below is a minor
+	modification to the fix he suggested to me.
+Repeat-By:
+	It's still tough (because it is hash-dependent) but Donn noted
+	that the problem was most likely to appear when programs had
+	goto's from one block to an enclosing block.  This was, indeed,
+	the case for the program that first brought the bug to my
+	attention.
+Fix:
+	Here's what I am running now.  It seems to have stopped the
+	schain botch errors, and doesn't seem to have hurt anything.
+
+RCS file: pftn.c,v
+retrieving revision 1.1
+retrieving revision 1.3
+diff -c -r1.1 -r1.3
+*** /tmp/,RCSt1007843	Wed Jul 15 13:08:48 1987
+--- /tmp/,RCSt2007843	Wed Jul 15 13:08:48 1987
+***************
+*** 1893,1899 ****
+  	/* step 2: fix any mishashed entries */
+  	p = clist;
+  	while( p ){
+! 		register struct symtab *r, *next;
+  
+  		q = p;
+  		next = p->snext;
+--- 1893,1899 ----
+  	/* step 2: fix any mishashed entries */
+  	p = clist;
+  	while( p ){
+! 		register struct symtab *next, **t, *r;
+  
+  		q = p;
+  		next = p->snext;
+***************
+*** 1901,1906 ****
+--- 1901,1911 ----
+  			if( ++q >= &stab[SYMTSZ] )q = stab;
+  			if( q == p || q->stype == TNULL )break;
+  			if( (r = relook(q)) != q ) {
++ 				/* move q in schain list */
++ 				t = &(schain[q->slevel]);
++ 				while (*t && *t != q) t = &((*t)->snext);
++ 				if (*t) *t = r;
++ 				else cerror("schain botch 2");
+  				*r = *q;
+  				q->stype = TNULL;
+  				}
+
+	Just a couple comments.  It looks like only two out the three
+	symtab pointers can fit in registers, so I rearranged the order.
+	I put "next" first because relook is only infrequently invoked,
+	and even less frequently returns a new entry.  I put "t" second
+	because it is in the inner loop of the schain patching.
+
+	This fix (closely matching Donn's suggestion) is much better
+	than the one I originally posted.  (Donn has the advantage of
+	understanding what is going on.)  It confines the search for
+	the dangling reference to the appropriate level (mine searched
+	all lower levels) so it is more efficient.  It INSISTS that a
+	dangling reference be found (mine merely fixed the reference IF
+	it was found) so it is more thorough.  And it is a standard
+	part of the code (I hid mine behind debugging checks) so it is
+	more effective.  I therefore suggest you employ this fix rather
+	than the one I originally posted.
+
+John P. Linderman  allegra!jpl  (201) 582-6427

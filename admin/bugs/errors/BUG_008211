@@ -1,0 +1,67 @@
+From torek@horse.ee.lbl.gov  Fri Sep 11 15:38:54 1992
+Received: from hofmann.CS.Berkeley.EDU by vangogh.CS.Berkeley.EDU (5.113/2.7) id AA08207; Fri, 11 Sep 92 15:38:54 -0700
+Received: from horse.ee.lbl.gov by hofmann.CS.Berkeley.EDU (5.115/2.8) id AA04494; Fri, 11 Sep 1992 15:39:51 -0700
+Received: by horse.ee.lbl.gov for 4bsd-bugs@cs.berkeley.edu (5.65/1.41)
+	id AA04601; Fri, 11 Sep 92 15:39:46 -0700
+Message-Id: <9209112239.AA04601@horse.ee.lbl.gov>
+To: composer@beyond.dreams.org (Jeff Kellem)
+Cc: problems@bsdi.com, 4bsd-bugs@cs.berkeley.edu, bugs@beyond.dreams.org
+Subject: Re: stdio misnomer? -- __SRD, __SWR, *and* __SRW flags ?
+In-Reply-To: Your message of Fri, 11 Sep 92 18:07:02 -0400.
+             <9209112207.AA17666@Beyond.Dreams.ORG>
+Date: Fri, 11 Sep 92 15:39:45 PDT
+From: Chris Torek <torek@horse.ee.lbl.gov>
+
+>Without delving through all the stdio implementation, it would seem that
+>you could just use the read and write flags to determine whether a file
+>was opened for reading and writing, instead of using a separate bit.
+
+Not quite: RD means `currently active as read', `WR' mean `currently
+active as write', and `RW' means `can switch'.  Since some files are
+opened read- or write-only, you need some way to distinguish between
+"[rw]+ but recently reading" vs "r"/"w" only.  It might be possible
+to encode this in fewer bits, but this seemed the most straightforward.
+
+>The way we [Geoff Collyer and I] happened upon this was the fflush()
+>routine failing on a file stream opened with mode "a+" -- this would also
+>fail on "r+".  1) it shouldn't fail on that, 2) I believe it shouldn't
+>fail even when attempting to flush a stream only opened for reading --
+>perhaps, it should just be a no-op for that case.  [I suppose the latter
+>is up for speculation.]
+
+This is how I had it originally, actually.  We (Keith Bostic and I)
+changed it for some reason that I do not properly recall.  I would go
+with having fflush check __SRW; __sflush will return 0 in this case.
+
+Note that some implementations define fflush(currently_input_stream)
+the way we define fpurge(same).  If someone wanted to change this
+stdio to act this way, you would definitely need both "current" and
+"ultimate" directional bits.  In any case, ANSI C leaves the effect
+of such a flush `undefined', so we make it an error.
+
+Below is the change I made on vangogh.
+
+Chris
+
+------- fflush.c -------
+*** /tmp/d08180	Fri Sep 11 15:35:40 1992
+--- fflush.c	Fri Sep 11 15:32:19 1992
+***************
+*** 21,28 ****
+  	register FILE *fp;
+  {
+  	if (fp == NULL)
+  		return (_fwalk(__sflush));
+! 
+! 	if ((fp->_flags & __SWR) == 0) {
+  		errno = EBADF;
+  		return (EOF);
+--- 21,28 ----
+  	register FILE *fp;
+  {
++ 
+  	if (fp == NULL)
+  		return (_fwalk(__sflush));
+! 	if ((fp->_flags & (__SWR | __SRW)) == 0) {
+  		errno = EBADF;
+  		return (EOF);

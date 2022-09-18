@@ -1,0 +1,106 @@
+From muller%sdcc7@ucsd.edu Tue Jun 28 18:42:58 1988
+Date: Tue, 28 Jun 88 18:42:47 PDT
+From: muller%sdcc7@ucsd.edu (Keith Muller)
+To: bostic@okeeffe.berkeley.edu
+Subject: mpcc ports wedge (fix #3)
+Index: sys/tahoevba/mp.c 4.3BSD
+
+Description:
+	Leave a background job running on a mpcc port. Further attempts
+	to log into the port will fail intermittantly. The getty that is
+	created after logging out fails and goes into a "sleeping" mode,
+	as mpopen() blindly returns when TS_ISOPEN is set even without
+	a connection to the port. 
+Repeat-By:
+	Log into a mpcc port. Do a "sleep 3000 &" and break the connection
+	(log out). Run "lastcomm" lastcomm on terminal port will show three
+	rapid failures of getty on the port with the sleep running. If left
+	long enough several failing "sleeping" messages appear in syslog.
+Fix:
+	The mpopen() routine has does not check that carrier is up when
+	the line is still open, this is true when a background job is
+	still running. What mpopen() should do is to avoid the EVCMD_OPEN
+	event when the line is TS_ISOPEN, but should wait on TS_CARR_ON and
+	call l_open().
+
+	Note: this also removes a uneeded mpmodem left in fix #2
+
+	Keith Muller
+	University of California, San Diego
+
+RCS file: RCS/mp.c,v
+retrieving revision 1.3
+diff -c -r1.3 mp.c
+*** /tmp/,RCSt1000308	Tue Jun 28 18:00:24 1988
+--- mp.c	Tue Jun 28 17:57:33 1988
+***************
+*** 171,205 ****
+  		sleep((caddr_t)&tp->t_canq, TTIPRI);
+  	while (tp->t_state & TS_WOPEN) 
+  		sleep((caddr_t)&tp->t_canq, TTIPRI);
+- 	if (tp->t_state & TS_ISOPEN) {
+- 		splx(s);
+- 		return (0);
+- 	}
+  	tp->t_state |= TS_WOPEN;
+  	tp->t_addr = (caddr_t)ms;
+  	tp->t_oproc = mpstart;
+  	tp->t_dev = dev;
+! 	ttychars(tp);
+! 	if (tp->t_ispeed == 0) {
+! 		tp->t_ispeed = B9600;
+! 		tp->t_ospeed = B9600;
+! 		tp->t_flags |= ODDP|EVENP|ECHO;
+  	}
+- 	/*
+- 	 * Initialize port state: init MPCC interface
+- 	 * structures for port and setup modem control.
+- 	 */
+- 	mp->mp_proto = MPPROTO_ASYNC;		/* XXX */
+- 	error = mpportinit(ms, mp, port);
+- 	if (error)
+- 		goto bad;
+- 	ev = mpparam(unit);
+- 	if (ev == 0) {
+- 		error = ENOBUFS;
+- 		goto bad;
+- 	}
+- 	mpmodem(unit, MMOD_ON);
+- 	mpcmd(ev, EVCMD_OPEN, 0, ms->ms_mb, port);
+  	while ((tp->t_state & TS_CARR_ON) == 0)
+  		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  	error = (*linesw[tp->t_line].l_open)(dev,tp);
+--- 171,202 ----
+  		sleep((caddr_t)&tp->t_canq, TTIPRI);
+  	while (tp->t_state & TS_WOPEN) 
+  		sleep((caddr_t)&tp->t_canq, TTIPRI);
+  	tp->t_state |= TS_WOPEN;
+  	tp->t_addr = (caddr_t)ms;
+  	tp->t_oproc = mpstart;
+  	tp->t_dev = dev;
+! 	if ((tp->t_state & TS_ISOPEN) == 0) {
+! 		ttychars(tp);
+! 		if (tp->t_ispeed == 0) {
+! 			tp->t_ispeed = B9600;
+! 			tp->t_ospeed = B9600;
+! 			tp->t_flags = ODDP|EVENP|ECHO;
+! 		}
+! 		/*
+! 		 * Initialize port state: init MPCC interface
+! 		 * structures for port and setup modem control.
+! 		 */
+! 		mp->mp_proto = MPPROTO_ASYNC;		/* XXX */
+! 		error = mpportinit(ms, mp, port);
+! 		if (error)
+! 			goto bad;
+! 		ev = mpparam(unit);
+! 		if (ev == 0) {
+! 			error = ENOBUFS;
+! 			goto bad;
+! 		}
+! 		mpcmd(ev, EVCMD_OPEN, 0, ms->ms_mb, port);
+  	}
+  	while ((tp->t_state & TS_CARR_ON) == 0)
+  		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  	error = (*linesw[tp->t_line].l_open)(dev,tp);
+

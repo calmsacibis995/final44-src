@@ -1,0 +1,57 @@
+Return-Path: <clyde@ut-ngp.ARPA>
+Date: Thu, 2 Feb 84 16:16:14 cst
+From: clyde@ut-ngp.ARPA
+Subject: Man leaves processes hanging around, tty modes left scrambled
+Index: 	ucb/man.c 4.2BSD
+
+Description:
+	Man does not always interact well with job control.
+	When displaying a manual page using "more" and interrupted,
+	processes can be left hanging.
+
+	Symptoms: there is a 'sh -c' in proc wait (on more)
+		'more' is in stopped mode.
+
+NOTE:	This only happens when using the Cshell.
+
+	Cause:
+		Man and more both trap SIGINT. Man removes temp file, and
+		more restores terminal modes before exiting.
+
+		If man exits before more, then Cshell resets the process
+		group of the controlling terminal, then when more finally
+		gets around to restoring tty modes, it is "in the background"
+		and so gets stopped with SIGTTOU.  The shell that fired up
+		more is hung waiting for more to exit.
+
+		Man rolls its own system() so it can use vfork; however
+		it does NOT ignore SIGINT and SIGQUIT while waiting for
+		the shell it invoked to exit.  So if interrupted, man can
+		exit before its subprocesses do.  No problem unless the
+		subprocesses do things with the terminal - then they will
+		get stopped with SIGTTOU.
+
+Repeat-By:
+	Do 'man something' and interrupt at the "--More--" prompt a few
+	times until man dies and the tty is left in noecho cbreak mode.
+Fix:
+system(s)	(Last routine in man.c)
+char *s;
+{
+	int status, pid, w;
+	int (*saveintr)(), (*savequit)();
+
+	if ((pid = vfork()) == 0) {
+		execl("/bin/sh", "sh", "-c", s, 0);
+		_exit(127);
+	}
+	saveintr = signal (SIGINT, SIG_IGN);	/* ***** FIX **** */
+	savequit = signal (SIGQUIT, SIG_IGN);	/* ***** FIX **** */
+	while ((w = wait(&status)) != pid && w != -1)
+		;
+	if (w == -1)
+		status = -1;
+	return (status);
+	(void) signal (SIGQUIT, saveintr);	/* ***** FIX **** */
+	(void) signal (SIGQUIT, savequit);	/* ***** FIX **** */
+}

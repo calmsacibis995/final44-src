@@ -1,0 +1,82 @@
+From chris@gyre.umd.edu  Tue Jul 28 08:13:56 1987
+Date: Tue, 28 Jul 87 01:31:50 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+Subject: telnetd CR/LF processing is wrong
+Index: etc/telnetd.c 4.3BSD Fix
+
+Description: (Viz. tcp-ip discussions)
+	Telnetd maps \r\n to just \n (except when it crosses an
+	input buffer boundary!), whereas it should map this to just
+	\r because \r\n is supposed to represent the remote user's
+	`enter' key.  Bridge CS/1 boxes, in particular, like to
+	send \r\n for a typed \r.
+
+Repeat-by:
+	Buy a Bridge box, or better, borrow one (you will not want
+	to keep it).  Connect to a Unix host and try typing ^V^M;
+	note that it comes out as a newline instead of a literal
+	carriage return.
+
+Fix:
+	Below.  There are simpler changes, but this cleans the whole
+	thing up.
+
+Chris
+
+RCS file: RCS/telnetd.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c2 -r1.1 -r1.2
+*** /tmp/,RCSt1007480	Tue Jul 28 01:24:41 1987
+--- /tmp/,RCSt2007480	Tue Jul 28 01:24:45 1987
+***************
+*** 615,623 ****
+  
+  		case TS_CR:
+  			state = TS_DATA;
+! 			if ((c == 0) || (c == '\n')) {
+! 				break;
+! 			}
+! 			/* FALL THROUGH */
+  
+  		case TS_DATA:
+--- 615,625 ----
+  
+  		case TS_CR:
++ 			/*
++ 			 * Consume LF or NUL following CR.
++ 			 */
+  			state = TS_DATA;
+! 			if (c != 0 && c != '\n')
+! 				*pfrontp++ = c;
+! 			break;
+  
+  		case TS_DATA:
+***************
+*** 628,646 ****
+  			if (inter > 0)
+  				break;
+! 			/*
+! 			 * We map \r\n ==> \n, since \r\n says
+! 			 * that we want to be in column 1 of the next
+! 			 * printable line, and \n is the standard
+! 			 * unix way of saying that (\r is only good
+! 			 * if CRMOD is set, which it normally is).
+! 			 */
+! 			if ((myopts[TELOPT_BINARY] == OPT_NO) && c == '\r') {
+! 				if ((ncc > 0) && ('\n' == *netip)) {
+! 					netip++; ncc--;
+! 					c = '\n';
+! 				} else {
+! 					state = TS_CR;
+! 				}
+! 			}
+  			*pfrontp++ = c;
+  			break;
+--- 630,635 ----
+  			if (inter > 0)
+  				break;
+! 			if (c == '\r' && myopts[TELOPT_BINARY] == OPT_NO)
+! 				state = TS_CR;
+  			*pfrontp++ = c;
+  			break;

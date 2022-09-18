@@ -1,0 +1,216 @@
+From bigbug  Mon Aug  2 02:23:20 1993
+Received: from hofmann.CS.Berkeley.EDU (hofmann.CS.Berkeley.EDU [128.32.131.12]) by vangogh.CS.Berkeley.EDU (8.1C/6.32) with ESMTP id CAA08032; Mon, 2 Aug 1993 02:23:16 -0700
+Received: from gw.home.vix.com (gw.home.vix.com [192.5.5.1]) by hofmann.CS.Berkeley.EDU (8.5/8.5) with ESMTP id CAA04543; Mon, 2 Aug 1993 02:23:29 -0700
+Received: by gw.home.vix.com; id AA20024; Mon, 2 Aug 93 02:23:24 -0700
+Message-Id: <9308020923.AA20024@gw.home.vix.com>
+X-Btw: vix.com is also efficacy.home.vix.com and vixie.sf.ca.us
+To: Ozan Yigit <oz@sis.yorku.ca>, 4bsd-bugs@cs.berkeley.edu, problems@bsdi.com
+Subject: m4 doesn't live up to its man page (very ugly fix included)
+Date: Mon, 02 Aug 93 02:23:23 PDT
+From: Paul A Vixie <paul@vix.com>
+
+according to m4(1) in the Berkeley Net-2 release...
+
+     defn            Returns the quoted definition for each argument.  This
+                     can be used to rename macro definitions (even for built-
+                     in macros).
+
+...if you apply the patch below, this will actually be true.  This patch also
+fixes a bug in the handling of the "unix" macro, which will otherwise cause an
+eval botch when entered alone.
+
+the fix is really, really ugly.  coyote ugly, if you know what i mean.  all i
+can say in my own defense is, well, it wasn't 8-bit clean before and it sure
+isn't 8-bit clean now, and if i had more time i'd rewrite it with structs or
+at least wchar_t's on the token stack, but sorry, it's magic cookies for now.
+
+last and least significant, 4096 characters of string space is impossibly small
+for any nontrivial application.  65535 characters seems to handle my needs, but
+if possible this should be made into a dynamic space some day.
+
+i'd love to publish a newer m4 on comp.sources.unix if you ever release one..
+
+to apply this, go to /usr/src/usr.bin/m4 and feed it to "patch -l".
+
+*** /tmp/RCSA019904	Mon Aug  2 02:16:48 1993
+--- eval.c	Mon Aug  2 00:24:24 1993
+***************
+*** 368,371 ****
+--- 368,378 ----
+  		break;
+  
++ 	case MACRTYPE:
++ 		/*
++ 		 * probably a builtin like `unix'.
++ 		 */
++ 		expand(argv, argc);
++ 		break;
++ 
+  	default:
+  		error("m4: major botch in eval.");
+*** /tmp/RCSA019904	Mon Aug  2 02:16:48 1993
+--- main.c	Mon Aug  2 02:04:17 1993
+***************
+*** 207,210 ****
+--- 207,211 ----
+  extern ndptr lookup();
+  extern ndptr addent();
++ extern ndptr unwrapCookie();
+  extern void onintr();
+  
+***************
+*** 334,337 ****
+--- 335,345 ----
+  			continue;
+  		}
++ 		else if (t == COOKIE) {
++ 			/* these are only meaningful inside of inspect();
++ 			 * nuke it here.
++ 			 */
++ 			while (gpbc() != COOKIE)
++ 				;
++ 		}
+  	/*
+  	 * non-alpha single-char token seen..
+***************
+*** 441,444 ****
+--- 449,454 ----
+  		if (strcmp(name, p->name) == 0)
+  			break;
++ 	if (p && p->defn && p->defn[0] == COOKIE)
++ 		p = unwrapCookie(p->defn);
+  	return(p);
+  }
+*** /tmp/RCSA019904	Mon Aug  2 02:16:48 1993
+--- mdef.h	Mon Aug  2 02:16:11 1993
+***************
+*** 103,106 ****
+--- 103,107 ----
+  
+  #define EOS             (char) 0
++ #define	COOKIE		(-2)		/* dodefn() -> inspect()   */
+  #define MAXINP          10              /* maximum include files   */
+  #define MAXOUT          10              /* maximum # of diversions */
+***************
+*** 108,112 ****
+  #define BUFSIZE         4096            /* size of pushback buffer */
+  #define STACKMAX        1024            /* size of call stack      */
+! #define STRSPMAX        4096            /* size of string space    */
+  #define MAXTOK          MAXSTR          /* maximum chars in a tokn */
+  #define HASHSIZE        199             /* maximum size of hashtab */
+--- 109,113 ----
+  #define BUFSIZE         4096            /* size of pushback buffer */
+  #define STACKMAX        1024            /* size of call stack      */
+! #define STRSPMAX        65536           /* size of string space    */
+  #define MAXTOK          MAXSTR          /* maximum chars in a tokn */
+  #define HASHSIZE        199             /* maximum size of hashtab */
+*** /tmp/RCSA019904	Mon Aug  2 02:16:49 1993
+--- serv.c	Mon Aug  2 02:12:35 1993
+***************
+*** 55,60 ****
+  extern ndptr addent();
+   
+- char *dumpfmt = "`%s'\t`%s'\n"; /* format string for dumpdef   */
+-  
+  /*
+   * expand - user-defined macro expansion
+--- 55,58 ----
+***************
+*** 151,158 ****
+          register ndptr p;
+   
+!         if ((p = lookup(name)) != nil && p->defn != null) {
+!                 putback(rquote);
+!                 pbstr(p->defn);
+!                 putback(lquote);
+          }
+  }
+--- 149,166 ----
+          register ndptr p;
+   
+!         if ((p = lookup(name)) != nil &&
+! 	    (p->defn != null) || (p->type != MACRTYPE)) {
+! 		putback(rquote);
+! 		if (p->type == MACRTYPE) {
+! 			pbstr(p->defn);
+! 		} else {
+! 			char buf[20];
+! 
+! 			putback(COOKIE);		/* slimy */
+! 			sprintf(buf, "0x%lx", p);	/* scummy */
+! 			pbstr(buf);			/* icky */
+! 			putback(COOKIE);		/* and bad */
+! 		}
+! 		putback(lquote);
+          }
+  }
+***************
+*** 199,204 ****
+                  for (n = 2; n < argc; n++)
+                          if ((p = lookup(argv[n])) != nil)
+!                                 fprintf(stderr, dumpfmt, p->name,
+!                                 p->defn);
+          }
+          else {
+--- 207,211 ----
+                  for (n = 2; n < argc; n++)
+                          if ((p = lookup(argv[n])) != nil)
+! 				dump1(p, 0);
+          }
+          else {
+***************
+*** 205,213 ****
+                  for (n = 0; n < HASHSIZE; n++)
+                          for (p = hashtab[n]; p != nil; p = p->nxtptr)
+!                                 fprintf(stderr, dumpfmt, p->name,
+!                                 p->defn);
+          }
+  }
+   
+  /*
+   * doifelse - select one of two alternatives - loop.
+--- 212,255 ----
+                  for (n = 0; n < HASHSIZE; n++)
+                          for (p = hashtab[n]; p != nil; p = p->nxtptr)
+! 				dump1(p, 0);
+          }
+  }
+   
++ ndptr
++ unwrapCookie(s)
++ register char *s;
++ {
++ 	char buf[20],
++ 	     *p = buf,
++ 	     c;
++ 	unsigned long l;
++ 
++ 	while ((c = *++s) != COOKIE) {
++ 		*p++ = c;
++ 	}
++ 	*p = '\0';
++ 	sscanf(buf, "%li", &l);
++ 	return ((ndptr) l);
++ }
++ 
++ dump1(p, l)
++ register ndptr p;
++ register int l;
++ {
++ 	register int i;
++ 
++ 	for (i = 0;  i < l;  i++)
++ 		fprintf(stderr, "  ");
++ 	fprintf(stderr, "`%s'\t", p->name);
++ 	if (p->type & STATIC) {
++ 		fprintf(stderr, "Internal(%d)\n", p->type & ~STATIC);
++ 	} else if (p->defn && (p->defn[0] == COOKIE)) {
++ 		fprintf(stderr, "(alias)\n");
++ 		dump1(unwrapCookie(p->defn), l+1);
++ 	} else {
++ 		fprintf(stderr, "`%s'\n", p->defn);
++ 	}
++ }
++ 
+  /*
+   * doifelse - select one of two alternatives - loop.

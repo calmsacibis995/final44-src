@@ -1,0 +1,1550 @@
+Subject: (tcp 2 of 2) updated IP/TCP and XNS sources for 4.3BSD
+Index: sys 4.3BSD
+
+Description:
+	This is number 11 of 11 total articles posted to the newsgroup
+	comp.bugs.4bsd.ucb-fixes.  This archive is number 2 of the 2
+	articles that make up the tcp posting.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	netinet
+#	netinet/tcp_seq.h
+#	netinet/tcp_subr.c
+#	netinet/tcp_timer.c
+#	netinet/tcp_timer.h
+#	netinet/tcp_usrreq.c
+#	netinet/tcp_var.h
+#	netinet/tcpip.h
+#
+echo c - netinet
+mkdir netinet > /dev/null 2>&1
+echo x - netinet/tcp_seq.h
+sed 's/^X//' >netinet/tcp_seq.h << 'END-of-netinet/tcp_seq.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_seq.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * TCP sequence numbers are 32 bit integers operated
+X * on with modular arithmetic.  These macros can be
+X * used to compare such integers.
+X */
+X#define	SEQ_LT(a,b)	((int)((a)-(b)) < 0)
+X#define	SEQ_LEQ(a,b)	((int)((a)-(b)) <= 0)
+X#define	SEQ_GT(a,b)	((int)((a)-(b)) > 0)
+X#define	SEQ_GEQ(a,b)	((int)((a)-(b)) >= 0)
+X
+X/*
+X * Macros to initialize tcp sequence numbers for
+X * send and receive from initial send and receive
+X * sequence numbers.
+X */
+X#define	tcp_rcvseqinit(tp) \
+X	(tp)->rcv_adv = (tp)->rcv_nxt = (tp)->irs + 1
+X
+X#define	tcp_sendseqinit(tp) \
+X	(tp)->snd_una = (tp)->snd_nxt = (tp)->snd_max = (tp)->snd_up = \
+X	    (tp)->iss
+X
+X#define	TCP_ISSINCR	(125*1024)	/* increment for tcp_iss each second */
+X
+X#ifdef KERNEL
+Xtcp_seq	tcp_iss;		/* tcp initial send seq # */
+X#endif
+END-of-netinet/tcp_seq.h
+echo x - netinet/tcp_subr.c
+sed 's/^X//' >netinet/tcp_subr.c << 'END-of-netinet/tcp_subr.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_subr.c	7.13.1.1 (Berkeley) 2/7/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "protosw.h"
+X#include "errno.h"
+X
+X#include "../net/route.h"
+X#include "../net/if.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X#include "ip_icmp.h"
+X#include "tcp.h"
+X#include "tcp_fsm.h"
+X#include "tcp_seq.h"
+X#include "tcp_timer.h"
+X#include "tcp_var.h"
+X#include "tcpip.h"
+X
+Xint	tcp_ttl = TCP_TTL;
+X
+X/*
+X * Tcp initialization
+X */
+Xtcp_init()
+X{
+X
+X	tcp_iss = 1;		/* wrong */
+X	tcb.inp_next = tcb.inp_prev = &tcb;
+X}
+X
+X/*
+X * Create template to be used to send tcp packets on a connection.
+X * Call after host entry created, allocates an mbuf and fills
+X * in a skeletal tcp/ip header, minimizing the amount of work
+X * necessary when the connection is used.
+X */
+Xstruct tcpiphdr *
+Xtcp_template(tp)
+X	struct tcpcb *tp;
+X{
+X	register struct inpcb *inp = tp->t_inpcb;
+X	register struct mbuf *m;
+X	register struct tcpiphdr *n;
+X
+X	if ((n = tp->t_template) == 0) {
+X		m = m_get(M_DONTWAIT, MT_HEADER);
+X		if (m == NULL)
+X			return (0);
+X		m->m_off = MMAXOFF - sizeof (struct tcpiphdr);
+X		m->m_len = sizeof (struct tcpiphdr);
+X		n = mtod(m, struct tcpiphdr *);
+X	}
+X	n->ti_next = n->ti_prev = 0;
+X	n->ti_x1 = 0;
+X	n->ti_pr = IPPROTO_TCP;
+X	n->ti_len = htons(sizeof (struct tcpiphdr) - sizeof (struct ip));
+X	n->ti_src = inp->inp_laddr;
+X	n->ti_dst = inp->inp_faddr;
+X	n->ti_sport = inp->inp_lport;
+X	n->ti_dport = inp->inp_fport;
+X	n->ti_seq = 0;
+X	n->ti_ack = 0;
+X	n->ti_x2 = 0;
+X	n->ti_off = 5;
+X	n->ti_flags = 0;
+X	n->ti_win = 0;
+X	n->ti_sum = 0;
+X	n->ti_urp = 0;
+X	return (n);
+X}
+X
+X/*
+X * Send a single message to the TCP at address specified by
+X * the given TCP/IP header.  If flags==0, then we make a copy
+X * of the tcpiphdr at ti and send directly to the addressed host.
+X * This is used to force keep alive messages out using the TCP
+X * template for a connection tp->t_template.  If flags are given
+X * then we send a message back to the TCP which originated the
+X * segment ti, and discard the mbuf containing it and any other
+X * attached mbufs.
+X *
+X * In any case the ack and sequence number of the transmitted
+X * segment are as specified by the parameters.
+X */
+Xtcp_respond(tp, ti, ack, seq, flags)
+X	struct tcpcb *tp;
+X	register struct tcpiphdr *ti;
+X	tcp_seq ack, seq;
+X	int flags;
+X{
+X	register struct mbuf *m;
+X	int win = 0, tlen;
+X	struct route *ro = 0;
+X
+X	if (tp) {
+X		win = sbspace(&tp->t_inpcb->inp_socket->so_rcv);
+X		ro = &tp->t_inpcb->inp_route;
+X	}
+X	if (flags == 0) {
+X		m = m_get(M_DONTWAIT, MT_HEADER);
+X		if (m == NULL)
+X			return;
+X#ifdef TCP_COMPAT_42
+X		tlen = 1;
+X#else
+X		tlen = 0;
+X#endif
+X		m->m_len = sizeof (struct tcpiphdr) + tlen;
+X		*mtod(m, struct tcpiphdr *) = *ti;
+X		ti = mtod(m, struct tcpiphdr *);
+X		flags = TH_ACK;
+X	} else {
+X		m = dtom(ti);
+X		m_freem(m->m_next);
+X		m->m_next = 0;
+X		m->m_off = (int)ti - (int)m;
+X		tlen = 0;
+X		m->m_len = sizeof (struct tcpiphdr);
+X#define xchg(a,b,type) { type t; t=a; a=b; b=t; }
+X		xchg(ti->ti_dst.s_addr, ti->ti_src.s_addr, u_long);
+X		xchg(ti->ti_dport, ti->ti_sport, u_short);
+X#undef xchg
+X	}
+X	ti->ti_next = ti->ti_prev = 0;
+X	ti->ti_x1 = 0;
+X	ti->ti_len = htons((u_short)(sizeof (struct tcphdr) + tlen));
+X	ti->ti_seq = htonl(seq);
+X	ti->ti_ack = htonl(ack);
+X	ti->ti_x2 = 0;
+X	ti->ti_off = sizeof (struct tcphdr) >> 2;
+X	ti->ti_flags = flags;
+X	ti->ti_win = htons((u_short)win);
+X	ti->ti_urp = 0;
+X	ti->ti_sum = in_cksum(m, sizeof (struct tcpiphdr) + tlen);
+X	((struct ip *)ti)->ip_len = sizeof (struct tcpiphdr) + tlen;
+X	((struct ip *)ti)->ip_ttl = tcp_ttl;
+X	(void) ip_output(m, (struct mbuf *)0, ro, 0);
+X}
+X
+X/*
+X * Create a new TCP control block, making an
+X * empty reassembly queue and hooking it to the argument
+X * protocol control block.
+X */
+Xstruct tcpcb *
+Xtcp_newtcpcb(inp)
+X	struct inpcb *inp;
+X{
+X	struct mbuf *m = m_getclr(M_DONTWAIT, MT_PCB);
+X	register struct tcpcb *tp;
+X
+X	if (m == NULL)
+X		return ((struct tcpcb *)0);
+X	tp = mtod(m, struct tcpcb *);
+X	tp->seg_next = tp->seg_prev = (struct tcpiphdr *)tp;
+X	tp->t_maxseg = TCP_MSS;
+X	tp->t_flags = 0;		/* sends options! */
+X	tp->t_inpcb = inp;
+X	/*
+X	 * Init srtt to TCPTV_SRTTBASE (0), so we can tell that we have no
+X	 * rtt estimate.  Set rttvar so that srtt + 2 * rttvar gives
+X	 * reasonable initial retransmit time.
+X	 */
+X	tp->t_srtt = TCPTV_SRTTBASE;
+X	tp->t_rttvar = TCPTV_SRTTDFLT << 2;
+X	TCPT_RANGESET(tp->t_rxtcur, 
+X	    ((TCPTV_SRTTBASE >> 2) + (TCPTV_SRTTDFLT << 2)) >> 1,
+X	    TCPTV_MIN, TCPTV_REXMTMAX);
+X	tp->snd_cwnd = sbspace(&inp->inp_socket->so_snd);
+X	tp->snd_ssthresh = 65535;		/* XXX */
+X	inp->inp_ppcb = (caddr_t)tp;
+X	return (tp);
+X}
+X
+X/*
+X * Drop a TCP connection, reporting
+X * the specified error.  If connection is synchronized,
+X * then send a RST to peer.
+X */
+Xstruct tcpcb *
+Xtcp_drop(tp, errno)
+X	register struct tcpcb *tp;
+X	int errno;
+X{
+X	struct socket *so = tp->t_inpcb->inp_socket;
+X
+X	if (TCPS_HAVERCVDSYN(tp->t_state)) {
+X		tp->t_state = TCPS_CLOSED;
+X		(void) tcp_output(tp);
+X		tcpstat.tcps_drops++;
+X	} else
+X		tcpstat.tcps_conndrops++;
+X	so->so_error = errno;
+X	return (tcp_close(tp));
+X}
+X
+X/*
+X * Close a TCP control block:
+X *	discard all space held by the tcp
+X *	discard internet protocol block
+X *	wake up any sleepers
+X */
+Xstruct tcpcb *
+Xtcp_close(tp)
+X	register struct tcpcb *tp;
+X{
+X	register struct tcpiphdr *t;
+X	struct inpcb *inp = tp->t_inpcb;
+X	struct socket *so = inp->inp_socket;
+X	register struct mbuf *m;
+X
+X	t = tp->seg_next;
+X	while (t != (struct tcpiphdr *)tp) {
+X		t = (struct tcpiphdr *)t->ti_next;
+X		m = dtom(t->ti_prev);
+X		remque(t->ti_prev);
+X		m_freem(m);
+X	}
+X	if (tp->t_template)
+X		(void) m_free(dtom(tp->t_template));
+X	(void) m_free(dtom(tp));
+X	inp->inp_ppcb = 0;
+X	soisdisconnected(so);
+X	in_pcbdetach(inp);
+X	tcpstat.tcps_closed++;
+X	return ((struct tcpcb *)0);
+X}
+X
+Xtcp_drain()
+X{
+X
+X}
+X
+X/*
+X * Notify a tcp user of an asynchronous error;
+X * just wake up so that he can collect error status.
+X */
+Xtcp_notify(inp)
+X	register struct inpcb *inp;
+X{
+X
+X	wakeup((caddr_t) &inp->inp_socket->so_timeo);
+X	sorwakeup(inp->inp_socket);
+X	sowwakeup(inp->inp_socket);
+X}
+Xtcp_ctlinput(cmd, sa)
+X	int cmd;
+X	struct sockaddr *sa;
+X{
+X	extern u_char inetctlerrmap[];
+X	struct sockaddr_in *sin;
+X	int tcp_quench(), in_rtchange();
+X
+X	if ((unsigned)cmd > PRC_NCMDS)
+X		return;
+X	if (sa->sa_family != AF_INET && sa->sa_family != AF_IMPLINK)
+X		return;
+X	sin = (struct sockaddr_in *)sa;
+X	if (sin->sin_addr.s_addr == INADDR_ANY)
+X		return;
+X
+X	switch (cmd) {
+X
+X	case PRC_QUENCH:
+X		in_pcbnotify(&tcb, &sin->sin_addr, 0, tcp_quench);
+X		break;
+X
+X	case PRC_ROUTEDEAD:
+X	case PRC_REDIRECT_NET:
+X	case PRC_REDIRECT_HOST:
+X	case PRC_REDIRECT_TOSNET:
+X	case PRC_REDIRECT_TOSHOST:
+X#if BSD>=43
+X		in_pcbnotify(&tcb, &sin->sin_addr, 0, in_rtchange);
+X#endif
+X		break;
+X
+X	default:
+X		if (inetctlerrmap[cmd] == 0)
+X			return;		/* XXX */
+X		in_pcbnotify(&tcb, &sin->sin_addr, (int)inetctlerrmap[cmd],
+X			tcp_notify);
+X	}
+X}
+X
+X#if BSD<43
+X/* XXX fake routine */
+Xtcp_abort(inp)
+X	struct inpcb *inp;
+X{
+X	return;
+X}
+X#endif
+X
+X/*
+X * When a source quench is received, close congestion window
+X * to one segment.  We will gradually open it again as we proceed.
+X */
+Xtcp_quench(inp)
+X	struct inpcb *inp;
+X{
+X	struct tcpcb *tp = intotcpcb(inp);
+X
+X	if (tp)
+X		tp->snd_cwnd = tp->t_maxseg;
+X}
+END-of-netinet/tcp_subr.c
+echo x - netinet/tcp_timer.c
+sed 's/^X//' >netinet/tcp_timer.c << 'END-of-netinet/tcp_timer.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_timer.c	7.11.1.2 (Berkeley) 3/16/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "protosw.h"
+X#include "errno.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X#include "tcp.h"
+X#include "tcp_fsm.h"
+X#include "tcp_seq.h"
+X#include "tcp_timer.h"
+X#include "tcp_var.h"
+X#include "tcpip.h"
+X
+Xint	tcpnodelack = 0;
+Xint	tcp_keepidle = TCPTV_KEEP_IDLE;
+Xint	tcp_keepintvl = TCPTV_KEEPINTVL;
+Xint	tcp_maxidle;
+X/*
+X * Fast timeout routine for processing delayed acks
+X */
+Xtcp_fasttimo()
+X{
+X	register struct inpcb *inp;
+X	register struct tcpcb *tp;
+X	int s = splnet();
+X
+X	inp = tcb.inp_next;
+X	if (inp)
+X	for (; inp != &tcb; inp = inp->inp_next)
+X		if ((tp = (struct tcpcb *)inp->inp_ppcb) &&
+X		    (tp->t_flags & TF_DELACK)) {
+X			tp->t_flags &= ~TF_DELACK;
+X			tp->t_flags |= TF_ACKNOW;
+X			tcpstat.tcps_delack++;
+X			(void) tcp_output(tp);
+X		}
+X	splx(s);
+X}
+X
+X/*
+X * Tcp protocol timeout routine called every 500 ms.
+X * Updates the timers in all active tcb's and
+X * causes finite state machine actions if timers expire.
+X */
+Xtcp_slowtimo()
+X{
+X	register struct inpcb *ip, *ipnxt;
+X	register struct tcpcb *tp;
+X	int s = splnet();
+X	register int i;
+X
+X	tcp_maxidle = TCPTV_KEEPCNT * tcp_keepintvl;
+X	/*
+X	 * Search through tcb's and update active timers.
+X	 */
+X	ip = tcb.inp_next;
+X	if (ip == 0) {
+X		splx(s);
+X		return;
+X	}
+X	for (; ip != &tcb; ip = ipnxt) {
+X		ipnxt = ip->inp_next;
+X		tp = intotcpcb(ip);
+X		if (tp == 0)
+X			continue;
+X		for (i = 0; i < TCPT_NTIMERS; i++) {
+X			if (tp->t_timer[i] && --tp->t_timer[i] == 0) {
+X				(void) tcp_usrreq(tp->t_inpcb->inp_socket,
+X				    PRU_SLOWTIMO, (struct mbuf *)0,
+X				    (struct mbuf *)i, (struct mbuf *)0);
+X				if (ipnxt->inp_prev != ip)
+X					goto tpgone;
+X			}
+X		}
+X		tp->t_idle++;
+X		if (tp->t_rtt)
+X			tp->t_rtt++;
+Xtpgone:
+X		;
+X	}
+X	tcp_iss += TCP_ISSINCR/PR_SLOWHZ;		/* increment iss */
+X#ifdef TCP_COMPAT_42
+X	if ((int)tcp_iss < 0)
+X		tcp_iss = 0;				/* XXX */
+X#endif
+X	splx(s);
+X}
+X
+X/*
+X * Cancel all timers for TCP tp.
+X */
+Xtcp_canceltimers(tp)
+X	struct tcpcb *tp;
+X{
+X	register int i;
+X
+X	for (i = 0; i < TCPT_NTIMERS; i++)
+X		tp->t_timer[i] = 0;
+X}
+X
+Xint	tcp_backoff[TCP_MAXRXTSHIFT + 1] =
+X    { 1, 2, 4, 8, 16, 32, 64, 64, 64, 64, 64, 64, 64 };
+X
+X/*
+X * TCP timer processing.
+X */
+Xstruct tcpcb *
+Xtcp_timers(tp, timer)
+X	register struct tcpcb *tp;
+X	int timer;
+X{
+X	register int rexmt;
+X
+X	switch (timer) {
+X
+X	/*
+X	 * 2 MSL timeout in shutdown went off.  If we're closed but
+X	 * still waiting for peer to close and connection has been idle
+X	 * too long, or if 2MSL time is up from TIME_WAIT, delete connection
+X	 * control block.  Otherwise, check again in a bit.
+X	 */
+X	case TCPT_2MSL:
+X		if (tp->t_state != TCPS_TIME_WAIT &&
+X		    tp->t_idle <= tcp_maxidle)
+X			tp->t_timer[TCPT_2MSL] = tcp_keepintvl;
+X		else
+X			tp = tcp_close(tp);
+X		break;
+X
+X	/*
+X	 * Retransmission timer went off.  Message has not
+X	 * been acked within retransmit interval.  Back off
+X	 * to a longer retransmit interval and retransmit one segment.
+X	 */
+X	case TCPT_REXMT:
+X		if (++tp->t_rxtshift > TCP_MAXRXTSHIFT) {
+X			tp->t_rxtshift = TCP_MAXRXTSHIFT;
+X			tcpstat.tcps_timeoutdrop++;
+X			tp = tcp_drop(tp, ETIMEDOUT);
+X			break;
+X		}
+X		tcpstat.tcps_rexmttimeo++;
+X		rexmt = ((tp->t_srtt >> 2) + tp->t_rttvar) >> 1;
+X		rexmt *= tcp_backoff[tp->t_rxtshift];
+X		TCPT_RANGESET(tp->t_rxtcur, rexmt, TCPTV_MIN, TCPTV_REXMTMAX);
+X		tp->t_timer[TCPT_REXMT] = tp->t_rxtcur;
+X		/*
+X		 * If losing, let the lower level know and try for
+X		 * a better route.  Also, if we backed off this far,
+X		 * our srtt estimate is probably bogus.  Clobber it
+X		 * so we'll take the next rtt measurement as our srtt;
+X		 * move the current srtt into rttvar to keep the current
+X		 * retransmit times until then.
+X		 */
+X		if (tp->t_rxtshift > TCP_MAXRXTSHIFT / 4) {
+X#if BSD>=43
+X			in_losing(tp->t_inpcb);
+X#endif
+X			tp->t_rttvar += (tp->t_srtt >> 2);
+X			tp->t_srtt = 0;
+X		}
+X		tp->snd_nxt = tp->snd_una;
+X		/*
+X		 * If timing a segment in this window, stop the timer.
+X		 */
+X		tp->t_rtt = 0;
+X		/*
+X		 * Close the congestion window down to one segment
+X		 * (we'll open it by one segment for each ack we get).
+X		 * Since we probably have a window's worth of unacked
+X		 * data accumulated, this "slow start" keeps us from
+X		 * dumping all that data as back-to-back packets (which
+X		 * might overwhelm an intermediate gateway).
+X		 *
+X		 * There are two phases to the opening: Initially we
+X		 * open by one mss on each ack.  This makes the window
+X		 * size increase exponentially with time.  If the
+X		 * window is larger than the path can handle, this
+X		 * exponential growth results in dropped packet(s)
+X		 * almost immediately.  To get more time between 
+X		 * drops but still "push" the network to take advantage
+X		 * of improving conditions, we switch from exponential
+X		 * to linear window opening at some threshhold size.
+X		 * For a threshhold, we use half the current window
+X		 * size, truncated to a multiple of the mss.
+X		 *
+X		 * (the minimum cwnd that will give us exponential
+X		 * growth is 2 mss.  We don't allow the threshhold
+X		 * to go below this.)
+X		 */
+X		{
+X		u_int win = MIN(tp->snd_wnd, tp->snd_cwnd) / 2 / tp->t_maxseg;
+X		if (win < 2)
+X			win = 2;
+X		tp->snd_cwnd = tp->t_maxseg;
+X		tp->snd_ssthresh = win * tp->t_maxseg;
+X		}
+X		(void) tcp_output(tp);
+X		break;
+X
+X	/*
+X	 * Persistance timer into zero window.
+X	 * Force a byte to be output, if possible.
+X	 */
+X	case TCPT_PERSIST:
+X		tcpstat.tcps_persisttimeo++;
+X		tcp_setpersist(tp);
+X		tp->t_force = 1;
+X		(void) tcp_output(tp);
+X		tp->t_force = 0;
+X		break;
+X
+X	/*
+X	 * Keep-alive timer went off; send something
+X	 * or drop connection if idle for too long.
+X	 */
+X	case TCPT_KEEP:
+X		tcpstat.tcps_keeptimeo++;
+X		if (tp->t_state < TCPS_ESTABLISHED)
+X			goto dropit;
+X		if (tp->t_inpcb->inp_socket->so_options & SO_KEEPALIVE &&
+X		    tp->t_state <= TCPS_CLOSE_WAIT) {
+X		    	if (tp->t_idle >= tcp_keepidle + tcp_maxidle)
+X				goto dropit;
+X			/*
+X			 * Send a packet designed to force a response
+X			 * if the peer is up and reachable:
+X			 * either an ACK if the connection is still alive,
+X			 * or an RST if the peer has closed the connection
+X			 * due to timeout or reboot.
+X			 * Using sequence number tp->snd_una-1
+X			 * causes the transmitted zero-length segment
+X			 * to lie outside the receive window;
+X			 * by the protocol spec, this requires the
+X			 * correspondent TCP to respond.
+X			 */
+X			tcpstat.tcps_keepprobe++;
+X#ifdef TCP_COMPAT_42
+X			/*
+X			 * The keepalive packet must have nonzero length
+X			 * to get a 4.2 host to respond.
+X			 */
+X			tcp_respond(tp, tp->t_template,
+X			    tp->rcv_nxt - 1, tp->snd_una - 1, 0);
+X#else
+X			tcp_respond(tp, tp->t_template,
+X			    tp->rcv_nxt, tp->snd_una - 1, 0);
+X#endif
+X			tp->t_timer[TCPT_KEEP] = tcp_keepintvl;
+X		} else
+X			tp->t_timer[TCPT_KEEP] = tcp_keepidle;
+X		break;
+X	dropit:
+X		tcpstat.tcps_keepdrops++;
+X		tp = tcp_drop(tp, ETIMEDOUT);
+X		break;
+X	}
+X	return (tp);
+X}
+END-of-netinet/tcp_timer.c
+echo x - netinet/tcp_timer.h
+sed 's/^X//' >netinet/tcp_timer.h << 'END-of-netinet/tcp_timer.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_timer.h	7.5 (Berkeley) 3/16/88
+X */
+X
+X/*
+X * Definitions of the TCP timers.  These timers are counted
+X * down PR_SLOWHZ times a second.
+X */
+X#define	TCPT_NTIMERS	4
+X
+X#define	TCPT_REXMT	0		/* retransmit */
+X#define	TCPT_PERSIST	1		/* retransmit persistance */
+X#define	TCPT_KEEP	2		/* keep alive */
+X#define	TCPT_2MSL	3		/* 2*msl quiet time timer */
+X
+X/*
+X * The TCPT_REXMT timer is used to force retransmissions.
+X * The TCP has the TCPT_REXMT timer set whenever segments
+X * have been sent for which ACKs are expected but not yet
+X * received.  If an ACK is received which advances tp->snd_una,
+X * then the retransmit timer is cleared (if there are no more
+X * outstanding segments) or reset to the base value (if there
+X * are more ACKs expected).  Whenever the retransmit timer goes off,
+X * we retransmit one unacknowledged segment, and do a backoff
+X * on the retransmit timer.
+X *
+X * The TCPT_PERSIST timer is used to keep window size information
+X * flowing even if the window goes shut.  If all previous transmissions
+X * have been acknowledged (so that there are no retransmissions in progress),
+X * and the window is too small to bother sending anything, then we start
+X * the TCPT_PERSIST timer.  When it expires, if the window is nonzero,
+X * we go to transmit state.  Otherwise, at intervals send a single byte
+X * into the peer's window to force him to update our window information.
+X * We do this at most as often as TCPT_PERSMIN time intervals,
+X * but no more frequently than the current estimate of round-trip
+X * packet time.  The TCPT_PERSIST timer is cleared whenever we receive
+X * a window update from the peer.
+X *
+X * The TCPT_KEEP timer is used to keep connections alive.  If an
+X * connection is idle (no segments received) for TCPTV_KEEP_INIT amount of time,
+X * but not yet established, then we drop the connection.  Once the connection
+X * is established, if the connection is idle for TCPTV_KEEP_IDLE time
+X * (and keepalives have been enabled on the socket), we begin to probe
+X * the connection.  We force the peer to send us a segment by sending:
+X *	<SEQ=SND.UNA-1><ACK=RCV.NXT><CTL=ACK>
+X * This segment is (deliberately) outside the window, and should elicit
+X * an ack segment in response from the peer.  If, despite the TCPT_KEEP
+X * initiated segments we cannot elicit a response from a peer in TCPT_MAXIDLE
+X * amount of time probing, then we drop the connection.
+X */
+X
+X#define	TCP_TTL		30		/* default time to live for TCP segs */
+X/*
+X * Time constants.
+X */
+X#define	TCPTV_MSL	( 30*PR_SLOWHZ)		/* max seg lifetime (hah!) */
+X#define	TCPTV_SRTTBASE	0			/* base roundtrip time;
+X						   if 0, no idea yet */
+X#define	TCPTV_SRTTDFLT	(  3*PR_SLOWHZ)		/* assumed RTT if no info */
+X
+X#define	TCPTV_PERSMIN	(  5*PR_SLOWHZ)		/* retransmit persistance */
+X#define	TCPTV_PERSMAX	( 60*PR_SLOWHZ)		/* maximum persist interval */
+X
+X#define	TCPTV_KEEP_INIT	( 75*PR_SLOWHZ)		/* initial connect keep alive */
+X#define	TCPTV_KEEP_IDLE	(120*60*PR_SLOWHZ)	/* dflt time before probing */
+X#define	TCPTV_KEEPINTVL	( 75*PR_SLOWHZ)		/* default probe interval */
+X#define	TCPTV_KEEPCNT	8			/* max probes before drop */
+X
+X#define	TCPTV_MIN	(  1*PR_SLOWHZ)		/* minimum allowable value */
+X#define	TCPTV_REXMTMAX	( 64*PR_SLOWHZ)		/* max allowable REXMT value */
+X
+X#define	TCP_LINGERTIME	120			/* linger at most 2 minutes */
+X
+X#define	TCP_MAXRXTSHIFT	12			/* maximum retransmits */
+X
+X#ifdef	TCPTIMERS
+Xchar *tcptimers[] =
+X    { "REXMT", "PERSIST", "KEEP", "2MSL" };
+X#endif
+X
+X/*
+X * Force a time value to be in a certain range.
+X */
+X#define	TCPT_RANGESET(tv, value, tvmin, tvmax) { \
+X	(tv) = (value); \
+X	if ((tv) < (tvmin)) \
+X		(tv) = (tvmin); \
+X	else if ((tv) > (tvmax)) \
+X		(tv) = (tvmax); \
+X}
+X
+X#ifdef KERNEL
+Xextern int tcp_keepidle;		/* time before keepalive probes begin */
+Xextern int tcp_keepintvl;		/* time between keepalive probes */
+Xextern int tcp_maxidle;			/* time to drop after starting probes */
+Xextern int tcp_ttl;			/* time to live for TCP segs */
+Xextern int tcp_backoff[];
+X#endif
+END-of-netinet/tcp_timer.h
+echo x - netinet/tcp_usrreq.c
+sed 's/^X//' >netinet/tcp_usrreq.c << 'END-of-netinet/tcp_usrreq.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_usrreq.c	7.7.1.2 (Berkeley) 3/16/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "protosw.h"
+X#include "errno.h"
+X#include "stat.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X#include "tcp.h"
+X#include "tcp_fsm.h"
+X#include "tcp_seq.h"
+X#include "tcp_timer.h"
+X#include "tcp_var.h"
+X#include "tcpip.h"
+X#include "tcp_debug.h"
+X
+X/*
+X * TCP protocol interface to socket abstraction.
+X */
+Xextern	char *tcpstates[];
+Xstruct	tcpcb *tcp_newtcpcb();
+X
+X/*
+X * Process a TCP user request for TCP tb.  If this is a send request
+X * then m is the mbuf chain of send data.  If this is a timer expiration
+X * (called from the software clock routine), then timertype tells which timer.
+X */
+X/*ARGSUSED*/
+Xtcp_usrreq(so, req, m, nam, rights)
+X	struct socket *so;
+X	int req;
+X	struct mbuf *m, *nam, *rights;
+X{
+X	register struct inpcb *inp;
+X	register struct tcpcb *tp;
+X	int s;
+X	int error = 0;
+X	int ostate;
+X
+X#if BSD>=43
+X	if (req == PRU_CONTROL)
+X		return (in_control(so, (int)m, (caddr_t)nam,
+X			(struct ifnet *)rights));
+X#else
+X	if (req == PRU_CONTROL)
+X		return(EOPNOTSUPP);
+X#endif
+X	if (rights && rights->m_len)
+X		return (EINVAL);
+X
+X	s = splnet();
+X	inp = sotoinpcb(so);
+X	/*
+X	 * When a TCP is attached to a socket, then there will be
+X	 * a (struct inpcb) pointed at by the socket, and this
+X	 * structure will point at a subsidary (struct tcpcb).
+X	 */
+X	if (inp == 0 && req != PRU_ATTACH) {
+X		splx(s);
+X		return (EINVAL);		/* XXX */
+X	}
+X	if (inp) {
+X		tp = intotcpcb(inp);
+X		/* WHAT IF TP IS 0? */
+X#ifdef KPROF
+X		tcp_acounts[tp->t_state][req]++;
+X#endif
+X		ostate = tp->t_state;
+X	} else
+X		ostate = 0;
+X	switch (req) {
+X
+X	/*
+X	 * TCP attaches to socket via PRU_ATTACH, reserving space,
+X	 * and an internet control block.
+X	 */
+X	case PRU_ATTACH:
+X		if (inp) {
+X			error = EISCONN;
+X			break;
+X		}
+X		error = tcp_attach(so);
+X		if (error)
+X			break;
+X		if ((so->so_options & SO_LINGER) && so->so_linger == 0)
+X			so->so_linger = TCP_LINGERTIME;
+X		tp = sototcpcb(so);
+X		break;
+X
+X	/*
+X	 * PRU_DETACH detaches the TCP protocol from the socket.
+X	 * If the protocol state is non-embryonic, then can't
+X	 * do this directly: have to initiate a PRU_DISCONNECT,
+X	 * which may finish later; embryonic TCB's can just
+X	 * be discarded here.
+X	 */
+X	case PRU_DETACH:
+X		if (tp->t_state > TCPS_LISTEN)
+X			tp = tcp_disconnect(tp);
+X		else
+X			tp = tcp_close(tp);
+X		break;
+X
+X	/*
+X	 * Give the socket an address.
+X	 */
+X	case PRU_BIND:
+X		error = in_pcbbind(inp, nam);
+X		if (error)
+X			break;
+X		break;
+X
+X	/*
+X	 * Prepare to accept connections.
+X	 */
+X	case PRU_LISTEN:
+X		if (inp->inp_lport == 0)
+X			error = in_pcbbind(inp, (struct mbuf *)0);
+X		if (error == 0)
+X			tp->t_state = TCPS_LISTEN;
+X		break;
+X
+X	/*
+X	 * Initiate connection to peer.
+X	 * Create a template for use in transmissions on this connection.
+X	 * Enter SYN_SENT state, and mark socket as connecting.
+X	 * Start keep-alive timer, and seed output sequence space.
+X	 * Send initial segment on connection.
+X	 */
+X	case PRU_CONNECT:
+X		if (inp->inp_lport == 0) {
+X			error = in_pcbbind(inp, (struct mbuf *)0);
+X			if (error)
+X				break;
+X		}
+X		error = in_pcbconnect(inp, nam);
+X		if (error)
+X			break;
+X		tp->t_template = tcp_template(tp);
+X		if (tp->t_template == 0) {
+X			in_pcbdisconnect(inp);
+X			error = ENOBUFS;
+X			break;
+X		}
+X		soisconnecting(so);
+X		tcpstat.tcps_connattempt++;
+X		tp->t_state = TCPS_SYN_SENT;
+X		tp->t_timer[TCPT_KEEP] = TCPTV_KEEP_INIT;
+X		tp->iss = tcp_iss; tcp_iss += TCP_ISSINCR/2;
+X		tcp_sendseqinit(tp);
+X		error = tcp_output(tp);
+X		break;
+X
+X	/*
+X	 * Create a TCP connection between two sockets.
+X	 */
+X	case PRU_CONNECT2:
+X		error = EOPNOTSUPP;
+X		break;
+X
+X	/*
+X	 * Initiate disconnect from peer.
+X	 * If connection never passed embryonic stage, just drop;
+X	 * else if don't need to let data drain, then can just drop anyways,
+X	 * else have to begin TCP shutdown process: mark socket disconnecting,
+X	 * drain unread data, state switch to reflect user close, and
+X	 * send segment (e.g. FIN) to peer.  Socket will be really disconnected
+X	 * when peer sends FIN and acks ours.
+X	 *
+X	 * SHOULD IMPLEMENT LATER PRU_CONNECT VIA REALLOC TCPCB.
+X	 */
+X	case PRU_DISCONNECT:
+X		tp = tcp_disconnect(tp);
+X		break;
+X
+X	/*
+X	 * Accept a connection.  Essentially all the work is
+X	 * done at higher levels; just return the address
+X	 * of the peer, storing through addr.
+X	 */
+X	case PRU_ACCEPT: {
+X		struct sockaddr_in *sin = mtod(nam, struct sockaddr_in *);
+X
+X		nam->m_len = sizeof (struct sockaddr_in);
+X		sin->sin_family = AF_INET;
+X		sin->sin_port = inp->inp_fport;
+X		sin->sin_addr = inp->inp_faddr;
+X		break;
+X		}
+X
+X	/*
+X	 * Mark the connection as being incapable of further output.
+X	 */
+X	case PRU_SHUTDOWN:
+X		socantsendmore(so);
+X		tp = tcp_usrclosed(tp);
+X		if (tp)
+X			error = tcp_output(tp);
+X		break;
+X
+X	/*
+X	 * After a receive, possibly send window update to peer.
+X	 */
+X	case PRU_RCVD:
+X		(void) tcp_output(tp);
+X		break;
+X
+X	/*
+X	 * Do a send by putting data in output queue and updating urgent
+X	 * marker if URG set.  Possibly send more data.
+X	 */
+X	case PRU_SEND:
+X		sbappend(&so->so_snd, m);
+X		error = tcp_output(tp);
+X		break;
+X
+X	/*
+X	 * Abort the TCP.
+X	 */
+X	case PRU_ABORT:
+X		tp = tcp_drop(tp, ECONNABORTED);
+X		break;
+X
+X	case PRU_SENSE:
+X		((struct stat *) m)->st_blksize = so->so_snd.sb_hiwat;
+X		(void) splx(s);
+X		return (0);
+X
+X	case PRU_RCVOOB:
+X		if ((so->so_oobmark == 0 &&
+X		    (so->so_state & SS_RCVATMARK) == 0) ||
+X#ifdef SO_OOBINLINE
+X		    so->so_options & SO_OOBINLINE ||
+X#endif
+X		    tp->t_oobflags & TCPOOB_HADDATA) {
+X			error = EINVAL;
+X			break;
+X		}
+X		if ((tp->t_oobflags & TCPOOB_HAVEDATA) == 0) {
+X			error = EWOULDBLOCK;
+X			break;
+X		}
+X		m->m_len = 1;
+X		*mtod(m, caddr_t) = tp->t_iobc;
+X		if (((int)nam & MSG_PEEK) == 0)
+X			tp->t_oobflags ^= (TCPOOB_HAVEDATA | TCPOOB_HADDATA);
+X		break;
+X
+X	case PRU_SENDOOB:
+X		if (sbspace(&so->so_snd) < -512) {
+X			m_freem(m);
+X			error = ENOBUFS;
+X			break;
+X		}
+X		/*
+X		 * According to RFC961 (Assigned Protocols),
+X		 * the urgent pointer points to the last octet
+X		 * of urgent data.  We continue, however,
+X		 * to consider it to indicate the first octet
+X		 * of data past the urgent section.
+X		 * Otherwise, snd_up should be one lower.
+X		 */
+X		sbappend(&so->so_snd, m);
+X		tp->snd_up = tp->snd_una + so->so_snd.sb_cc;
+X		tp->t_force = 1;
+X		error = tcp_output(tp);
+X		tp->t_force = 0;
+X		break;
+X
+X	case PRU_SOCKADDR:
+X		in_setsockaddr(inp, nam);
+X		break;
+X
+X	case PRU_PEERADDR:
+X		in_setpeeraddr(inp, nam);
+X		break;
+X
+X	/*
+X	 * TCP slow timer went off; going through this
+X	 * routine for tracing's sake.
+X	 */
+X	case PRU_SLOWTIMO:
+X		tp = tcp_timers(tp, (int)nam);
+X		req |= (int)nam << 8;		/* for debug's sake */
+X		break;
+X
+X	default:
+X		panic("tcp_usrreq");
+X	}
+X	if (tp && (so->so_options & SO_DEBUG))
+X		tcp_trace(TA_USER, ostate, tp, (struct tcpiphdr *)0, req);
+X	splx(s);
+X	return (error);
+X}
+X
+X#if BSD>=43
+Xtcp_ctloutput(op, so, level, optname, mp)
+X	int op;
+X	struct socket *so;
+X	int level, optname;
+X	struct mbuf **mp;
+X{
+X	int error = 0;
+X	struct inpcb *inp = sotoinpcb(so);
+X	register struct tcpcb *tp = intotcpcb(inp);
+X	register struct mbuf *m;
+X
+X	if (level != IPPROTO_TCP)
+X		return (ip_ctloutput(op, so, level, optname, mp));
+X
+X	switch (op) {
+X
+X	case PRCO_SETOPT:
+X		m = *mp;
+X		switch (optname) {
+X
+X		case TCP_NODELAY:
+X			if (m == NULL || m->m_len < sizeof (int))
+X				error = EINVAL;
+X			else if (*mtod(m, int *))
+X				tp->t_flags |= TF_NODELAY;
+X			else
+X				tp->t_flags &= ~TF_NODELAY;
+X			break;
+X
+X		case TCP_MAXSEG:	/* not yet */
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		if (m)
+X			(void) m_free(m);
+X		break;
+X
+X	case PRCO_GETOPT:
+X		*mp = m = m_get(M_WAIT, MT_SOOPTS);
+X		m->m_len = sizeof(int);
+X
+X		switch (optname) {
+X		case TCP_NODELAY:
+X			*mtod(m, int *) = tp->t_flags & TF_NODELAY;
+X			break;
+X		case TCP_MAXSEG:
+X			*mtod(m, int *) = tp->t_maxseg;
+X			break;
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		break;
+X	}
+X	return (error);
+X}
+X#endif
+X
+Xint	tcp_sendspace = 1024*4;
+Xint	tcp_recvspace = 1024*4;
+X/*
+X * Attach TCP protocol to socket, allocating
+X * internet protocol control block, tcp control block,
+X * bufer space, and entering LISTEN state if to accept connections.
+X */
+Xtcp_attach(so)
+X	struct socket *so;
+X{
+X	register struct tcpcb *tp;
+X	struct inpcb *inp;
+X	int error;
+X
+X	error = soreserve(so, tcp_sendspace, tcp_recvspace);
+X	if (error)
+X		return (error);
+X	error = in_pcballoc(so, &tcb);
+X	if (error)
+X		return (error);
+X	inp = sotoinpcb(so);
+X	tp = tcp_newtcpcb(inp);
+X	if (tp == 0) {
+X		int nofd = so->so_state & SS_NOFDREF;	/* XXX */
+X
+X		so->so_state &= ~SS_NOFDREF;	/* don't free the socket yet */
+X		in_pcbdetach(inp);
+X		so->so_state |= nofd;
+X		return (ENOBUFS);
+X	}
+X	tp->t_state = TCPS_CLOSED;
+X	return (0);
+X}
+X
+X/*
+X * Initiate (or continue) disconnect.
+X * If embryonic state, just send reset (once).
+X * If in ``let data drain'' option and linger null, just drop.
+X * Otherwise (hard), mark socket disconnecting and drop
+X * current input data; switch states based on user close, and
+X * send segment to peer (with FIN).
+X */
+Xstruct tcpcb *
+Xtcp_disconnect(tp)
+X	register struct tcpcb *tp;
+X{
+X	struct socket *so = tp->t_inpcb->inp_socket;
+X
+X	if (tp->t_state < TCPS_ESTABLISHED)
+X		tp = tcp_close(tp);
+X	else if ((so->so_options & SO_LINGER) && so->so_linger == 0)
+X		tp = tcp_drop(tp, 0);
+X	else {
+X		soisdisconnecting(so);
+X		sbflush(&so->so_rcv);
+X		tp = tcp_usrclosed(tp);
+X		if (tp)
+X			(void) tcp_output(tp);
+X	}
+X	return (tp);
+X}
+X
+X/*
+X * User issued close, and wish to trail through shutdown states:
+X * if never received SYN, just forget it.  If got a SYN from peer,
+X * but haven't sent FIN, then go to FIN_WAIT_1 state to send peer a FIN.
+X * If already got a FIN from peer, then almost done; go to LAST_ACK
+X * state.  In all other cases, have already sent FIN to peer (e.g.
+X * after PRU_SHUTDOWN), and just have to play tedious game waiting
+X * for peer to send FIN or not respond to keep-alives, etc.
+X * We can let the user exit from the close as soon as the FIN is acked.
+X */
+Xstruct tcpcb *
+Xtcp_usrclosed(tp)
+X	register struct tcpcb *tp;
+X{
+X
+X	switch (tp->t_state) {
+X
+X	case TCPS_CLOSED:
+X	case TCPS_LISTEN:
+X	case TCPS_SYN_SENT:
+X		tp->t_state = TCPS_CLOSED;
+X		tp = tcp_close(tp);
+X		break;
+X
+X	case TCPS_SYN_RECEIVED:
+X	case TCPS_ESTABLISHED:
+X		tp->t_state = TCPS_FIN_WAIT_1;
+X		break;
+X
+X	case TCPS_CLOSE_WAIT:
+X		tp->t_state = TCPS_LAST_ACK;
+X		break;
+X	}
+X	if (tp && tp->t_state >= TCPS_FIN_WAIT_2)
+X		soisdisconnected(tp->t_inpcb->inp_socket);
+X	return (tp);
+X}
+END-of-netinet/tcp_usrreq.c
+echo x - netinet/tcp_var.h
+sed 's/^X//' >netinet/tcp_var.h << 'END-of-netinet/tcp_var.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcp_var.h	7.7 (Berkeley) 2/27/88
+X */
+X
+X/*
+X * TCP configuration:  This is a half-assed attempt to make TCP
+X * self-configure for a few varieties of 4.2 and 4.3-based unixes.
+X * If you don't have a) a 4.3bsd vax or b) a 3.x Sun (x<6), check
+X * this carefully (it's probably not right).  Please send me mail
+X * if you run into configuration problems.
+X *  - Van Jacobson (van@lbl-csam.arpa)
+X */
+X
+X#ifndef BSD
+X#define BSD 42	/* if we're not 4.3, pretend we're 4.2 */
+X#define OLDSTAT	/* set if we have to use old netstat binaries */
+X#endif
+X
+X/* #define OLDSTAT	/* set if we have to use old netstat binaries */
+X
+X#if sun || BSD < 43
+X#define TCP_COMPAT_42	/* set if we have to interop w/4.2 systems */
+X#endif
+X
+X#ifndef SB_MAX
+X#ifdef	SB_MAXCOUNT
+X#define	SB_MAX	SB_MAXCOUNT	/* Sun has to be a little bit different... */
+X#else
+X#define SB_MAX	32767		/* XXX */
+X#endif	SB_MAXCOUNT
+X#endif	SB_MAX
+X
+X#ifndef IP_MAXPACKET
+X#define	IP_MAXPACKET	65535		/* maximum packet size */
+X#endif
+X
+X/*
+X * Bill Nowicki pointed out that the page size (CLBYTES) has
+X * nothing to do with the mbuf cluster size.  So, we followed
+X * Sun's lead and made the new define MCLBYTES stand for the mbuf
+X * cluster size.  The following define makes up backwards compatible
+X * with 4.3 and 4.2.  If CLBYTES is >1024 on your machine, check
+X * this against the mbuf cluster definitions in /usr/include/sys/mbuf.h.
+X */
+X#ifndef MCLBYTES
+X#define	MCLBYTES CLBYTES	/* XXX */
+X#endif
+X
+X/*
+X * The routine in_localaddr is broken in Sun's 3.4.  We redefine ours
+X * (in tcp_input.c) so we use can it but won't have a name conflict.
+X */
+X#ifdef sun
+X#define in_localaddr tcp_in_localaddr
+X#endif
+X
+X/* --------------- end of TCP config ---------------- */
+X
+X/*
+X * Kernel variables for tcp.
+X */
+X
+X/*
+X * Tcp control block, one per tcp; fields:
+X */
+Xstruct tcpcb {
+X	struct	tcpiphdr *seg_next;	/* sequencing queue */
+X	struct	tcpiphdr *seg_prev;
+X	short	t_state;		/* state of this connection */
+X	short	t_timer[TCPT_NTIMERS];	/* tcp timers */
+X	short	t_rxtshift;		/* log(2) of rexmt exp. backoff */
+X	short	t_rxtcur;		/* current retransmit value */
+X	short	t_dupacks;		/* consecutive dup acks recd */
+X	u_short	t_maxseg;		/* maximum segment size */
+X	char	t_force;		/* 1 if forcing out a byte */
+X	u_char	t_flags;
+X#define	TF_ACKNOW	0x01		/* ack peer immediately */
+X#define	TF_DELACK	0x02		/* ack, but try to delay it */
+X#define	TF_NODELAY	0x04		/* don't delay packets to coalesce */
+X#define	TF_NOOPT	0x08		/* don't use tcp options */
+X#define	TF_SENTFIN	0x10		/* have sent FIN */
+X	struct	tcpiphdr *t_template;	/* skeletal packet for transmit */
+X	struct	inpcb *t_inpcb;		/* back pointer to internet pcb */
+X/*
+X * The following fields are used as in the protocol specification.
+X * See RFC783, Dec. 1981, page 21.
+X */
+X/* send sequence variables */
+X	tcp_seq	snd_una;		/* send unacknowledged */
+X	tcp_seq	snd_nxt;		/* send next */
+X	tcp_seq	snd_up;			/* send urgent pointer */
+X	tcp_seq	snd_wl1;		/* window update seg seq number */
+X	tcp_seq	snd_wl2;		/* window update seg ack number */
+X	tcp_seq	iss;			/* initial send sequence number */
+X	u_short	snd_wnd;		/* send window */
+X/* receive sequence variables */
+X	u_short	rcv_wnd;		/* receive window */
+X	tcp_seq	rcv_nxt;		/* receive next */
+X	tcp_seq	rcv_up;			/* receive urgent pointer */
+X	tcp_seq	irs;			/* initial receive sequence number */
+X/*
+X * Additional variables for this implementation.
+X */
+X/* receive variables */
+X	tcp_seq	rcv_adv;		/* advertised window */
+X/* retransmit variables */
+X	tcp_seq	snd_max;		/* highest sequence number sent
+X					 * used to recognize retransmits
+X					 */
+X/* congestion control (for slow start, source quench, retransmit after loss) */
+X	u_short	snd_cwnd;		/* congestion-controlled window */
+X	u_short snd_ssthresh;		/* snd_cwnd size threshhold for
+X					 * for slow start exponential to
+X					 * linear switch */
+X/*
+X * transmit timing stuff.
+X * srtt and rttvar are stored as fixed point; for convenience in smoothing,
+X * srtt has 3 bits to the right of the binary point, rttvar has 2.
+X * "Variance" is actually smoothed difference.
+X */
+X	short	t_idle;			/* inactivity time */
+X	short	t_rtt;			/* round trip time */
+X	tcp_seq	t_rtseq;		/* sequence number being timed */
+X	short	t_srtt;			/* smoothed round-trip time */
+X	short	t_rttvar;		/* variance in round-trip time */
+X	u_short max_rcvd;		/* most peer has sent into window */
+X	u_short	max_sndwnd;		/* largest window peer has offered */
+X/* out-of-band data */
+X	char	t_oobflags;		/* have some */
+X	char	t_iobc;			/* input character */
+X#define	TCPOOB_HAVEDATA	0x01
+X#define	TCPOOB_HADDATA	0x02
+X};
+X
+X#define	intotcpcb(ip)	((struct tcpcb *)(ip)->inp_ppcb)
+X#define	sototcpcb(so)	(intotcpcb(sotoinpcb(so)))
+X
+X/*
+X * TCP statistics.
+X * Many of these should be kept per connection,
+X * but that's inconvenient at the moment.
+X */
+Xstruct	tcpstat {
+X#ifdef OLDSTAT
+X	/*
+X	 * Declare statistics the same as in 4.3
+X	 * at the start of tcpstat (same size and
+X	 * position) for netstat.
+X	 */
+X	int	tcps_rcvbadsum;
+X	int	tcps_rcvbadoff;
+X	int	tcps_rcvshort;
+X	int	tcps_badsegs;
+X	int	tcps_unack;
+X#define	tcps_badsum	tcps_rcvbadsum
+X#define	tcps_badoff	tcps_rcvbadoff
+X#define	tcps_hdrops	tcps_rcvshort
+X
+X#endif OLDSTAT
+X	u_long	tcps_connattempt;	/* connections initiated */
+X	u_long	tcps_accepts;		/* connections accepted */
+X	u_long	tcps_connects;		/* connections established */
+X	u_long	tcps_drops;		/* connections dropped */
+X	u_long	tcps_conndrops;		/* embryonic connections dropped */
+X	u_long	tcps_closed;		/* conn. closed (includes drops) */
+X	u_long	tcps_segstimed;		/* segs where we tried to get rtt */
+X	u_long	tcps_rttupdated;	/* times we succeeded */
+X	u_long	tcps_delack;		/* delayed acks sent */
+X	u_long	tcps_timeoutdrop;	/* conn. dropped in rxmt timeout */
+X	u_long	tcps_rexmttimeo;	/* retransmit timeouts */
+X	u_long	tcps_persisttimeo;	/* persist timeouts */
+X	u_long	tcps_keeptimeo;		/* keepalive timeouts */
+X	u_long	tcps_keepprobe;		/* keepalive probes sent */
+X	u_long	tcps_keepdrops;		/* connections dropped in keepalive */
+X
+X	u_long	tcps_sndtotal;		/* total packets sent */
+X	u_long	tcps_sndpack;		/* data packets sent */
+X	u_long	tcps_sndbyte;		/* data bytes sent */
+X	u_long	tcps_sndrexmitpack;	/* data packets retransmitted */
+X	u_long	tcps_sndrexmitbyte;	/* data bytes retransmitted */
+X	u_long	tcps_sndacks;		/* ack-only packets sent */
+X	u_long	tcps_sndprobe;		/* window probes sent */
+X	u_long	tcps_sndurg;		/* packets sent with URG only */
+X	u_long	tcps_sndwinup;		/* window update-only packets sent */
+X	u_long	tcps_sndctrl;		/* control (SYN|FIN|RST) packets sent */
+X
+X	u_long	tcps_rcvtotal;		/* total packets received */
+X	u_long	tcps_rcvpack;		/* packets received in sequence */
+X	u_long	tcps_rcvbyte;		/* bytes received in sequence */
+X#ifndef OLDSTAT
+X	u_long	tcps_rcvbadsum;		/* packets received with ccksum errs */
+X	u_long	tcps_rcvbadoff;		/* packets received with bad offset */
+X	u_long	tcps_rcvshort;		/* packets received too short */
+X#endif
+X	u_long	tcps_rcvduppack;	/* duplicate-only packets received */
+X	u_long	tcps_rcvdupbyte;	/* duplicate-only bytes received */
+X	u_long	tcps_rcvpartduppack;	/* packets with some duplicate data */
+X	u_long	tcps_rcvpartdupbyte;	/* dup. bytes in part-dup. packets */
+X	u_long	tcps_rcvoopack;		/* out-of-order packets received */
+X	u_long	tcps_rcvoobyte;		/* out-of-order bytes received */
+X	u_long	tcps_rcvpackafterwin;	/* packets with data after window */
+X	u_long	tcps_rcvbyteafterwin;	/* bytes rcvd after window */
+X	u_long	tcps_rcvafterclose;	/* packets rcvd after "close" */
+X	u_long	tcps_rcvwinprobe;	/* rcvd window probe packets */
+X	u_long	tcps_rcvdupack;		/* rcvd duplicate acks */
+X	u_long	tcps_rcvacktoomuch;	/* rcvd acks for unsent data */
+X	u_long	tcps_rcvackpack;	/* rcvd ack packets */
+X	u_long	tcps_rcvackbyte;	/* bytes acked by rcvd acks */
+X	u_long	tcps_rcvwinupd;		/* rcvd window update packets */
+X};
+X
+X#ifdef KERNEL
+Xstruct	inpcb tcb;		/* head of queue of active tcpcb's */
+Xstruct	tcpstat tcpstat;	/* tcp statistics */
+Xstruct	tcpiphdr *tcp_template();
+Xstruct	tcpcb *tcp_close(), *tcp_drop();
+Xstruct	tcpcb *tcp_timers(), *tcp_disconnect(), *tcp_usrclosed();
+X#endif
+END-of-netinet/tcp_var.h
+echo x - netinet/tcpip.h
+sed 's/^X//' >netinet/tcpip.h << 'END-of-netinet/tcpip.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)tcpip.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Tcp+ip header, after ip options removed.
+X */
+Xstruct tcpiphdr {
+X	struct 	ipovly ti_i;		/* overlaid ip structure */
+X	struct	tcphdr ti_t;		/* tcp header */
+X};
+X#define	ti_next		ti_i.ih_next
+X#define	ti_prev		ti_i.ih_prev
+X#define	ti_x1		ti_i.ih_x1
+X#define	ti_pr		ti_i.ih_pr
+X#define	ti_len		ti_i.ih_len
+X#define	ti_src		ti_i.ih_src
+X#define	ti_dst		ti_i.ih_dst
+X#define	ti_sport	ti_t.th_sport
+X#define	ti_dport	ti_t.th_dport
+X#define	ti_seq		ti_t.th_seq
+X#define	ti_ack		ti_t.th_ack
+X#define	ti_x2		ti_t.th_x2
+X#define	ti_off		ti_t.th_off
+X#define	ti_flags	ti_t.th_flags
+X#define	ti_win		ti_t.th_win
+X#define	ti_sum		ti_t.th_sum
+X#define	ti_urp		ti_t.th_urp
+END-of-netinet/tcpip.h
+exit
+

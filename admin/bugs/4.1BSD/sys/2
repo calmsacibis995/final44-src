@@ -1,0 +1,57 @@
+Return-Path: <mjb%Brown@UDel-Relay>
+Date: 3 Oct 83 (Monday) 03:06 EDT
+From: Mike Braca <mjb%Brown@UDel-Relay>
+Return-Path: <mjb%Brown@UDel-Relay>
+Subject:  Using sdb or dbx can crash the system (panic: munhash)
+Index: sys/vax/vm_machdep.c 4.1BSD Fix
+
+Description:
+	You can crash the system using breakpoints in sdb or dbx
+	(causing "panic: munhash").  Because of a bug in the compiler,
+	incorrect code is generated in vax/vm_machdep.c. The compiler
+	error is that a bit field which is declared as "unsigned int"
+	gets its sign extended when it is cast to "long". The code
+	affected is in routine chgprot() and is a parameter passed in a
+	call to munhash() which reads:
+		(daddr_t)c->c_blkno
+	where "daddr_t" is typedef'ed to "long", "c" is a pointer to a
+	"cmap" structure, and "c_blkno" is a 20-bit "unsigned int"
+	field. If the file system is > 256MB, then the MSB of the bit
+	field can be on, and what is passed to munhash() is a negative
+	block number which it won't find, so it panics.
+Repeat-By:
+	This is real tough to repeat. First you need a file system
+	that's larger than 256MB. Then you need an executable binary
+	file that resides in blocks numbered higher than 256MB on that
+	fs. Run sdb or dbx on the file and use breakpoints. The system
+	will crash when it's trying to make one of the text blocks
+	writeable in order to set the breakpoint.
+
+	Just look at the assembly language produced by compiling
+	vm_machdep.c , or disassemble the code using adb.  Notice that
+	an "extv" instruction is generated to extract c->c_blkno in the
+	mentioned case, rather than "extzv".
+Fix:
+	Fix the compiler! Or do this:
+	*** vm_machdep.c.ucb	Fri Dec 17 14:57:33 1982
+	--- vm_machdep.c	Wed Aug 24 03:33:08 1983
+	***************
+	*** 117,123
+		if (pte->pg_fod == 0 && pte->pg_pfnum) {
+			c = &cmap[pgtocm(pte->pg_pfnum)];
+			if (c->c_blkno && c->c_mdev != MSWAPX)
+	! 			munhash(mount[c->c_mdev].m_dev, (daddr_t)c->c_blkno);
+		}
+		*(int *)pte &= ~PG_PROT;
+		*(int *)pte |= tprot;
+
+	--- 117,124 -----
+		if (pte->pg_fod == 0 && pte->pg_pfnum) {
+			c = &cmap[pgtocm(pte->pg_pfnum)];
+			if (c->c_blkno && c->c_mdev != MSWAPX)
+	! 			munhash(mount[c->c_mdev].m_dev,
+	! 				(daddr_t)((u_long) 0 + c->c_blkno));
+		}
+		*(int *)pte &= ~PG_PROT;
+		*(int *)pte |= tprot;
+	====END OF FIX====

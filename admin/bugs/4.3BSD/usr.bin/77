@@ -1,0 +1,369 @@
+From schoch@ames.arpa  Sat Jul 25 11:02:30 1987
+Date: Sat, 25 Jul 87 11:01:05 PDT
+From: Steve Schoch <schoch@ames.arpa>
+Subject: 4.3 uucp can lose on slow TCP connections
+Index: usr.bin/uucp/{aculib/bsdtcp.c,conn.c,cico.c,tio.c,uucp.h,uucpd.c} 4.3BSD
+
+Description:
+	Uucp connections using TCP will often fail if the site to which
+	you are connecting has a slow TCP connection to your site.
+Repeat-By:
+	Try to establish a uucp connection with TCP from a site on the
+	ARPANET to a site on the NSFNET, or some other net far away.
+	You will almost always get TIMEOUT errors.
+Fix:
+	The problem is that the uucp user code sets very small timeout
+	delays.  While these small delays (60-90 seconds) are reasonable
+	for a phone connection, they are not with a TCP connection, since
+	the TCP network code has its own timeout mechanisms.  A user timeout
+	defeats the network code in this respect.
+
+	However, the network can get in a state where one side has dropped
+	the connection but the other side will wait for input forever.  For
+	this reason, we should keep the user timeouts, but make them more
+	reasonable, say 1 hour instead of 60 seconds.
+
+	The following patches will fix this timeout problem:
+
+*** aculib/bsdtcp.c.old	Sat Jul 25 10:44:51 1987
+--- aculib/bsdtcp.c	Sat Jul 25 10:46:42 1987
+***************
+*** 37,47 ****
+  		port = sp->s_port;
+  	DEBUG(4, "bsdtcpopn host %s, ", flds[F_PHONE]);
+  	DEBUG(4, "port %d\n", ntohs(port));
+- 	if (setjmp(Sjbuf)) {
+- 		bsdtcpcls(s);
+- 		logent("tcpopen", "TIMEOUT");
+- 		return CF_DIAL;
+- 	}
+  
+  	bzero((char *)&hisctladdr, sizeof (hisctladdr));
+  	hp = gethostbyname(flds[F_PHONE]);
+--- 37,42 ----
+***************
+*** 49,56 ****
+  		logent("tcpopen","UNKNOWN HOST");
+  		return CF_DIAL;
+  	}
+- 	signal(SIGALRM, alarmtr);
+- 	alarm(30);
+  	hisctladdr.sin_family = hp->h_addrtype;
+  #ifdef BSD2_9
+  	s = socket(SOCK_STREAM, 0, &hisctladdr, 0);
+--- 44,49 ----
+***************
+*** 71,81 ****
+  	if (connect(s, (char *)&hisctladdr, sizeof (hisctladdr), 0) < 0)
+  #endif BSD4_2
+  		goto bad;
+! 	alarm(0);
+  	CU_end = bsdtcpcls;
+  	return s;
+  bad:
+- 	alarm(0);
+  	bsdtcpcls(s);
+  	DEBUG(5, "tcpopen failed: errno %d\n", errno);
+  	logent(sys_errlist[errno], _FAILED);
+--- 64,73 ----
+  	if (connect(s, (char *)&hisctladdr, sizeof (hisctladdr), 0) < 0)
+  #endif BSD4_2
+  		goto bad;
+! 	maxmsgtime = TCPMAXMSGTIME;
+  	CU_end = bsdtcpcls;
+  	return s;
+  bad:
+  	bsdtcpcls(s);
+  	DEBUG(5, "tcpopen failed: errno %d\n", errno);
+  	logent(sys_errlist[errno], _FAILED);
+*** cico.c.old	Sat Jul 25 10:30:29 1987
+--- cico.c	Sat Jul 25 10:35:25 1987
+***************
+*** 64,69 ****
+--- 64,70 ----
+  int Role = SLAVE;
+  int onesys = 0;
+  int turntime = 30 * 60;	/* 30 minutes expressed in seconds */
++ unsigned maxmsgtime = MAXMSGTIME;
+  char *ttyn = NULL;
+  extern int LocalOnly;
+  extern int errno;
+***************
+*** 220,226 ****
+  		/*
+  		 * Determine if we are on TCPIP
+  		 */
+! 		if (isatty(Ifn) < 0) {
+  			IsTcpIp = 1;
+  			DEBUG(4, "TCPIP connection -- ioctl-s disabled\n", CNULL);
+  		} else
+--- 221,227 ----
+  		/*
+  		 * Determine if we are on TCPIP
+  		 */
+! 		if (isatty(Ifn) == 0) {
+  			IsTcpIp = 1;
+  			DEBUG(4, "TCPIP connection -- ioctl-s disabled\n", CNULL);
+  		} else
+***************
+*** 249,255 ****
+  		sprintf(msg, "here=%s", Myfullname);
+  		omsg('S', msg, Ofn);
+  		signal(SIGALRM, timeout);
+! 		alarm(MAXMSGTIME);
+  		if (setjmp(Sjbuf)) {
+  			/* timed out */
+  			if (!IsTcpIp) {
+--- 250,258 ----
+  		sprintf(msg, "here=%s", Myfullname);
+  		omsg('S', msg, Ofn);
+  		signal(SIGALRM, timeout);
+!  		if (IsTcpIp)
+!  			maxmsgtime = TCPMAXMSGTIME;
+!  		alarm(maxmsgtime);
+  		if (setjmp(Sjbuf)) {
+  			/* timed out */
+  			if (!IsTcpIp) {
+***************
+*** 524,530 ****
+  		if (setjmp(Sjbuf))
+  			goto next;
+  		signal(SIGALRM, timeout);
+! 		alarm(2 * MAXMSGTIME);
+  		for (;;) {
+  			ret = imsg(msg, Ifn);
+  			if (ret != 0) {
+--- 527,533 ----
+  		if (setjmp(Sjbuf))
+  			goto next;
+  		signal(SIGALRM, timeout);
+! 		alarm(2 * maxmsgtime);
+  		for (;;) {
+  			ret = imsg(msg, Ifn);
+  			if (ret != 0) {
+***************
+*** 535,541 ****
+  			if (msg[0] == 'S')
+  				break;
+  		}
+! 		alarm(MAXMSGTIME);
+  #ifdef GNXSEQ
+  		seq = gnxseq(Rmtname);
+  #else !GNXSEQ
+--- 538,544 ----
+  			if (msg[0] == 'S')
+  				break;
+  		}
+! 		alarm(maxmsgtime);
+  #ifdef GNXSEQ
+  		seq = gnxseq(Rmtname);
+  #else !GNXSEQ
+***************
+*** 595,601 ****
+  
+  	ttyn = ttyname(Ifn);
+  
+! 	alarm(MAXMSGTIME);
+  	if (ret=setjmp(Sjbuf))
+  		goto Failure;
+  	ret = startup(Role);
+--- 598,604 ----
+  
+  	ttyn = ttyname(Ifn);
+  
+! 	alarm(maxmsgtime);
+  	if (ret=setjmp(Sjbuf))
+  		goto Failure;
+  	ret = startup(Role);
+***************
+*** 633,639 ****
+  			US_SST(us_s_cf);
+  			systat(Rmtname, SS_FAIL, "CONVERSATION FAILED");
+  		}
+! 		alarm(MAXMSGTIME);
+  		DEBUG(4, "send OO %d,", ret);
+  		if (!setjmp(Sjbuf)) {
+  			for (;;) {
+--- 636,642 ----
+  			US_SST(us_s_cf);
+  			systat(Rmtname, SS_FAIL, "CONVERSATION FAILED");
+  		}
+! 		alarm(maxmsgtime);
+  		DEBUG(4, "send OO %d,", ret);
+  		if (!setjmp(Sjbuf)) {
+  			for (;;) {
+*** conn.c.old	Sat Jul 25 10:39:10 1987
+--- conn.c	Sat Jul 25 10:40:06 1987
+***************
+*** 583,589 ****
+  	register char *rp = rdvec, *strptr;
+  	int kr, cnt_char;
+  	char nextch;
+! 	int timo = MAXMSGTIME;
+  
+  	if (*str == '\0' || strcmp(str, "\"\"") == SAME)
+  		return SUCCESS;
+--- 583,589 ----
+  	register char *rp = rdvec, *strptr;
+  	int kr, cnt_char;
+  	char nextch;
+! 	int timo = maxmsgtime;
+  
+  	if (*str == '\0' || strcmp(str, "\"\"") == SAME)
+  		return SUCCESS;
+***************
+*** 609,615 ****
+  		*strptr++ = '\0';
+  		timo = atoi(strptr);
+  		if (timo <= 0)
+! 			timo = MAXMSGTIME;
+  	}
+  
+  	if (setjmp(Sjbuf))
+--- 609,615 ----
+  		*strptr++ = '\0';
+  		timo = atoi(strptr);
+  		if (timo <= 0)
+! 			timo = maxmsgtime;
+  	}
+  
+  	if (setjmp(Sjbuf))
+*** tio.c.old	Sat Jul 25 10:42:23 1987
+--- tio.c	Sat Jul 25 10:44:19 1987
+***************
+*** 43,49 ****
+  	if(setjmp(Failbuf))
+  		return FAIL;
+  	signal(SIGALRM, pkfail);
+! 	alarm(MAXMSGTIME);
+  	bufr[0] = type;
+  	s = &bufr[1];
+  	while (*str)
+--- 43,49 ----
+  	if(setjmp(Failbuf))
+  		return FAIL;
+  	signal(SIGALRM, pkfail);
+! 	alarm(TCPMAXMSGTIME);
+  	bufr[0] = type;
+  	s = &bufr[1];
+  	while (*str)
+***************
+*** 69,80 ****
+  	if(setjmp(Failbuf))
+  		return FAIL;
+  	signal(SIGALRM, pkfail);
+! 	alarm(MAXMSGTIME);
+  	for (;;) {
+  		len = read(fn, str, TPACKSIZE);
+! 		if (len == 0)
+! 			continue;
+! 		if (len < 0) {
+  			alarm(0);
+  			return FAIL;
+  		}
+--- 69,78 ----
+  	if(setjmp(Failbuf))
+  		return FAIL;
+  	signal(SIGALRM, pkfail);
+! 	alarm(TCPMAXMSGTIME);
+  	for (;;) {
+  		len = read(fn, str, TPACKSIZE);
+! 		if (len <= 0) {
+  			alarm(0);
+  			return FAIL;
+  		}
+***************
+*** 116,122 ****
+  #endif !vax and !pdp11 and !ns32000
+  		DEBUG(8,"twrdata sending %d bytes\n",len);
+  		len += sizeof(long);
+! 		alarm(MAXMSGTIME);
+  		ret = twrblk((char *)&bufr, len, fn);
+  		alarm(0);
+  		if (ret != len)
+--- 114,120 ----
+  #endif !vax and !pdp11 and !ns32000
+  		DEBUG(8,"twrdata sending %d bytes\n",len);
+  		len += sizeof(long);
+! 		alarm(TCPMAXMSGTIME);
+  		ret = twrblk((char *)&bufr, len, fn);
+  		alarm(0);
+  		if (ret != len)
+***************
+*** 126,132 ****
+  	}
+  	bufr.t_nbytes = 0;
+  	len = sizeof(long);
+! 	alarm(MAXMSGTIME);
+  	ret = twrblk((char *)&bufr, len, fn);
+  	alarm(0);
+  	if (ret != len)
+--- 124,130 ----
+  	}
+  	bufr.t_nbytes = 0;
+  	len = sizeof(long);
+! 	alarm(TCPMAXMSGTIME);
+  	ret = twrblk((char *)&bufr, len, fn);
+  	alarm(0);
+  	if (ret != len)
+***************
+*** 172,178 ****
+  #endif !USG
+  	bytes = 0L;
+  	for (;;) {
+! 		alarm(MAXMSGTIME);
+  		len = trdblk((char *)&Nbytes,sizeof Nbytes,fn);
+  		alarm(0);
+  		if (len != sizeof Nbytes)
+--- 170,176 ----
+  #endif !USG
+  	bytes = 0L;
+  	for (;;) {
+! 		alarm(TCPMAXMSGTIME);
+  		len = trdblk((char *)&Nbytes,sizeof Nbytes,fn);
+  		alarm(0);
+  		if (len != sizeof Nbytes)
+*** uucp.h.old	Sat Jul 25 10:36:18 1987
+--- uucp.h	Sat Jul 25 10:37:35 1987
+***************
+*** 270,275 ****
+--- 270,276 ----
+  #define SLAVE		0
+  #define MAXFULLNAME	255
+  #define MAXMSGTIME	45
++ #define TCPMAXMSGTIME	(60*60)
+  #define NAMESIZE	255
+  #define MAXBASENAME	14
+  #define SYSNSIZE	(MAXBASENAME-1-1-1-4)
+***************
+*** 386,391 ****
+--- 387,393 ----
+  extern int (*CU_end)();
+  extern struct condev condevs[];
+  extern char NOLOGIN[];
++ extern unsigned maxmsgtime;
+  
+  extern	char DLocal[], DLocalX[], *subfile(), *subdir();
+  
+*** uucpd.c.old	Sat Jul 25 10:37:57 1987
+--- uucpd.c	Sat Jul 25 10:38:47 1987
+***************
+*** 151,157 ****
+  	char *xpasswd, *crypt();
+  	struct passwd *pw, *getpwnam();
+  
+! 	alarm(60);
+  	printf("login: "); fflush(stdout);
+  	if (readline(user, sizeof user) < 0) {
+  		fprintf(stderr, "user read\n");
+--- 151,157 ----
+  	char *xpasswd, *crypt();
+  	struct passwd *pw, *getpwnam();
+  
+! 	alarm(TCPMAXMSGTIME);
+  	printf("login: "); fflush(stdout);
+  	if (readline(user, sizeof user) < 0) {
+  		fprintf(stderr, "user read\n");
+----
+
+	Steve Schoch

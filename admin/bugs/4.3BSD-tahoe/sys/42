@@ -1,0 +1,158 @@
+From auspex!auspex.com!guy@uunet.UU.NET  Wed May 31 15:09:06 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA01589; Wed, 31 May 89 15:09:06 -0700
+Received: from uunet.UU.NET by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA08845; Wed, 31 May 89 15:08:31 -0700
+Received: from auspex.UUCP by uunet.uu.net (5.61/1.14) with UUCP 
+	id AA05165; Wed, 31 May 89 18:08:29 -0400
+Received: by auspex.com (4.0/SMI-4.0)
+	id AA13170; Wed, 31 May 89 14:46:35 PDT
+Date: Wed, 31 May 89 14:46:35 PDT
+From: guy@auspex.com (Guy Harris)
+Message-Id: <8905312146.AA13170@auspex.com>
+Subject: UDP reports ICMP "port unreachable" errors to too many sockets
+Index: sys 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	When a UDP datagram is received for a port on which nobody's
+	listening, the 4.3BSD and 4.3-tahoe UDP code will send an ICMP
+	"port unreachable" packet in reply.
+
+	When such an ICMP packet is received, the 4.3BSD and 4.3-tahoe
+	code will try to notify everybody potentially interested in this
+	message using "in_pcbnotify".  Unfortunately, "in_pcbnotify"
+	takes only a *host* address, not a *port* address, as an
+	argument; this means that it cannot choose to notify only those
+	sockets actually "connected" to the unreachable port.
+
+	This means that if you send to a UDP port on which nobody's
+	listening, and the remote side sends an ICMP "port unreachable"
+	message, any UDP socket that was "connect"ed to the remote *host*
+	will get an ECONNREFUSED error - even if it was talking to some
+	completely unrelated service.
+
+	This is probably not a good idea.  I haven't actually been
+	bitten by this personally - I came across it while trying to see
+	whether I would get any notification when trying to talk to an
+	unreachable UDP port - but Stuart Friedberg of U of Wisconsin
+	(stuart@cs.wisc.edu) apparently *was* bitten by it (he mentioned
+	this in a mailing to the TCP-IP mailing list).
+
+	Oh, yes, as I noted, I came across it while trying to see
+	whether I would get any notification - if this is really
+	considered an "official" feature of the implementation, it would
+	be nice to document it as such, so that people without source
+	(or the ambition to plow through the source) could find it out
+	by reading, say, UDP(4P).
+Repeat-By:
+	Compile and run the following program:
+
+#include <stdio.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+
+#include <netdb.h>
+
+#include <netinet/in.h>
+
+static char message[] = "Hi, mom!";
+
+int
+main(argc, argv)
+	int argc;
+	char **argv;
+{
+	register struct hostent *hp;
+	u_short badport;
+	u_short goodport;
+	register int badsock;	/* connect to bogus port */
+	register int goodsock;	/* connect to valid port */
+	struct sockaddr_in addr;
+	char buf[1024];
+
+	if (argc != 4) {
+		(void) fprintf(stderr, "Usage: test host badport goodport\n");
+		exit(1);
+	}
+
+	if ((hp = gethostbyname(argv[1])) == NULL) {
+		(void) fprintf(stderr, "%s: No such host\n", argv[1]);
+		exit(2);
+	}
+	if (hp->h_addrtype != AF_INET) {
+		(void) fprintf(stderr, "%s: No Internet address\n",
+		    argv[1]);
+		exit(2);
+	}
+	badport = atoi(argv[2]);
+	goodport = atoi(argv[3]);
+
+	if ((badsock = socket(PF_INET, SOCK_DGRAM, 0)) < 0) {
+		perror("Can't create socket");
+		exit(2);
+	}
+
+	if ((goodsock = socket(PF_INET, SOCK_DGRAM, 0)) < 0) {
+		perror("Can't create socket");
+		exit(2);
+	}
+
+	addr.sin_family = AF_INET;
+	bcopy(hp->h_addr, (char *)&addr.sin_addr, sizeof addr.sin_addr);
+	addr.sin_port = badport;
+	if (connect(badsock, (struct sockaddr *)&addr, sizeof addr) < 0) {
+		perror("Can't connect to bad port");
+		exit(2);
+	}
+	addr.sin_port = goodport;
+	if (connect(goodsock, (struct sockaddr *)&addr, sizeof addr) < 0) {
+		perror("Can't connect to good port");
+		exit(2);
+	}
+
+	if (send(badsock, message, sizeof message, 0) < 0) {
+		perror("Can't send to bad port");
+		exit(2);
+	}
+
+	if (recv(goodsock, buf, sizeof buf, 0) < 0)
+		perror("Error on receive from good port");
+
+	exit(0);
+}
+
+	with a first argument that's the hostname of a valid host, a
+	second argument that's an INvalid port number on that host, and
+	a third argument that's some port number - I think a good one or
+	a bad one will do; I succeeded by giving it a good one.
+
+	The program will report something like
+
+		Error on receive from good port: Connection refused
+
+	if the bug is present; it should just hang if it's not present.
+
+	Changing the last "recv" call to:
+
+		if (recv(badsock, buf, sizeof buf, 0) < 0)
+			perror("Error on receive from bad port");
+
+	should get a report like
+
+		Error on receive from bad port: Connection refused
+
+	even if the bug *is* fixed.
+
+Fix:
+	Change "in_pcbnotify" to take a port number as well as a host
+	address as an argument, and if the port number is not 0 have it
+	skip sockets not connected to the specified port.  Have those
+	notifications that are to go to all sockets connected to the
+	specified host pass 0, and have other notifications pass the
+	proper port number.
+
+	Then *document* the resulting behavior in UDP(4P) (and TCP(4P),
+	if ICMP messages cause errors to be reported that aren't
+	described there or in the section 2 manuals).

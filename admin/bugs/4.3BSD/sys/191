@@ -1,0 +1,75 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Sun Apr  3 16:31:30 1988
+Date: Sun, 3 Apr 88 16:08:38 PDT
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Subject: Important change to: ht driver enhancements/fixes +FIX
+Index: sys/vaxmba/ht.c 4.3BSD
+
+Description:
+	An error has been found in the ht driver enhancements and fixes
+	that I recently mail to 4bsd-bugs.  Without the following small
+	changes the new driver will fail to read 32K records properly,
+	though it does *write* them correctly.  This is of particular
+	concern to anyone who uses a 6250 bpi tape drive to do backups,
+	since dump will automatically use a 32K blocking factor, thus
+	creating tapes that restore is unable to read.
+
+Repeat-By:
+	Install the previous patch, then write a tape with 32K blocks.
+	Try to read it back.  Note the interesting behaviour from some
+	programs.
+
+Fix:
+	The problem lies in the handling of the frame count register
+	during read operations.  At the beginning of a read operation
+	the formatter clears the frame count register.  The frame count
+	is then incremented for each frame (byte) read from the tape.
+	Thus, at the end of a read the frame count register contains
+	the number of bytes read.  A 32K record results in a frame
+	count of 0x8000 which the driver incorrectly treated as -32768.
+	The following diff listing contains the necessary changes.
+
+RCS file: RCS/ht.c,v
+retrieving revision 1.9
+retrieving revision 1.10
+diff -c -r1.9 -r1.10
+*** /tmp/,RCSt1029998	Sun Apr  3 15:47:36 1988
+--- /tmp/,RCSt2029998	Sun Apr  3 15:47:38 1988
+***************
+*** 470,476 ****
+  			 */
+  			bp->b_resid = bp->b_bcount;
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno);
+! 		} else if (bp->b_bcount < sc->sc_resid) {
+  			/*
+  			 * The tape record was longer than the buffer passed
+  			 * to read; return ENOMEM.
+--- 470,476 ----
+  			 */
+  			bp->b_resid = bp->b_bcount;
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno);
+! 		} else if (bp->b_bcount < (unsigned short)sc->sc_resid) {
+  			/*
+  			 * The tape record was longer than the buffer passed
+  			 * to read; return ENOMEM.
+***************
+*** 478,484 ****
+  			bp->b_error = ENOMEM;
+  			bp->b_flags |= B_ERROR;
+  		} else {	/* bp->b_bcount >= sc->sc_resid */
+! 			bp->b_resid = bp->b_bcount - sc->sc_resid;
+  		}
+  	return (MBD_DONE);
+  }
+--- 478,484 ----
+  			bp->b_error = ENOMEM;
+  			bp->b_flags |= B_ERROR;
+  		} else {	/* bp->b_bcount >= sc->sc_resid */
+! 			bp->b_resid = bp->b_bcount - (unsigned short)sc->sc_resid;
+  		}
+  	return (MBD_DONE);
+  }
+
+-- 
+
+Jeff Gilliam	{ucbvax,pyramid,nsc}!voder!jeff
+

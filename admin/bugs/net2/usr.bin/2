@@ -1,0 +1,67 @@
+From jik@pit-manager.MIT.EDU Thu Jan 30 16:46:50 1992
+Date: Thu, 30 Jan 92 19:47:09 -0500
+From: "Jonathan I. Kamens" <jik@pit-manager.MIT.EDU>
+Sender: jik@pit-manager.MIT.EDU
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Cc: haynes@cats.ucsc.edu
+Subject: compress does not detect all file write errors
+Index: usr.bin/compress net2
+
+
+Description:
+	The net2 compress.c does not close output files after finished
+	writing to them and check the return value of the close.  This
+	leads to the possibility of some write errors being missed,
+	e.g. quota errors that don't get detected until a file is
+	closed, or errors when writing to a filesystem such as AFS
+	that might not actually notice space problems until the file
+	is closed and transported back to the server.
+Repeat-By:
+	Compress a file in a directory in which you do not have enough
+	disk quota to save the compressed version.  The uncompressed
+	version may be deleted by compress, leaving behind a
+	zero-length compressed version, because it does not notice
+	that the safe of the compressed version failed.
+
+	It's hard to say how to reproduce this reliably, since it
+	depends on the particular quota system and/or filesystem type
+	being used.
+Fix:
+	Apply this patch.
+
+*** compress.c.old	work-2/usr.bin/compress/compress.c	Wed Apr 17 20:04:22 1991
+--- compress.c	Thu Jan 30 17:50:59 1992
+***************
+*** 810,816 ****
+  	}
+  	offset = 0;
+  	(void)fflush( stdout );
+! 	if( ferror( stdout ) )
+  		writeerr();
+  #ifdef DEBUG
+  	if ( verbose )
+--- 810,816 ----
+  	}
+  	offset = 0;
+  	(void)fflush( stdout );
+! 	if( ferror( stdout ) || (fclose(stdout) == EOF))
+  		writeerr();
+  #ifdef DEBUG
+  	if ( verbose )
+***************
+*** 936,941 ****
+--- 936,943 ----
+  	offset += nwritten;
+  	n -= nwritten;
+      }
++     if ((zcat_flg == 0) && (close(fileno(stdout)) == -1))
++ 	 writeerr();
+  }
+  
+  /*-
+
+Jonathan Kamens						jik@MIT.Edu
+MIT Information Systems/Athena		    Moderator, news.answers
+	      (Send news.answers-related correspondence
+		  to news-answers-request@MIT.Edu.)
+

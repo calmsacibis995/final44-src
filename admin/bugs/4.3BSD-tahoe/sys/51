@@ -1,0 +1,140 @@
+From sjoerd@cwi.nl  Wed Apr 11 08:20:29 1990
+Received: from ucbarpa.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA00726; Wed, 11 Apr 90 08:20:29 -0700
+Received: from ucbvax.Berkeley.EDU by ucbarpa.Berkeley.EDU (5.61/1.41)
+	id AA09603; Wed, 11 Apr 90 02:47:19 -0700
+Received: from piring.cwi.nl by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA16120; Wed, 11 Apr 90 02:46:07 -0700
+Received: by piring.cwi.nl via EUnet; Wed, 11 Apr 90 11:45:52 +0200 (MET)
+Date: Wed, 11 Apr 90 11:45:52 +0200
+From: sjoerd@cwi.nl (Sjoerd Mullender)
+Message-Id: <9004110945.AA04256@piring.cwi.nl>
+Subject: cannot select on tahoe console
+Index: sys 4.3BSD-tahoe
+Cc: sjoerd@cwi.nl
+
+Description:
+	A select on the console never indicates that there is anything
+	to read or write.  This is only true for the Tahoe processor.
+Repeat-By:
+	Try a telnet on the console.  Telnet uses select to see whether
+	there is input.  Notice that telnet does not read anything from
+	the console, not even the escape character.
+Fix:
+	The problem is that the minor device of /dev/console equals 1.
+	Select uses the entry in cdevsw to get at the tty structure.
+	The d_ttys entry in the tty structure points to cons, so select
+	uses &cons+1.  It should use &cons.
+
+	The fix is complicated by the fact that somewhere else in the
+	kernel cons is used explicitly to refer to the console.  This
+	means that it is hard to let cdevsw point to an array of which
+	the second element (index 1) is the tty structure for the
+	console.
+
+	The easiest fix (and the one I implemented) is to change the
+	select entry in cdevsw for the console into cnselect and add
+	the function to tahoe/cons.c.  Below is a context diff that
+	implements this fix.
+
+===================================================================
+RCS file: RCS/conf.c,v
+retrieving revision 1.1
+diff -c -r1.1 conf.c
+*** /tmp/,RCSt1004243	Wed Apr 11 11:43:02 1990
+--- conf.c	Tue Apr 10 20:36:22 1990
+***************
+*** 80,86 ****
+  };
+  int	nblkdev = sizeof (bdevsw) / sizeof (bdevsw[0]);
+  
+! int	cnopen(),cnclose(),cnread(),cnwrite(),cnioctl();
+  extern	struct tty cons;
+  
+  #include "vx.h"
+--- 80,86 ----
+  };
+  int	nblkdev = sizeof (bdevsw) / sizeof (bdevsw[0]);
+  
+! int	cnopen(),cnclose(),cnread(),cnwrite(),cnioctl(),cnselect();
+  extern	struct tty cons;
+  
+  #include "vx.h"
+***************
+*** 193,199 ****
+  {
+  	cnopen,		cnclose,	cnread,		cnwrite,	/*0*/
+  	cnioctl,	nulldev,	nulldev,	&cons,
+! 	ttselect,	nodev,		NULL,
+  	vxopen,		vxclose,	vxread,		vxwrite,	/*1*/
+  	vxioctl,	vxstop,		vxreset,	vx_tty,
+  	ttselect,	nodev,		NULL,
+--- 193,199 ----
+  {
+  	cnopen,		cnclose,	cnread,		cnwrite,	/*0*/
+  	cnioctl,	nulldev,	nulldev,	&cons,
+! 	cnselect,	nodev,		NULL,
+  	vxopen,		vxclose,	vxread,		vxwrite,	/*1*/
+  	vxioctl,	vxstop,		vxreset,	vx_tty,
+  	ttselect,	nodev,		NULL,
+===================================================================
+RCS file: RCS/cons.c,v
+retrieving revision 1.1
+diff -c -r1.1 cons.c
+*** /tmp/,RCSt1004243	Wed Apr 11 11:43:04 1990
+--- cons.c	Tue Apr 10 20:44:26 1990
+***************
+*** 21,26 ****
+--- 21,27 ----
+  #include "user.h"
+  #include "proc.h"
+  #include "tty.h"
++ #include "file.h"
+  #include "uio.h"
+  #include "callout.h"
+  #include "systm.h"
+***************
+*** 203,208 ****
+--- 204,245 ----
+  	else if (cmd == TIOCSETP || cmd == TIOCSETN)
+  		cnparams(tp);
+  	return (error);
++ }
++ 
++ cnselect(dev, rw)
++ 	dev_t dev;
++ 	int rw;
++ {
++ 	register struct tty *tp = cntty[minor(dev)];
++ 	int nread;
++ 	int s = spltty();
++ 
++ 	switch (rw) {
++ 
++ 	case FREAD:
++ 		nread = ttnread(tp);
++ 		if (nread > 0 || (tp->t_state & TS_CARR_ON) == 0)
++ 			goto win;
++ 		if (tp->t_rsel && tp->t_rsel->p_wchan == (caddr_t)&selwait)
++ 			tp->t_state |= TS_RCOLL;
++ 		else
++ 			tp->t_rsel = u.u_procp;
++ 		break;
++ 
++ 	case FWRITE:
++ 		if (tp->t_outq.c_cc <= TTLOWAT(tp))
++ 			goto win;
++ 		if (tp->t_wsel && tp->t_wsel->p_wchan == (caddr_t)&selwait)
++ 			tp->t_state |= TS_WCOLL;
++ 		else
++ 			tp->t_wsel = u.u_procp;
++ 		break;
++ 	}
++ 	splx(s);
++ 	return (0);
++ win:
++ 	splx(s);
++ 	return (1);
+  }
+  
+  int	consintr = 1;

@@ -1,0 +1,93 @@
+From sherk@umd5.UMD.EDU  Mon May  1 10:50:09 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA03024; Mon, 1 May 89 10:50:09 -0700
+Received: from umd5.umd.edu by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA04392; Mon, 1 May 89 10:50:23 -0700
+Received: by umd5.UMD.EDU (5.57/Ultrix2.4-C)
+        id AA03464; Mon, 1 May 89 13:49:55 EDT
+Message-Id: <8905011749.AA03464@umd5.UMD.EDU>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+From: sherk@umd5.UMD.EDU
+Subject: Nslookup dumps core if you list somthing with a dot in it.
+Index: ucb/nslookup/list.c 4.2BSD
+Date: Mon, 01 May 89 13:49:54 EDT
+Sender: sherk@umd5.UMD.EDU
+
+Description:
+	Report on bug in nslookup. 
+	
+        Nslookup will dump core if it tries to do an 'ls'
+        on a 'Non-existent domain'. It only does it
+	it there is a 'dot' in the request.
+
+
+Repeat-By:
+
+#  Script started on Sat Apr 29 09:57:05 1989
+#  umd5 [1] nslookup
+#  Default Server:  umd5.umd.edu
+#  Address:  128.8.10.5
+#  
+This look ok...
+
+#  > ls bogus
+#  [umd5.umd.edu]
+#  Host or domain name            Internet address              
+#  *** Error during listing of bogus: No information
+
+This shouldn't work...
+
+#  > ls bogus.domain >foo
+#  *** Can't find address for server bogus.domain: Non-existent domain
+
+This is clearly wrong...
+
+#  > ls bogus.domain
+#  [umd5.umd.edu]
+#  Host or domain name            Internet address              
+#  Received 0 record.
+#  *** Error during listing of bogus.domain: No information
+#  Illegal instruction (core dumped)
+#  umd5 [2] 
+#  script done on Sat Apr 29 09:58:08 1989
+
+
+Why is this happening, you may ask. Well in nslookup/list.c we have
+the following code:
+
+list.c: line 316,
+
+            if ((len = htons(*(u_short *)&buf)) == 0) {
+                break;        /* nothing left to read */
+            }
+
+            /*
+             * Read the response.
+             */
+
+            cp = (char *) &buf;
+            amtToRead = len;
+            while(amtToRead > 0 && (numRead = read(sockFD, cp, amtToRead)) > 0){
+                cp += numRead;
+                amtToRead -= numRead;
+            }
+
+--- end ---
+
+Well what happens if len > sizeof( buf ) ? We trash the stack!
+
+Fix:
+	I changed the assignment of amtToRead to be ...
+
+            /* Don't read too much... */
+
+            if ( sizeof( buf ) < len )
+                amtToRead = sizeof( buf );
+            else
+                amtToRead = len;
+
+And it seems to work.
+
+Erik Sherk
+sherk@umd5.umd.edu
+

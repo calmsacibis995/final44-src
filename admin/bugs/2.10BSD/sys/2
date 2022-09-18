@@ -1,0 +1,135 @@
+From bostic@okeeffe.Berkeley.EDU  Tue Sep 29 18:24:50 1987
+Date: Tue, 29 Sep 87 18:24:03 PDT
+From: bostic@okeeffe.Berkeley.EDU (Keith Bostic)
+Subject: Fix for non-UNIBUS machines trying to run GENERIC 2.10BSD kernel
+Index: sys 2.10BSD
+
+Description:
+	The GENERIC 2.10BSD distribution kernel only uses the first 256K of
+	memory on non-UNIBUS machines even when more memory is available.
+	This was done purposely to avoid problems with 18-bit peripherals on
+	22-bit QBUS machines.  The relevant comments from /sys/conf/GENERIC
+	and /sys/pdp/machdep2.c follow (excerpts reformatted to fit in 72
+	columns):
+
+	/sys/conf/GENERIC:
+	------------------
+	# The define Q22 states that the configured system is a 22-bit
+	# Q-BUS machine (if UNIBUS mapping isn't found) and no 18-bit DMA
+	# disk or tape devices exist.  If Q22 is defined and an 18-bit DMA
+	# disk or tape does exist, reads and writes to the raw devices will
+	# cause DMA transfers to and from user space which might be above
+	# 18-bits (256K) which would cause random sections of memory
+	# (probably the kernel) to be overwritten (for reads).  An 18-bit
+	# DH isn't a problem since it never does DMA to user space and
+	# clists (even with UCB_CLIST defined) are never above 18-bits.
+
+	# Note, the Q22 define is only effective if the kernel finds itself
+	# on a machine without UNIBUS mapping.  Note also that the presence
+	# of UNIBUS mapping is only tested for if UNIBUS_MAP is defined.
+	Q22	NO		# 22-bit Qbus with no 18-bit devices
+				# always 11/53/73/83 
+				# sometimes: 11/23
+				# never: 11/24/34/35/40/44/50/
+				#       55/60/70/84
+	-------------------------------------------------------------------
+
+	/sys/pdp/machdep2.c:
+	--------------------
+	/* Zero and free all of core:
+	 *
+	 * MAXCLICK is the maximum accessible physical memory, assuming an
+	 * 8K I/O page.  On systems without a Unibus map the end of memory
+	 * is heralded by the beginning of the I/O page (some people have
+	 * dz's at 0160000).  On systems with a Unibus map, the last 256K
+	 * of the 4M address space is off limits since 017000000 to
+	 * 017777777 is the actual 18 bit Unibus address space.  896 is
+	 * btoc(64K - 8K), 3968 is btoc(256K - 8K), 61440 is btoc(4M -
+	 * 256K), and 65408 is btoc(4M - 8K).  The 16 bit entry included
+	 * only for completeness, don't use it.
+	 *
+	 * If we're not on a UNIBUS machine and Q22 isn't defined we
+	 * artificially limit ourselves to 256K-8K to avoid problems of
+	 * 18-bit DMA disk or tape peripherals attached to 22-bit Q-BUS
+	 * machines.  See extended notes in /sys/conf/GENERIC.
+	 */
+	#define	MAXCLICK_16	896	/* 16 bit UNIBUS or QBUS */
+	#define	MAXCLICK_18	3968	/* 18 bit UNIBUS or QBUS */
+	#define	MAXCLICK_22U	61440	/* 22 bit UNIBUS (UNIBUS mapping) */
+	#define	MAXCLICK_22	65408	/* 22 bit QBUS */
+	
+	#ifdef Q22
+		maxclick = ubmap ? MAXCLICK_22U : MAXCLICK_22;
+	#else
+		maxclick = ubmap ? MAXCLICK_22U : MAXCLICK_18;
+	#endif
+	-------------------------------------------------------------------
+
+	This is fine except that the GENERIC kernel takes up too much space
+	and can't run some of the larger utilities if only 256K of memory is
+	used.
+
+	[The GERNERIC kernel is very large because it contains four disk
+	and two tape drivers.  Additionally, somehow NBUFS was set to 60
+	in the GENERIC kernel instead of the 20 which was planned.  The
+	too large value of NBUFS is the the major cause of the GENERIC
+	kernel failing to fit in 256K.]
+
+	One of the utilities which can't be run is "ld" ...  This is a problem
+	because without ld one can't load a new kernel that will use all of
+	the available memory (by defining Q22) or can be trimmed back to fit
+	in an extremely small machine.
+
+	Luckily all is not lost: the GENERIC kernel can run "adb" ...  If you
+	have a 22-bit QBUS machine with more than 256K of memory you can
+	execute the following procedure directly.  If you have a 22-bit QBUS
+	which only has 256K of memory, you're going to have to borrow a memory
+	board first.  If you have any 18-bit peripherals life is going to be
+	interesting; you'll have to call us and we'll try work our way through
+	the problem.
+
+Repeat-By:
+	Try and boot the GENERIC kernel on an 11/73.
+
+Fix:
+	Perform the following procedure:
+
+	# cp XXunix newunix
+	# adb -w newunix
+	adb> startup+056,8?ai
+	~startup+056:	tstb	_ubmap
+	~startup+062:	beq	~startup+076
+	~startup+064:	mov	$0170000,r1
+	~startup+070:	clr	r0 
+	~startup+072:	br	~startup+0104
+	~startup+074:	mov	$07600,r1
+	~startup+0100:	sxt	r0
+	~startup+0102:	mov	r1,r2
+	adb> startup+076?w 65408
+	~startup+0100:	07600	=	0177600
+	adb> ^D
+
+		"XXunix" is the copy of the GENERIC kernel that you use to
+	boot up.  The goal of this procedure is to create a copy of the
+	GENERIC kernel which doesn't restrict itself to 256K of memory (hence
+	the comment above about using the above procedure and having problems
+	with 18-bit peripherals.)
+		The first command to adb ("startup+056,8?ai") effectively
+	prints out the assembly statements corresponding to the line:
+
+	maxclick = ubmap ? MAXCLICK_22U : MAXCLICK_18;
+
+	in machdep2.c in the #else portion of the Q22 define above.  The
+	instruction at ~startup+074 ("mov $7600,r1") is the instruction which
+	assigns MAXCLICK_18 (3968 == 07600) to maxclick.  The second adb
+	command ("startup+076?w 65408") replaces MAXCLICK_18 with MAXCLICK_22
+	(65408).  Adb verifies the replacement by typing out the old value
+	(07600), followed by an equal sign, followed by the new value
+	(65408 == 0177600).
+
+		At this point, you can reboot the new kernel "newunix" and
+	you should now be able to use all of your memory and, in particular,
+	build a new kernel for your configuration.  Note that if you do have
+	a 22-bit QBUS machine and you don't have any 18-bit peripherals, you
+	should define Q22 in your machine's configuration file ("Q22 YES").
+

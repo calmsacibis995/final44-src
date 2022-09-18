@@ -1,0 +1,518 @@
+<html>
+<!--
+$Header: /vol/src/devel/gated/master/gated/doc/config_guide/kernel_stmt.html,v 1.3 1994/03/22 04:00:56 jch Exp $
+
+%(Copyright)
+>
+<head>
+<TITLE>GateD Configuration Guide - Kernel Statement</TITLE>
+</head>
+<body>
+
+<H1>The Kernel Statement</H1>
+
+While the kernel interface isn't technically a routing protocol, it
+has many characteristics of one, and GateD handles handles it
+similarly to one.  The routes GateD chooses to install in the kernel
+forwarding table are those that will actually be used by the kernel to
+forward packets.
+<P>
+
+The add, delete and change operations GateD must use to update the 
+typical kernel forwarding table take a non-trivial amount of time.  
+This does not present a problem for older routing protocols (RIP, 
+EGP), which are not particularly time critical and do not easily 
+handle very large numbers of routes anyway.  The newer routing 
+protocols (OSPF, BGP) have stricter timing requirements and are often 
+used to process many more routes.  The speed of the kernel interface 
+becomes critical when these protocols are used.
+<P>
+
+To prevent GateD from locking up for significant periods of time 
+installing large numbers of routes (up to a minute or more has been 
+observed on real networks), the processing of these routes is now done 
+in batches.  The size of these batches may be controlled by the tuning 
+parameters described below, but normally the default parameters will 
+provide the proper functionality. <p>
+
+During normal shutdown processing, GateD normally deletes all the
+routes it has installed in the kernel forwarding table, except for
+those marked with <strong>retain</strong>.  Optionally, GateD can
+leave all routes in the kernel forwarding table by not deleting any
+routes.  In this case changes will be made to insure that routes with
+a <strong>retain</strong> indication are installed in the table.  This
+is useful on systems with large numbers of routes as it prevents the
+need to re-install the routes when GateD restarts.  This can greatly
+reduce the time it takes to recover from a restart.
+
+<h2>Forwarding tables and Routing tables</h2>
+
+The table in the kernel that controls the forwarding of packets is a
+<em>forwarding table</em>, also know in ISO speak as a <em>forwarding
+information base</em>, or <em>FIB</em>.  The table that GateD uses
+internally to store routing information it learns from routing
+protocols is a <em>routing table</em>, known in ISO speak as a
+<em>routing information base</em>, or <em>RIB</em>.  The routing table
+is used to collect and store routes from various protocols.  For each
+unique combination of <em>network</em> and <em>mask</em> an
+<em>active</em> route is chosen, this route will be the one with the
+best (numerically smallest) <em>preference</em>.  All the active
+routes are installed in the kernel forwarding table.  The entries in
+this table are what the kernel actually uses to forward packets.
+
+<h2>Updating the Forwarding Table</h2>
+
+There are two main methods of updating the kernel <em>FIB</em>, the
+<code>ioctl()</code> interface and the <em>routing socket</em> interface.
+Their various characteristics are described here.
+
+<h3>Updating the Forwarding Table with the ioctl interface</h3>
+
+The <code>ioctl</code> interface to the forwarding table was
+introduced in <em>BSD 4.3</em> and widely distributed in <em>BSD
+4.3</em>.  This is a one-way interface, it only allows GateD to update
+the kernel forwarding table.  It has several other limitations:
+
+<dl>
+<dt> Fixed subnet masks
+<dd> The BSD 4.3 networking code assumed that all subnets of a given
+     network had the same subnet mask.  This limitation is enforced
+     by the kernel.  The network mask is not stored in the kernel
+     forwarding table, but determined when a packet is forwarded by
+     searching for interfaces on the same network.
+
+<dt> One way interface
+<dd> GateD is able to update the kernel forwarding table, but it is
+     not aware of other modifications of the forwarding table.  GateD
+     is able to listen to ICMP messages and guess how the kernel has
+     updated the forwarding table with response to ICMP redirects.
+
+<dt> Blind updates
+<dd> GateD is not able to detect changes to the forwarding table
+     resulting from the use of the the <em>route</em> command by the
+     system administrator.  Use of the <em>route</em> command on
+     systems that use the <code>ioctl()</code> interface is strongly
+     discouraged while GateD is running.
+
+<dt> Changes not supported
+<dd> In all known implementations, there is no change operation
+     supported, to change a route that exists in the kernel, the route
+     must be deleted and a new one added.
+
+</dl>
+
+<h3><a name="routing_socket">Updating the Forwarding Table with the routing socket interface</a></h3>
+
+The <em>routing socket</em> interface to the kernel forwarding table
+was introduced in <em>BSD 4.3 Reno</em>, widely distributed in <em>BSD
+4.3 Net/2</em> and improved in <em>BSD 4.4</em>.  <!-- XXX - Document
+reference!> This interface is simply a socket, similar to a UDP
+socket, on which the kernel and GateD exchange messages.  It has
+several advatages over the <code>ioctl()</code> interface:
+
+<dl>
+<dt> Variable subnet masks
+<dd> The network mask is passed to the kernel explicitly.  This allows
+     different masks to be used on subnets of the same network.  It
+     also allows routes with masks that are more general than the
+     natural mask to be used.  This is known as classless routing.
+     <!-- XXX - CIDR reference?>
+
+<dt> Two way interface
+<dd> Not only is GateD able to change the kernel forwarding table with
+     this interface, but the kernel can also report changes to the
+     forwarding table to GateD.  The most interesting of these is an
+     indication that a redirect has modified the kernel forwarding
+     table; this means that gated no longer needs to monitor ICMP
+     messages to learn about redirects.  Plus, there is an indication
+     of whether the kernel processed the redirect, GateD can safely
+     ignore redirect messages that the kernel did not process.
+
+<dt> Updates visible
+<dd> Changes to the routing table by other processes, including the
+     <em>route</em> command are received via the routing socket.  This
+     allows GateD to insure that the kernel forwarding table is in
+     sync with the routing table.  Plus it allows the system
+     administrator the ability to do some operations with the
+     <em>route</em> command while gated is running.
+     
+<dt> Changes supported
+<dd> There is a functioning <em>change</em> message that allows routes
+     in the kernel to be atomically changed.  Some early verions of
+     the routing socket code had bugs in the change message
+     processing.  There are compilation time and configuration time
+     options that cause delete and add sequences to be used in lieu of
+     change messages.
+     
+<dt> Expandable
+<dd> New levels of kernel/GateD communications may be added by adding
+     new message types.
+
+</dl>
+
+<h2>Reading the Forwarding Table</h2>
+
+When GateD starts up it reads the kernel forwarding table and installs
+corresponding routes in the routing table.  These routes are called
+<em>remnant</em>s and are timed out after a configured interval (which
+defaults to 3 minutes), or as soon as a more attractive route is
+learned.  This allows forwarding to occur during the time it takes the
+routing protocols to start learning routes.  <p>
+
+There are three main methods for reading the forwarding table from the
+kernel.
+
+<h3>Reading forwarding table via kmem</h3>
+
+On many systems, especially those based on BSD 4.3, GateD must have
+knowledge of the kernel's data structures and poke around in the
+kernel to read the current state of forwarding table.  This method is
+slow and subject to error if the kernel forwarding table is updated
+while GateD is in the middle of reading it.  This can happen if the
+system administrator uses the <em>route</em> command, or an ICMP
+redirect message is received while GateD is starting up. <p>
+
+Due to an oversight some systems, such as OSF/1, which are based on
+BSD 4.3 Reno or later, do not have the <code>getkerninfo()</code>
+system call described below which allows GateD to read routes from the
+kernel without know about kernel internal structures.  On these
+systems it is necessary to read the kernel radix tree from the kernel
+by poking around in kernel memory.  This is even more error prone than
+reading the hash based forwding table.
+
+<h3>Reading the forwarding table via getkerninfo/sysctl</h3>
+
+Besides the routing socket, BSD 4.3 Reno introduced the
+<code>getkerninfo()</code> system call.  This call allows a user
+process (of which GateD is one) to read various information from the
+kernel without knowledge of the kernel data structures.  In the case
+of the forwarding table, it is returned to gated atomically as a
+series of routing socket messages.  This prevents the problem
+associated with the forwarding table changing while GateD is in the
+process of reading it. <p>
+
+BSD 4.4 changed the <code>getkerninfo()</code> interface into the
+<code>sysctl()</code> interface, which takes different parameters, but
+otherwise functions identically.
+
+<h3>Reading the forwarding table via OS specific methods</h3>
+
+Some operating systems, for example SunOS 5, define their own method
+of reading the kernel forwarding table.  The SunOS 5 version is
+similar in concept to the <code>getkerninfo()</code> method.
+
+<h2>Reading the interface list</h2>
+
+The kernel support subsystem of GateD is resposible for reading the
+status of the kernel's physical and protocl interfaces periodically.
+GateD detects changes in the interface list and notifies the protocols
+so they can start or stop instances or peers.  The interface list is
+read one of two ways:
+
+<h3>Reading the interface list with SIOCGIFCONF</h3>
+
+On systems based on BSD 4.3, 4.3 Reno and 4.3 Net/2 the
+<code>SIOCGIFCONF</code> <code>ioctl</code> interface is used to read the
+kernel interface list.  Using this method a list of interfaces and
+some basic information about them is return by the SIOCGIFCONF call.
+Other information must be learned by issuing other ioctls to learn the
+interface network mask, flags, MTU, metric, destination address (for
+point-to-point interfaces) and broadcast address (for broadcast
+capable interfaces).
+<p>
+
+GateD reads re-reads this list every 15 second looking for changes.
+When the routing socket is in use, it also re-reads it whenever a
+messages is received indicating a change in routing configuration.
+Receipt of a <code>SIGUSR2</code> signal also causes GateD to re-read
+the list.  This interval may be explicitly configured in the <a
+href="intfcs.html">interface configuration</a>.
+
+<h3>Reading the interface list with sysctl</h3>
+
+BSD 4.4 added the ability to read the kernel interface list via the
+<em>sysctl</em> system call.  The interface status is returned
+atomically as a list of routing socket messages which GateD parses for
+the required information. <p>
+
+BSD 4.4 also added routing socket messsages to report interface status
+changes immediately.  This allows GateD to react quickly to changes in
+interface configuration. <p>
+
+When this method is in use, GateD re-reads the interface list only
+once a minute.  It also re-reads it on routing table changes
+indications and when a <code>SIGUSR2</code> is received.  This
+interval may be explicitly configured in the <a
+href="intfcs.html">interface configuration</a>.
+
+<h2>Reading interface physical addresses</h2>
+
+Later version of the <code>getkerninfo()</code> and
+<code>sysctl()</code> interfaces return the interface physical
+addresses as part of the interface information.  On most systems where
+this information is not returned, GateD scans the kernel physical
+interface list for this information for interfaces with IFF_BROADCAST
+set, assuming that their drivers are handled the same as Ethernet
+drivers.  On some systems, such as <em>SunOS 4</em> and <em>SunOS
+5</em>, system specific interfaces are used to learn this
+information<p>
+
+The interface physical addresses are useful for IS-IS, for IP
+protocols, they are not currently used, but may be in the future.
+
+<h2>Reading kernel variables</h2>
+
+At startup, GateD reads some special variables out of the kernel.
+This is usually done with the <em>nlist</em> (or <em>kvm_nlist</em>)
+system call, but some systems use different methods. <p>
+
+The variables read include the status of <em>UDP checksum creation and
+generation</em>, <em>IP forwarding</em> and <em>kernel version</em>
+(for informational purposes).  On systems where the routing table is
+read directly from kernel memory, the root of the <em>hash table</em>
+or <em>radix tree</em> <em>routing table</em> is read.  On systems
+where interface physical addresses are not supplied by other means,
+the root of the <em>interface list</em> is read.
+
+<h2>Special route flags</h2>
+
+The later <em>BSD</em> based kernel support the special route flags
+described here.
+
+<dl>
+<dt> <strong>RTF_REJECT</strong>
+<dd> Instead of forwarding a packet like a normal route, routes with
+     <code>RTF_REJECT</code> cause packets to be dropped and
+     <code>unreachable</code> messages to be sent to the packet
+     originators.  This flag is only valid on routes pointing at the
+     <em>loopback</em> interface.
+     
+<dt> <strong>RTF_BLACKHOLE</strong>
+<dd> Like the <code>RTF_REJECT</code> flag, routes with
+     <code>RTF_BLACKHOLE</code> cause packets to be dropped, but
+     <code>unreachable</code> messages are not sent.  This flag is
+     only valid on routes pointing at the <em>loopback</em> interface.
+
+<dt> <strong>RTF_STATIC</strong>
+<dd> When GateD starts, it reads all the routes currently in the
+     kernel forwarding table.  Besides interface routes, it usually
+     marks everything else as a <em>remnant</em> from a previous run
+     of GateD and deletes it after a few minutes.  This means that
+     routes added with the <em>route</em> command will not be retained
+     after GateD has started. <p>
+
+     To fix this the <code>RTF_STATIC</code> flag was added.  When the
+     <em>route</em> command is used to install a route that is not an
+     inteface route it sets the <code>RTF_STATIC</code> flag.  This
+     signals to GateD that said route was added by the systems
+     administrator and should be retained.
+
+</dl>
+
+<hr>
+
+<h2>Kernel Configuration</h2>
+
+<PRE>
+<strong>kernel</strong> <strong>{</strong>
+    <strong>options</strong>
+        [ <strong>nochange</strong> ]
+	[ <strong>noflushatexit</strong> ]
+	[ <strong>remnantholdtime</strong> <var>time</var> ]
+	;
+    <strong>routes</strong> <var>number</var> <strong>;</strong>
+    <strong>flash</strong>
+        [ <strong>limit</strong> <var>number</var> ]
+        [ <strong>type</strong> <strong>interface</strong> | <strong>interior</strong> | <strong>all</strong> ]
+        <strong>;</strong>
+    <strong>background</strong>
+        [ <strong>limit</strong> <var>number</var> ]
+        [ <strong>priority</strong> <strong>flash</strong> | <strong>higher</strong> | <strong>lower</strong> ]
+        <strong>;</strong>
+    <strong>traceoptions</strong> <var>trace_options</var> <strong>;</strong>
+<strong>}</strong> <strong>;</strong>
+</PRE>
+
+<dl>
+<dt> <strong>options</strong> <var>option_list</var>
+<dd> Configure kernel options.  The valid options are:
+
+<dl>
+<dt> <strong>nochange</strong>
+<dd> On systems supporting the <a href="#routing_socket">routing
+     socket</a> this insures that changes operations will not be
+     performed, only deletes and adds.  This is useful on early
+     versions of the routing socket code where the change operation
+     was broken.
+
+<dt> <strong>noflushatexit</strong>
+<dd> During normal shutdown processing GateD deletes all routes from
+     the kernel forwarding table that do not have a
+     <strong>retain</strong> indication.  The
+     <strong>noflushatexit</strong> option prevents route deletions at
+     shutdown.  Instead, routes are changed and added to make sure
+     that all the routes marked with <strong>retain</strong> get
+     installed. <p>
+
+     This is handy on systems with thousands of routes.  Upon startup
+     GateD will notice which routes are in the kernel forwarding table
+     and not have add them back.
+
+<dt> <strong>remnantholddimte</strong> <var>time</var>
+<dd> Normally <var>remnant</var> routes read from the kernel
+     forwarding table at startup are timed out in three minutes or as
+     soon as they are overridden.  This option allows the interval to
+     be configured to a value between zero and 15 minutes.  Setting it
+     to zero causes these routes to be deleted immediately.
+
+</dl>
+
+<dt> <strong>routes</strong> <var>number</var>
+<dd> On some systems kernel memory is at a premium.  With this
+     parameter a limit can be placed on the maximum number of routes
+     GateD will install in the kernel.  Normally gated
+     adds/changes/deletes routes in interface/internal/external order,
+     i.e.  it queues interface routes first, followed by internal
+     routes, followed by external routes, and processes the queue from
+     the beginning.  If a this parameter is specified and the
+     limit is hit, GateD does two scans of the list instead.  On the
+     first scan it does deletes, and also deletes all changed routes,
+     turning the queued changes into adds. It then rescans the list
+     doing adds in interface/internal/external order until it hits the
+     limit again.  This will tend to favor internal routes over
+     external routes.  The default is not to limit the number of
+     routes in the kernel forwarding table.
+	
+<dt> <strong>flash</strong>
+<dd> When routes change, the process of notifying the protocols is
+     called a <em>flash update</em>.  The kernel forwarding table
+     interface is the first to be notified.  Normally a maximum of 20
+     interface routes may be processed during one flash update.  The
+     <code>flash</code> command allows tuning of these parameters.
+
+     <dl>
+     <dt> <strong>limit</strong> <var>number</var>
+     <dd> Specifies the maximum number of routes which may be
+          processed during one flash update.  The default is
+          <code>20</code>.  A value of <code>-1</code> will cause all
+          pending route changes of the specified type to be processed
+          during the flash update.
+
+     <dt> <strong>type</strong> <strong>interface</strong> | <strong>interior</strong> | <strong>all</strong>
+     <dd> Specifies the type of routes that will be processed during a
+          flash update. <CODE>Interior</CODE> specifies that interior
+          routes (See the definition of <a
+          href="proto_over.html#igp">interior gateway protocols</a>) will
+          also be installed. <CODE>All</CODE> specifies the inclusion
+          of exterior routes (See the definition of <a
+          href="proto_over.html#egp">exterior gateway protocols</a>) as
+          well.  The default is <code>interface</code> which
+          specifies that only interface routes will be installed
+          during a flash update.
+     </dl>
+     
+     Specifying <code>flash limit -1 all</code> causes all routes to
+     be installed during the <em>flash update</em>; this mimics the
+     behavoir of previous versions of GateD.
+     <p>
+	
+<dt> <strong>background</strong> 
+<dd> Since only interface routes are normally installed during a flash
+     update, the remaining routes are processed in batches in the
+     background, that is, when no routing protocol traffic is being
+     received.  Normally, 120 routes are installed at a time to allow
+     other tasks to be performed and this background processing
+     is done at lower priority than flash updates the following
+     parameters allow tuning of these parameters:
+
+     <dl>
+     <dt> <strong>limit</strong> <var>number</var>
+     <dd> Specifies the number of route which may be processed at
+          during one batch.  The default is 120.
+
+     <dt> <strong>priority</strong> <strong>flash</strong> | <strong>higher</strong> | <strong>lower</strong>
+     <dd> Specifies the priority of the processing of batches of
+          kernel updates in relationship to the <em>flash update</em>
+          processing.  The default is <code>lower</code> which means
+          that flash updates are processed first.  To process kernel
+          updates at the same priority as flash updates, specify
+          <code>flash</code>; to process them at a lower priority, use
+          <code>lower</code>.
+     </dl>
+</dl>
+
+<hr>
+<h2>Tracing optins</h2>
+
+While the kernel interface isn't technically a routing protocol, in
+many cases it is handled as one.  The following two symbols make sense
+when entered from the command line since the code that uses them is
+executed before the trace file is parsed.
+
+<dl>
+<dt> <strong>symbols</strong>
+<dd> Symbols read from the kernel, by <code>nlist()</code> or similar
+     interface. 
+	
+<dt> <strong>iflist</strong>
+<dd> Interface list scan.  This option is useful when entered from the
+     command line as the first interface list scan is performed before
+     the configuration file is parsed.
+</dl>
+<P>
+
+The following tracing options may only be specified in the
+configuration file.  They are not valid from the command line.
+
+<dl>
+<dt> <strong>remnants</strong>
+<dd> Routes read from the kernel when GateD starts.
+	
+<dt> <strong>request</strong>
+<dd> Requests by GateD to Add/Delete/Change routes in the kernel forwarding table.
+</dl>
+<P>
+
+The following general option and packet-tracing options only apply on
+systems that use the routing socket to exchange routing information
+with the kernel.  They do not apply on systems that use the old BSD4.3
+<code>ioctl()</code> interface to the kernel.
+          
+<dl>
+<dt> <strong>info</strong>
+<dd> Informational messages received from the routing socket, such as
+     TCP lossage, routing lookup failure, and route resolution
+     requests.  GateD does not currently do processing on these
+     messages, just logs the information if requested.
+</dl>
+
+                         
+Packet tracing options (which may be modified with
+<CODE>detail</CODE>, <CODE>send</CODE> and <CODE>recv</CODE>):
+                    
+<dl>
+<dt> <strong>routes</strong>
+<dd> Routes exchanged with the kernel, including Add/Delete/Change
+     messages and Add/Delete/Change messages received from other
+     processes. 
+
+<dt> <strong>redirect</strong>
+<dd> Redirect messages received from the kernel.
+	
+<dt> <strong>interface</strong>
+<dd> Interface status messages received from the kernel.  These are
+     only supported on systems with networking code derived from BSD
+     4.4.
+	
+<dt> <strong>other</strong>
+<dd> Other messages received from the kernel, including those
+     mentioned in the <em>info</em> type above.
+</dl>
+
+<hr>
+
+Last updated $Date: 1994/03/22 04:00:56 $.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

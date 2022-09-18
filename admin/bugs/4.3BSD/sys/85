@@ -1,0 +1,49 @@
+From decwrl!pyramid!lewey!lewey.AIT.COM!pkl@ucbvax.Berkeley.EDU  Fri Jan 30 01:45:28 1987
+Date: Tue, 27 Jan 87 11:50:16 PST
+From: decwrl!pkl@lewey.ait.com (Peter K. Lee)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: suspicious code in /sys/sys/kern_descrip.c dup()
+
+Subject: Suspicious code in dup()
+Index: sys/sys/kern_descrip.c 4.3BSD
+
+Description:
+	dup() has a gross kludge to simulate dup2().  If argument 1
+	is greater than 63 (uap->i &~ 077), only the lower 6 bits
+	of argument 1 will be used as the file descriptor and the
+	second argument is the file descriptor to dup to.  This is
+	an undocumented feature used by /bin/sh (or at least the sh
+	at that time).  In 4.3, sh has been fixed to use dup2()
+	instead of this kludge.
+	However, in sys/kern_descrip.c, dup() still has this kludge
+	there.  This makes it impossible to configure the kernel
+	with NOFILE > 64.  If you do so, your dup() will
+	occassionally behave like a dup2() with garbage in the
+	second argument.
+
+Repeat-By:
+	First, you'll have to build a kernel with NOFILE > 64.
+	Write a program that opens more than 65 files (file
+	descriptor 0 to 64), then dup(64).  This may cause one of
+	your first 64 files (file descriptor 0 to 63) to be
+	replaced by a duplicate of 64, or an error.  The result
+	depends on what was left in u.u_arg[1] (second argument) in
+	the previous system call.
+
+Fix:
+
+Delete kludgy test for dup2 in dup().
+
+*** /sys/sys/kern_descrip.c	Thu Jun  5 00:02:14 1986
+--- kern_descrip.c	Tue Jan 27 11:45:30 1987
+***************
+*** 57,64 ****
+  	struct file *fp;
+  	int j;
+  
+- 	if (uap->i &~ 077) { uap->i &= 077; dup2(); return; }	/* XXX */
+- 
+  	GETF(fp, uap->i);
+  	j = ufalloc(0);
+  	if (j < 0)
+--- 79,84 ----

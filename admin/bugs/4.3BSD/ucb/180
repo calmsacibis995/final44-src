@@ -1,0 +1,74 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 10:08:44 1988
+Date: Mon, 18 Apr 88 12:53:43 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 mail command can dump core (with fix)
+#Index: ucb/Mail/tty.c MORE/bsd 4.3 Fix
+Index: ucb/Mail/tty.c 4.3BSD
+
+Description:
+	The mail command can dump core when mail is being sent.
+
+Repeat-By:
+	Using csh, type in the command
+		mail root
+	and when prompted for a
+		Subject:
+	tap your interrupt character.  After the response
+		(Interrupt -- one more to kill letter)
+		Subject: 
+	type in a subject line followed by a RETURN.  Now tap
+	your job suspension character.  When you get the csh prompt,
+	type in "fg" and note the output:
+		mail root
+		longjmp botch
+		Illegal instruction (core dumped)
+
+Fix:
+	Make the changes conditioned on ASWAS below to the function
+	"grabh" in "tty.c".
+
+		grabh(hp, gflags)
+			struct header *hp;
+		{
+			struct sgttyb ttybuf;
+			int ttycont(), signull();
+		#ifndef TIOCSTI
+			int (*savesigs[2])();
+		#endif
+		#ifdef ASWAS
+			int (*savecont)();
+		#else /* !ASWAS */
+			/*
+			** We want to avoid:
+			**	% mail ado
+			**	Subject: ^C
+			**	(Interrupt -- one more to kill letter)
+			**	Subject: 
+			**	^Z
+			**	Stopped
+			**	% fg
+			**	mail ado
+			**	longjmp botch
+			**	Illegal instruction (core dumped)
+			**	%
+			*/
+			static int (*savecont)();
+			int (*testcont)();
+		#endif /* !ASWAS */
+			register int s;
+			int errs;
+
+		# ifdef VMUNIX
+		#ifdef ASWAS
+			savecont = sigset(SIGCONT, signull);
+		#else /* !ASWAS */
+			if ((testcont = sigset(SIGCONT, signull)) != ttycont)
+				savecont = testcont;
+		#endif /* !ASWAS */
+		# endif VMUNIX
+			errs = 0;
+		#ifndef TIOCSTI
+			ttyset = 0;
+		#endif
+			...
+

@@ -1,0 +1,6 @@
+(load 'test)
+(test)
+(load 'test2)
+(test)
+(load 'test3)
+(test)

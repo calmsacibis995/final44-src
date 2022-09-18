@@ -1,0 +1,119 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:01:19 1988
+Date: Mon, 18 Apr 88 13:14:13 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 catman's -p option fails to foil file removal (with fix)
+Index: etc/catman.c 4.3BSD
+
+Description:
+	The manual page for catman describes these
+
+		     Options:
+
+		     -n   prevents creations of the whatis database.
+
+		     -p   prints what would be done instead of doing it.
+
+	but sometimes catman goes ahead and does it anyway even if you use the
+	-p flag.
+
+Repeat-By:
+	Script started on Sun Mar  8 21:07:46 1987
+	$ cd /tmp
+	$ mkdir man1 cat1
+	$ echo .so man1/beta.1 > man1/alpha.1
+	$ echo hello > man1/beta.1
+	$ /etc/4.3BSD/catman -M /tmp 1
+	$ /bin/ls -l man1 cat1
+	cat1:
+	total 2
+1 >>>>	lrwxrwxrwx  1 ado            14 Mar  8 21:08 alpha.1 -> ../cat1/beta.1
+	-rw-rw-rw-  1 ado            71 Mar  8 21:08 beta.1
+
+	man1:
+	total 2
+	-rw-r--r--  1 ado            16 Mar  8 21:08 alpha.1
+	-rw-r--r--  1 ado             6 Mar  8 21:08 beta.1
+	$ touch man1/alpha.1
+2 >>>>	$ /etc/4.3BSD/catman -M /tmp -p 1
+	cd /tmp
+	ln -s ../cat1/beta.1 cat1/alpha.1
+	/usr/lib/makewhatis /tmp
+	$ /bin/ls -l man1 cat1
+	cat1:
+	total 1
+	-rw-rw-rw-  1 ado            71 Mar  8 21:08 beta.1
+3 >>>>
+	man1:
+	total 2
+	-rw-r--r--  1 ado            16 Mar  8 21:10 alpha.1
+	-rw-r--r--  1 ado             6 Mar  8 21:08 beta.1
+	$ 
+	script done on Sun Mar  8 21:10:19 1987
+
+	Note that the file cat1/alpha.1 was listed at line "1 >>>>" above;
+	then a "catman -p" was done at line "2 >>>>";
+	doing the "catman" caused the removal of the cat1/alpha.1 file,
+	which should have shown up at line "3 >>>>".
+
+Fix:
+*** OLD/catman.c	Sun Mar  8 21:00:54 1987
+--- NEW/catman.c	Sun Mar  8 21:00:43 1987
+***************
+*** 1,3 ****
+--- 1,10 ----
++ #ifndef ASWAS
++ #ifndef lint
++ #ifndef NOID
++ static char	elsieid[] = "%W";
++ #endif /* !NOID */
++ #endif /* !lint */
++ #endif /* !ASWAS */
+  /*
+   * Copyright (c) 1980 Regents of the University of California.
+   * All rights reserved.  The Berkeley software License Agreement
+***************
+*** 210,216 ****
+--- 217,229 ----
+				(void) stat(man, &sbuf);
+				if (time >= sbuf.st_mtime)
+					continue;
++ #ifdef ASWAS
+				(void) unlink(cat);
++ #else /* !ASWAS */
++ 				if (pflag)
++ 					(void) printf("rm -f %s\n", cat);
++ 				else	(void) unlink(cat);
++ #endif /* !ASWAS */
+			}
+			if (makelink) {
+				/*
+***************
+*** 219,225 ****
+--- 232,245 ----
+				if (stat(lncat+3, &sbuf) >= 0 &&
+				    (((sbuf.st_mode&S_IFMT)==S_IFREG) ||
+				     ((sbuf.st_mode&S_IFMT)==S_IFLNK)))
++ #ifdef ASWAS
+					(void) unlink(cat);
++ #else /* !ASWAS */
++ 					if (pflag)
++ 						(void) printf("rm -f %s\n",
++ 							cat);
++ 					else	(void) unlink(cat);
++ #endif /* !ASWAS */
+				if (pflag)
+					printf("ln -s %s %s\n", lncat, cat);
+				else
+--
+I'm also a bit suspicious of the catman.c code that reads:
+				/*
+				 * Don't unlink a directory by accident.
+				 */
+				if (stat(lncat+3, &sbuf) >= 0 &&
+				    (((sbuf.st_mode&S_IFMT)==S_IFREG) ||
+				     ((sbuf.st_mode&S_IFMT)==S_IFLNK)))
+					(void) unlink(cat);
+since after applying tests to one file (the one whose name is stored in
+"lncat+3") the code unlinks a different file (the one whose name is stored in
+"cat"); I'll let wiser hands be the judge here.
+

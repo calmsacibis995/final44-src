@@ -1,0 +1,118 @@
+head     1.1;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.1
+date     83.03.03.13.41.20;  author layer;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@#ifndef lint
+static char *sccsid = "@@(#)fex3.c	35.4 8/23/82";
+#endif
+
+#include "global.h"
+#include "daout.h"
+
+
+/*
+ *Ndumplisp -- create executable version of current state of this lisp.
+ */
+
+lispval
+Ndumplisp()
+{
+	register struct exec *workp;
+	register lispval argptr, temp;
+	register char *fname;
+	extern int reborn;
+	struct exec work, old;
+	extern int dmpmode,usehole;
+	extern char etext[], holbeg[], *curhbeg;
+	int descrip, des2, ax,mode;
+	char tbuf[BUFSIZ], *gstab();
+	long count, lseek();
+
+
+
+	/* dump mode is kept in decimal (which looks like octal in dmpmode)
+	   and is changeable via (sstatus dumpmode n) where n is 413 or 410
+	   base 10		
+	*/
+	mode = 0410;
+
+	workp = &work;
+	workp->a_magic	= mode;
+	if(usehole)
+		workp->a_text = (((int)curhbeg)-OFFSET) & (~PAGRND);
+	else
+	workp->a_text	= etext - ((char *) nil);
+	workp->a_data	= (char *) sbrk(0) - holbeg;
+	workp->a_bss	= 0;
+	workp->a_syms	= 0;
+	workp->a_entry	= (unsigned) gstart();
+	workp->a_trsize	= 0;
+	workp->a_drsize	= 0;
+
+	fname = "savedlisp"; /*set defaults*/
+	reborn = (int) CNIL;
+	argptr = lbot->val;
+	if (argptr != nil) {
+		temp = argptr->d.car;
+		if((TYPE(temp))==ATOM)
+			fname = temp->a.pname;
+	}
+	des2 = open(gstab(),0);
+	if(des2 >= 0) {
+		if(read(des2,(char *)&old,sizeof(old))>=0)
+			work.a_syms = old.a_syms;
+	}
+	descrip=creat(fname,0777); /*doit!*/
+	if(-1==write(descrip,(char *)workp,sizeof(work)))
+	{
+		close(descrip);
+		error("Dumplisp failed",FALSE);
+	}
+	if(mode == 0413) lseek(descrip,(long)PAGSIZ,0); 
+	if( -1==write(descrip,(char *)nil,(int)workp->a_text)    ||
+	    -1==write(descrip, holbeg, (int)workp->a_data) ) {
+		close(descrip);
+		error("Dumplisp Failed",FALSE);
+	}
+	if(des2>0  && work.a_syms) {
+		count = old.a_text + old.a_data + sizeof(old);
+		if(-1==lseek(des2,count,0))
+			error("Could not seek to stab",FALSE);
+		for(count = old.a_syms;count > 0; count -=BUFSIZ) {
+			ax = read(des2,tbuf,(int)(count < BUFSIZ ? count : BUFSIZ));
+			if(ax==0) {
+				printf("Unexpected end of syms",count);
+				fflush(stdout);
+				break;
+			} else if(ax >  0)
+				write(descrip,tbuf,ax);
+			else 
+				error("Failure to write dumplisp stab",FALSE);
+		}
+	}
+	close(descrip);
+	if(des2>0) close(des2);
+	reborn = 0;
+
+	return(nil);
+}
+@

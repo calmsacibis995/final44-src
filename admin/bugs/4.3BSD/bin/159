@@ -1,0 +1,106 @@
+Subject: Double exec unnecessary in diff.
+Index: bin/diff 4.3BSD
+
+Description:
+
+Note 98  (*)  Double exec unnecessary in diff.       3 responses
+ivanlan@alberto                              5:37 am  Feb 27, 1986
+
+SHORT BUT DESCRIPTIVE ONE LINE TITLE:  (Type on next line)
+Double exec unnecessary in diff.
+
+Operating System:  	UTX/32
+Release:  		1.1 (and in 1.2, 1.3 UTX, inherited from  BSD)
+Patch Level:  		C
+Product Name:           UTX/32
+Hardware Environment:   9080 
+Organization:		Gould-CSD/Urbana      (217) 384-8500 
+                        1101 E. University, Urbana, Il 61801
+
+MODULE NAME: /usr/src/bin/diff/diffdir.c
+
+SPR TYPE:  (Software/Doc/ER)
+Software
+PRIORITY:  (1 = High, 5 = Low)
+3	(Wasteful and inefficient, but it still works.)
+DESCRIPTION OF PROBLEM:
+In two places in the file diffdir.c, diff calls first
+pr and then itself when invoked with the -r option (recursive).
+Diff sets up execv argument lists for pr and diff, and
+then does the exec twice:  the second time through arg0 is
+the correct "/bin/pr" or "/bin/diff".  The first time execv
+is called, however, it is called with an arg0 of "/pr" or
+"/diff":  the execv therefore fails.
+
+Here is the relevant code:
+	execv ( diff+4, diffargs ) ;
+	execv ( diff, diffargs ) ;
+
+It is surmised that Berkeley originally had pr and diff stashed
+somewhere in the second level of a filesystem with a two-letter
+name, such as "/va/pr":  calling execv with diff+4 would get
+you "pr" as arg0, and the call would work the first time.  Of
+course, you still get the overhead of the second execv call,
+and the second call would also work.  Since pr is now /bin/pr,
+the first call fails but the second works (the first call
+comes out as "/pr ...").  Execv is still called twice:
+this is cheesy code.
+SAMPLE BROKEN OUTPUT:
+Insert debugging statements to have diff tell you every time
+
+it issues an execv, recompile and test.  Make sure that the
+Makefile has correct pathnames in it (otherwise, you can end
+up with your changed diff invoking /bin/diff and not itself...).
+SUGGESTED FIX:
+A)	Quick fix: 
+#ifdef notdef
+	execv(diff+4, diffargs);
+#endif
+	execv(diff, diffargs);
+	....
+and 
+#ifdef notdef
+	execv(pr+4, prargs);
+#endif
+	execv(pr, prargs);
+	....
+(Search for execv in diffdir.c:  it's only used in two places.)
+
+B)	Better fix:
+In the switch for the options, diff increments the rflag when it
+gets the -r option.  At that time, diff should find out where it
+lives and stuff that pathname into the global var "diff".  It
+should do the same thing for the -l option (set the variable
+"pr" to pr's correct pathname).  It should not make assumptions
+about where it lives;  if it is invoked as "/foo/garbage/diff"
+it should call itself as "/foo/garbage/diff".  Probably it
+should just do a "getcwd" call for itself, and should just use 
+the pr in its search path;  then IF the call fails (which it
+should test for), then and only then should it attempt to
+guess where pr lives.
+OTHER COMMENTS:  Pat Kane reported this bug in conjunction with
+the Makefile bug noted elsewhere.
+This bug exists in the original code for BSD from which UTX was
+ported (see duplicate bug report in bug.bsd).
+
+CURRENT WORKING DIRECTORY:
+	/mnt/ivanlan
+
+PATH:
+	.:/mnt/ivanlan/bin:/mnt/ivanlan/bin/Bin:/tmp/ivanlan/vsh/src:/ops/cableroute:/mnt/kane/Bin:/usr/local:/usr/new:/ops/bin:/usr/ucb:/bin:/usr/bin:/etc
+
+==== ==== ====
+Response 1    to Note 98  
+	ivanlan@alberto                         5:44 am  Feb 27, 1986  
+
+This has been corrected, recompiled and installed on
+mycroft, al and fang.
+
+==== ==== ====
+Response 2    to Note 98  
+	ivanlan@alberto                         6:24 am  Feb 27, 1986  
+
+--getcwd of course wont do any good at all.  sorry, i spaced.
+diff needs to do a path search, find where it lives, and save
+the path.
+

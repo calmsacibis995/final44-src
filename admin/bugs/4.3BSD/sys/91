@@ -1,0 +1,51 @@
+From bostic@okeeffe.berkeley.edu  Wed Feb 18 13:18:34 1987
+Received: by ucbarpa.Berkeley.EDU (5.57/1.20)
+	id AA23732; Wed, 18 Feb 87 13:18:34 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.21)
+	id AA04769; Wed, 18 Feb 87 13:18:25 PST
+Received: by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA03143; Tue, 17 Feb 87 14:28:47 PST
+Date: Tue, 17 Feb 87 14:28:47 PST
+From: bostic@okeeffe.berkeley.edu (Keith Bostic)
+Message-Id: <8702172228.AA03143@okeeffe.Berkeley.EDU>
+Subject: bad case statement in locore.s
+Index: sys/vax/locore.s 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+From sun!adobe!eakins!smiddy@ucbvax.berkeley.edu
+From: sun!adobe!eakins!smiddy@ucbvax.berkeley.edu (Richard Smith - Software)
+
+Description:
+
+Starting at line 95 in /sys/vax/locore.s we find the code:
+
+SCBVEC(machcheck):
+	tstl	nofault
+	bneq	1f
+	PUSHR; pushab 6*4(sp); calls $1,_machinecheck; POPR;
+	addl2 (sp)+,sp; rei
+	.align	2
+1:
+	casel	_cpu,$1,$VAX_MAX
+0:
+	.word	8f-0b		# 1 is 780
+	.word	5f-0b		# 2 is 750
+	.word	5f-0b		# 3 is 730
+	.word	7f-0b		# 4 is 8600
+	.word	1f-0b		# ???
+	.word	1f-0b		# ???
+	.word	1f-0b		# ???
+	.word	1f-0b		# 8 is 630
+5:
+#if defined(VAX750) || defined(VAX730)
+	mtpr	$0xf,$MCESR
+#endif
+
+Now, in /sys/vax/cpu.h VAX_MAX is defined as 8. However the "case"
+machine language instruction indexes the branch table starting from
+zero, so that one has addr[0] to addr[7]. The "case" instruction
+does a "less than or equal" compare of the index into the branch
+table that it calculates, and the maximum the programmer gives it.
+In this case, the "mtpr" instruction following becomes a part of the
+branch table. It is still branched to and executed, but is hard to find
+with "adb."

@@ -1,0 +1,89 @@
+From mcintosh@wind.bellcore.com  Tue Nov 29 05:34:09 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA01561; Tue, 29 Nov 88 05:34:09 PST
+Received: from wind.bellcore.com by ucbvax.Berkeley.EDU (5.59/1.31)
+	id AA08394; Tue, 29 Nov 88 05:32:35 PST
+Received: by wind.bellcore.com (5.58/1.1)
+	id AA04346; Tue, 29 Nov 88 08:31:00 EST
+Date: Tue, 29 Nov 88 08:31:00 EST
+From: mcintosh@wind.bellcore.com (Allen Mcintosh)
+Message-Id: <8811291331.AA04346@wind.bellcore.com>
+Subject: Bug in interleaving code in CCI /lib/c2
+Index: lib 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The interleaving code in the latest CCI /lib/c2 is terribly
+	naive about floating point instructions with operands that
+	are indirect through a memory location.  In a sequence like
+		subf	*-60(fp)
+		mulf	r0
+		addf	*-60(fp)
+		stf	*4(fp)
+		addl2	$4,4(fp)
+	it will move the addl2 ahead of the stf.
+	The sccs id in the offending file (/usr/src/lib/c2/c2.tahoe/c22.c) is
+		c22.c	1.9 (Berkeley/CCI) 5/12/88
+Repeat-By:
+	The following program, compiled with cc -O, will print the
+	error message:
+
+foo(x, par1, n) float *x, *par1; int n; {
+	/* c2 incorrectly turns the post increment into a pre-increment */
+	*x++ = *par1 * *par1;
+	n = n + 1;
+}
+
+main() {
+	float x[2], par1 = 2.0;
+	x[0] = -1.0; x[1] = -2.0;
+	foo(x, &par1, 1);
+	if( x[0] != par1*par1 || x[1] != -2.0 )
+		printf("BUG: x[0] is %f should be %f x[1] is %f should be -2.0\n", x[0], par1*par1, x[1]);
+}
+
+Fix:
+	Turning off the interleaving code makes the problem go away, though
+	it's not a satisfactory fix.  Short of keeping a memory map (hardly
+	worthwhile), something along the following lines should work.  The
+	details of checkreg() are vague because I'm not familiar with the
+	architecture.
+
+int usedmem;	/* perhaps this belongs in c2.h */
+interleave()
+{
+	.........
+		clearuse();
+		usedmem = 0;
+		clearreg();
+	.........
+}
+sideeffect(p,p1)
+struct node *p, *p1;
+{
+	.........
+	splitrand(p1);
+	r = isreg(lastrand);
+	if (r >= 0) {
+		/* THE r>=0 && uses[r] TESTS ARE IN THE WRONG ORDER IN c22.c */
+		if(uses[r]) return(1);
+	} else {
+		/* Assume p1 writes into memory. */
+		if(usedmem) return 1;
+	}
+	.........
+}
+checkreg(p,s)
+struct node *p;
+char *s;
+{
+	.........
+	splitrand(p);
+	for(each operand){
+		if( *operand == '*' )
+			usedmem++;
+		for(step through operand as before) {
+			if( isreg ) uses[r] = p;
+		}
+	}
+}

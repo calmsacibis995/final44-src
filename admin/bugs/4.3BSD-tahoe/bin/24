@@ -1,0 +1,76 @@
+From earle@mahendo.Jpl.Nasa.Gov  Tue May 23 22:04:24 1989
+Date: Tue, 23 May 89 15:01:36 PDT
+From: Greg Earle <earle@mahendo.Jpl.Nasa.Gov>
+To: bugs@okeeffe.Berkeley.EDU, bugpost%elmer@Sun.COM
+Subject: FTP daemon doesn't log anonymous FTP logins to wtmp
+Return-Path: <stevo@jane.Jpl.Nasa.Gov>
+Date: Tue, 23 May 89 07:54:42 PDT
+From: stevo@jane.Jpl.Nasa.Gov (Steve Groom)
+To: earle@elroy.Jpl.Nasa.Gov
+Subject: Re:  elroy not logging anonymous FTP logins
+Cc: david@jane.Jpl.Nasa.Gov
+Index: bin/ftp 4.3BSD-tahoe
+
+How's this for one that got away:
+
+-------------------------------------------------------
+[...]
+static char sccsid[] = "@(#)ftpd.c	5.16 (Berkeley) 10/30/88";
+[...]
+
+	/* grab wtmp before chroot */
+	wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+	if (guest && chroot(pw->pw_dir) < 0) {
+		reply(550, "Can't set guest privileges.");
+		if (wtmp >= 0) {
+			(void) close(wtmp);
+			wtmp = -1;
+		}
+		goto bad;
+	}
+	if (!guest)
+		reply(230, "User %s logged in.", pw->pw_name);
+	else
+		reply(230, "Guest login ok, access restrictions apply.");
+	logged_in = 1;
+	(void)sprintf(ttyline, "ftp%d", getpid());
+	logwtmp(ttyline, pw->pw_name, remotehost);
+[...]
+-------------------------------------------------------
+[...]
+
+static char sccsid[] = "@(#)logwtmp.c	5.2 (Berkeley) 9/22/88";
+
+[...]
+
+static int fd;
+
+logwtmp(line, name, host)
+	char *line, *name, *host;
+{
+	struct utmp ut;
+	struct stat buf;
+	time_t time();
+	char *strncpy();
+
+	if (!fd && (fd = open(WTMPFILE, O_WRONLY|O_APPEND, 0)) < 0)
+		return;
+	if (!fstat(fd, &buf)) {
+		(void)strncpy(ut.ut_line, line, sizeof(ut.ut_line));
+		(void)strncpy(ut.ut_name, name, sizeof(ut.ut_name));
+		(void)strncpy(ut.ut_host, host, sizeof(ut.ut_host));
+		(void)time(&ut.ut_time);
+		if (write(fd, (char *)&ut, sizeof(struct utmp)) !=
+		    sizeof(struct utmp))
+			(void)ftruncate(fd, buf.st_size);
+	}
+}
+-----------------------------------------------------
+
+Ftpd opens wtmp before the chroot.  But logwtmp doesn't use that fd,
+it tries to go get it's own!
+
+Whoops. 
+
+-steve
+

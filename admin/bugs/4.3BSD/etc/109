@@ -1,0 +1,125 @@
+From chris@gyre.umd.edu  Sat Mar 19 00:00:26 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.59/1.26)
+	id AA19002; Sat, 19 Mar 88 00:00:26 PST
+Received: from gyre.umd.edu by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA05469; Fri, 18 Mar 88 19:33:46 PST
+Received: by gyre.umd.edu (5.58/4.7)
+	id AA16418; Fri, 18 Mar 88 15:21:12 EST
+Date: Fri, 18 Mar 88 15:21:12 EST
+From: Chris Torek <chris@gyre.umd.edu>
+Message-Id: <8803182021.AA16418@gyre.umd.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: restore misbehaves on files that end in holes
+
+Index: etc/restore/tape.c 4.3BSD Fix
+
+Description:
+	Restoring a file that ends in a `hole' (nonexistent blocks)
+	leaves the file with the wrong size.
+
+Repeat-by:
+	Use the program below to create such a file in some
+	file system (e.g., /tmp/foo); then, run
+
+		dump 0f - /tmp | restore if -
+		restore> add tmp/foo
+		restore> extract
+		...
+		restore> quit
+		% ls -l tmp/foo
+
+	and note that the file is zero bytes long.
+
+Fix:
+	`xtrfile' and `xtrskip' must cooperate, so that extractfile()
+	can tell that it must `fill in' a hole.  From a disk-space
+	standpoint, it would be best if the hole were filled in the
+	same way as in the demonstration program or sample fix below.
+
+	Somewhere in tape.c, add
+
+int xtrhole; /* set true whenever xtrskip runs, false when xtrfile runs */
+
+	Then, around line 430:
+
+		(void) fchown(ofile, curfile.dip->di_uid, curfile.dip->di_gid);
+		(void) fchmod(ofile, mode);
+		getfile(xtrfile, xtrskip);
+#ifdef FIX /* untested */
+		if (xtrhole) {
+			/* fill the hole */
+			long where = lseek(ofile, (long)MAXBSIZE, 1);
+			if (write(ofile, "", 1) != 1)
+				do something about it.
+			if (ftruncate(ofile, where - MAXBSIZE))
+				do something about it.
+			xtrhole = 0;
+		}
+#endif
+		(void) close(ofile);
+
+	...
+
+xtrfile(buf, size)
+	char	*buf;
+	long	size;
+{
+
+	if (write(ofile, buf, (int) size) == -1) {
+		fprintf(stderr, "write error extracting inode %d, name %s\n",
+			curfile.ino, curfile.name);
+		perror("write");
+		done(1);
+	}
+/*ADD*/	xtrhole = 0;
+}
+
+xtrskip(buf, size)
+	char *buf;
+	long size;
+{
+
+#ifdef lint
+	buf = buf;
+#endif
+	if (lseek(ofile, size, 1) == (long)-1) {
+		fprintf(stderr, "seek error extracting inode %d, name %s\n",
+			curfile.ino, curfile.name);
+		perror("lseek");
+		done(1);
+	}
+/*ADD*/	xtrhole = 1;
+}
+
+	Here is the program to make a file that is just a hole.
+	Incidentally, it demonstrates that itrunc() allocates fragments
+	`unnecessarily' (if there is a hole and we truncate to other
+	than a block boundary, itrunc calls bmap, which notices the
+	hole and allocates a fragment).
+
+#include <sys/types.h>
+#include <sys/stat.h>
+
+struct stat st;
+
+main(argc, argv)
+	int argc;
+	char **argv;
+{
+	char *name;
+	int fd;
+	long size, atol();
+
+	name = argc > 1 ? argv[1] : "t.hole";
+	if ((fd = creat(name, 0666)) < 0)
+		perror(name), exit(1);
+	size = argc > 2 ? atol(argv[2]) : 16384L;
+	(void) fstat(fd, &st);
+	(void) lseek(fd, size + st.st_blksize, 0);
+	(void) write(fd, "", 1);
+	(void) ftruncate(fd, size);
+	(void) fstat(fd, &st);
+	(void) printf("%s: size=%ld, blocks=%ld\n", name,
+		st.st_size, st.st_blocks);
+	exit(0);
+}

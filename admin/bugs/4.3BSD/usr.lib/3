@@ -1,0 +1,38 @@
+Return-Path: <gregc@ucsf-cgl.ARPA>
+Date: Fri, 19 Apr 85 15:27:44 PST
+From: gregc@ucsf-cgl.ARPA (Greg Couch)
+Subject: sendmail drops core
+Index: 	usr.lib/sendmail/src/envelope.c 4.3BSD
+
+Description:
+	Sendmail core dumps if queued mail has a non-existent local user as a
+	sender (e.g. postmaster) in 4.3 sendmail, 4.2 sendmail did not have
+	this bug.  getpwname returns NULL, but it isn't checked.
+
+Repeat-By:
+	startup sendmail in smtp mode (mailq -bs) and type
+	"mail from: <postmaster>" Now look in /usr/spool/mqueue where you'll
+	find a sendmail core file whose backtrace shows that it died in
+	setsender().
+
+Fix:
+	Here's the quick fix I came up with, but I think Eric might have a
+	better solution:
+
+diff  -r1.3 envelope.c
+390a391
+> 	register struct passwd *pw;
+397a399
+> 	extern struct passwd *getpwnam();
+450,454c452,453
+< 	if (CurEnv->e_from.q_mailer == LocalMailer)
+< 	{
+< 		register struct passwd *pw;
+< 		extern struct passwd *getpwnam();
+< 
+---
+> 	if (CurEnv->e_from.q_mailer == LocalMailer
+> 	&& (pw = getpwnam(CurEnv->e_from.q_user)) != NULL) {
+458,459d456
+< 
+< 		pw = getpwnam(CurEnv->e_from.q_user);

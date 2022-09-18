@@ -1,0 +1,152 @@
+From muller%sdcc7@ucsd.edu Tue Jun 28 18:39:21 1988
+Date: Tue, 28 Jun 88 18:38:52 PDT
+From: muller%sdcc7@ucsd.edu (Keith Muller)
+To: bostic@okeeffe.berkeley.edu
+Subject: mpcc bugfix #2
+
+Here is the second bugfix relative to the beta tape (the first one was
+a better fix for handling the <delete> key wedging problem.
+
+Subject: mpcc ports on CCI can wedge (fix #2)
+Index: sys/tahoevba/mp.c 4.3BSD
+
+Description:
+	Both mpopen and mpclose send two events to a mpcc port. One to
+	control the state of the modem lines and a second to cause either
+	a close or open of the line. The firmware in the mpcc can process
+	more than one event at a time with a completion order that is not
+	always dependent on the order the events are posted. Under certain
+	timing conditions related to DCD drops and rises this can cause a
+	wait on an event in mpclose or mpopen that will never occur. 
+
+	A lesser problem this also creates is the intermittant failure to
+	drop DTR when the login shell is exited and hangup on close is set
+	with no other processes with an opern file descriptor on that port.
+
+Repeat-By:
+	On a directly connected port, drop DCD while the port is transmitting
+	characters. (This is hard to repeat consistantly, but usually works
+	within 10 attempts). Attempting to log into that port will fail once
+	it is wedged. Inspect the process table and you will see a process
+	<exiting> and waiting on an event that will never occur.
+
+	The lesser problem is easily repeated. Log in and make sure hangup
+	on close is set. exit the login shell without running any process
+	(make sure no other processes have this port open). In many
+	cases (use a line monitor here or a have a dialup modem on the port) 
+	DTR will NOT drop consistantly after the shell exits.
+Fix:
+	The problem is a race condition between two events to the mpcc on a
+	single port. The modem change event sometimes only partially completes
+	before the close (or open) event completes. THis puts the port in an
+	odd state. THe fix is easy as both open and close events will change
+	the modem state as set up, so a distinct event for the modem change
+	is not needed. mpmode() was changed to set the modem state, but not
+	post the event. The context diffs follow:
+
+	Keith Muller
+	University of California, San Diego
+
+RCS file: RCS/mp.c,v
+retrieving revision 1.2
+retrieving revision 1.3
+diff -c -r1.2 -r1.3
+*** /tmp/,RCSt1011018	Sat Jun 25 11:30:55 1988
+--- /tmp/,RCSt2011018	Sat Jun 25 11:30:56 1988
+***************
+*** 198,211 ****
+  		error = ENOBUFS;
+  		goto bad;
+  	}
+  	mpcmd(ev, EVCMD_OPEN, 0, ms->ms_mb, port);
+  	while ((tp->t_state & TS_CARR_ON) == 0)
+  		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+- 	error = mpmodem(unit, MMOD_ON);
+- 	if (error)
+- 		goto bad;
+- 	while ((tp->t_state & TS_CARR_ON) == 0)
+- 		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  	error = (*linesw[tp->t_line].l_open)(dev,tp);
+  done:
+  	splx(s);
+--- 198,207 ----
+  		error = ENOBUFS;
+  		goto bad;
+  	}
++ 	mpmodem(unit, MMOD_ON);
+  	mpcmd(ev, EVCMD_OPEN, 0, ms->ms_mb, port);
+  	while ((tp->t_state & TS_CARR_ON) == 0)
+  		sleep((caddr_t)&tp->t_rawq, TTIPRI);
+  	error = (*linesw[tp->t_line].l_open)(dev,tp);
+  done:
+  	splx(s);
+***************
+*** 249,268 ****
+  	error = 0;
+  	mp->mp_flags |= MP_PROGRESS;
+  	(*linesw[tp->t_line].l_close)(tp);
+- 	if (tp->t_state & TS_HUPCLS || (tp->t_state & TS_ISOPEN) == 0) 
+- 		if (error = mpmodem(unit, MMOD_OFF)) {
+- 			mp->mp_flags &= ~MP_PROGRESS;
+- 			goto out;
+- 		}
+- 	while (tp->t_state & TS_FLUSH)			/* ??? */
+- 		sleep((caddr_t)&tp->t_state, TTOPRI);	/* ??? */
+- 	ttyclose(tp);
+  	ev = mp_getevent(mp, unit);
+  	if (ev == 0) {
+! 		 error = ENOBUFS;
+! 		 goto out;
+  	}
+  	mpcmd(ev, EVCMD_CLOSE, 0, mb, port);
+  out:
+  	if (mp->mp_flags & MP_REMBSY)
+  		mpclean(mb, port);
+--- 245,262 ----
+  	error = 0;
+  	mp->mp_flags |= MP_PROGRESS;
+  	(*linesw[tp->t_line].l_close)(tp);
+  	ev = mp_getevent(mp, unit);
+  	if (ev == 0) {
+! 		error = ENOBUFS;
+! 		mp->mp_flags &= ~MP_PROGRESS;
+! 		goto out;
+  	}
++ 	if (tp->t_state & TS_HUPCLS || (tp->t_state & TS_ISOPEN) == 0)
++ 		mpmodem(unit, MMOD_OFF);
++ 	else
++ 		mpmodem(unit, MMOD_ON);
+  	mpcmd(ev, EVCMD_CLOSE, 0, mb, port);
++ 	ttyclose(tp);
+  out:
+  	if (mp->mp_flags & MP_REMBSY)
+  		mpclean(mb, port);
+***************
+*** 656,669 ****
+  	struct mpsoftc *ms = &mp_softc[MPUNIT(unit)];
+  	int port = MPPORT(unit);
+  	register struct mpport *mp;
+- 	register struct mpevent *ev;
+  	register struct asyncparam *asp;
+  
+  	mp = &ms->ms_mb->mb_port[port];
+- 	ev = mp_getevent(mp, unit);
+- 	if (ev == 0)
+- 		return (ENOBUFS);
+- 	/* YUCK */
+  	asp = &ms->ms_async[port][mp->mp_on?mp->mp_on-1:MPINSET-1];
+  	if (flag == MMOD_ON) {
+  		if (ms->ms_softCAR & (1 << port))
+--- 650,658 ----
+***************
+*** 675,682 ****
+  		setm(&asp->ap_modem, 0, DROP);
+  		seti(&asp->ap_intena, 0);
+  	}
+- 	mpcmd(ev, EVCMD_IOCTL, A_MDMCHG, ms->ms_mb, port);
+- 	return (0);
+  }
+  
+  /*
+--- 664,669 ----
+

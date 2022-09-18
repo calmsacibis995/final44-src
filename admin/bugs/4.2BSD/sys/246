@@ -1,0 +1,65 @@
+Date: 28 Jan 84 14:27:18 PST (Sat)
+From: Tim Morgan <morgan%uci-750a@Rand-Relay>
+Return-Path: <morgan%uci-750a@Rand-Relay>
+Subject: PTY Closing problem
+
+I understand that you have a fix to the problem reported by Jeff Mogul to
+Unix-Wizards concerning pty's in 4.2bsd.  We are experiencing the same
+problem on our 4.2 system.  Jeff said that you sent him a fix for the
+problem; we would appreciate receiving the same fix as soon a possible.
+I have enclosed Jeff's description of the problem below.
+
+		Tim Morgan
+		UCI ICS Support Group
+		Reply to:		morgan%uci@rand-relay
+		*NOT*			morgan@uci
+
+--------------------------------------------------------------------------
+Index: sys 4.2BSD
+
+Description:
+	Symptom: files get trashed, with text mysteriously
+	appearing at random places in random files.  Sometimes,
+	directories become corrupted (by the way, fsck core dumps
+	if you ask it to try to fix these.)
+
+	One process is writing output to a file (usually, to a terminal
+	or pseudo-terminal).  Somewhere on the system, another process
+	opens a file (any file).  The output from the first process ends
+	up in the file opened by the second process.
+	
+	This bug is so obviously similar to the 4.1BSD mx2.c mxclose()
+	bug that it took me only a few minutes to find the superficial
+	cause: iput() is being called with an inode whose i_count is already
+	less than 1.  Thus, at some later point the inode shows up both
+	allocated and free, and gets allocated a second time.  The
+	disaster is inevitable once this occurs.
+	
+	I installed a bugcheck in iput() and quickly found that the
+	real problem is that closef() (in sys/kern_descrip.c) is
+	being called with a file argument whose f_count field is
+	already zero.  Since nobody checks that this count is positive,
+	the inode referenced by f_data is passed to iput() for a second
+	time.
+	
+	By installing another bugcheck in closef() I verified this
+	hypothesis.  However, after a week of placing debugging code
+	into parts of the kernel (and reading a lot of it) I have not
+	been able to find where the reference count is going wrong.
+	Two possible theories are:
+	
+	(1)	Something is copying a struct file * but is not bumping
+	the reference count
+	(2)	There's a race going on somewhere.
+	
+	Theory #2 had some initial support from a possible bug between
+	closef() and ino_close().  Both set f_count to zero, and ino_close
+	may block (if I've understood things) between the point where
+	it zeros the count and the point where closef() zeros the count.
+	If another process allocates the (now apparently free) file
+	in the interim, the potential for disaster is obvious.  However,
+	in spite of a few traps I set this race is not leaving the traces
+	I would have expected.
+	
+	Even so, this looks like it might be a bug in certain circumstances.
+	the line in ino_close() that sets the count to 0 is crypticly

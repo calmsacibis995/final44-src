@@ -1,0 +1,75 @@
+Return-Path: <richl@daemon>
+From: Rick Lindsley <richl%daemon%tektronix.csnet@csnet-relay.arpa>
+To: 4bsd-bugs@BERKELEY
+Date: Tuesday, 22 Jan 85 14:58:36 PST
+Subject: crypt can get confused when in pipes
+Index: usr.bin/crypt.c 4.2BSD
+
+Description:
+	When crypt was included in a complex arrangement of pipes and
+	processes, it failed to work, saying "crypt: cannot generate key".
+	Of course it worked fine when alone.
+
+Repeat-By:
+	Here are the contents of a shell script "shscript". I've simplified
+	it somewhat to the point where the bug is still apparent, so don't
+	look at it and say "but WHY would anyone want to do that??"
+
+	#! /bin/sh
+	case $1 in
+	-e) cat | crypt ;;
+
+	-d) cat | cat | crypt ;;
+	esac
+	exit 0
+
+	---
+	(What's interesting is that the two cats are needed to demonstrate
+	this bug.)
+
+	% echo JJJ DDD ooo | crypt > test.out
+	Enter key:foo
+	% cat test.out | shscript -d
+	Enter key:foo
+	crypt: cannot generate key.
+	%
+
+Fix:
+    Crypt was writing to a pipe that it was using as a full duplex
+    communication channel to another process. This is kind of unreliable,
+    because if the timing is wrong one can read their own data back out of
+    the pipe before the intended process can receive it. Crypt got around
+    this by doing a wait() on the receiving process to wait for it to die
+    (thus it MUST have read the data) but it never checked the pid returned
+    -- and when something else in a complicated pipe arrangement exited first
+    the above scenario took place.
+
+    I'm not sure why crypt inherited another process in the first place...I
+    think something else may smell a bit here, too, especially when one
+    considers the contrivance one must go through to make this bug apparent.
+
+    The elegant fix would be to have crypt use two pipes, one each for
+    stdin and stdout and use them as half-duplex communication lines. But,
+    another option which takes less effort is to have crypt wait() in a
+    loop, checking the pid it got against the one it was looking for. That
+    way it REALLY knows when makekey is dead. The latter choice is the one
+    I implemented, by virtue of the fact that it is easier.
+
+    Line numbers will doubtless be different due to headers, but it shouldn't
+    be too confusing.
+
+    22a29
+    > 	int pid,wpid;
+    32c39
+    < 	if (fork()==0) {
+    ---
+    > 	if ((pid=fork())==0) {
+    42c49,50
+    < 	wait((int *)NULL);
+    ---
+    > 	while ((wpid = wait((int *)NULL)) != -1 && wpid != pid)
+    > 	    ;
+
+Rick Lindsley
+richl@tektronix.csnet
+...!{decvax,ihnp4,allegra,ucbvax}!tektronix!richl

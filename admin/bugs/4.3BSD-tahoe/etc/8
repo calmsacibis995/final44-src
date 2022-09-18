@@ -1,0 +1,261 @@
+From nowicki@Sun.COM Tue Nov 15 14:08:31 1988
+Date: Tue, 15 Nov 88 14:08:35 PST
+From: nowicki@Sun.COM (Bill Nowicki)
+To: bostic@okeeffe.Berkeley.EDU
+Subject: FTPD diffs
+Index: etc/ftpd 4.3BSD-tahoe
+
+Here are the major differences between our ftp daemon and the last one
+that you posted.  This is actually pretty close, here are the highlights:
+
+Instead of using a buffer of 1K, we increased the size to 8K and used
+a window of 24K.  This greatly improves throughput.
+
+If the chdir to home directory fails, use "/" instead of giving up.
+This is useful if the remote is running YP but not automounter, or
+your home directory is soft-mounted and NFS is broken (which might be
+why you are resorting to FTP).
+
+I have the "print_type" function and print the type at both begining
+and end of the connection to emphasize it.  This is, of course, taste.
+
+I find the #ifdef notdef's to make things unreadable, so I just remove
+them and use the SCCS log files to keep historical code.
+
+Someone long ago discovered a condition that could cause SIGPIPE on the
+fclose of the data connection, but the code assumed that all SIGPIPEs
+were due to the control connection.
+
+The "reply()" function needs to be converted to use varargs to run on
+the Sun-4. Same for lreply(). We also added a function called vsyslog
+that took an explicit va_list instead of the actual arguments.
+
+Now if we could just do this for the rest of the network code....
+
+	Thanks, WIN
+--------------------------------------------
+static char sccsid[] = "@(#)ftpd.c    5.16 (Berkeley) 10/30/88";
+
+
+38a42
+> #include <arpa/telnet.h>
+48d51
+< #include <varargs.h>
+89d91
+< int   socksize = 24 * 1024;   /* larger socket window size for data */
+93d94
+< char  buf[BUFSIZ*8];          /* larger buffer to speed up binary xfers */
+118d118
+<       openlog("ftpd", LOG_PID, LOG_DAEMON);
+130a131
+>       openlog("ftpd", LOG_PID, LOG_DAEMON);
+163c164
+<       if (signal(SIGURG, myoob) == BADSIG) {
+---
+>       if ((int)signal(SIGURG, myoob) < 0)
+165c166
+<       }
+---
+> 
+213a215,217
+> #ifdef notdef
+>       char *new = strdup(s);
+> #else
+215a220
+> #endif
+220a226
+> #ifndef notdef
+221a228
+> #endif
+279,283c286,288
+<               if (chdir("/")) {
+<                       reply(550, "User %s: can't change directory to %s.",
+<                               pw->pw_name, pw->pw_dir);
+<                       goto bad;
+<               }
+---
+>               reply(530, "User %s: can't change directory to %s.",
+>                       pw->pw_name, pw->pw_dir);
+>               goto bad;
+287c292
+<       wtmp = open("/var/adm/wtmp", O_WRONLY|O_APPEND);
+---
+>       wtmp = open("/usr/adm/wtmp", O_WRONLY|O_APPEND);
+311,324d315
+< /*
+<  * return a printable type string
+<  */
+< char *print_type(t)
+< {
+<       switch (t)
+<       {
+<         case TYPE_A:  return("ASCII ");
+<         case TYPE_L:
+<         case TYPE_I:  return("Binary ");
+<       }
+<       return("");
+< }
+< 
+331d321
+<       void (*oldpipe)();      /* Hold value of SIGPIPE during close */
+334c324,330
+<               fin = fopen(name, "r"), closefunc = fclose;
+---
+> #ifdef notdef
+>               /* no remote command execution -- it's a security hole */
+>               if (*name == '|')
+>                       fin = popen(name + 1, "r"), closefunc = pclose;
+>               else
+> #endif
+>                       fin = fopen(name, "r"), closefunc = fclose;
+359c355
+<               reply(226, "%sTransfer complete.", print_type(type));
+---
+>               reply(226, "Transfer complete.");
+361,366d356
+<       /*
+<        * If the transfer failed because the data connection got aborted,
+<        * then the fclose may cause a SIGPIPE trying to flush the buffers
+<        * and abort the whole session.  Ignore SIGPIPEs during the fclose.
+<        */
+<       oldpipe = signal(SIGPIPE, SIG_IGN);
+370d359
+<       signal(SIGPIPE, oldpipe);
+381a371,376
+> #ifdef notdef
+>       /* no remote command execution -- it's a security hole */
+>       if (name[0] == '|')
+>               fout = popen(&name[1], "w"), closefunc = pclose;
+>       else
+> #endif
+476,479c471,472
+<               reply(150, "%sdata connection for %s (%s,%d)%s.",
+<                    print_type(type),
+<                    name, inet_ntoa(from.sin_addr),
+<                    ntohs(from.sin_port), sizebuf);
+---
+>               reply(150, "Opening data connection for %s (%s mode)%s.",
+>                    name, type == TYPE_A ? "ascii" : "binary", sizebuf);
+483,484c476
+<               reply(125, "Using existing %sdata connection for %s%s.",
+<                   print_type(type),
+---
+>               reply(125, "Using existing data connection for %s%s.",
+501,504d492
+<       (void) setsockopt(data, SOL_SOCKET, SO_SNDBUF, (char *)&socksize, 
+<                               sizeof (socksize));
+<       (void) setsockopt(data, SOL_SOCKET, SO_RCVBUF, (char *)&socksize, 
+<                               sizeof (socksize));
+517,520c505,506
+<       reply(150, "%sdata connection for %s (%s,%d)%s.",
+<           print_type(type),
+<           name, inet_ntoa(data_dest.sin_addr),
+<           ntohs(data_dest.sin_port), sizebuf);
+---
+>       reply(150, "Opening data connection for %s (%s mode)%s.",
+>           name, type == TYPE_A ? "ascii" : "binary", sizebuf);
+525,544d510
+<  * Envelope for 'send_data_body'.  Allow data connections to fail without
+<  * terminating the daemon, but SIGPIPE is set to be ignored so that if
+<  * one occurs on the data channel we'll just catch the error return on
+<  * the write rather than causing the whole session to abort.
+<  */
+< 
+< send_data(instr, outstr)
+<       FILE *instr;            /* Data being sent */
+<       FILE *outstr;           /* Connection being transmitted upon */
+< {
+<       int value;              /* Return value from send_data_body */
+<       void (*oldpipe)();      /* Old handler for SIGPIPE */
+< 
+<       oldpipe = signal(SIGPIPE, SIG_IGN);
+<       value = send_data_body(instr, outstr);
+<       signal(SIGPIPE, oldpipe);
+<       return (value); 
+< }
+< 
+< /*
+552c518
+< send_data_body(instr, outstr)
+---
+> send_data(instr, outstr)
+556a523
+>       char buf[BUFSIZ];
+574a542,543
+>               /*      if (c == '\r')                  */
+>               /*              putc ('\0', outstr);    */
+613a583
+>       char buf[BUFSIZ];
+647a618,619
+>                       /*      if (c == '\0')                  */
+>                       /*              continue;               */
+669,670c641
+< /*VARARGS2*/
+< reply(n, s, va_alist)
+---
+> reply(n, s, p0, p1, p2, p3, p4)
+673d643
+<       va_dcl
+675d644
+<       va_list ap;
+677d645
+<       va_start(ap);
+679c647
+<       _doprnt(s, ap, stdout);
+---
+>       printf(s, p0, p1, p2, p3, p4);
+684c652
+<               vsyslog(LOG_DEBUG, s, ap);
+---
+>               syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+686d653
+<       va_end(ap);
+689,690c656
+< /*VARARGS2*/
+< lreply(n, s, va_alist)
+---
+> lreply(n, s, p0, p1, p2, p3, p4)
+693d658
+<       va_dcl
+695,697d659
+<       va_list ap;
+< 
+<       va_start(ap);
+699c661
+<       _doprnt(s, ap, stdout);
+---
+>       printf(s, p0, p1, p2, p3, p4);
+677d645
+<       va_start(ap);
+679c647
+<       _doprnt(s, ap, stdout);
+---
+>       printf(s, p0, p1, p2, p3, p4);
+684c652
+<               vsyslog(LOG_DEBUG, s, ap);
+---
+>               syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+686d653
+<       va_end(ap);
+689,690c656
+< /*VARARGS2*/
+< lreply(n, s, va_alist)
+---
+> lreply(n, s, p0, p1, p2, p3, p4)
+693d658
+<       va_dcl
+695,697d659
+<       va_list ap;
+< 
+<       va_start(ap);
+699c661
+<       _doprnt(s, ap, stdout);
+---
+>       printf(s, p0, p1, p2, p3, p4);
+704c666
+<               vsyslog(LOG_DEBUG, s, ap);
+---
+>               syslog(LOG_DEBUG, s, p0, p1, p2, p3, p4);
+706d667
+<       va_end(ap);
+

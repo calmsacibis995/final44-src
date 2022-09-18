@@ -1,0 +1,80 @@
+Return-Path: <sun!Jskud>
+From: sun!Jskud
+Date: 21 Nov 83 15:50:38 PST (Mon)
+Subject: ls too easily follows symbolic links
+Index: 	bin/ls.c 4.2BSD
+
+Description:
+	(1) ls wants to follow symbolic links if the -F flag is set
+	(2) ls wants to follow symbolic links if linked to a directory
+	(3) ls does not handle -F and -l properly
+
+Repeat-By:
+	    cd /tmp && ln -s /bin Jx
+	    ls -l  Jx will
+		lrwxr-xr-x  1 Jskud           4 Nov 21 15:28 Jx -> /bin
+	    yet ls -lF Jx will
+		long list all of /bin!
+	    and ls -lF /tmp will 
+	        drwxr-xr-x  2 bin          1024 Oct 20 14:48 Jx/
+		(that is, /Jx appears to be 1024 bytes big and a
+		directory, when it should appear to be 4 bytes long and
+		a symbolic link)
+
+Fix:
+	I have fixed these problems, with the following diffs:
+
+------- ls.c -------
+2c2
+< static	char sccsid[] = "%Z%%M% %I% %E% SMI"; /* from UCB 4.14 83/07/01 */
+---
+> static	char sccsid[] = "@(#)ls.c 1.3 83/11/21 SMI"; /* from UCB 4.14 83/07/01 */
+270c270,271
+< 	int statarg, *pnb;
+---
+> 	int statarg;
+> 	int *pnb;	/* (int *)0 if file is ISARG */
+272c273
+< 	int (*statf)() = Lflg || Fflg ? stat : lstat;
+---
+> 	int (*statf)() = Lflg ? stat : lstat;
+303a305,324
+> 					/*
+> 					 * here we follow the symbolic
+> 					 * link to generate the proper
+> 					 * Fflg marker for the object,
+> 					 * eg, /bin -> /pub/bin/
+> 					 */
+> 					if (Fflg && !stat(file, &stb1))
+> 						switch (stb1.st_mode & S_IFMT){
+> 						case S_IFDIR:
+> 							buf[cc++] = '/';
+> 							break;
+> 						case S_IFSOCK:
+> 							buf[cc++] = '=';
+> 							break;
+> 						default:
+> 						if ( (stb1.st_mode & ~S_IFMT)
+> 						    & 0111)
+> 							buf[cc++] = '*';
+> 							break;
+> 						}
+309c330,337
+< 			if (stat(file, &stb1) < 0)
+---
+> 			/*
+> 			 *  this is a hack from UCB to avoid having 
+> 			 *  ls /bin behave differently from ls /bin/
+> 			 *  when /bin is a symbolic link.  We hack the
+> 			 *  hack to have that happen, but only for
+> 			 *  explicit arguments, by inspecting pnb.
+> 			 */
+> 			if (pnb != (int *)0 || stat(file, &stb1) < 0)
+463c491,492
+< 	if (Fflg) {
+---
+> 	/* avoid both "->" and trailing marks */
+> 	if (Fflg && ! (lflg && fp->flinkto)) {
+
+
+/Jskud@sun.uucp

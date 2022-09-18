@@ -1,0 +1,261 @@
+From cfe+@transarc.com  Thu Jun  7 12:09:34 1990
+Received: from ucbarpa.Berkeley.EDU by okeeffe.Berkeley.EDU (5.63/1.41)
+	id AA15458; Thu, 7 Jun 90 12:09:34 -0700
+Received: from transarc.com by ucbarpa.Berkeley.EDU (5.63/1.41)
+	id AA05833; Thu, 7 Jun 90 12:09:31 -0700
+Received: by transarc.com (5.54/3.15) id <AA01220> for 4bsd-bugs@ucbarpa.berkeley.edu; Thu, 7 Jun 90 15:13:19 EDT
+Received: via switchmail; Thu,  7 Jun 1990 15:13:18 -0400 (EDT)
+Received: from apollo.transarc.com via qmail
+          ID </afs/transarc.com/service/mailqs/q2/QF.4aPeQlX0BwwOQ0OYVt>;
+          Thu,  7 Jun 1990 15:12:50 -0400 (EDT)
+Received: from apollo.transarc.com via qmail
+          ID </afs/transarc.com/usr/cfe/.Outgoing/QF.caPeQXX0BwwOQrNvcY>;
+          Thu,  7 Jun 90 15:12:36 -0400 (EDT)
+Received: from Messages.7.8.N.CUILIB.3.45.SNAP.NOT.LINKED.apollo.transarc.com.pmax.3
+          via MS.5.6.apollo.transarc.com.pmax_3;
+          Thu,  7 Jun 90 15:12:29 -0400 (EDT)
+Message-Id: <MaPeQRz0BwwO4rNvQJ@transarc.com>
+Date: Thu,  7 Jun 90 15:12:29 -0400 (EDT)
+From: Craig_Everhart@transarc.com
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: sendmail source patch
+In-Reply-To: <9006071728.AA15843@ernie.Berkeley.EDU>
+References: <9006071728.AA15843@ernie.Berkeley.EDU>
+
+Here's a possible sendmail bug fix.  I just sent it to Lennart Lovstrand
+also, whom I understand is responsible for ``IDA Sendmail''.
+
+The problem addressed by the fix is that if sendmail delivers to a long
+address list (in a single request) but crashes in the middle, it has no
+record of the successful deliveries that it has made so far, so when it
+eventually gets around to retrying that request, it re-delivers to all
+the addresses to which it had been able to deliver earlier.  Not only
+does this generate duplicate mail, but the re-delivery process also
+requires additional queue processing time, so that it might continue to
+take a long time even to attempt delivery to the last address in the
+list.
+
+The solution that this patch builds is simple and not very expensive:
+after every successful mail delivery, the qf* file is rewritten,
+omitting the recipient to whom delivery was successful.  The qf* file
+gets shorter even as the request is processed.  A crash in the middle of
+processing the list will result in duplicate delivery to at most one
+host.  It doesn't require that much time to rewrite the qf* file;
+certainly less time than the delivery itself takes.
+
+The only real disadvantage I can imagine is that my sendmail sources
+have diverged in many ways from a UCB version of about 1986. 
+Nonetheless, it shouldn't be difficult to install this change.
+
+As you can see, this change works by adding an additional flag parameter
+to queueup(), then calling queueup() (from sendall()) with this
+parameter set sometimes.  The queueup() flag parameter controls which
+addresses are rewritten, looking at different flags.
+
+So here's the patch.  I hope that you find it useful.  I look forward to
+your reply.
+
+		Craig Everhart
+
+----------------
+*** deliver.c.old	Mon Jan  8 10:10:24 1990
+--- deliver.c	Mon Jan  8 10:10:29 1990
+***************
+*** 1453,1459 ****
+  	char mode;
+  {
+  	register ADDRESS *q;
+! 	bool oldverbose;
+  	int pid;
+  
+  	/* determine actual delivery mode */
+--- 1453,1459 ----
+  	char mode;
+  {
+  	register ADDRESS *q;
+! 	bool oldverbose, DoingMore;
+  	int pid;
+  
+  	/* determine actual delivery mode */
+***************
+*** 1503,1509 ****
+  	if ((mode == SM_QUEUE || mode == SM_FORK ||
+  	     (mode != SM_VERIFY && SuperSafe)) &&
+  	    !bitset(EF_INQUEUE, e->e_flags))
+! 		queueup(e, TRUE, mode == SM_QUEUE);
+  #endif QUEUE
+  
+  	oldverbose = Verbose;
+--- 1503,1509 ----
+  	if ((mode == SM_QUEUE || mode == SM_FORK ||
+  	     (mode != SM_VERIFY && SuperSafe)) &&
+  	    !bitset(EF_INQUEUE, e->e_flags))
+! 		queueup(e, TRUE, mode == SM_QUEUE, FALSE);
+  #endif QUEUE
+  
+  	oldverbose = Verbose;
+***************
+*** 1547,1552 ****
+--- 1547,1553 ----
+  	**  Run through the list and send everything.
+  	*/
+  
++ 	DoingMore = FALSE;
+  	for (q = e->e_sendqueue; q != NULL; q = q->q_next)
+  	{
+  		if (mode == SM_VERIFY)
+***************
+*** 1555,1562 ****
+  			if (!bitset(QDONTSEND|QBADADDR, q->q_flags))
+  				message(Arpa_Info, "deliverable");
+  		}
+! 		else
+! 			(void) deliver(e, q);
+  	}
+  	Verbose = oldverbose;
+  
+--- 1556,1569 ----
+  			if (!bitset(QDONTSEND|QBADADDR, q->q_flags))
+  				message(Arpa_Info, "deliverable");
+  		}
+! 		else if (!bitset(QDONTSEND, q->q_flags))
+! 		{
+! 			int estat;
+! 			if (DoingMore) queueup(e, TRUE, FALSE, TRUE);
+! 			DoingMore = FALSE;
+! 			estat = deliver(e, q);	/* Queueup if any delivered */
+! 			if (estat == EX_OK) DoingMore = TRUE;
+! 		}
+  	}
+  	Verbose = oldverbose;
+  
+
+*** envelope.c.old	Mon Jan  8 10:18:06 1990
+--- envelope.c	Mon Jan  8 10:18:08 1990
+***************
+*** 147,153 ****
+  	else if (queueit || !bitset(EF_INQUEUE, e->e_flags))
+  	{
+  #ifdef QUEUE
+! 		queueup(e, FALSE, FALSE);
+  #else QUEUE
+  		syserr("dropenvelope: queueup");
+  #endif QUEUE
+--- 147,153 ----
+  	else if (queueit || !bitset(EF_INQUEUE, e->e_flags))
+  	{
+  #ifdef QUEUE
+! 		queueup(e, FALSE, FALSE, FALSE);
+  #else QUEUE
+  		syserr("dropenvelope: queueup");
+  #endif QUEUE
+
+*** queue.c.old	Mon Jan  8 10:19:05 1990
+--- queue.c	Mon Jan  8 10:19:08 1990
+***************
+*** 48,53 ****
+--- 48,57 ----
+  **		queueall -- if TRUE, queue all addresses, rather than
+  **			just those with the QQUEUEUP flag set.
+  **		announce -- if TRUE, tell when you are queueing up.
++ ** (CFE)		Checkpoint -- if TRUE, we're doing a checkpoint of a
++ **			list currently being delivered.  Write the
++ **			addresses not yet tried as well as the queued
++ **			addresses.
+  **
+  **	Returns:
+  **		none.
+***************
+*** 56,65 ****
+  **		The current request are saved in a control file.
+  */
+  
+! queueup(e, queueall, announce)
+  	register ENVELOPE *e;
+  	bool queueall;
+  	bool announce;
+  {
+  	char *tf;
+  	char *qf;
+--- 60,70 ----
+  **		The current request are saved in a control file.
+  */
+  
+! queueup(e, queueall, announce, Checkpoint)
+  	register ENVELOPE *e;
+  	bool queueall;
+  	bool announce;
++ 	bool Checkpoint;
+  {
+  	char *tf;
+  	char *qf;
+***************
+*** 139,148 ****
+  	/* output list of recipient addresses */
+  	for (q = e->e_sendqueue; q != NULL; q = q->q_next)
+  	{
+! 		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+! 			       bitset(QQUEUEUP, q->q_flags))
+  		{
+! 			if (ValidateRuleSet > 0 || q->q_user != NULL || q->q_user[0] != '\0') {
+  				fprintf(tfp, "R%s\n", q->q_user);
+  			} else {
+  				fprintf(tfp, "R%s\n", q->q_paddr);
+--- 144,165 ----
+  	/* output list of recipient addresses */
+  	for (q = e->e_sendqueue; q != NULL; q = q->q_next)
+  	{
+! 		int writeit;
+! 
+! /*		if (queueall ? !bitset(QDONTSEND, q->q_flags) :
+! 			       bitset(QQUEUEUP, q->q_flags)) */
+! 		if (Checkpoint) {	/* Just delete the already-sent addresses. */
+! 			writeit = TRUE;
+! 			if (bitset(QDONTSEND, q->q_flags)
+! 			  && !bitset(QQUEUEUP, q->q_flags)
+! 			  && !bitset(QBADADDR, q->q_flags)) writeit = FALSE;
+! 		} else if (queueall)
+! 			writeit = !bitset(QDONTSEND, q->q_flags);
+! 		else
+! 			writeit = bitset(QQUEUEUP, q->q_flags);
+! 		if (writeit)
+  		{
+! 			if (ValidateRuleSet > 0 && q->q_user != NULL && q->q_user[0] != '\0') {
+  				fprintf(tfp, "R%s\n", q->q_user);
+  			} else {
+  				fprintf(tfp, "R%s\n", q->q_paddr);
+***************
+*** 663,677 ****
+  		if (link(w->w_name, queuename(CurEnv, 'l')) < 0)
+  		{
+  			/* being processed by another queuer */
+- 			CurEnv->e_id = NULL;
+  # ifdef LOG
+  			if (LogLevel > 4)
+  /*
+  				syslog(LOG_DEBUG, "%s: locked", CurEnv->e_id);
+  */
+! 				Log(LOG_DISPLAY, "%s: locked", CurEnv->e_id);
+  
+  # endif LOG
+  			if (ForkQueueRuns)
+  				exit(EX_OK);
+  			else
+--- 680,695 ----
+  		if (link(w->w_name, queuename(CurEnv, 'l')) < 0)
+  		{
+  			/* being processed by another queuer */
+  # ifdef LOG
+  			if (LogLevel > 4)
+  /*
+  				syslog(LOG_DEBUG, "%s: locked", CurEnv->e_id);
+  */
+! 				Log(LOG_DISPLAY, "%s: locked (%d)", CurEnv->e_id,
+! 					errno);
+  
+  # endif LOG
++ 			CurEnv->e_id = NULL;
+  			if (ForkQueueRuns)
+  				exit(EX_OK);
+  			else
+----------------

@@ -1,0 +1,173 @@
+Date: Fri, 9 Aug 85 16:20:38 PDT
+From: jsq@MONET.BERKELEY (John Quarterman)
+Subject: Multiple UUCP logins cause security problem for ftpd.
+Index: 	etc/ftpd/{ftpcmds.y,ftpd.c} 4.3BSD
+
+Description:
+	Many machines with UUCP connections have a separate login name per
+	connection, all with the same numerical user ID.  The system
+	administrator may not remember to name all such logins in
+	/etc/ftpusers.  Someone may then login through ftp using such
+	an omitted login and modify UUCP parameters, such as L.cmds.
+Repeat-By:
+	Make a login with the same uid as uucp but a different name.
+	Log in as that name through ftp.  Try modifying /usr/lib/uucp/L.cmds.
+Fix:
+	Add another parameter file, /etc/ftpshells, which contains a list
+	of login shells.  Make ftpd not permit login by any user whose
+	login shell is not in that list.  If /etc/ftpshells does not exist,
+	permit logins by users with any shell.  This solution has been in
+	use for a year tomorrow on ut-sally.
+
+	One could also build the list of shells into ftpd.  I think seismo
+	does it that way.
+
+: This is a shar archive.  Extract with sh, not csh.
+echo x - ftpshells
+sed -e 's/^X//' > ftpshells << '!RoNnIe!RaYgUn!'
+X
+X/bin/csh
+X/bin/oldcsh
+X/usr/new/csh
+!RoNnIe!RaYgUn!
+echo x - ftpd.8c.diff-c
+sed -e 's/^X//' > ftpd.8c.diff-c << '!RoNnIe!RaYgUn!'
+X*** ftpd.8c.4.2BSD	Wed Aug  7 11:00:04 1985
+X--- ftpd.8c	Wed Jul 25 10:27:47 1984
+X***************
+X*** 97,103
+X  may be performed.
+X  .IP 2)
+X  The user name must not appear in the file
+X! .IR /etc/ftpusers .
+X  .IP 3)
+X  If the user name is ``anonymous'' or ``ftp'', an
+X  anonymous ftp account must be present in the password
+X
+X--- 97,106 -----
+X  may be performed.
+X  .IP 2)
+X  The user name must not appear in the file
+X! .IR /etc/ftpusers ,
+X! and if
+X! .IR /etc/ftpshells
+X! exists, the user's regular login shell must be named in that file.
+X  .IP 3)
+X  If the user name is ``anonymous'' or ``ftp'', an
+X  anonymous ftp account must be present in the password
+!RoNnIe!RaYgUn!
+echo x - ftpcmd.y.diff-c
+sed -e 's/^X//' > ftpcmd.y.diff-c << '!RoNnIe!RaYgUn!'
+X*** ftpcmd.y.4.2BSD	Wed Aug  7 10:29:08 1985
+X--- ftpcmd.y	Wed Jul 25 09:52:57 1984
+X***************
+X*** 81,86
+X  			} else if (checkuser($3)) {
+X  				guest = 0;
+X  				pw = getpwnam($3);
+X  				reply(331, "Password required for %s.", $3);
+X  			}
+X  			if (pw == NULL)
+X
+X--- 81,89 -----
+X  			} else if (checkuser($3)) {
+X  				guest = 0;
+X  				pw = getpwnam($3);
+X+ 				if (!checkshell(pw->pw_shell))
+X+ 					pw = NULL;
+X+ 				else
+X  				reply(331, "Password required for %s.", $3);
+X  			}
+X  			if (pw == NULL)
+!RoNnIe!RaYgUn!
+echo x - ftpd.c.diff-c
+sed -e 's/^X//' > ftpd.c.diff-c << '!RoNnIe!RaYgUn!'
+X*** ftpd.c.4.2BSD	Wed Aug  7 10:25:46 1985
+X--- ftpd.c	Wed Aug  8 21:32:45 1984
+X***************
+X*** 30,35
+X   * Commonly used to disallow uucp.
+X   */
+X  #define	FTPUSERS	"/etc/ftpusers"
+X  
+X  extern	int errno;
+X  extern	char *sys_errlist[];
+X
+X--- 30,41 -----
+X   * Commonly used to disallow uucp.
+X   */
+X  #define	FTPUSERS	"/etc/ftpusers"
+X+ /*
+X+  * File containing a list of shells PERMITTED in /etc/passwd entries.
+X+  * Useful when there is a different uucp login per UUCP link, as it
+X+  * doesn't require /etc/ftpusers to be updated for each.
+X+  */ 
+X+ #define FTPSHELLS	"/etc/ftpshells"
+X  
+X  extern	int errno;
+X  extern	char *sys_errlist[];
+X***************
+X*** 867,873
+X  }
+X  
+X  /*
+X!  * Check user requesting login priviledges.
+X   * Disallow anyone mentioned in the file FTPUSERS
+X   * to allow people such as uucp to be avoided.
+X   */
+X
+X--- 894,900 -----
+X  }
+X  
+X  /*
+X!  * Check user requesting login privileges.
+X   * Disallow anyone mentioned in the file FTPUSERS
+X   * to allow people such as uucp to be avoided.
+X   */
+X***************
+X*** 893,896
+X  	}
+X  	fclose(fd);
+X  	return (!found);
+X  }
+X
+X--- 920,951 -----
+X  	}
+X  	fclose(fd);
+X  	return (!found);
+X+ }
+X+ 
+X+ /*
+X+  * Check user requesting login privileges.
+X+  * Allow only shells mentioned in FTPSHELLS.
+X+  */
+X+ checkshell(shell)
+X+ 	register char *shell;
+X+ {
+X+ 	char line[BUFSIZ], *index();
+X+ 	FILE *fd;
+X+ 	int found = 0;
+X+ 
+X+ 	fd = fopen(FTPSHELLS, "r");
+X+ 	if (fd == NULL)
+X+ 		return (1);
+X+ 	while (fgets(line, sizeof (line), fd) != NULL) {
+X+ 		register char *cp = index(line, '\n');
+X+ 
+X+ 		if (cp)
+X+ 			*cp = '\0';
+X+ 		if (strcmp(line, shell) == 0) {
+X+ 			found++;
+X+ 			break;
+X+ 		}
+X+ 	}
+X+ 	fclose(fd);
+X+ 	return (found);
+X  }
+!RoNnIe!RaYgUn!
+exit
+
+>>>>> Comment <<<<<
+
+Fixed, by requiring that the login have one of the shells returned
+by getusershell().  For more info, see checkuser() in ftpd.c.

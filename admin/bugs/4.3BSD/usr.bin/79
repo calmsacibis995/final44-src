@@ -1,0 +1,142 @@
+Path: seismo!columbia!rutgers!ames!amdcad!amd!intelca!mipos3!omepd!intelisc!littlei!ogcvax!pase
+From: pase@ogcvax.UUCP (Douglas M. Pase)
+Newsgroups: comp.lang.c,comp.bugs.4bsd
+Subject: lint bug fix needed
+Index: usr.bin/lint 4.3BSD
+
+I have been having a problem with lint, and I would like to know if there is
+a "fix" for it.  The problem, briefly, is that lint fails to notice that the
+argument to the function bis_empty (line 21) is of a different type than its
+formal parameter (line 26).  However, if any one of lines 3, 4, 8, 9, 10, or
+11 are deleted, it does recognize the inconsistency as it should.
+
+I have included a script file which illustrates what I discribe.   `lint1.c'
+shows the bug, `lint2.c' shows the correct behavior.
+
+Please send me your responses via e-mail as I don't usually follow either of
+these groups - (...ucbvax!tektronix!ogcvax!pase  or  pase@Oregon-Grad.csnet)
+
+Script started on Thu Jul 30 16:31:30 1987
+[101] num lint1.c
+     1	struct s_bstack {
+     2		int top;
+     3		int limit;
+     4		long block[1];
+     5	};
+     6	
+     7	struct s_symtab {
+     8		short node;
+     9		short task;
+    10		short offset;
+    11		struct s_predicate *p;
+    12	};
+    13	
+    14	struct s_strategy {
+    15		struct s_symtab symlist[16];
+    16	};
+    17	
+    18	bind_unif_mgu(eval)
+    19	struct s_strategy *eval;
+    20	{
+    21		if (! bis_empty(eval->symlist))
+    22			;
+    23	}
+    24	
+    25	bis_empty(stack)
+    26	struct s_bstack *stack;
+    27	{
+    28		return(stack->top <= 0);
+    29	}
+[102] lint lint1.c
+lint1.c:
+bind_unif_mgu defined( lint1.c(20) ), but never used
+[103] num lint2.c
+     1	struct s_bstack {
+     2		int top;
+     3		int limit;
+     4	};
+     5	
+     6	struct s_symtab {
+     7		short node;
+     8		short task;
+     9		short offset;
+    10		struct s_predicate *p;
+    11	};
+    12	
+    13	struct s_strategy {
+    14		struct s_symtab symlist[16];
+    15	};
+    16	
+    17	bind_unif_mgu(eval)
+    18	struct s_strategy *eval;
+    19	{
+    20		if (! bis_empty(eval->symlist))
+    21			;
+    22	}
+    23	
+    24	bis_empty(stack)
+    25	struct s_bstack *stack;
+    26	{
+    27		return(stack->top <= 0);
+    28	}
+[104] lint lint2.c
+lint2.c:
+bis_empty, arg. 1 used inconsistently	lint2.c(26)  ::  lint2.c(20)
+bind_unif_mgu defined( lint2.c(19) ), but never used
+[105] diff lint1.c lint2.c
+4d3
+< 	long block[1];
+[106] exit
+[107] 
+script done on Thu Jul 30 16:33:58 1987
+
+Thank you for any help you can give me.
+--
+Doug Pase   --   ...ucbvax!tektronix!ogcvax!pase  or  pase@Oregon-Grad.csnet
+----------------------------------------------------------------------
+
+Subject: Re: lint bug fix needed
+I have been able to trace this down further by following the hunch of a
+colleague.  It seems the problem is that lint considers structures of the
+same size to be the same structures, even when they are not.
+
+In the example below, I experimented with several different sizes for the
+structures `s_bstack' and `s_symtab', and lint proclaimed the argument usage
+to be inconsistent whenever the sizes were different.  It failed to mention any
+inconsistency whenever the sizes were the same, even when it was because of
+padding in the field allocation to allign pointers (doubles, floats, whatever)
+on certain boundaries (e.g. allocating 4 bytes for a `short').
+
+Question:  Is this considered a "bug" or a "feature"?  If it's a bug, is there
+a fix?  If it's a "feature", someone should be shot!
+
+Script started on Fri Jul 31 17:15:13 1987
+[101] num lint4.c
+     1  struct s_bstack {
+     2          char top;
+     3  };
+     4  
+     5  struct s_symtab {
+     6          char node;
+     7  };
+     8  
+     9  bind_unif_mgu(eval)
+    10  struct s_symtab *eval;
+    11  {
+    12          if (! bis_empty(eval))
+    13                  ;
+    14  }
+    15  
+    16  bis_empty(stack)
+    17  struct s_bstack *stack;
+    18  {
+    19          return(stack->top <= 0);
+    20  }
+[102] lint lint4.c
+lint4.c:
+bind_unif_mgu defined( lint4.c(11) ), but never used
+[103] exit
+script done on Fri Jul 31 17:17:17 1987
+
+--
+Doug Pase   --   ...ucbvax!tektronix!ogcvax!pase  or  pase@Oregon-Grad.csnet

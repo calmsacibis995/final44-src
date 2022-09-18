@@ -1,0 +1,47 @@
+Bug fix for Liszt v8.01 (and earlier versions)
+Fix #: z8.1
+File affected: liszt/funb.l  (liszt/cadr.l in earlier versions of Liszt)
+Author: dan.hoey@cmu-780G@cmu-10a
+
+This would not compile correctly:
+	(defun p9 nil
+	    (> (or nil 9) 0))
+
+The problem was in the cc-eq function: g-trueop and g-falseop were not
+reset to their standard values before d-exp was called.  Here is
+cc-eq now (with the four added lines marked by ;*;) :
+
+(defun cc-eq nil
+  (let ((arg1 (cadr v-form))
+	(arg2 (caddr v-form))
+	arg1loc
+	arg2loc)
+       (If (setq arg2loc (d-simple arg2))
+	   then (If (setq arg1loc (d-simple arg1))
+		    then ; eq <simple> <simple>
+			 (d-cmp arg1loc arg2loc)
+		    else ; eq <nonsimple> <simple>
+			 (let ((g-loc 'reg)	; put <nonsimple> in r0
+			       (g-trueop 'jneq) ;*; must rebind because
+			       (g-falseop 'jeql);*; cc->& may have modified
+			       g-cc
+			       g-ret)
+			      (d-exp arg1))
+			 (d-cmp 'reg arg2loc))
+	   else ; since second is nonsimple, must stack first
+		; arg out of harms way
+		(let ((g-loc 'stack)
+		      (g-trueop 'jneq) ;*; must rebind because
+		      (g-falseop 'jeql);*;  cc->& may have modified
+		      g-cc
+		      g-ret)
+		     (d-exp arg1)
+		     (Push g-locs nil)
+		     (incr g-loccnt)
+		     (setq g-loc 'reg)		; second arg to r0
+		     (d-exp arg2))
+		(d-cmp 'unstack 'reg)
+		(setq g-locs (cdr g-locs))
+		(decr g-loccnt)))
+
+  (d-invert))

@@ -1,0 +1,2951 @@
+Subject: (inet 4 of 4) updated IP/TCP and XNS sources for 4.3BSD
+Index: sys 4.3BSD
+
+Description:
+	This is number 5 of 11 total articles posted to the newsgroup
+	comp.bugs.4bsd.ucb-fixes.  This archive is number 4 of the 4
+	articles that make up the inet posting.
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	netinet
+#	netinet/ip.h
+#	netinet/ip_icmp.c
+#	netinet/ip_icmp.h
+#	netinet/ip_input.c
+#	netinet/ip_output.c
+#	netinet/ip_var.h
+#	netinet/raw_ip.c
+#	netinet/udp.h
+#	netinet/udp_usrreq.c
+#	netinet/udp_var.h
+#
+echo c - netinet
+mkdir netinet > /dev/null 2>&1
+echo x - netinet/ip.h
+sed 's/^X//' >netinet/ip.h << 'END-of-netinet/ip.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip.h	7.6.1.1 (Berkeley) 3/15/88
+X */
+X#ifndef BYTE_ORDER
+X/*
+X * Definitions for byte order,
+X * according to byte significance from low address to high.
+X */
+X#define	LITTLE_ENDIAN	1234	/* least-significant byte first (vax) */
+X#define	BIG_ENDIAN	4321	/* most-significant byte first (IBM, net) */
+X#define	PDP_ENDIAN	3412	/* LSB first in word, MSW first in long (pdp) */
+X
+X#ifdef vax
+X#define	BYTE_ORDER	LITTLE_ENDIAN
+X#else
+X#define	BYTE_ORDER	BIG_ENDIAN	/* mc68000, tahoe, most others */
+X#endif
+X#endif BYTE_ORDER
+X
+X/*
+X * Definitions for internet protocol version 4.
+X * Per RFC 791, September 1981.
+X */
+X#define	IPVERSION	4
+X
+X/*
+X * Structure of an internet header, naked of options.
+X *
+X * We declare ip_len and ip_off to be short, rather than u_short
+X * pragmatically since otherwise unsigned comparisons can result
+X * against negative integers quite easily, and fail in subtle ways.
+X */
+Xstruct ip {
+X#if BYTE_ORDER == LITTLE_ENDIAN 
+X	u_char	ip_hl:4,		/* header length */
+X		ip_v:4;			/* version */
+X#endif
+X#if BYTE_ORDER == BIG_ENDIAN 
+X	u_char	ip_v:4,			/* version */
+X		ip_hl:4;		/* header length */
+X#endif
+X	u_char	ip_tos;			/* type of service */
+X	short	ip_len;			/* total length */
+X	u_short	ip_id;			/* identification */
+X	short	ip_off;			/* fragment offset field */
+X#define	IP_DF 0x4000			/* dont fragment flag */
+X#define	IP_MF 0x2000			/* more fragments flag */
+X	u_char	ip_ttl;			/* time to live */
+X	u_char	ip_p;			/* protocol */
+X	u_short	ip_sum;			/* checksum */
+X	struct	in_addr ip_src,ip_dst;	/* source and dest address */
+X};
+X
+X#define	IP_MAXPACKET	65535		/* maximum packet size */
+X
+X/*
+X * Definitions for options.
+X */
+X#define	IPOPT_COPIED(o)		((o)&0x80)
+X#define	IPOPT_CLASS(o)		((o)&0x60)
+X#define	IPOPT_NUMBER(o)		((o)&0x1f)
+X
+X#define	IPOPT_CONTROL		0x00
+X#define	IPOPT_RESERVED1		0x20
+X#define	IPOPT_DEBMEAS		0x40
+X#define	IPOPT_RESERVED2		0x60
+X
+X#define	IPOPT_EOL		0		/* end of option list */
+X#define	IPOPT_NOP		1		/* no operation */
+X
+X#define	IPOPT_RR		7		/* record packet route */
+X#define	IPOPT_TS		68		/* timestamp */
+X#define	IPOPT_SECURITY		130		/* provide s,c,h,tcc */
+X#define	IPOPT_LSRR		131		/* loose source route */
+X#define	IPOPT_SATID		136		/* satnet id */
+X#define	IPOPT_SSRR		137		/* strict source route */
+X
+X/*
+X * Offsets to fields in options other than EOL and NOP.
+X */
+X#define	IPOPT_OPTVAL		0		/* option ID */
+X#define	IPOPT_OLEN		1		/* option length */
+X#define IPOPT_OFFSET		2		/* offset within option */
+X#define	IPOPT_MINOFF		4		/* min value of above */
+X
+X/*
+X * Time stamp option structure.
+X */
+Xstruct	ip_timestamp {
+X	u_char	ipt_code;		/* IPOPT_TS */
+X	u_char	ipt_len;		/* size of structure (variable) */
+X	u_char	ipt_ptr;		/* index of current entry */
+X#if BYTE_ORDER == LITTLE_ENDIAN 
+X	u_char	ipt_flg:4,		/* flags, see below */
+X		ipt_oflw:4;		/* overflow counter */
+X#endif
+X#if BYTE_ORDER == BIG_ENDIAN 
+X	u_char	ipt_oflw:4,		/* overflow counter */
+X		ipt_flg:4;		/* flags, see below */
+X#endif
+X	union ipt_timestamp {
+X		n_long	ipt_time[1];
+X		struct	ipt_ta {
+X			struct in_addr ipt_addr;
+X			n_long ipt_time;
+X		} ipt_ta[1];
+X	} ipt_timestamp;
+X};
+X
+X/* flag bits for ipt_flg */
+X#define	IPOPT_TS_TSONLY		0		/* timestamps only */
+X#define	IPOPT_TS_TSANDADDR	1		/* timestamps and addresses */
+X#define	IPOPT_TS_PRESPEC	2		/* specified modules only */
+X
+X/* bits for security (not byte swapped) */
+X#define	IPOPT_SECUR_UNCLASS	0x0000
+X#define	IPOPT_SECUR_CONFID	0xf135
+X#define	IPOPT_SECUR_EFTO	0x789a
+X#define	IPOPT_SECUR_MMMM	0xbc4d
+X#define	IPOPT_SECUR_RESTR	0xaf13
+X#define	IPOPT_SECUR_SECRET	0xd788
+X#define	IPOPT_SECUR_TOPSECRET	0x6bc5
+X
+X/*
+X * Internet implementation parameters.
+X */
+X#define	MAXTTL		255		/* maximum time to live (seconds) */
+X#define	IPFRAGTTL	60		/* time to live for frags, slowhz */
+X#define	IPTTLDEC	1		/* subtracted when forwarding */
+X
+X#define	IP_MSS		576		/* default maximum segment size */
+END-of-netinet/ip.h
+echo x - netinet/ip_icmp.c
+sed 's/^X//' >netinet/ip_icmp.c << 'END-of-netinet/ip_icmp.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip_icmp.c	7.7 (Berkeley) 12/7/87
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "time.h"
+X#include "kernel.h"
+X
+X#include "../net/route.h"
+X#include "../net/if.h"
+X
+X#include "in.h"
+X#include "in_systm.h"
+X#include "in_var.h"
+X#include "ip.h"
+X#include "ip_icmp.h"
+X#include "icmp_var.h"
+X
+X#ifdef ICMPPRINTFS
+X/*
+X * ICMP routines: error generation, receive packet processing, and
+X * routines to turnaround packets back to the originator, and
+X * host table maintenance routines.
+X */
+Xint	icmpprintfs = 0;
+X#endif
+X
+X/*
+X * Generate an error packet of type error
+X * in response to bad packet ip.
+X */
+X/*VARARGS4*/
+Xicmp_error(oip, type, code, ifp, dest)
+X	struct ip *oip;
+X	int type, code;
+X	struct ifnet *ifp;
+X	struct in_addr dest;
+X{
+X	register unsigned oiplen = oip->ip_hl << 2;
+X	register struct icmp *icp;
+X	struct mbuf *m;
+X	struct ip *nip;
+X	unsigned icmplen;
+X
+X#ifdef ICMPPRINTFS
+X	if (icmpprintfs)
+X		printf("icmp_error(%x, %d, %d)\n", oip, type, code);
+X#endif
+X	if (type != ICMP_REDIRECT)
+X		icmpstat.icps_error++;
+X	/*
+X	 * Don't send error if not the first fragment of message.
+X	 * Don't error if the old packet protocol was ICMP
+X	 * error message, only known informational types.
+X	 */
+X	if (oip->ip_off &~ (IP_MF|IP_DF))
+X		goto free;
+X	if (oip->ip_p == IPPROTO_ICMP && type != ICMP_REDIRECT &&
+X	  !ICMP_INFOTYPE(((struct icmp *)((caddr_t)oip + oiplen))->icmp_type)) {
+X		icmpstat.icps_oldicmp++;
+X		goto free;
+X	}
+X
+X	/*
+X	 * First, formulate icmp message
+X	 */
+X	m = m_get(M_DONTWAIT, MT_HEADER);
+X	if (m == NULL)
+X		goto free;
+X	icmplen = oiplen + MIN(8, oip->ip_len);
+X	m->m_len = icmplen + ICMP_MINLEN;
+X	m->m_off = MMAXOFF - m->m_len;
+X	icp = mtod(m, struct icmp *);
+X	if ((u_int)type > ICMP_MAXTYPE)
+X		panic("icmp_error");
+X	icmpstat.icps_outhist[type]++;
+X	icp->icmp_type = type;
+X	if (type == ICMP_REDIRECT)
+X		icp->icmp_gwaddr = dest;
+X	else
+X		icp->icmp_void = 0;
+X	if (type == ICMP_PARAMPROB) {
+X		icp->icmp_pptr = code;
+X		code = 0;
+X	}
+X	icp->icmp_code = code;
+X	bcopy((caddr_t)oip, (caddr_t)&icp->icmp_ip, icmplen);
+X	nip = &icp->icmp_ip;
+X	nip->ip_len += oiplen;
+X	nip->ip_len = htons((u_short)nip->ip_len);
+X
+X	/*
+X	 * Now, copy old ip header in front of icmp message.
+X	 */
+X	if (m->m_len + oiplen > MLEN)
+X		oiplen = sizeof(struct ip);
+X	if (m->m_len + oiplen > MLEN)
+X		panic("icmp len");
+X	m->m_off -= oiplen;
+X	m->m_len += oiplen;
+X	nip = mtod(m, struct ip *);
+X	bcopy((caddr_t)oip, (caddr_t)nip, oiplen);
+X	nip->ip_len = m->m_len;
+X	nip->ip_p = IPPROTO_ICMP;
+X	icmp_reflect(nip, ifp);
+X
+Xfree:
+X	m_freem(dtom(oip));
+X}
+X
+Xstatic struct sockproto icmproto = { AF_INET, IPPROTO_ICMP };
+Xstatic struct sockaddr_in icmpsrc = { AF_INET };
+Xstatic struct sockaddr_in icmpdst = { AF_INET };
+Xstatic struct sockaddr_in icmpgw = { AF_INET };
+Xstruct in_ifaddr *ifptoia();
+X
+X/*
+X * Process a received ICMP message.
+X */
+Xicmp_input(m, ifp)
+X	register struct mbuf *m;
+X	struct ifnet *ifp;
+X{
+X	register struct icmp *icp;
+X	register struct ip *ip = mtod(m, struct ip *);
+X	int icmplen = ip->ip_len, hlen = ip->ip_hl << 2;
+X	register int i;
+X	struct in_ifaddr *ia;
+X	int (*ctlfunc)(), code;
+X	extern u_char ip_protox[];
+X	extern struct in_addr in_makeaddr();
+X
+X	/*
+X	 * Locate icmp structure in mbuf, and check
+X	 * that not corrupted and of at least minimum length.
+X	 */
+X#ifdef ICMPPRINTFS
+X	if (icmpprintfs)
+X		printf("icmp_input from %x, len %d\n", ip->ip_src, icmplen);
+X#endif
+X	if (icmplen < ICMP_MINLEN) {
+X		icmpstat.icps_tooshort++;
+X		goto free;
+X	}
+X	i = hlen + MIN(icmplen, ICMP_ADVLENMIN);
+X 	if ((m->m_off > MMAXOFF || m->m_len < i) &&
+X 		(m = m_pullup(m, i)) == 0)  {
+X		icmpstat.icps_tooshort++;
+X		return;
+X	}
+X 	ip = mtod(m, struct ip *);
+X	m->m_len -= hlen;
+X	m->m_off += hlen;
+X	icp = mtod(m, struct icmp *);
+X	if (in_cksum(m, icmplen)) {
+X		icmpstat.icps_checksum++;
+X		goto free;
+X	}
+X	m->m_len += hlen;
+X	m->m_off -= hlen;
+X
+X#ifdef ICMPPRINTFS
+X	/*
+X	 * Message type specific processing.
+X	 */
+X	if (icmpprintfs)
+X		printf("icmp_input, type %d code %d\n", icp->icmp_type,
+X		    icp->icmp_code);
+X#endif
+X	if (icp->icmp_type > ICMP_MAXTYPE)
+X		goto raw;
+X	icmpstat.icps_inhist[icp->icmp_type]++;
+X	code = icp->icmp_code;
+X	switch (icp->icmp_type) {
+X
+X	case ICMP_UNREACH:
+X		if (code > 5)
+X			goto badcode;
+X		code += PRC_UNREACH_NET;
+X		goto deliver;
+X
+X	case ICMP_TIMXCEED:
+X		if (code > 1)
+X			goto badcode;
+X		code += PRC_TIMXCEED_INTRANS;
+X		goto deliver;
+X
+X	case ICMP_PARAMPROB:
+X		if (code)
+X			goto badcode;
+X		code = PRC_PARAMPROB;
+X		goto deliver;
+X
+X	case ICMP_SOURCEQUENCH:
+X		if (code)
+X			goto badcode;
+X		code = PRC_QUENCH;
+X	deliver:
+X		/*
+X		 * Problem with datagram; advise higher level routines.
+X		 */
+X		icp->icmp_ip.ip_len = ntohs((u_short)icp->icmp_ip.ip_len);
+X		if (icmplen < ICMP_ADVLENMIN || icmplen < ICMP_ADVLEN(icp)) {
+X			icmpstat.icps_badlen++;
+X			goto free;
+X		}
+X#ifdef ICMPPRINTFS
+X		if (icmpprintfs)
+X			printf("deliver to protocol %d\n", icp->icmp_ip.ip_p);
+X#endif
+X		icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
+X		if (ctlfunc = inetsw[ip_protox[icp->icmp_ip.ip_p]].pr_ctlinput)
+X			(*ctlfunc)(code, (struct sockaddr *)&icmpsrc);
+X		break;
+X
+X	badcode:
+X		icmpstat.icps_badcode++;
+X		break;
+X
+X	case ICMP_ECHO:
+X		icp->icmp_type = ICMP_ECHOREPLY;
+X		goto reflect;
+X
+X	case ICMP_TSTAMP:
+X		if (icmplen < ICMP_TSLEN) {
+X			icmpstat.icps_badlen++;
+X			break;
+X		}
+X		icp->icmp_type = ICMP_TSTAMPREPLY;
+X		icp->icmp_rtime = iptime();
+X		icp->icmp_ttime = icp->icmp_rtime;	/* bogus, do later! */
+X		goto reflect;
+X		
+X	case ICMP_IREQ:
+X#define	satosin(sa)	((struct sockaddr_in *)(sa))
+X		if (in_netof(ip->ip_src) == 0 && (ia = ifptoia(ifp)))
+X			ip->ip_src = in_makeaddr(in_netof(IA_SIN(ia)->sin_addr),
+X			    in_lnaof(ip->ip_src));
+X		icp->icmp_type = ICMP_IREQREPLY;
+X		goto reflect;
+X
+X	case ICMP_MASKREQ:
+X		if (icmplen < ICMP_MASKLEN || (ia = ifptoia(ifp)) == 0)
+X			break;
+X		icp->icmp_type = ICMP_MASKREPLY;
+X		icp->icmp_mask = htonl(ia->ia_subnetmask);
+X		if (ip->ip_src.s_addr == 0) {
+X			if (ia->ia_ifp->if_flags & IFF_BROADCAST)
+X			    ip->ip_src = satosin(&ia->ia_broadaddr)->sin_addr;
+X			else if (ia->ia_ifp->if_flags & IFF_POINTOPOINT)
+X			    ip->ip_src = satosin(&ia->ia_dstaddr)->sin_addr;
+X		}
+Xreflect:
+X		ip->ip_len += hlen;	/* since ip_input deducts this */
+X		icmpstat.icps_reflect++;
+X		icmpstat.icps_outhist[icp->icmp_type]++;
+X		icmp_reflect(ip, ifp);
+X		return;
+X
+X	case ICMP_REDIRECT:
+X		if (icmplen < ICMP_ADVLENMIN || icmplen < ICMP_ADVLEN(icp)) {
+X			icmpstat.icps_badlen++;
+X			break;
+X		}
+X		/*
+X		 * Short circuit routing redirects to force
+X		 * immediate change in the kernel's routing
+X		 * tables.  The message is also handed to anyone
+X		 * listening on a raw socket (e.g. the routing
+X		 * daemon for use in updating its tables).
+X		 */
+X		icmpgw.sin_addr = ip->ip_src;
+X		icmpdst.sin_addr = icp->icmp_gwaddr;
+X#ifdef	ICMPPRINTFS
+X		if (icmpprintfs)
+X			printf("redirect dst %x to %x\n", icp->icmp_ip.ip_dst,
+X				icp->icmp_gwaddr);
+X#endif
+X		if (code == ICMP_REDIRECT_NET || code == ICMP_REDIRECT_TOSNET) {
+X			icmpsrc.sin_addr =
+X			 in_makeaddr(in_netof(icp->icmp_ip.ip_dst), INADDR_ANY);
+X			rtredirect((struct sockaddr *)&icmpsrc,
+X			  (struct sockaddr *)&icmpdst, RTF_GATEWAY,
+X			  (struct sockaddr *)&icmpgw);
+X			icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
+X			pfctlinput(PRC_REDIRECT_NET,
+X			  (struct sockaddr *)&icmpsrc);
+X		} else {
+X			icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
+X			rtredirect((struct sockaddr *)&icmpsrc,
+X			  (struct sockaddr *)&icmpdst, RTF_GATEWAY | RTF_HOST,
+X			  (struct sockaddr *)&icmpgw);
+X			pfctlinput(PRC_REDIRECT_HOST,
+X			  (struct sockaddr *)&icmpsrc);
+X		}
+X		break;
+X
+X	/*
+X	 * No kernel processing for the following;
+X	 * just fall through to send to raw listener.
+X	 */
+X	case ICMP_ECHOREPLY:
+X	case ICMP_TSTAMPREPLY:
+X	case ICMP_IREQREPLY:
+X	case ICMP_MASKREPLY:
+X	default:
+X		break;
+X	}
+X
+Xraw:
+X	icmpsrc.sin_addr = ip->ip_src;
+X	icmpdst.sin_addr = ip->ip_dst;
+X	raw_input(m, &icmproto, (struct sockaddr *)&icmpsrc,
+X	    (struct sockaddr *)&icmpdst);
+X	return;
+X
+Xfree:
+X	m_freem(m);
+X}
+X
+X/*
+X * Reflect the ip packet back to the source
+X */
+Xicmp_reflect(ip, ifp)
+X	register struct ip *ip;
+X	struct ifnet *ifp;
+X{
+X	register struct in_ifaddr *ia;
+X	struct in_addr t;
+X	struct mbuf *opts = 0, *ip_srcroute();
+X	int optlen = (ip->ip_hl << 2) - sizeof(struct ip);
+X
+X	t = ip->ip_dst;
+X	ip->ip_dst = ip->ip_src;
+X	/*
+X	 * If the incoming packet was addressed directly to us,
+X	 * use dst as the src for the reply.  Otherwise (broadcast
+X	 * or anonymous), use the address which corresponds
+X	 * to the incoming interface.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next) {
+X		if (t.s_addr == IA_SIN(ia)->sin_addr.s_addr)
+X			break;
+X		if ((ia->ia_ifp->if_flags & IFF_BROADCAST) &&
+X		    t.s_addr == satosin(&ia->ia_broadaddr)->sin_addr.s_addr)
+X			break;
+X	}
+X	if (ia == (struct in_ifaddr *)0)
+X		ia = ifptoia(ifp);
+X	if (ia == (struct in_ifaddr *)0)
+X		ia = in_ifaddr;
+X	t = IA_SIN(ia)->sin_addr;
+X	ip->ip_src = t;
+X	ip->ip_ttl = MAXTTL;
+X
+X	if (optlen > 0) {
+X		/*
+X		 * Retrieve any source routing from the incoming packet
+X		 * and strip out other options.  Adjust the IP length.
+X		 */
+X		opts = ip_srcroute();
+X		ip->ip_len -= optlen;
+X		ip_stripoptions(ip, (struct mbuf *)0);
+X	}
+X	icmp_send(ip, opts);
+X	if (opts)
+X		(void)m_free(opts);
+X}
+X
+Xstruct in_ifaddr *
+Xifptoia(ifp)
+X	struct ifnet *ifp;
+X{
+X	register struct in_ifaddr *ia;
+X
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if (ia->ia_ifp == ifp)
+X			return (ia);
+X	return ((struct in_ifaddr *)0);
+X}
+X
+X/*
+X * Send an icmp packet back to the ip level,
+X * after supplying a checksum.
+X */
+Xicmp_send(ip, opts)
+X	register struct ip *ip;
+X	struct mbuf *opts;
+X{
+X	register int hlen;
+X	register struct icmp *icp;
+X	register struct mbuf *m;
+X
+X	m = dtom(ip);
+X	hlen = ip->ip_hl << 2;
+X	m->m_off += hlen;
+X	m->m_len -= hlen;
+X	icp = mtod(m, struct icmp *);
+X	icp->icmp_cksum = 0;
+X	icp->icmp_cksum = in_cksum(m, ip->ip_len - hlen);
+X	m->m_off -= hlen;
+X	m->m_len += hlen;
+X#ifdef ICMPPRINTFS
+X	if (icmpprintfs)
+X		printf("icmp_send dst %x src %x\n", ip->ip_dst, ip->ip_src);
+X#endif
+X	(void) ip_output(m, opts, (struct route *)0, 0);
+X}
+X
+Xn_time
+Xiptime()
+X{
+X	struct timeval atv;
+X	u_long t;
+X
+X	microtime(&atv);
+X	t = (atv.tv_sec % (24*60*60)) * 1000 + atv.tv_usec / 1000;
+X	return (htonl(t));
+X}
+END-of-netinet/ip_icmp.c
+echo x - netinet/ip_icmp.h
+sed 's/^X//' >netinet/ip_icmp.h << 'END-of-netinet/ip_icmp.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip_icmp.h	7.3 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Interface Control Message Protocol Definitions.
+X * Per RFC 792, September 1981.
+X */
+X
+X/*
+X * Structure of an icmp header.
+X */
+Xstruct icmp {
+X	u_char	icmp_type;		/* type of message, see below */
+X	u_char	icmp_code;		/* type sub code */
+X	u_short	icmp_cksum;		/* ones complement cksum of struct */
+X	union {
+X		u_char ih_pptr;			/* ICMP_PARAMPROB */
+X		struct in_addr ih_gwaddr;	/* ICMP_REDIRECT */
+X		struct ih_idseq {
+X			n_short	icd_id;
+X			n_short	icd_seq;
+X		} ih_idseq;
+X		int ih_void;
+X	} icmp_hun;
+X#define	icmp_pptr	icmp_hun.ih_pptr
+X#define	icmp_gwaddr	icmp_hun.ih_gwaddr
+X#define	icmp_id		icmp_hun.ih_idseq.icd_id
+X#define	icmp_seq	icmp_hun.ih_idseq.icd_seq
+X#define	icmp_void	icmp_hun.ih_void
+X	union {
+X		struct id_ts {
+X			n_time its_otime;
+X			n_time its_rtime;
+X			n_time its_ttime;
+X		} id_ts;
+X		struct id_ip  {
+X			struct ip idi_ip;
+X			/* options and then 64 bits of data */
+X		} id_ip;
+X		u_long	id_mask;
+X		char	id_data[1];
+X	} icmp_dun;
+X#define	icmp_otime	icmp_dun.id_ts.its_otime
+X#define	icmp_rtime	icmp_dun.id_ts.its_rtime
+X#define	icmp_ttime	icmp_dun.id_ts.its_ttime
+X#define	icmp_ip		icmp_dun.id_ip.idi_ip
+X#define	icmp_mask	icmp_dun.id_mask
+X#define	icmp_data	icmp_dun.id_data
+X};
+X
+X/*
+X * Lower bounds on packet lengths for various types.
+X * For the error advice packets must first insure that the
+X * packet is large enought to contain the returned ip header.
+X * Only then can we do the check to see if 64 bits of packet
+X * data have been returned, since we need to check the returned
+X * ip header length.
+X */
+X#define	ICMP_MINLEN	8				/* abs minimum */
+X#define	ICMP_TSLEN	(8 + 3 * sizeof (n_time))	/* timestamp */
+X#define	ICMP_MASKLEN	12				/* address mask */
+X#define	ICMP_ADVLENMIN	(8 + sizeof (struct ip) + 8)	/* min */
+X#define	ICMP_ADVLEN(p)	(8 + ((p)->icmp_ip.ip_hl << 2) + 8)
+X	/* N.B.: must separately check that ip_hl >= 5 */
+X
+X/*
+X * Definition of type and code field values.
+X */
+X#define	ICMP_ECHOREPLY		0		/* echo reply */
+X#define	ICMP_UNREACH		3		/* dest unreachable, codes: */
+X#define		ICMP_UNREACH_NET	0		/* bad net */
+X#define		ICMP_UNREACH_HOST	1		/* bad host */
+X#define		ICMP_UNREACH_PROTOCOL	2		/* bad protocol */
+X#define		ICMP_UNREACH_PORT	3		/* bad port */
+X#define		ICMP_UNREACH_NEEDFRAG	4		/* IP_DF caused drop */
+X#define		ICMP_UNREACH_SRCFAIL	5		/* src route failed */
+X#define	ICMP_SOURCEQUENCH	4		/* packet lost, slow down */
+X#define	ICMP_REDIRECT		5		/* shorter route, codes: */
+X#define		ICMP_REDIRECT_NET	0		/* for network */
+X#define		ICMP_REDIRECT_HOST	1		/* for host */
+X#define		ICMP_REDIRECT_TOSNET	2		/* for tos and net */
+X#define		ICMP_REDIRECT_TOSHOST	3		/* for tos and host */
+X#define	ICMP_ECHO		8		/* echo service */
+X#define	ICMP_TIMXCEED		11		/* time exceeded, code: */
+X#define		ICMP_TIMXCEED_INTRANS	0		/* ttl==0 in transit */
+X#define		ICMP_TIMXCEED_REASS	1		/* ttl==0 in reass */
+X#define	ICMP_PARAMPROB		12		/* ip header bad */
+X#define	ICMP_TSTAMP		13		/* timestamp request */
+X#define	ICMP_TSTAMPREPLY	14		/* timestamp reply */
+X#define	ICMP_IREQ		15		/* information request */
+X#define	ICMP_IREQREPLY		16		/* information reply */
+X#define	ICMP_MASKREQ		17		/* address mask request */
+X#define	ICMP_MASKREPLY		18		/* address mask reply */
+X
+X#define	ICMP_MAXTYPE		18
+X
+X#define	ICMP_INFOTYPE(type) \
+X	((type) == ICMP_ECHOREPLY || (type) == ICMP_ECHO || \
+X	(type) == ICMP_TSTAMP || (type) == ICMP_TSTAMPREPLY || \
+X	(type) == ICMP_IREQ || (type) == ICMP_IREQREPLY || \
+X	(type) == ICMP_MASKREQ || (type) == ICMP_MASKREPLY)
+END-of-netinet/ip_icmp.h
+echo x - netinet/ip_input.c
+sed 's/^X//' >netinet/ip_input.c << 'END-of-netinet/ip_input.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip_input.c	7.9 (Berkeley) 3/15/88
+X */
+X
+X#include "param.h"
+X#include "systm.h"
+X#include "mbuf.h"
+X#include "domain.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "errno.h"
+X#include "time.h"
+X#include "kernel.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "in_var.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X#include "ip_icmp.h"
+X#include "tcp.h"
+X
+Xu_char	ip_protox[IPPROTO_MAX];
+Xint	ipqmaxlen = IFQ_MAXLEN;
+Xstruct	in_ifaddr *in_ifaddr;			/* first inet address */
+X
+X/*
+X * We need to save the IP options in case a protocol wants to respond
+X * to an incoming packet over the same route if the packet got here
+X * using IP source routing.  This allows connection establishment and
+X * maintenance when the remote end is on a network that is not known
+X * to us.
+X */
+Xint	ip_nhops = 0;
+Xstatic	struct ip_srcrt {
+X	char	nop;				/* one NOP to align */
+X	char	srcopt[IPOPT_OFFSET + 1];	/* OPTVAL, OLEN and OFFSET */
+X	struct	in_addr route[MAX_IPOPTLEN];
+X} ip_srcrt;
+X
+X/*
+X * IP initialization: fill in IP protocol switch table.
+X * All protocols not implemented in kernel go to raw IP protocol handler.
+X */
+Xip_init()
+X{
+X	register struct protosw *pr;
+X	register int i;
+X
+X	pr = pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW);
+X	if (pr == 0)
+X		panic("ip_init");
+X	for (i = 0; i < IPPROTO_MAX; i++)
+X		ip_protox[i] = pr - inetsw;
+X	for (pr = inetdomain.dom_protosw;
+X	    pr < inetdomain.dom_protoswNPROTOSW; pr++)
+X		if (pr->pr_domain->dom_family == PF_INET &&
+X		    pr->pr_protocol && pr->pr_protocol != IPPROTO_RAW)
+X			ip_protox[pr->pr_protocol] = pr - inetsw;
+X	ipq.next = ipq.prev = &ipq;
+X	ip_id = time.tv_sec & 0xffff;
+X	ipintrq.ifq_maxlen = ipqmaxlen;
+X}
+X
+Xu_char	ipcksum = 1;
+Xstruct	ip *ip_reass();
+Xstruct	sockaddr_in ipaddr = { AF_INET };
+Xstruct	route ipforward_rt;
+X
+X/*
+X * Ip input routine.  Checksum and byte swap header.  If fragmented
+X * try to reassamble.  If complete and fragment queue exists, discard.
+X * Process options.  Pass to next level.
+X */
+Xipintr()
+X{
+X	register struct ip *ip;
+X	register struct mbuf *m;
+X	struct mbuf *m0;
+X	register int i;
+X	register struct ipq *fp;
+X	register struct in_ifaddr *ia;
+X	struct ifnet *ifp;
+X	int hlen, s;
+X
+Xnext:
+X	/*
+X	 * Get next datagram off input queue and get IP header
+X	 * in first mbuf.
+X	 */
+X	s = splimp();
+X	IF_DEQUEUEIF(&ipintrq, m, ifp);
+X	splx(s);
+X	if (m == 0)
+X		return;
+X	/*
+X	 * If no IP addresses have been set yet but the interfaces
+X	 * are receiving, can't do anything with incoming packets yet.
+X	 */
+X	if (in_ifaddr == NULL)
+X		goto bad;
+X	ipstat.ips_total++;
+X	if ((m->m_off > MMAXOFF || m->m_len < sizeof (struct ip)) &&
+X	    (m = m_pullup(m, sizeof (struct ip))) == 0) {
+X		ipstat.ips_toosmall++;
+X		goto next;
+X	}
+X	ip = mtod(m, struct ip *);
+X	hlen = ip->ip_hl << 2;
+X	if (hlen < sizeof(struct ip)) {	/* minimum header length */
+X		ipstat.ips_badhlen++;
+X		goto bad;
+X	}
+X	if (hlen > m->m_len) {
+X		if ((m = m_pullup(m, hlen)) == 0) {
+X			ipstat.ips_badhlen++;
+X			goto next;
+X		}
+X		ip = mtod(m, struct ip *);
+X	}
+X	if (ipcksum)
+X		if (ip->ip_sum = in_cksum(m, hlen)) {
+X			ipstat.ips_badsum++;
+X			goto bad;
+X		}
+X
+X	/*
+X	 * Convert fields to host representation.
+X	 */
+X	ip->ip_len = ntohs((u_short)ip->ip_len);
+X	if (ip->ip_len < hlen) {
+X		ipstat.ips_badlen++;
+X		goto bad;
+X	}
+X	ip->ip_id = ntohs(ip->ip_id);
+X	ip->ip_off = ntohs((u_short)ip->ip_off);
+X
+X	/*
+X	 * Check that the amount of data in the buffers
+X	 * is as at least much as the IP header would have us expect.
+X	 * Trim mbufs if longer than we expect.
+X	 * Drop packet if shorter than we expect.
+X	 */
+X	i = -(u_short)ip->ip_len;
+X	m0 = m;
+X	for (;;) {
+X		i += m->m_len;
+X		if (m->m_next == 0)
+X			break;
+X		m = m->m_next;
+X	}
+X	if (i != 0) {
+X		if (i < 0) {
+X			ipstat.ips_tooshort++;
+X			m = m0;
+X			goto bad;
+X		}
+X		if (i <= m->m_len)
+X			m->m_len -= i;
+X		else
+X			m_adj(m0, -i);
+X	}
+X	m = m0;
+X
+X	/*
+X	 * Process options and, if not destined for us,
+X	 * ship it on.  ip_dooptions returns 1 when an
+X	 * error was detected (causing an icmp message
+X	 * to be sent and the original packet to be freed).
+X	 */
+X	ip_nhops = 0;		/* for source routed packets */
+X	if (hlen > sizeof (struct ip) && ip_dooptions(ip, ifp))
+X		goto next;
+X
+X	/*
+X	 * Check our list of addresses, to see if the packet is for us.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next) {
+X#define	satosin(sa)	((struct sockaddr_in *)(sa))
+X
+X		if (IA_SIN(ia)->sin_addr.s_addr == ip->ip_dst.s_addr)
+X			goto ours;
+X		if (
+X#ifdef	DIRECTED_BROADCAST
+X		    ia->ia_ifp == ifp &&
+X#endif
+X		    (ia->ia_ifp->if_flags & IFF_BROADCAST)) {
+X			u_long t;
+X
+X			if (satosin(&ia->ia_broadaddr)->sin_addr.s_addr ==
+X			    ip->ip_dst.s_addr)
+X				goto ours;
+X			if (ip->ip_dst.s_addr == ia->ia_netbroadcast.s_addr)
+X				goto ours;
+X			/*
+X			 * Look for all-0's host part (old broadcast addr),
+X			 * either for subnet or net.
+X			 */
+X			t = ntohl(ip->ip_dst.s_addr);
+X			if (t == ia->ia_subnet)
+X				goto ours;
+X			if (t == ia->ia_net)
+X				goto ours;
+X		}
+X	}
+X	if (ip->ip_dst.s_addr == (u_long)INADDR_BROADCAST)
+X		goto ours;
+X	if (ip->ip_dst.s_addr == INADDR_ANY)
+X		goto ours;
+X
+X	/*
+X	 * Not for us; forward if possible and desirable.
+X	 */
+X	ip_forward(ip, ifp);
+X	goto next;
+X
+Xours:
+X	/*
+X	 * If offset or IP_MF are set, must reassemble.
+X	 * Otherwise, nothing need be done.
+X	 * (We could look in the reassembly queue to see
+X	 * if the packet was previously fragmented,
+X	 * but it's not worth the time; just let them time out.)
+X	 */
+X	if (ip->ip_off &~ IP_DF) {
+X		/*
+X		 * Look for queue of fragments
+X		 * of this datagram.
+X		 */
+X		for (fp = ipq.next; fp != &ipq; fp = fp->next)
+X			if (ip->ip_id == fp->ipq_id &&
+X			    ip->ip_src.s_addr == fp->ipq_src.s_addr &&
+X			    ip->ip_dst.s_addr == fp->ipq_dst.s_addr &&
+X			    ip->ip_p == fp->ipq_p)
+X				goto found;
+X		fp = 0;
+Xfound:
+X
+X		/*
+X		 * Adjust ip_len to not reflect header,
+X		 * set ip_mff if more fragments are expected,
+X		 * convert offset of this to bytes.
+X		 */
+X		ip->ip_len -= hlen;
+X		((struct ipasfrag *)ip)->ipf_mff = 0;
+X		if (ip->ip_off & IP_MF)
+X			((struct ipasfrag *)ip)->ipf_mff = 1;
+X		ip->ip_off <<= 3;
+X
+X		/*
+X		 * If datagram marked as having more fragments
+X		 * or if this is not the first fragment,
+X		 * attempt reassembly; if it succeeds, proceed.
+X		 */
+X		if (((struct ipasfrag *)ip)->ipf_mff || ip->ip_off) {
+X			ipstat.ips_fragments++;
+X			ip = ip_reass((struct ipasfrag *)ip, fp);
+X			if (ip == 0)
+X				goto next;
+X			m = dtom(ip);
+X		} else
+X			if (fp)
+X				ip_freef(fp);
+X	} else
+X		ip->ip_len -= hlen;
+X
+X	/*
+X	 * Switch out to protocol's input routine.
+X	 */
+X	(*inetsw[ip_protox[ip->ip_p]].pr_input)(m, ifp);
+X	goto next;
+Xbad:
+X	m_freem(m);
+X	goto next;
+X}
+X
+X/*
+X * Take incoming datagram fragment and try to
+X * reassemble it into whole datagram.  If a chain for
+X * reassembly of this datagram already exists, then it
+X * is given as fp; otherwise have to make a chain.
+X */
+Xstruct ip *
+Xip_reass(ip, fp)
+X	register struct ipasfrag *ip;
+X	register struct ipq *fp;
+X{
+X	register struct mbuf *m = dtom(ip);
+X	register struct ipasfrag *q;
+X	struct mbuf *t;
+X	int hlen = ip->ip_hl << 2;
+X	int i, next;
+X
+X	/*
+X	 * Presence of header sizes in mbufs
+X	 * would confuse code below.
+X	 */
+X	m->m_off += hlen;
+X	m->m_len -= hlen;
+X
+X	/*
+X	 * If first fragment to arrive, create a reassembly queue.
+X	 */
+X	if (fp == 0) {
+X		if ((t = m_get(M_DONTWAIT, MT_FTABLE)) == NULL)
+X			goto dropfrag;
+X		fp = mtod(t, struct ipq *);
+X		insque(fp, &ipq);
+X		fp->ipq_ttl = IPFRAGTTL;
+X		fp->ipq_p = ip->ip_p;
+X		fp->ipq_id = ip->ip_id;
+X		fp->ipq_next = fp->ipq_prev = (struct ipasfrag *)fp;
+X		fp->ipq_src = ((struct ip *)ip)->ip_src;
+X		fp->ipq_dst = ((struct ip *)ip)->ip_dst;
+X		q = (struct ipasfrag *)fp;
+X		goto insert;
+X	}
+X
+X	/*
+X	 * Find a segment which begins after this one does.
+X	 */
+X	for (q = fp->ipq_next; q != (struct ipasfrag *)fp; q = q->ipf_next)
+X		if (q->ip_off > ip->ip_off)
+X			break;
+X
+X	/*
+X	 * If there is a preceding segment, it may provide some of
+X	 * our data already.  If so, drop the data from the incoming
+X	 * segment.  If it provides all of our data, drop us.
+X	 */
+X	if (q->ipf_prev != (struct ipasfrag *)fp) {
+X		i = q->ipf_prev->ip_off + q->ipf_prev->ip_len - ip->ip_off;
+X		if (i > 0) {
+X			if (i >= ip->ip_len)
+X				goto dropfrag;
+X			m_adj(dtom(ip), i);
+X			ip->ip_off += i;
+X			ip->ip_len -= i;
+X		}
+X	}
+X
+X	/*
+X	 * While we overlap succeeding segments trim them or,
+X	 * if they are completely covered, dequeue them.
+X	 */
+X	while (q != (struct ipasfrag *)fp && ip->ip_off + ip->ip_len > q->ip_off) {
+X		i = (ip->ip_off + ip->ip_len) - q->ip_off;
+X		if (i < q->ip_len) {
+X			q->ip_len -= i;
+X			q->ip_off += i;
+X			m_adj(dtom(q), i);
+X			break;
+X		}
+X		q = q->ipf_next;
+X		m_freem(dtom(q->ipf_prev));
+X		ip_deq(q->ipf_prev);
+X	}
+X
+Xinsert:
+X	/*
+X	 * Stick new segment in its place;
+X	 * check for complete reassembly.
+X	 */
+X	ip_enq(ip, q->ipf_prev);
+X	next = 0;
+X	for (q = fp->ipq_next; q != (struct ipasfrag *)fp; q = q->ipf_next) {
+X		if (q->ip_off != next)
+X			return (0);
+X		next += q->ip_len;
+X	}
+X	if (q->ipf_prev->ipf_mff)
+X		return (0);
+X
+X	/*
+X	 * Reassembly is complete; concatenate fragments.
+X	 */
+X	q = fp->ipq_next;
+X	m = dtom(q);
+X	t = m->m_next;
+X	m->m_next = 0;
+X	m_cat(m, t);
+X	q = q->ipf_next;
+X	while (q != (struct ipasfrag *)fp) {
+X		t = dtom(q);
+X		q = q->ipf_next;
+X		m_cat(m, t);
+X	}
+X
+X	/*
+X	 * Create header for new ip packet by
+X	 * modifying header of first packet;
+X	 * dequeue and discard fragment reassembly header.
+X	 * Make header visible.
+X	 */
+X	ip = fp->ipq_next;
+X	ip->ip_len = next;
+X	((struct ip *)ip)->ip_src = fp->ipq_src;
+X	((struct ip *)ip)->ip_dst = fp->ipq_dst;
+X	remque(fp);
+X	(void) m_free(dtom(fp));
+X	m = dtom(ip);
+X	m->m_len += (ip->ip_hl << 2);
+X	m->m_off -= (ip->ip_hl << 2);
+X	return ((struct ip *)ip);
+X
+Xdropfrag:
+X	ipstat.ips_fragdropped++;
+X	m_freem(m);
+X	return (0);
+X}
+X
+X/*
+X * Free a fragment reassembly header and all
+X * associated datagrams.
+X */
+Xip_freef(fp)
+X	struct ipq *fp;
+X{
+X	register struct ipasfrag *q, *p;
+X
+X	for (q = fp->ipq_next; q != (struct ipasfrag *)fp; q = p) {
+X		p = q->ipf_next;
+X		ip_deq(q);
+X		m_freem(dtom(q));
+X	}
+X	remque(fp);
+X	(void) m_free(dtom(fp));
+X}
+X
+X/*
+X * Put an ip fragment on a reassembly chain.
+X * Like insque, but pointers in middle of structure.
+X */
+Xip_enq(p, prev)
+X	register struct ipasfrag *p, *prev;
+X{
+X
+X	p->ipf_prev = prev;
+X	p->ipf_next = prev->ipf_next;
+X	prev->ipf_next->ipf_prev = p;
+X	prev->ipf_next = p;
+X}
+X
+X/*
+X * To ip_enq as remque is to insque.
+X */
+Xip_deq(p)
+X	register struct ipasfrag *p;
+X{
+X
+X	p->ipf_prev->ipf_next = p->ipf_next;
+X	p->ipf_next->ipf_prev = p->ipf_prev;
+X}
+X
+X/*
+X * IP timer processing;
+X * if a timer expires on a reassembly
+X * queue, discard it.
+X */
+Xip_slowtimo()
+X{
+X	register struct ipq *fp;
+X	int s = splnet();
+X
+X	fp = ipq.next;
+X	if (fp == 0) {
+X		splx(s);
+X		return;
+X	}
+X	while (fp != &ipq) {
+X		--fp->ipq_ttl;
+X		fp = fp->next;
+X		if (fp->prev->ipq_ttl == 0) {
+X			ipstat.ips_fragtimeout++;
+X			ip_freef(fp->prev);
+X		}
+X	}
+X	splx(s);
+X}
+X
+X/*
+X * Drain off all datagram fragments.
+X */
+Xip_drain()
+X{
+X
+X	while (ipq.next != &ipq) {
+X		ipstat.ips_fragdropped++;
+X		ip_freef(ipq.next);
+X	}
+X}
+X
+Xextern struct in_ifaddr *ifptoia();
+Xstruct in_ifaddr *ip_rtaddr();
+X
+X/*
+X * Do option processing on a datagram,
+X * possibly discarding it if bad options
+X * are encountered.
+X */
+Xip_dooptions(ip, ifp)
+X	register struct ip *ip;
+X	struct ifnet *ifp;
+X{
+X	register u_char *cp;
+X	int opt, optlen, cnt, off, code, type = ICMP_PARAMPROB;
+X	register struct ip_timestamp *ipt;
+X	register struct in_ifaddr *ia;
+X	struct in_addr *sin;
+X	n_time ntime;
+X
+X	cp = (u_char *)(ip + 1);
+X	cnt = (ip->ip_hl << 2) - sizeof (struct ip);
+X	for (; cnt > 0; cnt -= optlen, cp += optlen) {
+X		opt = cp[IPOPT_OPTVAL];
+X		if (opt == IPOPT_EOL)
+X			break;
+X		if (opt == IPOPT_NOP)
+X			optlen = 1;
+X		else {
+X			optlen = cp[IPOPT_OLEN];
+X			if (optlen <= 0 || optlen > cnt) {
+X				code = &cp[IPOPT_OLEN] - (u_char *)ip;
+X				goto bad;
+X			}
+X		}
+X		switch (opt) {
+X
+X		default:
+X			break;
+X
+X		/*
+X		 * Source routing with record.
+X		 * Find interface with current destination address.
+X		 * If none on this machine then drop if strictly routed,
+X		 * or do nothing if loosely routed.
+X		 * Record interface address and bring up next address
+X		 * component.  If strictly routed make sure next
+X		 * address on directly accessible net.
+X		 */
+X		case IPOPT_LSRR:
+X		case IPOPT_SSRR:
+X			if ((off = cp[IPOPT_OFFSET]) < IPOPT_MINOFF) {
+X				code = &cp[IPOPT_OFFSET] - (u_char *)ip;
+X				goto bad;
+X			}
+X			ipaddr.sin_addr = ip->ip_dst;
+X			ia = (struct in_ifaddr *)
+X				ifa_ifwithaddr((struct sockaddr *)&ipaddr);
+X			if (ia == 0) {
+X				if (opt == IPOPT_SSRR) {
+X					type = ICMP_UNREACH;
+X					code = ICMP_UNREACH_SRCFAIL;
+X					goto bad;
+X				}
+X				/*
+X				 * Loose routing, and not at next destination
+X				 * yet; nothing to do except forward.
+X				 */
+X				break;
+X			}
+X			off--;			/* 0 origin */
+X			if (off > optlen - sizeof(struct in_addr)) {
+X				/*
+X				 * End of source route.  Should be for us.
+X				 */
+X				save_rte(cp, ip->ip_src);
+X				break;
+X			}
+X			/*
+X			 * locate outgoing interface
+X			 */
+X			bcopy((caddr_t)(cp + off), (caddr_t)&ipaddr.sin_addr,
+X			    sizeof(ipaddr.sin_addr));
+X			if ((opt == IPOPT_SSRR &&
+X			    in_iaonnetof(in_netof(ipaddr.sin_addr)) == 0) ||
+X			    (ia = ip_rtaddr(ipaddr.sin_addr)) == 0) {
+X				type = ICMP_UNREACH;
+X				code = ICMP_UNREACH_SRCFAIL;
+X				goto bad;
+X			}
+X			ip->ip_dst = ipaddr.sin_addr;
+X			bcopy((caddr_t)&(IA_SIN(ia)->sin_addr),
+X			    (caddr_t)(cp + off), sizeof(struct in_addr));
+X			cp[IPOPT_OFFSET] += sizeof(struct in_addr);
+X			break;
+X
+X		case IPOPT_RR:
+X			if ((off = cp[IPOPT_OFFSET]) < IPOPT_MINOFF) {
+X				code = &cp[IPOPT_OFFSET] - (u_char *)ip;
+X				goto bad;
+X			}
+X			/*
+X			 * If no space remains, ignore.
+X			 */
+X			off--;			/* 0 origin */
+X			if (off > optlen - sizeof(struct in_addr))
+X				break;
+X			bcopy((caddr_t)(&ip->ip_dst), (caddr_t)&ipaddr.sin_addr,
+X			    sizeof(ipaddr.sin_addr));
+X			/*
+X			 * locate outgoing interface
+X			 */
+X			if ((ia = ip_rtaddr(ipaddr.sin_addr)) == 0) {
+X				type = ICMP_UNREACH;
+X				code = ICMP_UNREACH_HOST;
+X				goto bad;
+X			}
+X			bcopy((caddr_t)&(IA_SIN(ia)->sin_addr),
+X			    (caddr_t)(cp + off), sizeof(struct in_addr));
+X			cp[IPOPT_OFFSET] += sizeof(struct in_addr);
+X			break;
+X
+X		case IPOPT_TS:
+X			code = cp - (u_char *)ip;
+X			ipt = (struct ip_timestamp *)cp;
+X			if (ipt->ipt_len < 5)
+X				goto bad;
+X			if (ipt->ipt_ptr > ipt->ipt_len - sizeof (long)) {
+X				if (++ipt->ipt_oflw == 0)
+X					goto bad;
+X				break;
+X			}
+X			sin = (struct in_addr *)(cp + ipt->ipt_ptr - 1);
+X			switch (ipt->ipt_flg) {
+X
+X			case IPOPT_TS_TSONLY:
+X				break;
+X
+X			case IPOPT_TS_TSANDADDR:
+X				if (ipt->ipt_ptr + sizeof(n_time) +
+X				    sizeof(struct in_addr) > ipt->ipt_len)
+X					goto bad;
+X				ia = ifptoia(ifp);
+X				bcopy((caddr_t)&IA_SIN(ia)->sin_addr,
+X				    (caddr_t)sin, sizeof(struct in_addr));
+X				ipt->ipt_ptr += sizeof(struct in_addr);
+X				break;
+X
+X			case IPOPT_TS_PRESPEC:
+X				if (ipt->ipt_ptr + sizeof(n_time) +
+X				    sizeof(struct in_addr) > ipt->ipt_len)
+X					goto bad;
+X				bcopy((caddr_t)sin, (caddr_t)&ipaddr.sin_addr,
+X				    sizeof(struct in_addr));
+X				if (ifa_ifwithaddr((struct sockaddr *)&ipaddr) == 0)
+X					continue;
+X				ipt->ipt_ptr += sizeof(struct in_addr);
+X				break;
+X
+X			default:
+X				goto bad;
+X			}
+X			ntime = iptime();
+X			bcopy((caddr_t)&ntime, (caddr_t)cp + ipt->ipt_ptr - 1,
+X			    sizeof(n_time));
+X			ipt->ipt_ptr += sizeof(n_time);
+X		}
+X	}
+X	return (0);
+Xbad:
+X	icmp_error(ip, type, code, ifp);
+X	return (1);
+X}
+X
+X/*
+X * Given address of next destination (final or next hop),
+X * return internet address info of interface to be used to get there.
+X */
+Xstruct in_ifaddr *
+Xip_rtaddr(dst)
+X	 struct in_addr dst;
+X{
+X	register struct sockaddr_in *sin;
+X	register struct in_ifaddr *ia;
+X
+X	sin = (struct sockaddr_in *) &ipforward_rt.ro_dst;
+X
+X	if (ipforward_rt.ro_rt == 0 || dst.s_addr != sin->sin_addr.s_addr) {
+X		if (ipforward_rt.ro_rt) {
+X			RTFREE(ipforward_rt.ro_rt);
+X			ipforward_rt.ro_rt = 0;
+X		}
+X		sin->sin_family = AF_INET;
+X		sin->sin_addr = dst;
+X
+X		rtalloc(&ipforward_rt);
+X	}
+X	if (ipforward_rt.ro_rt == 0)
+X		return ((struct in_ifaddr *)0);
+X	/*
+X	 * Find address associated with outgoing interface.
+X	 */
+X	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X		if (ia->ia_ifp == ipforward_rt.ro_rt->rt_ifp)
+X			break;
+X	return (ia);
+X}
+X
+X/*
+X * Save incoming source route for use in replies,
+X * to be picked up later by ip_srcroute if the receiver is interested.
+X */
+Xsave_rte(option, dst)
+X	u_char *option;
+X	struct in_addr dst;
+X{
+X	unsigned olen;
+X	extern ipprintfs;
+X
+X	olen = option[IPOPT_OLEN];
+X	if (olen > sizeof(ip_srcrt) - 1) {
+X		if (ipprintfs)
+X			printf("save_rte: olen %d\n", olen);
+X		return;
+X	}
+X	bcopy((caddr_t)option, (caddr_t)ip_srcrt.srcopt, olen);
+X	ip_nhops = (olen - IPOPT_OFFSET - 1) / sizeof(struct in_addr);
+X	ip_srcrt.route[ip_nhops++] = dst;
+X}
+X
+X/*
+X * Retrieve incoming source route for use in replies,
+X * in the same form used by setsockopt.
+X * The first hop is placed before the options, will be removed later.
+X */
+Xstruct mbuf *
+Xip_srcroute()
+X{
+X	register struct in_addr *p, *q;
+X	register struct mbuf *m;
+X
+X	if (ip_nhops == 0)
+X		return ((struct mbuf *)0);
+X	m = m_get(M_DONTWAIT, MT_SOOPTS);
+X	if (m == 0)
+X		return ((struct mbuf *)0);
+X	m->m_len = ip_nhops * sizeof(struct in_addr) + IPOPT_OFFSET + 1 + 1;
+X
+X	/*
+X	 * First save first hop for return route
+X	 */
+X	p = &ip_srcrt.route[ip_nhops - 1];
+X	*(mtod(m, struct in_addr *)) = *p--;
+X
+X	/*
+X	 * Copy option fields and padding (nop) to mbuf.
+X	 */
+X	ip_srcrt.nop = IPOPT_NOP;
+X	bcopy((caddr_t)&ip_srcrt, mtod(m, caddr_t) + sizeof(struct in_addr),
+X	    IPOPT_OFFSET + 1 + 1);
+X	q = (struct in_addr *)(mtod(m, caddr_t) +
+X	    sizeof(struct in_addr) + IPOPT_OFFSET + 1 + 1);
+X	/*
+X	 * Record return path as an IP source route,
+X	 * reversing the path (pointers are now aligned).
+X	 */
+X	while (p >= ip_srcrt.route)
+X		*q++ = *p--;
+X	return (m);
+X}
+X
+X/*
+X * Strip out IP options, at higher
+X * level protocol in the kernel.
+X * Second argument is buffer to which options
+X * will be moved, and return value is their length.
+X */
+Xip_stripoptions(ip, mopt)
+X	struct ip *ip;
+X	struct mbuf *mopt;
+X{
+X	register int i;
+X	register struct mbuf *m;
+X	register caddr_t opts;
+X	int olen;
+X
+X	olen = (ip->ip_hl<<2) - sizeof (struct ip);
+X	m = dtom(ip);
+X	opts = (caddr_t)(ip + 1);
+X	if (mopt) {
+X		mopt->m_len = olen;
+X		mopt->m_off = MMINOFF;
+X		bcopy(opts, mtod(mopt, caddr_t), (unsigned)olen);
+X	}
+X	i = m->m_len - (sizeof (struct ip) + olen);
+X	bcopy(opts  + olen, opts, (unsigned)i);
+X	m->m_len -= olen;
+X	ip->ip_hl = sizeof(struct ip) >> 2;
+X}
+X
+Xu_char inetctlerrmap[PRC_NCMDS] = {
+X	0,		0,		0,		0,
+X	0,		0,		EHOSTDOWN,	EHOSTUNREACH,
+X	ENETUNREACH,	EHOSTUNREACH,	ECONNREFUSED,	ECONNREFUSED,
+X	EMSGSIZE,	EHOSTUNREACH,	0,		0,
+X	0,		0,		0,		0,
+X	ENOPROTOOPT
+X};
+X
+X#ifndef	IPFORWARDING
+X#define	IPFORWARDING	1
+X#endif
+X#ifndef	IPSENDREDIRECTS
+X#define	IPSENDREDIRECTS	1
+X#endif
+Xint	ipprintfs = 0;
+Xint	ipforwarding = IPFORWARDING;
+Xextern	int in_interfaces;
+Xint	ipsendredirects = IPSENDREDIRECTS;
+X
+X/*
+X * Forward a packet.  If some error occurs return the sender
+X * an icmp packet.  Note we can't always generate a meaningful
+X * icmp message because icmp doesn't have a large enough repertoire
+X * of codes and types.
+X *
+X * If not forwarding (possibly because we have only a single external
+X * network), just drop the packet.  This could be confusing if ipforwarding
+X * was zero but some routing protocol was advancing us as a gateway
+X * to somewhere.  However, we must let the routing protocol deal with that.
+X */
+Xip_forward(ip, ifp)
+X	register struct ip *ip;
+X	struct ifnet *ifp;
+X{
+X	register int error, type = 0, code;
+X	register struct sockaddr_in *sin;
+X	struct mbuf *mcopy;
+X	struct in_addr dest;
+X
+X	dest.s_addr = 0;
+X	if (ipprintfs)
+X		printf("forward: src %x dst %x ttl %x\n", ip->ip_src,
+X			ip->ip_dst, ip->ip_ttl);
+X	ip->ip_id = htons(ip->ip_id);
+X	if (ipforwarding == 0 || in_interfaces <= 1) {
+X		ipstat.ips_cantforward++;
+X#ifdef GATEWAY
+X		type = ICMP_UNREACH, code = ICMP_UNREACH_NET;
+X		goto sendicmp;
+X#else
+X		m_freem(dtom(ip));
+X		return;
+X#endif
+X	}
+X	if (in_canforward(ip->ip_dst) == 0) {
+X		m_freem(dtom(ip));
+X		return;
+X	}
+X	if (ip->ip_ttl <= IPTTLDEC) {
+X		type = ICMP_TIMXCEED, code = ICMP_TIMXCEED_INTRANS;
+X		goto sendicmp;
+X	}
+X	ip->ip_ttl -= IPTTLDEC;
+X
+X	/*
+X	 * Save at most 64 bytes of the packet in case
+X	 * we need to generate an ICMP message to the src.
+X	 */
+X	mcopy = m_copy(dtom(ip), 0, imin((int)ip->ip_len, 64));
+X
+X	sin = (struct sockaddr_in *)&ipforward_rt.ro_dst;
+X	if (ipforward_rt.ro_rt == 0 ||
+X	    ip->ip_dst.s_addr != sin->sin_addr.s_addr) {
+X		if (ipforward_rt.ro_rt) {
+X			RTFREE(ipforward_rt.ro_rt);
+X			ipforward_rt.ro_rt = 0;
+X		}
+X		sin->sin_family = AF_INET;
+X		sin->sin_addr = ip->ip_dst;
+X
+X		rtalloc(&ipforward_rt);
+X	}
+X	/*
+X	 * If forwarding packet using same interface that it came in on,
+X	 * perhaps should send a redirect to sender to shortcut a hop.
+X	 * Only send redirect if source is sending directly to us,
+X	 * and if packet was not source routed (or has any options).
+X	 * Also, don't send redirect if forwarding using a default route
+X	 * or a route modfied by a redirect.
+X	 */
+X#define	satosin(sa)	((struct sockaddr_in *)(sa))
+X	if (ipforward_rt.ro_rt && ipforward_rt.ro_rt->rt_ifp == ifp &&
+X	    (ipforward_rt.ro_rt->rt_flags & (RTF_DYNAMIC|RTF_MODIFIED)) == 0 &&
+X	    satosin(&ipforward_rt.ro_rt->rt_dst)->sin_addr.s_addr != 0 &&
+X	    ipsendredirects && ip->ip_hl == (sizeof(struct ip) >> 2)) {
+X		struct in_ifaddr *ia;
+X		u_long src = ntohl(ip->ip_src.s_addr);
+X		u_long dst = ntohl(ip->ip_dst.s_addr);
+X
+X		if ((ia = ifptoia(ifp)) &&
+X		   (src & ia->ia_subnetmask) == ia->ia_subnet) {
+X		    if (ipforward_rt.ro_rt->rt_flags & RTF_GATEWAY)
+X			dest = satosin(&ipforward_rt.ro_rt->rt_gateway)->sin_addr;
+X		    else
+X			dest = ip->ip_dst;
+X		    /*
+X		     * If the destination is reached by a route to host,
+X		     * is on a subnet of a local net, or is directly
+X		     * on the attached net (!), use host redirect.
+X		     * (We may be the correct first hop for other subnets.)
+X		     */
+X		    type = ICMP_REDIRECT;
+X		    code = ICMP_REDIRECT_NET;
+X		    if ((ipforward_rt.ro_rt->rt_flags & RTF_HOST) ||
+X		       (ipforward_rt.ro_rt->rt_flags & RTF_GATEWAY) == 0)
+X			code = ICMP_REDIRECT_HOST;
+X		    else for (ia = in_ifaddr; ia = ia->ia_next; )
+X			if ((dst & ia->ia_netmask) == ia->ia_net) {
+X			    if (ia->ia_subnetmask != ia->ia_netmask)
+X				    code = ICMP_REDIRECT_HOST;
+X			    break;
+X			}
+X		    if (ipprintfs)
+X		        printf("redirect (%d) to %x\n", code, dest);
+X		}
+X	}
+X
+X	error = ip_output(dtom(ip), (struct mbuf *)0, &ipforward_rt,
+X		IP_FORWARDING);
+X	if (error)
+X		ipstat.ips_cantforward++;
+X	else if (type)
+X		ipstat.ips_redirectsent++;
+X	else {
+X		if (mcopy)
+X			m_freem(mcopy);
+X		ipstat.ips_forward++;
+X		return;
+X	}
+X	if (mcopy == NULL)
+X		return;
+X	ip = mtod(mcopy, struct ip *);
+X	type = ICMP_UNREACH;
+X	switch (error) {
+X
+X	case 0:				/* forwarded, but need redirect */
+X		type = ICMP_REDIRECT;
+X		/* code set above */
+X		break;
+X
+X	case ENETUNREACH:
+X	case ENETDOWN:
+X		if (in_localaddr(ip->ip_dst))
+X			code = ICMP_UNREACH_HOST;
+X		else
+X			code = ICMP_UNREACH_NET;
+X		break;
+X
+X	case EMSGSIZE:
+X		code = ICMP_UNREACH_NEEDFRAG;
+X		break;
+X
+X	case EPERM:
+X		code = ICMP_UNREACH_PORT;
+X		break;
+X
+X	case ENOBUFS:
+X		type = ICMP_SOURCEQUENCH;
+X		break;
+X
+X	case EHOSTDOWN:
+X	case EHOSTUNREACH:
+X		code = ICMP_UNREACH_HOST;
+X		break;
+X	}
+Xsendicmp:
+X	icmp_error(ip, type, code, ifp, dest);
+X}
+END-of-netinet/ip_input.c
+echo x - netinet/ip_output.c
+sed 's/^X//' >netinet/ip_output.c << 'END-of-netinet/ip_output.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip_output.c	7.9 (Berkeley) 3/15/88
+X */
+X
+X#include "param.h"
+X#include "mbuf.h"
+X#include "errno.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "in_var.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X
+X#ifdef vax
+X#include "../machine/mtpr.h"
+X#endif
+X
+Xstruct mbuf *ip_insertoptions();
+X
+X/*
+X * IP output.  The packet in mbuf chain m contains a skeletal IP
+X * header (with len, off, ttl, proto, tos, src, dst).
+X * The mbuf chain containing the packet will be freed.
+X * The mbuf opt, if present, will not be freed.
+X */
+Xip_output(m0, opt, ro, flags)
+X	struct mbuf *m0;
+X	struct mbuf *opt;
+X	struct route *ro;
+X	int flags;
+X{
+X	register struct ip *ip, *mhip;
+X	register struct ifnet *ifp;
+X	register struct mbuf *m = m0;
+X	register int hlen = sizeof (struct ip);
+X	int len, off, error = 0;
+X	struct route iproute;
+X	struct sockaddr_in *dst;
+X
+X	if (opt) {
+X		m = ip_insertoptions(m, opt, &len);
+X		hlen = len;
+X	}
+X	ip = mtod(m, struct ip *);
+X	/*
+X	 * Fill in IP header.
+X	 */
+X	if ((flags & IP_FORWARDING) == 0) {
+X		ip->ip_v = IPVERSION;
+X		ip->ip_off &= IP_DF;
+X		ip->ip_id = htons(ip_id++);
+X		ip->ip_hl = hlen >> 2;
+X	} else
+X		hlen = ip->ip_hl << 2;
+X
+X	/*
+X	 * Route packet.
+X	 */
+X	if (ro == 0) {
+X		ro = &iproute;
+X		bzero((caddr_t)ro, sizeof (*ro));
+X	}
+X	dst = (struct sockaddr_in *)&ro->ro_dst;
+X	/*
+X	 * If there is a cached route,
+X	 * check that it is to the same destination
+X	 * and is still up.  If not, free it and try again.
+X	 */
+X	if (ro->ro_rt && ((ro->ro_rt->rt_flags & RTF_UP) == 0 ||
+X	   dst->sin_addr.s_addr != ip->ip_dst.s_addr)) {
+X		RTFREE(ro->ro_rt);
+X		ro->ro_rt = (struct rtentry *)0;
+X	}
+X	if (ro->ro_rt == 0) {
+X		dst->sin_family = AF_INET;
+X		dst->sin_addr = ip->ip_dst;
+X	}
+X	/*
+X	 * If routing to interface only,
+X	 * short circuit routing lookup.
+X	 */
+X	if (flags & IP_ROUTETOIF) {
+X		struct in_ifaddr *ia;
+X
+X		ia = (struct in_ifaddr *)ifa_ifwithdstaddr(dst);
+X		if (ia == 0)
+X			ia = in_iaonnetof(in_netof(ip->ip_dst));
+X		if (ia == 0) {
+X			error = ENETUNREACH;
+X			goto bad;
+X		}
+X		ifp = ia->ia_ifp;
+X	} else {
+X		if (ro->ro_rt == 0)
+X			rtalloc(ro);
+X		if (ro->ro_rt == 0 || (ifp = ro->ro_rt->rt_ifp) == 0) {
+X			if (in_localaddr(ip->ip_dst))
+X				error = EHOSTUNREACH;
+X			else
+X				error = ENETUNREACH;
+X			goto bad;
+X		}
+X		ro->ro_rt->rt_use++;
+X		if (ro->ro_rt->rt_flags & RTF_GATEWAY)
+X			dst = (struct sockaddr_in *)&ro->ro_rt->rt_gateway;
+X	}
+X#ifndef notdef
+X	/*
+X	 * If source address not specified yet, use address
+X	 * of outgoing interface.
+X	 */
+X	if (ip->ip_src.s_addr == INADDR_ANY) {
+X		register struct in_ifaddr *ia;
+X
+X		for (ia = in_ifaddr; ia; ia = ia->ia_next)
+X			if (ia->ia_ifp == ifp) {
+X				ip->ip_src = IA_SIN(ia)->sin_addr;
+X				break;
+X			}
+X	}
+X#endif
+X	/*
+X	 * Look for broadcast address and
+X	 * and verify user is allowed to send
+X	 * such a packet.
+X	 */
+X	if (in_broadcast(dst->sin_addr)) {
+X		if ((ifp->if_flags & IFF_BROADCAST) == 0) {
+X			error = EADDRNOTAVAIL;
+X			goto bad;
+X		}
+X		if ((flags & IP_ALLOWBROADCAST) == 0) {
+X			error = EACCES;
+X			goto bad;
+X		}
+X		/* don't allow broadcast messages to be fragmented */
+X		if (ip->ip_len > ifp->if_mtu) {
+X			error = EMSGSIZE;
+X			goto bad;
+X		}
+X	}
+X
+X	/*
+X	 * If small enough for interface, can just send directly.
+X	 */
+X	if (ip->ip_len <= ifp->if_mtu) {
+X		ip->ip_len = htons((u_short)ip->ip_len);
+X		ip->ip_off = htons((u_short)ip->ip_off);
+X		ip->ip_sum = 0;
+X		ip->ip_sum = in_cksum(m, hlen);
+X		error = (*ifp->if_output)(ifp, m, (struct sockaddr *)dst);
+X		goto done;
+X	}
+X
+X	/*
+X	 * Too large for interface; fragment if possible.
+X	 * Must be able to put at least 8 bytes per fragment.
+X	 */
+X	if (ip->ip_off & IP_DF) {
+X		error = EMSGSIZE;
+X		goto bad;
+X	}
+X	len = (ifp->if_mtu - hlen) &~ 7;
+X	if (len < 8) {
+X		error = EMSGSIZE;
+X		goto bad;
+X	}
+X
+X    {
+X	int mhlen, firstlen = len;
+X	struct mbuf **mnext = &m->m_act;
+X
+X	/*
+X	 * Loop through length of segment after first fragment,
+X	 * make new header and copy data of each part and link onto chain.
+X	 */
+X	m0 = m;
+X	mhlen = sizeof (struct ip);
+X	for (off = hlen + len; off < ip->ip_len; off += len) {
+X		MGET(m, M_DONTWAIT, MT_HEADER);
+X		if (m == 0) {
+X			error = ENOBUFS;
+X			goto bad;
+X		}
+X		m->m_off = MMAXOFF - hlen;
+X		mhip = mtod(m, struct ip *);
+X		*mhip = *ip;
+X		if (hlen > sizeof (struct ip)) {
+X			mhlen = ip_optcopy(ip, mhip) + sizeof (struct ip);
+X			mhip->ip_hl = mhlen >> 2;
+X		}
+X		m->m_len = mhlen;
+X		mhip->ip_off = ((off - hlen) >> 3) + (ip->ip_off & ~IP_MF);
+X		if (ip->ip_off & IP_MF)
+X			mhip->ip_off |= IP_MF;
+X		if (off + len >= ip->ip_len)
+X			len = ip->ip_len - off;
+X		else
+X			mhip->ip_off |= IP_MF;
+X		mhip->ip_len = htons((u_short)(len + mhlen));
+X		m->m_next = m_copy(m0, off, len);
+X		if (m->m_next == 0) {
+X			error = ENOBUFS;	/* ??? */
+X			goto sendorfree;
+X		}
+X		mhip->ip_off = htons((u_short)mhip->ip_off);
+X		mhip->ip_sum = 0;
+X		mhip->ip_sum = in_cksum(m, mhlen);
+X		*mnext = m;
+X		mnext = &m->m_act;
+X	}
+X	/*
+X	 * Update first fragment by trimming what's been copied out
+X	 * and updating header, then send each fragment (in order).
+X	 */
+X	m_adj(m0, hlen + firstlen - ip->ip_len);
+X	ip->ip_len = hlen + firstlen;
+X	ip->ip_off |= IP_MF;
+X	ip->ip_sum = 0;
+X	ip->ip_sum = in_cksum(m0, hlen);
+Xsendorfree:
+X	for (m = m0; m; m = m0) {
+X		m0 = m->m_act;
+X		m->m_act = 0;
+X		if (error == 0)
+X			error = (*ifp->if_output)(ifp, m,
+X			    (struct sockaddr *)dst);
+X		else
+X			m_freem(m);
+X	}
+X    }
+Xdone:
+X	if (ro == &iproute && (flags & IP_ROUTETOIF) == 0 && ro->ro_rt)
+X		RTFREE(ro->ro_rt);
+X	return (error);
+Xbad:
+X	m_freem(m0);
+X	goto done;
+X}
+X
+X/*
+X * Insert IP options into preformed packet.
+X * Adjust IP destination as required for IP source routing,
+X * as indicated by a non-zero in_addr at the start of the options.
+X */
+Xstruct mbuf *
+Xip_insertoptions(m, opt, phlen)
+X	register struct mbuf *m;
+X	struct mbuf *opt;
+X	int *phlen;
+X{
+X	register struct ipoption *p = mtod(opt, struct ipoption *);
+X	struct mbuf *n;
+X	register struct ip *ip = mtod(m, struct ip *);
+X	unsigned optlen;
+X
+X	optlen = opt->m_len - sizeof(p->ipopt_dst);
+X	if (p->ipopt_dst.s_addr)
+X		ip->ip_dst = p->ipopt_dst;
+X	if (m->m_off >= MMAXOFF || MMINOFF + optlen > m->m_off) {
+X		MGET(n, M_DONTWAIT, MT_HEADER);
+X		if (n == 0)
+X			return (m);
+X		m->m_len -= sizeof(struct ip);
+X		m->m_off += sizeof(struct ip);
+X		n->m_next = m;
+X		m = n;
+X		m->m_off = MMAXOFF - sizeof(struct ip) - optlen;
+X		m->m_len = optlen + sizeof(struct ip);
+X		bcopy((caddr_t)ip, mtod(m, caddr_t), sizeof(struct ip));
+X	} else {
+X		m->m_off -= optlen;
+X		m->m_len += optlen;
+X		ovbcopy((caddr_t)ip, mtod(m, caddr_t), sizeof(struct ip));
+X	}
+X	ip = mtod(m, struct ip *);
+X	bcopy((caddr_t)p->ipopt_list, (caddr_t)(ip + 1), (unsigned)optlen);
+X	*phlen = sizeof(struct ip) + optlen;
+X	ip->ip_len += optlen;
+X	return (m);
+X}
+X
+X/*
+X * Copy options from ip to jp,
+X * omitting those not copied during fragmentation.
+X */
+Xip_optcopy(ip, jp)
+X	struct ip *ip, *jp;
+X{
+X	register u_char *cp, *dp;
+X	int opt, optlen, cnt;
+X
+X	cp = (u_char *)(ip + 1);
+X	dp = (u_char *)(jp + 1);
+X	cnt = (ip->ip_hl << 2) - sizeof (struct ip);
+X	for (; cnt > 0; cnt -= optlen, cp += optlen) {
+X		opt = cp[0];
+X		if (opt == IPOPT_EOL)
+X			break;
+X		if (opt == IPOPT_NOP)
+X			optlen = 1;
+X		else
+X			optlen = cp[IPOPT_OLEN];
+X		/* bogus lengths should have been caught by ip_dooptions */
+X		if (optlen > cnt)
+X			optlen = cnt;
+X		if (IPOPT_COPIED(opt)) {
+X			bcopy((caddr_t)cp, (caddr_t)dp, (unsigned)optlen);
+X			dp += optlen;
+X		}
+X	}
+X	for (optlen = dp - (u_char *)(jp+1); optlen & 0x3; optlen++)
+X		*dp++ = IPOPT_EOL;
+X	return (optlen);
+X}
+X
+X/*
+X * IP socket option processing.
+X */
+Xip_ctloutput(op, so, level, optname, m)
+X	int op;
+X	struct socket *so;
+X	int level, optname;
+X	struct mbuf **m;
+X{
+X	int error = 0;
+X	struct inpcb *inp = sotoinpcb(so);
+X
+X	if (level != IPPROTO_IP)
+X		error = EINVAL;
+X	else switch (op) {
+X
+X	case PRCO_SETOPT:
+X		switch (optname) {
+X		case IP_OPTIONS:
+X			return (ip_pcbopts(&inp->inp_options, *m));
+X
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		break;
+X
+X	case PRCO_GETOPT:
+X		switch (optname) {
+X		case IP_OPTIONS:
+X			*m = m_get(M_WAIT, MT_SOOPTS);
+X			if (inp->inp_options) {
+X				(*m)->m_off = inp->inp_options->m_off;
+X				(*m)->m_len = inp->inp_options->m_len;
+X				bcopy(mtod(inp->inp_options, caddr_t),
+X				    mtod(*m, caddr_t), (unsigned)(*m)->m_len);
+X			} else
+X				(*m)->m_len = 0;
+X			break;
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		break;
+X	}
+X	if (op == PRCO_SETOPT && *m)
+X		(void)m_free(*m);
+X	return (error);
+X}
+X
+X/*
+X * Set up IP options in pcb for insertion in output packets.
+X * Store in mbuf with pointer in pcbopt, adding pseudo-option
+X * with destination address if source routed.
+X */
+Xip_pcbopts(pcbopt, m)
+X	struct mbuf **pcbopt;
+X	register struct mbuf *m;
+X{
+X	register cnt, optlen;
+X	register u_char *cp;
+X	u_char opt;
+X
+X	/* turn off any old options */
+X	if (*pcbopt)
+X		(void)m_free(*pcbopt);
+X	*pcbopt = 0;
+X	if (m == (struct mbuf *)0 || m->m_len == 0) {
+X		/*
+X		 * Only turning off any previous options.
+X		 */
+X		if (m)
+X			(void)m_free(m);
+X		return (0);
+X	}
+X
+X#ifndef	vax
+X	if (m->m_len % sizeof(long))
+X		goto bad;
+X#endif
+X	/*
+X	 * IP first-hop destination address will be stored before
+X	 * actual options; move other options back
+X	 * and clear it when none present.
+X	 */
+X#if	MAX_IPOPTLEN >= MMAXOFF - MMINOFF
+X	if (m->m_off + m->m_len + sizeof(struct in_addr) > MAX_IPOPTLEN)
+X		goto bad;
+X#else
+X	if (m->m_off + m->m_len + sizeof(struct in_addr) > MMAXOFF)
+X		goto bad;
+X#endif
+X	cnt = m->m_len;
+X	m->m_len += sizeof(struct in_addr);
+X	cp = mtod(m, u_char *) + sizeof(struct in_addr);
+X	ovbcopy(mtod(m, caddr_t), (caddr_t)cp, (unsigned)cnt);
+X	bzero(mtod(m, caddr_t), sizeof(struct in_addr));
+X
+X	for (; cnt > 0; cnt -= optlen, cp += optlen) {
+X		opt = cp[IPOPT_OPTVAL];
+X		if (opt == IPOPT_EOL)
+X			break;
+X		if (opt == IPOPT_NOP)
+X			optlen = 1;
+X		else {
+X			optlen = cp[IPOPT_OLEN];
+X			if (optlen <= IPOPT_OLEN || optlen > cnt)
+X				goto bad;
+X		}
+X		switch (opt) {
+X
+X		default:
+X			break;
+X
+X		case IPOPT_LSRR:
+X		case IPOPT_SSRR:
+X			/*
+X			 * user process specifies route as:
+X			 *	->A->B->C->D
+X			 * D must be our final destination (but we can't
+X			 * check that since we may not have connected yet).
+X			 * A is first hop destination, which doesn't appear in
+X			 * actual IP option, but is stored before the options.
+X			 */
+X			if (optlen < IPOPT_MINOFF - 1 + sizeof(struct in_addr))
+X				goto bad;
+X			m->m_len -= sizeof(struct in_addr);
+X			cnt -= sizeof(struct in_addr);
+X			optlen -= sizeof(struct in_addr);
+X			cp[IPOPT_OLEN] = optlen;
+X			/*
+X			 * Move first hop before start of options.
+X			 */
+X			bcopy((caddr_t)&cp[IPOPT_OFFSET+1], mtod(m, caddr_t),
+X			    sizeof(struct in_addr));
+X			/*
+X			 * Then copy rest of options back
+X			 * to close up the deleted entry.
+X			 */
+X			ovbcopy((caddr_t)(&cp[IPOPT_OFFSET+1] +
+X			    sizeof(struct in_addr)),
+X			    (caddr_t)&cp[IPOPT_OFFSET+1],
+X			    (unsigned)cnt + sizeof(struct in_addr));
+X			break;
+X		}
+X	}
+X	*pcbopt = m;
+X	return (0);
+X
+Xbad:
+X	(void)m_free(m);
+X	return (EINVAL);
+X}
+END-of-netinet/ip_output.c
+echo x - netinet/ip_var.h
+sed 's/^X//' >netinet/ip_var.h << 'END-of-netinet/ip_var.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)ip_var.h	7.4 (Berkeley) 1/7/88
+X */
+X
+X/*
+X * Overlay for ip header used by other protocols (tcp, udp).
+X */
+Xstruct ipovly {
+X	caddr_t	ih_next, ih_prev;	/* for protocol sequence q's */
+X	u_char	ih_x1;			/* (unused) */
+X	u_char	ih_pr;			/* protocol */
+X	short	ih_len;			/* protocol length */
+X	struct	in_addr ih_src;		/* source internet address */
+X	struct	in_addr ih_dst;		/* destination internet address */
+X};
+X
+X/*
+X * Ip reassembly queue structure.  Each fragment
+X * being reassembled is attached to one of these structures.
+X * They are timed out after ipq_ttl drops to 0, and may also
+X * be reclaimed if memory becomes tight.
+X */
+Xstruct ipq {
+X	struct	ipq *next,*prev;	/* to other reass headers */
+X	u_char	ipq_ttl;		/* time for reass q to live */
+X	u_char	ipq_p;			/* protocol of this fragment */
+X	u_short	ipq_id;			/* sequence id for reassembly */
+X	struct	ipasfrag *ipq_next,*ipq_prev;
+X					/* to ip headers of fragments */
+X	struct	in_addr ipq_src,ipq_dst;
+X};
+X
+X/*
+X * Ip header, when holding a fragment.
+X *
+X * Note: ipf_next must be at same offset as ipq_next above
+X */
+Xstruct	ipasfrag {
+X#if BYTE_ORDER == LITTLE_ENDIAN 
+X	u_char	ip_hl:4,
+X		ip_v:4;
+X#endif
+X#if BYTE_ORDER == BIG_ENDIAN 
+X	u_char	ip_v:4,
+X		ip_hl:4;
+X#endif
+X	u_char	ipf_mff;		/* copied from (ip_off&IP_MF) */
+X	short	ip_len;
+X	u_short	ip_id;
+X	short	ip_off;
+X	u_char	ip_ttl;
+X	u_char	ip_p;
+X	u_short	ip_sum;
+X	struct	ipasfrag *ipf_next;	/* next fragment */
+X	struct	ipasfrag *ipf_prev;	/* previous fragment */
+X};
+X
+X/*
+X * Structure stored in mbuf in inpcb.ip_options
+X * and passed to ip_output when ip options are in use.
+X * The actual length of the options (including ipopt_dst)
+X * is in m_len.
+X */
+X#define MAX_IPOPTLEN	40
+X
+Xstruct ipoption {
+X	struct	in_addr ipopt_dst;	/* first-hop dst if source routed */
+X	char	ipopt_list[MAX_IPOPTLEN];	/* options proper */
+X};
+X
+Xstruct	ipstat {
+X	long	ips_total;		/* total packets received */
+X	long	ips_badsum;		/* checksum bad */
+X	long	ips_tooshort;		/* packet too short */
+X	long	ips_toosmall;		/* not enough data */
+X	long	ips_badhlen;		/* ip header length < data size */
+X	long	ips_badlen;		/* ip length < ip header length */
+X	long	ips_fragments;		/* fragments received */
+X	long	ips_fragdropped;	/* frags dropped (dups, out of space) */
+X	long	ips_fragtimeout;	/* fragments timed out */
+X	long	ips_forward;		/* packets forwarded */
+X	long	ips_cantforward;	/* packets rcvd for unreachable dest */
+X	long	ips_redirectsent;	/* packets forwarded on same net */
+X};
+X
+X#ifdef KERNEL
+X/* flags passed to ip_output as last parameter */
+X#define	IP_FORWARDING		0x1		/* most of ip header exists */
+X#define	IP_ROUTETOIF		SO_DONTROUTE	/* bypass routing tables */
+X#define	IP_ALLOWBROADCAST	SO_BROADCAST	/* can send broadcast packets */
+X
+Xstruct	ipstat	ipstat;
+Xstruct	ipq	ipq;			/* ip reass. queue */
+Xu_short	ip_id;				/* ip packet ctr, for ids */
+X
+Xstruct	mbuf *ip_srcroute();
+X#endif
+END-of-netinet/ip_var.h
+echo x - netinet/raw_ip.c
+sed 's/^X//' >netinet/raw_ip.c << 'END-of-netinet/raw_ip.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)raw_ip.c	7.3 (Berkeley) 12/7/87
+X */
+X
+X#include "param.h"
+X#include "mbuf.h"
+X#include "socket.h"
+X#include "protosw.h"
+X#include "socketvar.h"
+X#include "errno.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X#include "../net/raw_cb.h"
+X
+X#include "in.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X
+X/*
+X * Raw interface to IP protocol.
+X */
+X
+Xstruct	sockaddr_in ripdst = { AF_INET };
+Xstruct	sockaddr_in ripsrc = { AF_INET };
+Xstruct	sockproto ripproto = { PF_INET };
+X/*
+X * Setup generic address and protocol structures
+X * for raw_input routine, then pass them along with
+X * mbuf chain.
+X */
+Xrip_input(m)
+X	struct mbuf *m;
+X{
+X	register struct ip *ip = mtod(m, struct ip *);
+X
+X	ripproto.sp_protocol = ip->ip_p;
+X	ripdst.sin_addr = ip->ip_dst;
+X	ripsrc.sin_addr = ip->ip_src;
+X	raw_input(m, &ripproto, (struct sockaddr *)&ripsrc,
+X	  (struct sockaddr *)&ripdst);
+X}
+X
+X/*
+X * Generate IP header and pass packet to ip_output.
+X * Tack on options user may have setup with control call.
+X */
+Xrip_output(m0, so)
+X	struct mbuf *m0;
+X	struct socket *so;
+X{
+X	register struct mbuf *m;
+X	register struct ip *ip;
+X	int len = 0, error;
+X	struct rawcb *rp = sotorawcb(so);
+X	struct sockaddr_in *sin;
+X
+X	/*
+X	 * Calculate data length and get an mbuf
+X	 * for IP header.
+X	 */
+X	for (m = m0; m; m = m->m_next)
+X		len += m->m_len;
+X	m = m_get(M_DONTWAIT, MT_HEADER);
+X	if (m == 0) {
+X		error = ENOBUFS;
+X		goto bad;
+X	}
+X	
+X	/*
+X	 * Fill in IP header as needed.
+X	 */
+X	m->m_off = MMAXOFF - sizeof(struct ip);
+X	m->m_len = sizeof(struct ip);
+X	m->m_next = m0;
+X	ip = mtod(m, struct ip *);
+X	ip->ip_tos = 0;
+X	ip->ip_off = 0;
+X	ip->ip_p = rp->rcb_proto.sp_protocol;
+X	ip->ip_len = sizeof(struct ip) + len;
+X	if (rp->rcb_flags & RAW_LADDR) {
+X		sin = (struct sockaddr_in *)&rp->rcb_laddr;
+X		if (sin->sin_family != AF_INET) {
+X			error = EAFNOSUPPORT;
+X			goto bad;
+X		}
+X		ip->ip_src.s_addr = sin->sin_addr.s_addr;
+X	} else
+X		ip->ip_src.s_addr = 0;
+X	ip->ip_dst = ((struct sockaddr_in *)&rp->rcb_faddr)->sin_addr;
+X	ip->ip_ttl = MAXTTL;
+X	return (ip_output(m, rp->rcb_options, &rp->rcb_route, 
+X	   (so->so_options & SO_DONTROUTE) | IP_ALLOWBROADCAST));
+Xbad:
+X	m_freem(m);
+X	return (error);
+X}
+X
+X/*
+X * Raw IP socket option processing.
+X */
+Xrip_ctloutput(op, so, level, optname, m)
+X	int op;
+X	struct socket *so;
+X	int level, optname;
+X	struct mbuf **m;
+X{
+X	int error = 0;
+X	register struct rawcb *rp = sotorawcb(so);
+X
+X	if (level != IPPROTO_IP)
+X		error = EINVAL;
+X	else switch (op) {
+X
+X	case PRCO_SETOPT:
+X		switch (optname) {
+X		case IP_OPTIONS:
+X			return (ip_pcbopts(&rp->rcb_options, *m));
+X
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		break;
+X
+X	case PRCO_GETOPT:
+X		switch (optname) {
+X		case IP_OPTIONS:
+X			*m = m_get(M_WAIT, MT_SOOPTS);
+X			if (rp->rcb_options) {
+X				(*m)->m_off = rp->rcb_options->m_off;
+X				(*m)->m_len = rp->rcb_options->m_len;
+X				bcopy(mtod(rp->rcb_options, caddr_t),
+X				    mtod(*m, caddr_t), (unsigned)(*m)->m_len);
+X			} else
+X				(*m)->m_len = 0;
+X			break;
+X		default:
+X			error = EINVAL;
+X			break;
+X		}
+X		break;
+X	}
+X	if (op == PRCO_SETOPT && *m)
+X		(void)m_free(*m);
+X	return (error);
+X}
+END-of-netinet/raw_ip.c
+echo x - netinet/udp.h
+sed 's/^X//' >netinet/udp.h << 'END-of-netinet/udp.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)udp.h	7.2 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * Udp protocol header.
+X * Per RFC 768, September, 1981.
+X */
+Xstruct udphdr {
+X	u_short	uh_sport;		/* source port */
+X	u_short	uh_dport;		/* destination port */
+X	short	uh_ulen;		/* udp length */
+X	u_short	uh_sum;			/* udp checksum */
+X};
+END-of-netinet/udp.h
+echo x - netinet/udp_usrreq.c
+sed 's/^X//' >netinet/udp_usrreq.c << 'END-of-netinet/udp_usrreq.c'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)udp_usrreq.c	7.5 (Berkeley) 3/11/88
+X */
+X
+X#include "param.h"
+X#include "dir.h"
+X#include "user.h"
+X#include "mbuf.h"
+X#include "protosw.h"
+X#include "socket.h"
+X#include "socketvar.h"
+X#include "errno.h"
+X#include "stat.h"
+X
+X#include "../net/if.h"
+X#include "../net/route.h"
+X
+X#include "in.h"
+X#include "in_pcb.h"
+X#include "in_systm.h"
+X#include "ip.h"
+X#include "ip_var.h"
+X#include "ip_icmp.h"
+X#include "udp.h"
+X#include "udp_var.h"
+X
+X/*
+X * UDP protocol implementation.
+X * Per RFC 768, August, 1980.
+X */
+Xudp_init()
+X{
+X
+X	udb.inp_next = udb.inp_prev = &udb;
+X}
+X
+X#ifndef	COMPAT_42
+Xint	udpcksum = 1;
+X#else
+Xint	udpcksum = 0;		/* XXX */
+X#endif
+Xint	udp_ttl = UDP_TTL;
+X
+Xstruct	sockaddr_in udp_in = { AF_INET };
+X
+Xudp_input(m0, ifp)
+X	struct mbuf *m0;
+X	struct ifnet *ifp;
+X{
+X	register struct udpiphdr *ui;
+X	register struct inpcb *inp;
+X	register struct mbuf *m;
+X	int len;
+X	struct ip ip;
+X
+X	/*
+X	 * Get IP and UDP header together in first mbuf.
+X	 */
+X	m = m0;
+X	if ((m->m_off > MMAXOFF || m->m_len < sizeof (struct udpiphdr)) &&
+X	    (m = m_pullup(m, sizeof (struct udpiphdr))) == 0) {
+X		udpstat.udps_hdrops++;
+X		return;
+X	}
+X	ui = mtod(m, struct udpiphdr *);
+X	if (((struct ip *)ui)->ip_hl > (sizeof (struct ip) >> 2))
+X		ip_stripoptions((struct ip *)ui, (struct mbuf *)0);
+X
+X	/*
+X	 * Make mbuf data length reflect UDP length.
+X	 * If not enough data to reflect UDP length, drop.
+X	 */
+X	len = ntohs((u_short)ui->ui_ulen);
+X	if (((struct ip *)ui)->ip_len != len) {
+X		if (len > ((struct ip *)ui)->ip_len) {
+X			udpstat.udps_badlen++;
+X			goto bad;
+X		}
+X		m_adj(m, len - ((struct ip *)ui)->ip_len);
+X		/* ((struct ip *)ui)->ip_len = len; */
+X	}
+X	/*
+X	 * Save a copy of the IP header in case we want restore it for ICMP.
+X	 */
+X	ip = *(struct ip*)ui;
+X
+X	/*
+X	 * Checksum extended UDP header and data.
+X	 */
+X	if (udpcksum && ui->ui_sum) {
+X		ui->ui_next = ui->ui_prev = 0;
+X		ui->ui_x1 = 0;
+X		ui->ui_len = ui->ui_ulen;
+X		if (ui->ui_sum = in_cksum(m, len + sizeof (struct ip))) {
+X			udpstat.udps_badsum++;
+X			m_freem(m);
+X			return;
+X		}
+X	}
+X
+X	/*
+X	 * Locate pcb for datagram.
+X	 */
+X	inp = in_pcblookup(&udb,
+X	    ui->ui_src, ui->ui_sport, ui->ui_dst, ui->ui_dport,
+X		INPLOOKUP_WILDCARD);
+X	if (inp == 0) {
+X		/* don't send ICMP response for broadcast packet */
+X		if (in_broadcast(ui->ui_dst))
+X			goto bad;
+X		*(struct ip *)ui = ip;
+X		icmp_error((struct ip *)ui, ICMP_UNREACH, ICMP_UNREACH_PORT,
+X		    ifp);
+X		return;
+X	}
+X
+X	/*
+X	 * Construct sockaddr format source address.
+X	 * Stuff source address and datagram in user buffer.
+X	 */
+X	udp_in.sin_port = ui->ui_sport;
+X	udp_in.sin_addr = ui->ui_src;
+X	m->m_len -= sizeof (struct udpiphdr);
+X	m->m_off += sizeof (struct udpiphdr);
+X	if (sbappendaddr(&inp->inp_socket->so_rcv, (struct sockaddr *)&udp_in,
+X	    m, (struct mbuf *)0) == 0)
+X		goto bad;
+X	sorwakeup(inp->inp_socket);
+X	return;
+Xbad:
+X	m_freem(m);
+X}
+X
+X/*
+X * Notify a udp user of an asynchronous error;
+X * just wake up so that he can collect error status.
+X */
+Xudp_notify(inp)
+X	register struct inpcb *inp;
+X{
+X
+X	sorwakeup(inp->inp_socket);
+X	sowwakeup(inp->inp_socket);
+X}
+X
+Xudp_ctlinput(cmd, sa)
+X	int cmd;
+X	struct sockaddr *sa;
+X{
+X	extern u_char inetctlerrmap[];
+X	struct sockaddr_in *sin;
+X	int in_rtchange();
+X
+X	if ((unsigned)cmd > PRC_NCMDS)
+X		return;
+X	if (sa->sa_family != AF_INET && sa->sa_family != AF_IMPLINK)
+X		return;
+X	sin = (struct sockaddr_in *)sa;
+X	if (sin->sin_addr.s_addr == INADDR_ANY)
+X		return;
+X
+X	switch (cmd) {
+X
+X	case PRC_QUENCH:
+X		break;
+X
+X	case PRC_ROUTEDEAD:
+X	case PRC_REDIRECT_NET:
+X	case PRC_REDIRECT_HOST:
+X	case PRC_REDIRECT_TOSNET:
+X	case PRC_REDIRECT_TOSHOST:
+X		in_pcbnotify(&udb, &sin->sin_addr, 0, in_rtchange);
+X		break;
+X
+X	default:
+X		if (inetctlerrmap[cmd] == 0)
+X			return;		/* XXX */
+X		in_pcbnotify(&udb, &sin->sin_addr, (int)inetctlerrmap[cmd],
+X			udp_notify);
+X	}
+X}
+X
+Xudp_output(inp, m0)
+X	register struct inpcb *inp;
+X	struct mbuf *m0;
+X{
+X	register struct mbuf *m;
+X	register struct udpiphdr *ui;
+X	register int len = 0;
+X
+X	/*
+X	 * Calculate data length and get a mbuf
+X	 * for UDP and IP headers.
+X	 */
+X	for (m = m0; m; m = m->m_next)
+X		len += m->m_len;
+X	MGET(m, M_DONTWAIT, MT_HEADER);
+X	if (m == 0) {
+X		m_freem(m0);
+X		return (ENOBUFS);
+X	}
+X
+X	/*
+X	 * Fill in mbuf with extended UDP header
+X	 * and addresses and length put into network format.
+X	 */
+X	m->m_off = MMAXOFF - sizeof (struct udpiphdr);
+X	m->m_len = sizeof (struct udpiphdr);
+X	m->m_next = m0;
+X	ui = mtod(m, struct udpiphdr *);
+X	ui->ui_next = ui->ui_prev = 0;
+X	ui->ui_x1 = 0;
+X	ui->ui_pr = IPPROTO_UDP;
+X	ui->ui_len = htons((u_short)len + sizeof (struct udphdr));
+X	ui->ui_src = inp->inp_laddr;
+X	ui->ui_dst = inp->inp_faddr;
+X	ui->ui_sport = inp->inp_lport;
+X	ui->ui_dport = inp->inp_fport;
+X	ui->ui_ulen = ui->ui_len;
+X
+X	/*
+X	 * Stuff checksum and output datagram.
+X	 */
+X	ui->ui_sum = 0;
+X	if (udpcksum) {
+X	    if ((ui->ui_sum = in_cksum(m, sizeof (struct udpiphdr) + len)) == 0)
+X		ui->ui_sum = 0xffff;
+X	}
+X	((struct ip *)ui)->ip_len = sizeof (struct udpiphdr) + len;
+X	((struct ip *)ui)->ip_ttl = udp_ttl;
+X	return (ip_output(m, inp->inp_options, &inp->inp_route,
+X	    inp->inp_socket->so_options & (SO_DONTROUTE | SO_BROADCAST)));
+X}
+X
+Xint	udp_sendspace = 2048;		/* really max datagram size */
+Xint	udp_recvspace = 4 * (1024+sizeof(struct sockaddr_in)); /* 4 1K dgrams */
+X
+X/*ARGSUSED*/
+Xudp_usrreq(so, req, m, nam, rights)
+X	struct socket *so;
+X	int req;
+X	struct mbuf *m, *nam, *rights;
+X{
+X	struct inpcb *inp = sotoinpcb(so);
+X	int error = 0;
+X
+X	if (req == PRU_CONTROL)
+X		return (in_control(so, (int)m, (caddr_t)nam,
+X			(struct ifnet *)rights));
+X	if (rights && rights->m_len) {
+X		error = EINVAL;
+X		goto release;
+X	}
+X	if (inp == NULL && req != PRU_ATTACH) {
+X		error = EINVAL;
+X		goto release;
+X	}
+X	switch (req) {
+X
+X	case PRU_ATTACH:
+X		if (inp != NULL) {
+X			error = EINVAL;
+X			break;
+X		}
+X		error = in_pcballoc(so, &udb);
+X		if (error)
+X			break;
+X		error = soreserve(so, udp_sendspace, udp_recvspace);
+X		if (error)
+X			break;
+X		break;
+X
+X	case PRU_DETACH:
+X		in_pcbdetach(inp);
+X		break;
+X
+X	case PRU_BIND:
+X		error = in_pcbbind(inp, nam);
+X		break;
+X
+X	case PRU_LISTEN:
+X		error = EOPNOTSUPP;
+X		break;
+X
+X	case PRU_CONNECT:
+X		if (inp->inp_faddr.s_addr != INADDR_ANY) {
+X			error = EISCONN;
+X			break;
+X		}
+X		error = in_pcbconnect(inp, nam);
+X		if (error == 0)
+X			soisconnected(so);
+X		break;
+X
+X	case PRU_CONNECT2:
+X		error = EOPNOTSUPP;
+X		break;
+X
+X	case PRU_ACCEPT:
+X		error = EOPNOTSUPP;
+X		break;
+X
+X	case PRU_DISCONNECT:
+X		if (inp->inp_faddr.s_addr == INADDR_ANY) {
+X			error = ENOTCONN;
+X			break;
+X		}
+X		in_pcbdisconnect(inp);
+X		so->so_state &= ~SS_ISCONNECTED;		/* XXX */
+X		break;
+X
+X	case PRU_SHUTDOWN:
+X		socantsendmore(so);
+X		break;
+X
+X	case PRU_SEND: {
+X		struct in_addr laddr;
+X		int s;
+X
+X		if (nam) {
+X			laddr = inp->inp_laddr;
+X			if (inp->inp_faddr.s_addr != INADDR_ANY) {
+X				error = EISCONN;
+X				break;
+X			}
+X			/*
+X			 * Must block input while temporarily connected.
+X			 */
+X			s = splnet();
+X			error = in_pcbconnect(inp, nam);
+X			if (error) {
+X				splx(s);
+X				break;
+X			}
+X		} else {
+X			if (inp->inp_faddr.s_addr == INADDR_ANY) {
+X				error = ENOTCONN;
+X				break;
+X			}
+X		}
+X		error = udp_output(inp, m);
+X		m = NULL;
+X		if (nam) {
+X			in_pcbdisconnect(inp);
+X			inp->inp_laddr = laddr;
+X			splx(s);
+X		}
+X		}
+X		break;
+X
+X	case PRU_ABORT:
+X		soisdisconnected(so);
+X		in_pcbdetach(inp);
+X		break;
+X
+X	case PRU_SOCKADDR:
+X		in_setsockaddr(inp, nam);
+X		break;
+X
+X	case PRU_PEERADDR:
+X		in_setpeeraddr(inp, nam);
+X		break;
+X
+X	case PRU_SENSE:
+X		/*
+X		 * stat: don't bother with a blocksize.
+X		 */
+X		return (0);
+X
+X	case PRU_SENDOOB:
+X	case PRU_FASTTIMO:
+X	case PRU_SLOWTIMO:
+X	case PRU_PROTORCV:
+X	case PRU_PROTOSEND:
+X		error =  EOPNOTSUPP;
+X		break;
+X
+X	case PRU_RCVD:
+X	case PRU_RCVOOB:
+X		return (EOPNOTSUPP);	/* do not free mbuf's */
+X
+X	default:
+X		panic("udp_usrreq");
+X	}
+Xrelease:
+X	if (m != NULL)
+X		m_freem(m);
+X	return (error);
+X}
+END-of-netinet/udp_usrreq.c
+echo x - netinet/udp_var.h
+sed 's/^X//' >netinet/udp_var.h << 'END-of-netinet/udp_var.h'
+X/*
+X * Copyright (c) 1982, 1986 Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that this notice is preserved and that due credit is given
+X * to the University of California at Berkeley. The name of the University
+X * may not be used to endorse or promote products derived from this
+X * software without specific prior written permission. This software
+X * is provided ``as is'' without express or implied warranty.
+X *
+X *	@(#)udp_var.h	7.3 (Berkeley) 12/7/87
+X */
+X
+X/*
+X * UDP kernel structures and variables.
+X */
+Xstruct	udpiphdr {
+X	struct 	ipovly ui_i;		/* overlaid ip structure */
+X	struct	udphdr ui_u;		/* udp header */
+X};
+X#define	ui_next		ui_i.ih_next
+X#define	ui_prev		ui_i.ih_prev
+X#define	ui_x1		ui_i.ih_x1
+X#define	ui_pr		ui_i.ih_pr
+X#define	ui_len		ui_i.ih_len
+X#define	ui_src		ui_i.ih_src
+X#define	ui_dst		ui_i.ih_dst
+X#define	ui_sport	ui_u.uh_sport
+X#define	ui_dport	ui_u.uh_dport
+X#define	ui_ulen		ui_u.uh_ulen
+X#define	ui_sum		ui_u.uh_sum
+X
+Xstruct	udpstat {
+X	int	udps_hdrops;
+X	int	udps_badsum;
+X	int	udps_badlen;
+X};
+X
+X#define	UDP_TTL		30		/* deflt time to live for UDP packets */
+X
+X#ifdef KERNEL
+Xstruct	inpcb udb;
+Xstruct	udpstat udpstat;
+X#endif
+END-of-netinet/udp_var.h
+exit
+

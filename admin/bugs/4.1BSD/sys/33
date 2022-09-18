@@ -1,0 +1,1604 @@
+Return-Path: <uucp@cmu-cs-vlsi>
+Date: 26 Sep 83 14:47:37 EDT (Mon)
+From: Dave Rosenthal <cmuitca!dave@cmu-cs-vlsi.arpa>
+Subject: Fixes for Unix domain sockets
+Index: sys/uipc_usrreq.c 4.1BSD Fix
+
+Description:
+
+	The problems these fixes solve have been observed
+	on 4.1c VAX systems,  and on Sun release 0.3/0.4.
+	The basic problem is that doing almost anything to a
+	Unix domain socket will crash the system.  Test
+	programs to do this are included.  The fixes
+	implement improved behaviour on close() and abort of
+	connected sockets,  correct connect() behaviour of
+	datagram sockets,  and correct behaviour when a
+	process open()s the name bound to a Unix domain
+	socket.
+
+Repeat-By:
+
+	Cut at the dotted line,  and feed to the shell.
+	Perform the following operations:
+
+	make gram drib
+	gram -x
+	gram -x -f
+	gram -x -t
+	gram -x -f -t
+	drib -x -f >LOG &
+	echo Hello World >/tmp/s?????  (name printed by drib)
+
+-----------
+cat >Makefile <<'Funky-EOF'
+CFLAGS=-g 
+
+gram: sock.o grampair.o
+	$(CC) $(CFLAGS) -o gram sock.o grampair.o
+
+sock: sock.o socketpair.o
+	$(CC) $(CFLAGS) -o sock sock.o socketpair.o
+
+drib:	drib.o dribble.o
+	$(CC) $(CFLAGS) -o drib drib.o dribble.o
+
+clean: 	/tmp
+	rm -f *.o sock gram core
+
+Funky-EOF
+cat >drib.c <<'Funky-EOF'
+
+#include        <stdio.h>
+#include        <sys/types.h>
+#include        <sys/socket.h>
+#include        <netdb.h>
+#include        <netinet/in.h>
+
+char    *prog;
+static struct protoent  prot = {"default", NULL, 0};
+extern struct protoent  *getprotobyname();
+int     xflag = 0;
+
+main(argc, argv)
+int     argc;
+char    **argv;
+{
+        int     p[2];
+        int     family = AF_INET;
+        int     type = SOCK_STREAM;
+        struct protoent *protoc = &prot;
+
+        prog = *argv;
+        while (--argc) {
+                argv++;
+                if (**(argv) == '-') switch (*++(*argv)) {
+                case 'x':
+                        xflag++;
+                        fprintf(stderr, "Debug on\n");
+                        break;
+                case 'p':
+                        argc--;
+                        if ((protoc = getprotobyname(*(++argv))) == NULL) {
+                                fprintf("unknown protocol: %s\n", *argv);
+                                exit(1);
+                        }
+                        if (xflag)
+                                fprintf(stderr, "Protocol %s\n", *argv);
+                        break;
+                case 'f':
+                        family = AF_UNIX;
+                        if (xflag)
+                                fprintf(stderr, "Family: AF_UNIX\n");
+                        break;
+                case 't':
+                        if (xflag)
+                                fprintf(stderr, "Type: SOCK_DGRAM\n");
+                        type = SOCK_DGRAM;
+                        break;
+                } else
+                        ;
+        }
+        if ((p[0] = dribble(family, type, protoc->p_proto)) < 0) {
+                fprintf(stderr, "%s: no dribble\n", prog);
+                exit(1);
+        }
+        {
+                FILE    *fo, *fi;
+                int     c;
+
+                if ((fi = fdopen(p[0], "w+")) == NULL) {
+                        fprintf(stderr,  "Can't fdopen\n");
+                        exit(1);
+                }
+		fo = stdout;
+                while ((c = getc(fi)) != EOF)
+                        putc(c,fo);
+                fflush(fo);
+        }
+        exit(0);
+}
+Funky-EOF
+cat >dribble.c <<'Funky-EOF'
+
+#include        <stdio.h>
+#include        <sys/types.h>
+#include        <sys/socket.h>
+#include        <netinet/in.h>
+#include        <sys/un.h>
+#include        <netdb.h>
+#include        <errno.h>
+
+extern int      errno;
+extern char     *prog;
+extern int      xflag;
+#define DEBUG(X,Y)      if (xflag) {fprintf(stderr,X,Y); fputc('\n',stderr);\
+if (errno) perror(prog);}
+
+int
+dribble(af, ty, pr)
+int     af, ty, pr;
+{
+        struct sockaddr skaddr;
+        register struct sockaddr *ska = &skaddr;
+        register int    ss, child;
+
+        /*
+         * ss is the socket for listening on
+         */
+        DEBUG("About to socket %s", (af==AF_INET ? "AF_INET" : "AF_UNIX"));
+        if ((ss = socket(af,ty,pr)) < 0) {
+                DEBUG("Bad socket %s", "");
+                return (-1);
+        }
+        /*
+         * now bind an address to it
+         */
+        switch (af) {
+        case AF_INET:
+		if (mkinet(ss, (struct sockaddr_in *) ska) < 0) {
+			close(ss);
+			return (-1);
+		}
+                break;
+        case AF_UNIX:
+		if (mkunix(ss, (struct sockaddr_un *) ska) < 0) {
+			close(ss);
+			return (-1);
+		}
+                break;
+        default:
+                DEBUG("Bad family %d", af);
+                close(ss);
+                return (-1);
+        }
+	switch (ty) {
+	case SOCK_STREAM:
+		DEBUG("About to %s",(ty==SOCK_STREAM ? "listen":"do nothing"));
+		if (listen(ss, 1) < 0) {
+			DEBUG("Bad listen", "");
+			close(ss);
+			return (-1);
+		}
+		{	int status, ssr = ss;
+			struct sockaddr skaddr2;
+			int skaddrlen = sizeof (struct sockaddr);
+
+			DEBUG("About to accept", "");
+			if ((ss = accept(ssr, &skaddr2, &skaddrlen)) < 0) {
+				DEBUG("Bad accept", "");
+				close(ssr);
+				return (-1);
+			}
+		}
+		break;
+	case SOCK_DGRAM:
+		break;
+	default:
+		DEBUG("Bad type %d", ty);
+		return(-1);
+	}
+        return (ss);
+}
+
+
+#define TEMPNAME        "/tmp/sXXXXXX"
+mkunix(ss, skau)
+int	ss;
+register struct sockaddr_un *skau;
+{ 
+	extern char *mktemp(), *calloc();
+	static char *tempname = NULL;
+
+
+	if (tempname == NULL ) {
+		if ((tempname = calloc(1024, 1)) == NULL) {
+			DEBUG("Out of space", "");
+			return (-1);
+		}
+		strcpy(tempname, TEMPNAME);
+	}
+	skau->sun_family = AF_UNIX;
+#ifdef	UNIXDOMAIN
+	skau->sun_path = mktemp(tempname);
+#else
+	/*
+	 *  Only works because strlen(TEMPNAME) == 12!
+	 */
+	strcpy(skau->sun_path,mktemp(tempname));
+#endif
+	errno = 0;
+	if (strlen(skau->sun_path) >= sizeof skau->sun_path) {
+		DEBUG("Name %s mangled", skau->sun_path);
+		close(ss);
+		return(-1);
+	}
+	DEBUG("About to bind %s", skau->sun_path);
+	if (bind(ss, skau, sizeof (*skau)) != 0) {
+		DEBUG("Bad bind %s", skau->sun_path);
+		close(ss);
+		return (-1);
+	}
+}
+
+mkinet(ss, skai)
+int	ss;
+register struct sockaddr_in *skai;
+{
+/*
+ *  Find a free port in the un-privileged range
+ *  We have to go through this charade because
+ *  there is no way to find out the address
+ *  bound to a socket.
+ */
+	char me[255];
+	struct hostent  *hp;
+	register int	pn;
+
+	gethostname(me, 255);
+	hp = gethostbyname(me);
+	if (hp == 0) {
+		DEBUG("No host %s", me);
+		return(-1);
+	}
+	skai->sin_family = AF_INET;
+	skai->sin_addr.s_addr = INADDR_ANY;
+	for (pn=IPPORT_RESERVED+1; pn<IPPORT_RESERVED*2; pn++) {
+		skai->sin_port = htons((u_short)pn);
+		DEBUG("About to bind %d", pn);
+		if (bind(ss, skai, sizeof (*skai)) >= 0)
+			break;
+		if (errno!=EADDRINUSE && errno!=EADDRNOTAVAIL) {
+			DEBUG("Bad bind %d", pn);
+			close(ss);
+			return (-1);
+		}
+		errno = 0;
+	}
+	if (pn >= IPPORT_RESERVED*2) {
+		DEBUG("No ports %d", pn);
+		close(ss);
+		return (-1);
+	}
+	bcopy(hp->h_addr,(char *)&(skai->sin_addr),hp->h_length);
+}
+Funky-EOF
+cat >sock.c <<'Funky-EOF'
+#include        <stdio.h>
+#include        <sys/types.h>
+#include        <sys/socket.h>
+#include        <netdb.h>
+#include        <netinet/in.h>
+
+char    *prog;
+static struct protoent  prot = {"default", NULL, 0};
+extern struct protoent  *getprotobyname();
+int     xflag = 0;
+
+main(argc, argv)
+int     argc;
+char    **argv;
+{
+        int     p[2];
+        int     family = AF_INET;
+        int     type = SOCK_STREAM;
+        struct protoent *protoc = &prot;
+
+        prog = *argv;
+        while (--argc) {
+                argv++;
+                if (**(argv) == '-') switch (*++(*argv)) {
+                case 'x':
+                        xflag++;
+                        fprintf(stderr, "Debug on\n");
+                        break;
+                case 'p':
+                        argc--;
+                        if ((protoc = getprotobyname(*(++argv))) == NULL) {
+                                fprintf("unknown protocol: %s\n", *argv);
+                                exit(1);
+                        }
+                        if (xflag)
+                                fprintf(stderr, "Protocol %s\n", *argv);
+                        break;
+                case 'f':
+                        family = AF_UNIX;
+                        if (xflag)
+                                fprintf(stderr, "Family: AF_UNIX\n");
+                        break;
+                case 't':
+                        if (xflag)
+                                fprintf(stderr, "Type: SOCK_DGRAM\n");
+                        type = SOCK_DGRAM;
+                        break;
+                } else
+                        ;
+        }
+        if (socketpair(family, type, protoc->p_proto, p) < 0) {
+                fprintf(stderr, "%s: no socketpair\n", prog);
+                exit(1);
+        }
+        {
+                FILE    *fo, *fi;
+                int     c;
+
+                if ((fo = fdopen(p[0], "w+")) == NULL
+                        || (fi = fdopen(p[1], "w+")) == NULL) {
+                        fprintf(stderr,  "Can't fdopen\n");
+                        exit(1);
+                }
+                fprintf(fo, "Hello there\n");
+                fflush(fo);
+                while ((c = getc(fi)) != '\n')
+                        putc(c,stderr);
+                putc('\n',stderr);
+                sleep(5);
+                fseek(fo, 0L, 0);
+                fseek(fi, 0L, 0);
+                fprintf(fi, "Goodbye now\n");
+                fflush(fi);
+                while ((c = getc(fo)) != '\n')
+                        putc(c,stderr);
+                putc('\n',stderr);
+        }
+        exit(0);
+}
+Funky-EOF
+cat >grampair.c <<'Funky-EOF'
+#include        <stdio.h>
+#include        <sys/types.h>
+#include        <sys/socket.h>
+#include        <netinet/in.h>
+#include        <sys/un.h>
+#include        <netdb.h>
+#include        <errno.h>
+
+extern int      errno;
+extern char     *prog;
+extern int      xflag;
+#define DEBUG(X,Y)      if (xflag) {fprintf(stderr,X,Y); fputc('\n',stderr);\
+if (errno) perror(prog);}
+
+socketpair(af, ty, pr, sd)
+int     af, ty, pr, sd[];
+{
+        struct sockaddr skaddr;
+        register struct sockaddr *ska = &skaddr;
+        register int    ss, child;
+
+        /*
+         * ss is the socket for listening on
+         */
+        DEBUG("About to socket %s", (af==AF_INET ? "AF_INET" : "AF_UNIX"));
+        if ((ss = socket(af,ty,pr)) < 0) {
+                DEBUG("Bad socket %s", "");
+                return (-1);
+        }
+        /*
+         * now bind an address to it
+         */
+        switch (af) {
+        case AF_INET:
+		if (mkinet(ss, (struct sockaddr_in *) ska) < 0) {
+			close(ss);
+			return (-1);
+		}
+                break;
+        case AF_UNIX:
+		if (mkunix(ss, (struct sockaddr_un *) ska) < 0) {
+			close(ss);
+			return (-1);
+		}
+                break;
+        default:
+                DEBUG("Bad family %d", af);
+                close(ss);
+                return (-1);
+        }
+        DEBUG("About to %s", (ty == SOCK_STREAM ? "listen" : "do nothing"));
+        if (ty == SOCK_STREAM && listen(ss, 1) < 0) {
+                DEBUG("Bad listen", "");
+                close(ss);
+                return (-1);
+        }
+        DEBUG("About to socket again", "");
+        if ((sd[1] = socket(af,ty,pr)) < 0) {
+                DEBUG("Bad socket", "");
+                close(ss);
+                return (-1);
+        }
+        if (ty == SOCK_DGRAM) {
+                int ret;
+		struct sockaddr me;
+		extern char *mktemp();
+		register struct sockaddr_un *me_u
+                                = (struct sockaddr_un *) &me;
+		register struct sockaddr_in *me_i
+                                = (struct sockaddr_in *) &me;
+
+		switch (af) {
+		case AF_INET:
+			if (mkinet(sd[1], (struct sockaddr_in *) &me) < 0) {
+				close(ss);
+				close(sd[1]);
+				return (-1);
+			}
+			break;
+		case AF_UNIX:
+			if (mkunix(sd[1], (struct sockaddr_un *) &me) < 0) {
+				close(ss);
+				close(sd[1]);
+				return (-1);
+			}
+			break;
+		default:
+			DEBUG("Bad address family", "");
+                        close(ss);
+                        close(sd[1]);
+                        return (-1);
+			break;
+		}
+
+                DEBUG("About to connect datagram once", "");
+                if (connect(sd[1], ska, sizeof (*ska)) < 0) {
+                        DEBUG("Bad datagram connect", "");
+                        close(ss);
+                        close(sd[1]);
+                        return (-1);
+                }
+		if (af == AF_INET) {
+			DEBUG("About to connect datagram twice", "");
+			if (connect(ss, &me, sizeof (me)) < 0) {
+				DEBUG("Bad datagram connect", "");
+				close(ss);
+				close(sd[1]);
+				return (-1);
+			}
+			sd[0] = ss;
+		} else {
+			sd[0] = sd[1];
+			sd[1] = ss;
+		}
+        } else if (/* ty == SOCK_STREAM && */ (child = fork()) == 0) {
+                /*
+                 *  NB - NOT vfork().  Both processes must run
+                 */
+		DEBUG("About to connect in child", "");
+                _exit(connect(sd[1], ska, sizeof (*ska)));
+        } else if (child > 0) {
+                int status;
+                struct sockaddr skaddr2;
+                int skaddrlen = sizeof (struct sockaddr);
+
+                DEBUG("About to accept", "");
+                if ((sd[0] = accept(ss, &skaddr2, &skaddrlen)) < 0) {
+                        DEBUG("Bad accept", "");
+                        close(ss);
+                        close(sd[1]);
+                        return (-1);
+                }
+                while(wait(&status) != child)
+                        ;
+                if (status != 0) {
+                        DEBUG("Bad status 0%o", status);
+                        close(ss);
+                        close(sd[0]);
+                        close(sd[1]);
+                        return (-1);
+                }
+        } else /* if (child < 0) */ {
+                DEBUG("Bad child %d", child);
+                close(ss);
+                close(sd[1]);
+                return (-1);
+        }
+        /*
+         *  should close ss here
+         */
+	DEBUG("returning from socketpair\n", "");
+        return (0);
+}
+
+mkinet(ss, skai)
+int	ss;
+register struct sockaddr_in *skai;
+{
+/*
+ *  Find a free port in the un-privileged range
+ *  We have to go through this charade because
+ *  there is no way to find out the address
+ *  bound to a socket.
+ */
+	char me[255];
+	struct hostent  *hp;
+	register int	pn;
+
+	gethostname(me, 255);
+	hp = gethostbyname(me);
+	if (hp == 0) {
+		DEBUG("No host %s", me);
+		return(-1);
+	}
+	skai->sin_family = AF_INET;
+	skai->sin_addr.s_addr = INADDR_ANY;
+	for (pn=IPPORT_RESERVED+1; pn<IPPORT_RESERVED*2; pn++) {
+		skai->sin_port = htons((u_short)pn);
+		DEBUG("About to bind %d", pn);
+		if (bind(ss, skai, sizeof (*skai)) >= 0)
+			break;
+		if (errno!=EADDRINUSE && errno!=EADDRNOTAVAIL) {
+			DEBUG("Bad bind %d", pn);
+			close(ss);
+			return (-1);
+		}
+		errno = 0;
+	}
+	if (pn >= IPPORT_RESERVED*2) {
+		DEBUG("No ports %d", pn);
+		close(ss);
+		return (-1);
+	}
+	bcopy(hp->h_addr,(char *)&(skai->sin_addr),hp->h_length);
+}
+
+#define TEMPNAME        "/tmp/sXXXXXX"
+mkunix(ss, skau)
+int	ss;
+register struct sockaddr_un *skau;
+{ 
+	extern char *mktemp(), *calloc();
+	static char *tempname = NULL;
+
+
+	if (tempname == NULL ) {
+		if ((tempname = calloc(1024, 1)) == NULL) {
+			DEBUG("Out of space", "");
+			return (-1);
+		}
+		strcpy(tempname, TEMPNAME);
+	}
+	skau->sun_family = AF_UNIX;
+#ifdef	UNIXDOMAIN
+	skau->sun_path = mktemp(tempname);
+#else
+	/*
+	 *  Only works because strlen(TEMPNAME) == 12!
+	 */
+	strcpy(skau->sun_path,mktemp(tempname));
+#endif
+	errno = 0;
+	if (strlen(skau->sun_path) >= sizeof skau->sun_path) {
+		DEBUG("Name %s mangled", skau->sun_path);
+		close(ss);
+		return(-1);
+	}
+	DEBUG("About to bind %s", skau->sun_path);
+	if (bind(ss, skau, sizeof (*skau)) != 0) {
+		DEBUG("Bad bind %s", skau->sun_path);
+		close(ss);
+		return (-1);
+	}
+}
+Funky-EOF
+
+Fix:
+
+	What follows is a diff -c of the various files
+	fixed,  against the versions on CMU's 4.1c tape.
+
+*** sys_socket.c	Thu Sep 15 22:10:31 1983
+--- /usrh1/4.1cbsd/sys/sys/sys_socket.c	Fri Mar  4 19:17:16 1983
+***************
+*** 26,44
+  		int	type;
+  		int	protocol;
+  	} *uap = (struct a *)u.u_ap;
+- 
+- 	socket1(uap->domain, uap->type, uap->protocol);
+- }
+- 
+- #ifdef	UNIXDOMAIN
+- /*
+-  *  Internal form of socket() - also used by open()
+-  */
+- socket1(domain, type, protocol)
+- 	int	domain;
+- 	int	type;
+- 	int	protocol;
+- {
+  	struct socket *so;
+  	register struct file *fp;
+  
+
+--- 26,31 -----
+  		int	type;
+  		int	protocol;
+  	} *uap = (struct a *)u.u_ap;
+  	struct socket *so;
+  	register struct file *fp;
+  
+***************
+*** 46,54
+  		return;
+  	fp->f_flag = FREAD|FWRITE;
+  	fp->f_type = DTYPE_SOCKET;
+- #ifdef	UNIXDOMAIN
+- 	u.u_error = socreate(domain, &so, type, protocol);
+- #else
+  	u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol);
+  #endif	UNIXDOMAIN
+  	if (u.u_error)
+
+--- 33,38 -----
+  		return;
+  	fp->f_flag = FREAD|FWRITE;
+  	fp->f_type = DTYPE_SOCKET;
+  	u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol);
+  	if (u.u_error)
+  		goto bad;
+***************
+*** 50,56
+  	u.u_error = socreate(domain, &so, type, protocol);
+  #else
+  	u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol);
+- #endif	UNIXDOMAIN
+  	if (u.u_error)
+  		goto bad;
+  	fp->f_socket = so;
+
+--- 34,39 -----
+  	fp->f_flag = FREAD|FWRITE;
+  	fp->f_type = DTYPE_SOCKET;
+  	u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol);
+  	if (u.u_error)
+  		goto bad;
+  	fp->f_socket = so;
+***************
+*** 207,228
+  		caddr_t	name;
+  		int	namelen;
+  	} *uap = (struct a *)u.u_ap;
+- #ifdef	UNIXDOMAIN
+- 	struct mbuf *nam;
+- 
+- 	u.u_error = sockname(&nam, uap->name, uap->namelen);
+- 	if (u.u_error)
+- 		return;
+- 	connect1(uap->s, nam);
+- }
+- 
+- /*
+-  *  Internal form of connect() - also used by open()
+-  */
+- connect1(sd, nam)
+- 	int	sd;
+- 	struct mbuf *nam;
+- {
+  	register struct file *fp;
+  	register struct socket *so;
+  	int s;
+
+--- 190,195 -----
+  		caddr_t	name;
+  		int	namelen;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct file *fp;
+  	register struct socket *so;
+  	struct mbuf *nam;
+***************
+*** 225,243
+  {
+  	register struct file *fp;
+  	register struct socket *so;
+- 	int s;
+- 
+- 	fp = getf(sd);
+- 	if (fp == 0)
+- 		return;
+- 	if (fp->f_type != DTYPE_SOCKET) {
+- 		u.u_error = ENOTSOCK;
+- 		return;
+- 	}
+- 	so = fp->f_socket;
+- #else
+- 	register struct file *fp;
+- 	register struct socket *so;
+  	struct mbuf *nam;
+  	int s;
+  
+
+--- 192,197 -----
+  	} *uap = (struct a *)u.u_ap;
+  	register struct file *fp;
+  	register struct socket *so;
+  	struct mbuf *nam;
+  	int s;
+  
+***************
+*** 252,258
+  	u.u_error = sockname(&nam, uap->name, uap->namelen);
+  	if (u.u_error)
+  		return;
+- #endif	UNIXDOMAIN
+  	u.u_error = soconnect(so, nam);
+  	if (u.u_error)
+  		goto bad;
+
+--- 206,211 -----
+  	u.u_error = sockname(&nam, uap->name, uap->namelen);
+  	if (u.u_error)
+  		return;
+  	u.u_error = soconnect(so, nam);
+  	if (u.u_error)
+  		goto bad;
+*** ufs_inode.c	Thu Sep 15 22:10:35 1983
+--- /usrh1/4.1cbsd/sys/sys/ufs_inode.c	Sun Mar 27 17:02:32 1983
+***************
+*** 1,9
+  /*	ufs_inode.c	4.34	83/03/15	*/
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 *  Render itrunc() nugatory except on regular files.
+- 	 */
+- #endif	UNIXDOMAIN
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+
+--- 1,4 -----
+  /*	ufs_inode.c	4.34	83/03/15	*/
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+***************
+*** 349,360
+  	long indirtrunc();
+  #endif
+  
+- #ifdef	UNIXDOMAIN
+- 	if ((oip->i_mode&IFMT) != IFREG
+- 	 && (oip->i_mode&IFMT) != IFDIR
+- 	 && (oip->i_mode&IFMT) != IFLNK)
+- 		return;
+- #endif	UNIXDOMAIN
+  	if (oip->i_size <= length)
+  		return;
+  	/*
+
+--- 344,349 -----
+  	long indirtrunc();
+  #endif
+  
+  	if (oip->i_size <= length)
+  		return;
+  	/*
+*** ufs_syscalls.c	Thu Sep 15 22:10:43 1983
+--- /usrh1/4.1cbsd/sys/sys/ufs_syscalls.c	Sun Mar 27 17:02:52 1983
+***************
+*** 1,12
+  /*	ufs_syscalls.c	4.53	83/03/22	*/
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 *  1)	Banned multiple links to sockets.
+- 	 *  3)  Changed open() to map open of name
+- 	 *      bound to AF_UNIX socket into socket()
+- 	 *	then connect()
+- 	 */
+- #endif	UNIXDOMAIN
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+
+--- 1,4 -----
+  /*	ufs_syscalls.c	4.53	83/03/22	*/
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+***************
+*** 25,35
+  #include "../h/socket.h"
+  #include "../h/socketvar.h"
+  #include "../h/nami.h"
+- #ifdef	UNIXDOMAIN
+- #include "../h/protosw.h"
+- #include "../h/un.h"
+- #include "../h/mbuf.h"
+- #endif	UNIXDOMAIN
+  
+  /*
+   * Change current working directory (``.'').
+
+--- 17,22 -----
+  #include "../h/socket.h"
+  #include "../h/socketvar.h"
+  #include "../h/nami.h"
+  
+  /*
+   * Change current working directory (``.'').
+***************
+*** 112,124
+  		ip = namei(uchar, LOOKUP, 1);
+  	if (ip == NULL)
+  		return;
+- #ifdef	UNIXDOMAIN
+- 	if ((ip->i_mode&IFMT) == IFSOCK) {
+- 		iunlock(ip);
+- 		soopen(ip, uap->fname);
+- 	} else
+- 		open1(ip, flags, checkpermissions);
+- #else
+  	open1(ip, flags, checkpermissions);
+  #endif	UNIXDOMAIN
+  }
+
+--- 99,104 -----
+  		ip = namei(uchar, LOOKUP, 1);
+  	if (ip == NULL)
+  		return;
+  	open1(ip, flags, checkpermissions);
+  }
+  
+***************
+*** 120,126
+  		open1(ip, flags, checkpermissions);
+  #else
+  	open1(ip, flags, checkpermissions);
+- #endif	UNIXDOMAIN
+  }
+  
+  #ifndef NOCOMPAT
+
+--- 100,105 -----
+  	if (ip == NULL)
+  		return;
+  	open1(ip, flags, checkpermissions);
+  }
+  
+  #ifndef NOCOMPAT
+***************
+*** 264,281
+  	ip = namei(uchar, LOOKUP, 1); /* well, this routine is doomed anyhow */
+  	if (ip == NULL)
+  		return;
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 * Forbid multiple links to sockets
+- 	 * to simplify things for now - may
+- 	 * be relaxed later
+- 	 */
+- 	if ((ip->i_mode&IFMT) == IFSOCK) {
+- 		iput(ip);
+- 		u.u_error = EOPNOTSUPP;
+- 		return;
+- 	}
+- #endif	UNIXDOMAIN
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser()) {
+  		iput(ip);
+  		return;
+
+--- 243,248 -----
+  	ip = namei(uchar, LOOKUP, 1); /* well, this routine is doomed anyhow */
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser()) {
+  		iput(ip);
+  		return;
+***************
+*** 778,808
+  		tv0.tv_sec = tv[0]; tv0.tv_usec = 0;
+  		tv1.tv_sec = tv[1]; tv1.tv_usec = 0;
+  		iupdat(ip, &tv0, &tv1, 0);
+- 	}
+- 	iput(ip);
+- }
+- 
+- /*
+-  * Set IUPD and IACC times on file.
+-  * Can't set ICHG.
+-  * Synthesised by DSHR
+-  */
+- utimes()
+- {
+- 	register struct a {
+- 		char	*fname;
+- 		struct timeval	**tvp;
+- 	} *uap;
+- 	register struct inode *ip;
+- 	struct timeval tv[2];
+- 
+- 	uap = (struct a *)u.u_ap;
+- 	if ((ip = owner(1)) == NULL)
+- 		return;
+- 	u.u_error = copyin((caddr_t)uap->tvp, (caddr_t)tv, sizeof(tv));
+- 	if (u.u_error == 0) {
+- 		ip->i_flag |= IACC|IUPD|ICHG;
+- 		iupdat(ip, &tv[0], &tv[1], 0);
+  	}
+  	iput(ip);
+  }
+
+--- 745,750 -----
+  		tv0.tv_sec = tv[0]; tv0.tv_usec = 0;
+  		tv1.tv_sec = tv[1]; tv1.tv_usec = 0;
+  		iupdat(ip, &tv0, &tv1, 0);
+  	}
+  	iput(ip);
+  }
+*** uipc_socket.c	Thu Sep 15 22:10:47 1983
+--- /usrh1/4.1cbsd/sys/sys/uipc_socket.c	Sun Jan 23 02:42:09 1983
+***************
+*** 1,12
+  /*	uipc_socket.c	4.71	83/01/22	*/
+  
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 *  1)	Pull all pending connect()s off queues
+- 	 *	on close() and abort them.
+- 	 */
+- #endif	UNIXDOMAIN
+- 
+  #include "../h/param.h"
+  #include "../h/systm.h"
+  #include "../h/dir.h"
+
+--- 1,5 -----
+  /*	uipc_socket.c	4.71	83/01/22	*/
+  
+  #include "../h/param.h"
+  #include "../h/systm.h"
+  #include "../h/dir.h"
+***************
+*** 23,31
+  #include "../h/ioctl.h"
+  #include "../h/uio.h"
+  #include "../net/route.h"
+- #ifdef	UNIXDOMAIN
+- #include "../h/un.h"
+- #endif	UNIXDOMAIN
+  
+  /*
+   * Socket operation routines.
+
+--- 16,21 -----
+  #include "../h/ioctl.h"
+  #include "../h/uio.h"
+  #include "../net/route.h"
+  
+  /*
+   * Socket operation routines.
+***************
+*** 129,135
+  	(void) m_free(dtom(so));
+  }
+  
+- #ifdef	UNIXDOMAIN
+  /*
+   *  Called from open() instead of open1() if "ip"
+   *  is a socket.  It maps the open() into a socket()
+
+--- 119,124 -----
+  	(void) m_free(dtom(so));
+  }
+  
+  /*
+   * Close a socket on last file table reference removal.
+   * Initiate disconnect if connected.
+***************
+*** 131,186
+  
+  #ifdef	UNIXDOMAIN
+  /*
+-  *  Called from open() instead of open1() if "ip"
+-  *  is a socket.  It maps the open() into a socket()
+-  *  then a connect() to the socket attached to "ip".
+-  *  We DONT get an inode for it - does this matter?
+-  */
+- soopen(ip, ufname)
+- 	register struct inode	*ip;
+- 	caddr_t	ufname;
+- {
+- 	register struct protosw	*prt = ip->i_socket->so_proto;
+- 	register struct mbuf *m;
+- 	extern struct mbuf *m_get();
+- 	register struct sockaddr_un *sa;
+- 
+- 	if (prt == 0)
+- 		panic("soopen: no protocol");
+- 	m = m_get(M_WAIT, MT_SONAME);
+- 	m->m_len = sizeof (struct sockaddr_un);
+- 	sa = mtod(m, struct sockaddr_un *);
+- 	sa->sun_family = AF_UNIX;
+- 	u.u_error = copyin(ufname, sa->sun_path, sizeof sa->sun_path);
+- 	if (u.u_error) {
+- 		(void) m_free(m);
+- 		return;
+- 	}
+- 	socket1(prt->pr_family, prt->pr_type, prt->pr_protocol);
+- 	if (u.u_error == 0) {
+- 		/*
+- 		 *  Now have socket and file structures
+- 		 */
+- 		register int	newfd = u.u_r.r_val1;
+- 
+- 		connect1(newfd, m);
+- 		if (u.u_error == 0) {
+- 			u.u_r.r_val1 = newfd;
+- 		} else
+- 			goto bad;
+- 	} else {
+- 		register struct file *fp;
+- 
+- bad:
+- 		if ((fp = getf(u.u_r.r_val1)) != 0)
+- 			fp->f_count = 0;
+- 		u.u_ofile[u.u_r.r_val1] = 0;
+- 	}
+- 		
+- }
+- #endif	UNIXDOMAIN
+- 
+- /*
+   * Close a socket on last file table reference removal.
+   * Initiate disconnect if connected.
+   * Free socket when disconnect complete.
+
+--- 120,125 -----
+  }
+  
+  /*
+   * Close a socket on last file table reference removal.
+   * Initiate disconnect if connected.
+   * Free socket when disconnect complete.
+***************
+*** 193,221
+  	int error;
+  
+  	if (so->so_options & SO_ACCEPTCONN) {
+- #ifdef	UNIXDOMAIN
+- 		/*
+- 		 *  Pull all the pending and partly complete
+- 		 *  connect()s off the queues,  and abort them.
+- 		 */
+- 		while (so->so_q0len > 0) {
+- 			register struct socket *so2 = so->so_q0;
+- 
+- 			(void) soabort(so2);
+- 			error = soclose(so2, exiting);
+- 		}
+- 		while (so->so_qlen > 0) {
+- 			register struct socket *so2 = so->so_q;
+- 
+- 			(void) soabort(so2);
+- 			error = soclose(so2, exiting);
+- 		}
+- #else
+- 		/*
+- 		 *  soabort() doesn't remove the socket
+- 		 *  from the queue,  so this loops.
+- 		 *  Diagnosed by mcvax!jim
+- 		 */
+  		while (so->so_q0 != so)
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+
+--- 132,137 -----
+  	int error;
+  
+  	if (so->so_options & SO_ACCEPTCONN) {
+  		while (so->so_q0 != so)
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+***************
+*** 220,226
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+  			(void) soabort(so->so_q);
+- #endif	UNIXDOMAIN
+  	}
+  	if (so->so_pcb == 0)
+  		goto discard;
+
+--- 136,141 -----
+  			(void) soabort(so->so_q0);
+  		while (so->so_q != so)
+  			(void) soabort(so->so_q);
+  	}
+  	if (so->so_pcb == 0)
+  		goto discard;
+***************
+*** 256,262
+  		}
+  	}
+  discard:
+- #ifndef	UNIXDOMAIN
+  	if (so->so_state & SS_NOFDREF)
+  		panic("soclose: NOFDREF");
+  #endif	UNIXDOMAIN
+
+--- 171,176 -----
+  		}
+  	}
+  discard:
+  	if (so->so_state & SS_NOFDREF)
+  		panic("soclose: NOFDREF");
+  	so->so_state |= SS_NOFDREF;
+***************
+*** 259,265
+  #ifndef	UNIXDOMAIN
+  	if (so->so_state & SS_NOFDREF)
+  		panic("soclose: NOFDREF");
+- #endif	UNIXDOMAIN
+  	so->so_state |= SS_NOFDREF;
+  	sofree(so);
+  	splx(s);
+
+--- 173,178 -----
+  discard:
+  	if (so->so_state & SS_NOFDREF)
+  		panic("soclose: NOFDREF");
+  	so->so_state |= SS_NOFDREF;
+  	sofree(so);
+  	splx(s);
+*** uipc_usrreq.c	Thu Sep 15 22:10:50 1983
+--- /usrh1/4.1cbsd/sys/sys/uipc_usrreq.c	Sun Mar 27 17:03:18 1983
+***************
+*** 1,10
+  /*	uipc_usrreq.c	1.8	83/03/23	*/
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 *  1)	Invented unp_accept to flip both sockets
+- 	 *	into connected state on accept.
+- 	 */
+- #endif	UNIXDOMAIN
+  
+  #include "../h/param.h"
+  #include "../h/dir.h"
+
+--- 1,4 -----
+  /*	uipc_usrreq.c	1.8	83/03/23	*/
+  
+  #include "../h/param.h"
+  #include "../h/dir.h"
+***************
+*** 9,15
+  #include "../h/param.h"
+  #include "../h/dir.h"
+  #include "../h/user.h"
+- #include "../h/buf.h"
+  #include "../h/mbuf.h"
+  #include "../h/protosw.h"
+  #include "../h/socket.h"
+
+--- 3,8 -----
+  #include "../h/param.h"
+  #include "../h/dir.h"
+  #include "../h/user.h"
+  #include "../h/mbuf.h"
+  #include "../h/protosw.h"
+  #include "../h/socket.h"
+***************
+*** 18,24
+  #include "../h/un.h"
+  #include "../h/inode.h"
+  #include "../h/nami.h"
+- #include "../h/fs.h"
+  
+  /*
+   * Unix communications domain.
+
+--- 11,16 -----
+  #include "../h/un.h"
+  #include "../h/inode.h"
+  #include "../h/nami.h"
+  
+  /*
+   * Unix communications domain.
+***************
+*** 68,76
+  		break;
+  
+  	case PRU_ACCEPT:
+- #ifdef	UNIXDOMAIN
+- 		unp_accept(so, unp, nam);
+- #else
+  		nam->m_len = unp->unp_remaddr->m_len;
+  		bcopy(mtod(unp->unp_remaddr, caddr_t),
+  		    mtod(nam, caddr_t), (unsigned)nam->m_len);
+
+--- 60,65 -----
+  		break;
+  
+  	case PRU_ACCEPT:
+  		nam->m_len = unp->unp_remaddr->m_len;
+  		bcopy(mtod(unp->unp_remaddr, caddr_t),
+  		    mtod(nam, caddr_t), (unsigned)nam->m_len);
+***************
+*** 74,80
+  		nam->m_len = unp->unp_remaddr->m_len;
+  		bcopy(mtod(unp->unp_remaddr, caddr_t),
+  		    mtod(nam, caddr_t), (unsigned)nam->m_len);
+- #endif	UNIXDOMAIN
+  		break;
+  
+  	case PRU_SHUTDOWN:
+
+--- 63,68 -----
+  		nam->m_len = unp->unp_remaddr->m_len;
+  		bcopy(mtod(unp->unp_remaddr, caddr_t),
+  		    mtod(nam, caddr_t), (unsigned)nam->m_len);
+  		break;
+  
+  	case PRU_SHUTDOWN:
+***************
+*** 132,137
+  				}
+  			}
+  			so2 = unp->unp_conn->unp_socket;
+  			if (sbspace(&so2->so_rcv) > 0)
+  				(void) sbappendaddr(&so2->so_rcv,
+  					mtod(nam, struct sockaddr *), m);
+
+--- 120,126 -----
+  				}
+  			}
+  			so2 = unp->unp_conn->unp_socket;
++ 			/* BEGIN XXX */
+  			if (sbspace(&so2->so_rcv) > 0)
+  				(void) sbappendaddr(&so2->so_rcv,
+  					mtod(nam, struct sockaddr *), m);
+***************
+*** 135,140
+  			if (sbspace(&so2->so_rcv) > 0)
+  				(void) sbappendaddr(&so2->so_rcv,
+  					mtod(nam, struct sockaddr *), m);
+  			if (nam)
+  				unp_disconnect(unp);
+  			break;
+
+--- 124,130 -----
+  			if (sbspace(&so2->so_rcv) > 0)
+  				(void) sbappendaddr(&so2->so_rcv,
+  					mtod(nam, struct sockaddr *), m);
++ 			/* END XXX */
+  			if (nam)
+  				unp_disconnect(unp);
+  			break;
+***************
+*** 246,255
+  	extern schar();
+  	int error;
+  
+- #ifdef	UNIXDOMAIN
+- 	if (error = unp_addrcheck(soun))
+- 		return (error);
+- #endif	UNIXDOMAIN
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, CREATE, 1);
+
+--- 236,241 -----
+  	extern schar();
+  	int error;
+  
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, CREATE, 1);
+***************
+*** 253,267
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, CREATE, 1);
+! 	if (u.u_error) {
+! 		/*
+! 		 *  error if file access
+! 		 */
+! 		return (u.u_error);
+! 	} else if (ip != NULL) {
+! 		/*
+! 		 *  file exists
+! 		 */
+  		iput(ip);
+  		return (EADDRINUSE);
+  	}
+
+--- 239,245 -----
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, CREATE, 1);
+! 	if (ip) {
+  		iput(ip);
+  		return (EADDRINUSE);
+  	}
+***************
+*** 265,281
+  		iput(ip);
+  		return (EADDRINUSE);
+  	}
+- #ifdef	UNIXDOMAIN
+- 	/*
+- 	 * Keep a reference to the parent,  though
+- 	 * it will be unlocked by maknode()
+- 	 */
+- #define	BADINODE	(struct inode *)0xc0000000	/* See ufs_nami.c */
+- 	if (u.u_pdir == NULL || u.u_pdir == BADINODE)
+- 		panic("bind without parent");
+- #undef	BADINODE
+- 	if (u.u_error || (ip = maknode(IFSOCK | 0777)) == NULL) {
+- #else
+  	ip = maknode(IFSOCK | 0777);
+  	if (ip == NULL) {
+  #endif	UNIXDOMAIN
+
+--- 243,248 -----
+  		iput(ip);
+  		return (EADDRINUSE);
+  	}
+  	ip = maknode(IFSOCK | 0777);
+  	if (ip == NULL) {
+  		error = u.u_error;		/* XXX */
+***************
+*** 278,284
+  #else
+  	ip = maknode(IFSOCK | 0777);
+  	if (ip == NULL) {
+- #endif	UNIXDOMAIN
+  		error = u.u_error;		/* XXX */
+  		u.u_error = 0;			/* XXX */
+  		return (error);
+
+--- 245,250 -----
+  	}
+  	ip = maknode(IFSOCK | 0777);
+  	if (ip == NULL) {
+  		error = u.u_error;		/* XXX */
+  		u.u_error = 0;			/* XXX */
+  		return (error);
+***************
+*** 299,305
+  	int error;
+  	struct socket *so2;
+  	struct unpcb *unp2;
+- 	extern schar();
+  
+  #ifdef	UNIXDOMAIN
+  	if (error = unp_addrcheck(soun))
+
+--- 265,270 -----
+  	int error;
+  	struct socket *so2;
+  	struct unpcb *unp2;
+  
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+***************
+*** 301,310
+  	struct unpcb *unp2;
+  	extern schar();
+  
+- #ifdef	UNIXDOMAIN
+- 	if (error = unp_addrcheck(soun))
+- 		return (error);
+- #endif	UNIXDOMAIN
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, LOOKUP, 1);
+
+--- 266,271 -----
+  	struct socket *so2;
+  	struct unpcb *unp2;
+  
+  	u.u_dirp = soun->sun_path;
+  	soun->sun_path[sizeof(soun->sun_path)-1] = 0;
+  	ip = namei(schar, LOOKUP, 1);
+***************
+*** 329,338
+  	switch (so->so_type) {
+  
+  	case SOCK_DGRAM:
+- #ifdef	UNIXDOMAIN
+- 		unp2 = sotounpcb(so2);
+- 		unp->unp_conn = unp2;
+- #else
+  		unp->unp_conn = sotounpcb(so2);
+  		unp2 = sotounpcb(so2);
+  #endif	UNIXDOMAIN
+
+--- 290,295 -----
+  	switch (so->so_type) {
+  
+  	case SOCK_DGRAM:
+  		unp->unp_conn = sotounpcb(so2);
+  		unp2 = sotounpcb(so2);
+  		unp->unp_nextref = unp2->unp_refs;
+***************
+*** 335,341
+  #else
+  		unp->unp_conn = sotounpcb(so2);
+  		unp2 = sotounpcb(so2);
+- #endif	UNIXDOMAIN
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
+  #ifdef	UNIXDOMAIN
+
+--- 292,297 -----
+  	case SOCK_DGRAM:
+  		unp->unp_conn = sotounpcb(so2);
+  		unp2 = sotounpcb(so2);
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
+  		break;
+***************
+*** 338,346
+  #endif	UNIXDOMAIN
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
+- #ifdef	UNIXDOMAIN
+- 		wakeup((caddr_t)&so->so_timeo);
+- #endif	UNIXDOMAIN
+  		break;
+  
+  	case SOCK_STREAM:
+
+--- 294,299 -----
+  		unp2 = sotounpcb(so2);
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
+  		break;
+  
+  	case SOCK_STREAM:
+***************
+*** 349,359
+  			error = ECONNREFUSED;
+  			goto bad;
+  		}
+- 		/*
+- 		 * Socket so2 is now on the q0 of old so2 (tacky!)
+- 		 * It gets moved to q of the old so2 == head by
+- 		 * soisconnected().
+- 		 */
+  		unp2 = sotounpcb(so2);
+  		unp->unp_conn = unp2;
+  		unp2->unp_conn = unp;
+
+--- 302,307 -----
+  			error = ECONNREFUSED;
+  			goto bad;
+  		}
+  		unp2 = sotounpcb(so2);
+  		unp->unp_conn = unp2;
+  		unp2->unp_conn = unp;
+***************
+*** 358,366
+  		unp->unp_conn = unp2;
+  		unp2->unp_conn = unp;
+  		unp2->unp_remaddr = m_copy(nam, 0, (int)M_COPYALL);
+- #ifdef	UNIXDOMAIN
+- 		soisconnected(so2);
+- #endif	UNIXDOMAIN
+  		break;
+  
+  	default:
+
+--- 306,311 -----
+  		unp->unp_conn = unp2;
+  		unp2->unp_conn = unp;
+  		unp2->unp_remaddr = m_copy(nam, 0, (int)M_COPYALL);
+  		break;
+  
+  	default:
+***************
+*** 366,372
+  	default:
+  		panic("uipc connip");
+  	}
+- #ifndef	UNIXDOMAIN
+  	soisconnected(so2);
+  #endif	UNIXDOMAIN
+  	soisconnected(so);
+
+--- 311,316 -----
+  	default:
+  		panic("uipc connip");
+  	}
+  	soisconnected(so2);
+  	soisconnected(so);
+  	iput(ip);
+***************
+*** 368,374
+  	}
+  #ifndef	UNIXDOMAIN
+  	soisconnected(so2);
+- #endif	UNIXDOMAIN
+  	soisconnected(so);
+  	iput(ip);
+  	return (0);
+
+--- 312,317 -----
+  		panic("uipc connip");
+  	}
+  	soisconnected(so2);
+  	soisconnected(so);
+  	iput(ip);
+  	return (0);
+***************
+*** 389,398
+  	switch (unp->unp_socket->so_type) {
+  
+  	case SOCK_DGRAM:
+- #ifdef	UNIXDOMAIN
+- 		if (unp2->unp_refs == 0)
+- 			break;
+- #endif	UNIXDOMAIN
+  		if (unp2->unp_refs == unp)
+  			unp2->unp_refs = unp->unp_nextref;
+  		else {
+
+--- 332,337 -----
+  	switch (unp->unp_socket->so_type) {
+  
+  	case SOCK_DGRAM:
+  		if (unp2->unp_refs == unp)
+  			unp2->unp_refs = unp->unp_nextref;
+  		else {
+***************
+*** 443,475
+  {
+  
+  }
+- 
+- #ifdef	UNIXDOMAIN
+- /*
+-  * accept - "so" is the shadow socket created
+-  * by sonewconn().  
+-  * 
+-  */
+- unp_accept(so, unp, nam)
+- 	struct socket *so;	/*  "shadow" socket from connect */
+- 	struct unpcb *unp;	/*  Its unpcb */
+- 	struct mbuf *nam;	/*  Name bound to original socket */
+- {
+- 	nam->m_len = unp->unp_remaddr->m_len;
+- 	bcopy(mtod(unp->unp_remaddr, caddr_t),
+- 	    mtod(nam, caddr_t), (unsigned)nam->m_len);
+- }
+- 
+- unp_addrcheck(soun)
+- 	struct sockaddr_un	*soun;
+- {
+- 	int	c;
+- 	extern uchar();
+- 
+- 	if (soun->sun_family != AF_UNIX)
+- 		return (EAFNOSUPPORT);
+- 	if (soun->sun_path[0] != '/')
+- 		return (ENOENT);
+- 	return (0);
+- }
+- #endif	UNIXDOMAIN
+
+--- 382,384 -----
+  {
+  
+  }
+
+

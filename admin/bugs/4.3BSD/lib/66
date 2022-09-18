@@ -1,0 +1,123 @@
+From mcvax!cwi.nl!root@seismo.css.gov  Thu Jun  4 02:14:23 1987
+Date: Thu, 4 Jun 87 10:40:45 +0200
+From: mcvax!cwi.nl!root@seismo.css.gov (Ed Gronke)
+Subject: /lib/ccom produces wrong code for passing a structure to a subroutine
+Index: lib/pcc/pcc.tahoe/local2.c 4.3BSD
+
+Description:
+	/lib/ccom produces wrong code when passing a member of an array
+	of structures when the index into the array
+	is a register and the structure is of a non-even or > 8-byte length.
+Repeat-By:
+	Try compiling and running the following problem
+
+	#define MAXMOVES 100
+	struct mvlist {
+	    int from;
+	    int to;
+	    int biff;
+	    char flags; 
+	};
+
+	main()
+	{
+		struct mvlist moves[MAXMOVES];
+		int i;
+		
+		moves[5].from = 85;
+		moves[5].to = 65;
+		i=5;   
+		foobar(moves[i]);
+	}
+	foobar(burfle)
+	struct mvlist burfle;
+	{
+		printf("burfle.a %d burfle.b %d\n", burfle.from, burfle.to);
+	}
+Fix:
+
+If one looks at the assembler output, one notices that the code to move the
+structure to the stack is wrong.
+
+	LL0:
+		.data
+		.text
+		.align	1
+		.globl	_main
+	_main:
+		.word	L12
+		jbr 	L14
+	L15:
+		movl	$85,-1572(fp)
+		movl	$65,-1568(fp)
+		movl	$5,-1656(fp)
+		/* start calculating the source address. should be in r0
+		/* when done*/
+		movl	-1656(fp),r0
+		subl3	$1652,fp,r1
+		shll	$4,r0,r0
+		addl2	r0,r1
+		/* notice that the source address is now in r1 */
+		movab	-16(sp),sp
+		/* the source address is about to be clobbered */
+		movab	(sp),r1
+		movab	(r1),r0
+		movl	$16,r2
+		/* r1 and r0 are the same. The movblk is a no-op */
+		movblk
+		callf	$20,_foobar
+		ret#2
+		.set	L12,0x4
+	L14:
+		subl3	$1656,fp,sp
+		jbr 	L15
+		.data
+		.text
+		.align	1
+		.globl	_foobar
+	_foobar:
+		.word	L17
+		jbr 	L19
+	L20:
+		.data	1
+	L22:
+		.ascii	"burfle.a %d burfle.b %d\12\0"
+		.text
+		pushl	8(fp)
+		pushl	4(fp)
+		pushl	$L22
+		callf	$16,_printf
+		ret#2
+		.set	L17,0x0
+	L19:
+		jbr 	L20
+		.data
+
+
+A fix is to check for this type of move in local2.c. There is an easy
+fix in the structure moving code. The comment about a conflict with r1
+just above is exactly the problem. The test of in.op might need to be
+expanded. I am not sure.
+
+------- local2.c -------
+531,534c531,545
+< 		adrput(l);
+< 		putstr(",r1\n\tmovab\t");
+< 		adrput(r);
+< 		printf(",r0\n\tmovl\t$%d,r2\n\tmovblk\n", size);
+---
+> 		if(r->in.op == OREG && r->tn.rval == R1)
+> 		{
+> 			adrput(r);
+> 			printf(",r0\n\tmovab\t");
+> 			adrput(l);
+> 			putstr(",r1\n");
+> 		}
+> 		else
+> 		{
+> 			adrput(l);
+> 			putstr(",r1\n\tmovab\t");
+> 			adrput(r);
+> 			printf(",r0\n");
+> 		}
+> 		printf("\tmovl\t$%d,r2\n\tmovblk\n", size);

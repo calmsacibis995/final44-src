@@ -1,0 +1,86 @@
+From root@orville.cse.ogi.edu  Fri Feb  9 19:06:53 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA02488; Fri, 9 Feb 90 19:06:53 -0800
+Received: from orville.cse.ogi.edu by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA12897; Fri, 9 Feb 90 19:07:01 -0800
+Received: by orville.cse.ogi.edu
+	(5.61+IDA_1.2.8+OGI_1.6.named/IDA-1.2.8+OGI_sat_1.4) id AA18911; Fri, 9 Feb 90 19:05:56 -0800
+Date: Fri, 9 Feb 90 19:05:56 -0800
+From: Bruce Jerrick <root@orville.cse.ogi.edu>
+Message-Id: <9002100305.AA18911@orville.cse.ogi.edu>
+Subject: mlogent() in Tahoe UUCP can cause null FILE pointer dereference
+Index: 	usr.bin/uucp/logent.c 4.3BSD TAHOE FIX
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	The new logging code in Tahoe UUCP can pass a null FILE pointer
+	into fprintf(), which will dereference the null pointer.
+
+Repeat-By:
+	Examine code in logent.c:
+
+	In each of logent(), log_xferstats(), and syslog(), look at
+	the call to mlogent() and the few lines above it.  If get_logfd()
+	fails to fopen() the log file, it returns a null FILE pointer,
+	which mlogent() merrily uses.  Note that get_logfd() itself has
+	code to handle such fopen() failures.
+
+	We had this happen when the kernel's file table overflowed;
+	uucico dumped core in /usr/spool/uucp.
+
+Fix:
+	Some of the code in mlogent() should be executed even if the FILE
+	pointer is null (the Debug traces).  So my fix was just to surround
+	all use of fp in mlogent() with "if (fp != NULL) { ... }".
+	The diff below is not as bad as it looks; all of the ! lines below
+	are just indentation changes.
+
+*** /tmp/,RCSt1018879	Fri Feb  9 18:56:44 1990
+--- logent.c	Fri Feb  9 18:38:54 1990
+***************
+*** 86,105 ****
+  	ftime(&Now);
+  #endif !USG
+  	tp = localtime(&Now.time);
+  #ifdef USG
+! 	fprintf(fp, "%s %s (%d/%d-%2.2d:%2.2d-%d) ",
+  #else !USG
+! 	fprintf(fp, "%s %s (%d/%d-%02d:%02d-%d) ",
+  #endif !USG
+! 		User, Rmtname, tp->tm_mon + 1, tp->tm_mday,
+! 		tp->tm_hour, tp->tm_min, pid);
+! 	fprintf(fp, "%s %s\n", status, text);
+  
+! 	/* Since it's buffered */
+  #ifndef F_SETFL
+! 	lseek (fileno(fp), (long)0, 2);
+  #endif !F_SETFL
+! 	fflush (fp);
+  	if (Debug) {
+  		fprintf(stderr, "%s %s ", User, Rmtname);
+  #ifdef USG
+--- 86,109 ----
+  	ftime(&Now);
+  #endif !USG
+  	tp = localtime(&Now.time);
++ 
++ 	if (fp != NULL) {
+  #ifdef USG
+! 		fprintf(fp, "%s %s (%d/%d-%2.2d:%2.2d-%d) ",
+  #else !USG
+! 		fprintf(fp, "%s %s (%d/%d-%02d:%02d-%d) ",
+  #endif !USG
+! 			User, Rmtname, tp->tm_mon + 1, tp->tm_mday,
+! 			tp->tm_hour, tp->tm_min, pid);
+! 		fprintf(fp, "%s %s\n", status, text);
+  
+! 		/* Since it's buffered */
+  #ifndef F_SETFL
+! 		lseek (fileno(fp), (long)0, 2);
+  #endif !F_SETFL
+! 		fflush (fp);
++ 	}
++ 
+  	if (Debug) {
+  		fprintf(stderr, "%s %s ", User, Rmtname);
+  #ifdef USG

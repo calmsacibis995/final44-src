@@ -1,0 +1,246 @@
+<html>
+<!--
+$Header: /vol/src/devel/gated/master/gated/doc/config_guide/samp_ig.html,v 1.2 1994/03/16 21:38:43 jch Exp $
+
+%(Copyright)
+>
+<head>
+<TITLE>GateD Configuration Guide - Sample Interior Gateway
+Configurations</TITLE>
+</head>
+<body>
+
+<H1>Sample Interior Gateway Configurations</H1>
+
+<P><STRONG>We need more examples.</STRONG>  If you don't see what 
+you need here, and you create a <EM>working</EM> config file that 
+you're willing to share, <EM>please</EM> send it to us.  (Also, if 
+you find mistakes in the examples here, well, ahem, just tell us 
+quietly and we'll fix them.)
+
+<H3>Contents</H3>
+
+<UL>
+<LI> <A HREF="#RIPonly">RIP only, subnet to backbone</A>
+<LI> <A HREF="#RIPdefault">RIP with default announcement</A>
+<LI> <A HREF="#RIPOSPF">RIP and OSPF</A>
+<LI> <A HREF="#OSPFNBMA">OSPF Using NBMA Mode</A>
+</UL>
+
+<A NAME="RIPonly"><H3>RIP only, subnet to backbone</H3></A>
+
+Gateway configurations are more complicated than a simple host 
+configuration as gateways have multiple interfaces and may run 
+multiple protocols.  This sample configuration file connects two nets 
+within an autonomous system.  This configuration can be used for any 
+gateway that uses only RIP and that connects a single subnet to a 
+larger network.
+
+<P><PRE>
+    #
+    # enable rip
+    #
+    rip yes ;
+    #
+    #  using  rip,  announce subnet 3 via  interface 136.66.1.2
+    #
+    export proto rip interface 136.66.1.2
+    {
+        proto direct
+        {
+            announce 136.66.3.0 metric 0 ;
+        } ;
+    } ;
+    #
+    #  using  rip, announce all routes learned from interface 136.66.1.2
+    #
+    export proto rip interface 136.66.3.1
+    {
+        proto rip interface 136.66.1.2
+        {
+            announce all ;
+        } ;
+    } ;
+</PRE>
+               
+<P>The configuration contains two export statements.  The first one tells 
+GateD to announce, via the RIP protocol and interface 136.66.1.2 a direct 
+route to subnet 136.66.3.0.  The second route announces to subnet 3 all 
+routes learned from the interface 136.66.12.  This includes subnet routes 
+and any routes to the rest of the world, including default routes.  The 
+first export statement was not required since by default GateD announces 
+every network that is directly connected to the gateway.  The first export 
+statement was explicitly entered for two reasons; to document the intended 
+structure and to avoid relying on defaults which may be changed in future 
+releases.  In any export statement the main proto clause and the main 
+interface clause may define the protocol and interface through which the 
+routes are advertised.  Subsidiary proto and interface clauses define the 
+protocols and the interfaces from which the routes must be learned.
+          
+<A NAME="RIPdefault"></A>
+<H3>RIP with default announcement</H3>
+
+If the gateway only runs RIP and connects a local backbone to a subnet 
+which in turn provides a gateway to the outside world, the file is 
+configured differently.  In this example, the gateway announces a default 
+route to the backbone and announces all of the individual subnet routes to 
+the outside world.
+          
+<P><PRE>
+    #
+    # enable rip
+    #
+    rip yes ;
+    #
+    #  using  rip, announce all local subnets via 136.66.12.3
+    #
+    export proto rip interface 136.66.12.3 metric 3
+    {
+        proto rip interface 136.66.1.5
+        {
+            announce all ;
+        } ;
+    };
+    #
+    #  using  rip,  announce default  to  the  local backbone via 136.66.1.5
+    #
+    export proto rip interface 136.66.3.1
+    {
+        proto rip interface 136.66.12.3
+        {
+            announce 0.0.0.0 ;
+        } ;
+    } ;
+</PRE>
+                 
+<P>The first export statement statement explictly directs GateD to 
+announce all of the routes it learns from interface 136.66.1.5 out through 
+interface 136.66.12.3.  The explicit announce all is not required.  The 
+metric value is specified in the main statement and applies to every route 
+announced via this protocol and interface.  When the metric is specified in 
+the export clause it only applies to the routes specified in that clause.  
+In this example metric 3 applies to every route announced over interface 
+136.66.12.3 via RIP.
+
+<A NAME="RIPOSPF"></A>
+<H3>RIP and OSPF</H3>
+     
+This configuration for AS 283 enables both RIP and OSPF protocols and can 
+be used for testing RIP and OSPF.
+     
+
+<P><PRE>
+    #options noinstall ;
+    interfaces {
+       interface le0 passive ;
+    } ;
+    autonomoussystem 283 ;
+    snmp yes ;
+    rip yes {
+       broadcast ;
+       defaultmetric 5 ;
+       hnterface le version 2 multicast ;
+    } ;
+    ospf yes {
+       traceoptions 1sabuild protocol ;
+       monauthkey "ZZZZZZZZ" ;
+       backbone {
+            authtype simple ;
+            interface all {
+                 priority 2 ;
+            } ;
+            interface le {
+                 authkey "YYYYYYYY" ;
+            } ;
+       | ;
+    } ;
+    static {
+        default  gateway 132.236.200.200  preference 140 retain ;
+    }
+</PRE>
+                 
+<P>In the RIP case version 2 multicast packets are generated on all 
+ethernet interfaces (le0, le1...).  This is a safe way to test RIP since 
+the production gateways on this network do not support RIP version 2.  In 
+the OSPF case, all interfaces are configured to be Priority 2 so the 
+Proteon routers (Priority 0) will become designated routers.  A simple 
+password is specified "YYYYYYYY" for authentication of all Ethernet 
+interfaces.  (The only kind of interfaces in this configuration.)
+
+
+<A NAME="OSPFNBMA"></A>
+<H3>OSPF Using NBMA Mode</H3>
+
+In this sample configuration, an HP server is configured to be both the 
+area border router and the backbone router.
+     
+
+<P><PRE>
+    traceoptions parse ;
+    routerid 195.1.1.2 ;
+    #
+    RIP no ;
+    OSPF yes {
+     defaults {
+       preference 10 ;
+       cost 5 ;
+       type 1 ;
+     } ;
+     area 0.0.0.1 {
+       networks {
+         195.1.1.0 ;
+     } ;
+     interface 195.1.1.2 nnnbrn`dcast {
+       routers {
+         195.1.1.1 eligible ;
+         195.1.1.2 eligible ;
+       } ;
+       priority 15 ;
+       enable ;
+       hellointerval 30 ;
+       routerdeadinterval 30 ;
+       pollinterval 30 ;
+     } ;
+    } ;
+    area 0.0.0.2 {
+     networks {
+       193.2.1.0 ;
+       194.1.1.0 ;
+     } ;
+     interface 194.1.1.3 nonbroadcast {
+       routers {
+         194.1.1.2 eligible ;
+         194.1.1.3 eligible ;
+         194.1.1.1 ;
+       } ;
+       priority 15 ;
+       enable ;
+       hellointerval 30 ;
+       routerdeadinterval 30 ;
+       retransmitinterval 30 ;
+       pollinterval 30 ;
+       } ;
+     } ;
+     backbone {
+       interface 15.13.115.156 nonbroadcast {
+         enable ;
+         transitdelay 20 ;
+         priority 10 ;
+         hellointerval 30 ;
+         routerdeadinterval 30 ;
+         retransmitinterval 30 ;
+         pollinterval 30 ;
+       } ;
+     } ;
+    } ;
+</PRE>
+
+<P>(SWB: This needs a brief one paragraph explanation.)
+
+<hr>
+
+Last updated $Date: 1994/03/16 21:38:43 $.
+
+<p><ADDRESS>gated@gated.cornell.edu</ADDRESS>
+</body>
+</html>

@@ -1,0 +1,123 @@
+From gil%taux01@nsc.COM Tue May 30 12:36:47 1989
+Path: lll-winken!xanth!ames!apple!voder!nsc!taux01!gil
+From: gil@taux01.UUCP ( Gil Shwed)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: Shared file descriptors
+Message-ID: <1770@taux01.UUCP>
+Date: 30 May 89 14:36:49 GMT
+Reply-To: gil%taux01@nsc.COM (Gil Shwed)
+Organization: National Semiconductor (IC) Ltd, Israel
+Lines: 83
+Index: sys 4.3BSD-tahoe
+
+Description:
+
+	Child/Father processes sharing of file descriptors does not
+work correctly. When two or more processes are reading simultaneously from
+using the same file descriptor (as resulted from fork())
+the file offset does not increment properly.
+Resulting in reading the same blocks by number of processes,
+and skipping others.
+
+This bug exist on *ALL* the Berkeley derived system I've checked,
+which includes: VAXen, ALL Suns, Sequent DYNIX, Gould, CCI TAHOE, and others.
+
+Repeat-By:
+	Compile the following program:
+	main() {
+		char buf[8192];
+		int n;
+
+		fork();
+		while((n = read(0, buf, 8192)) > 0)
+			write(1, buf, n);
+		exit(0);
+	}
+	Then, run:
+
+		a.out < /vmunix > out
+
+	Now, run:
+		cmp /vmunix out
+
+	They should be the same, but...
+
+Explanation:
+
+	The routine rwuio() in the file sys/sys_generic.c has the following
+	structure:
+
+	count = uio->uio_resid;		/* Take count to read/write */
+	uio->uio_offset = fp->f_offset;	/* (a) Offset in file */
+	.
+	.
+					/* (b) perform actual i/o */
+	u.u_error = (*fp->f_ops->fo_rw)(fp, rw, uio);
+	u.u_r.r_val1 = count - uio->uio_resid;
+	fp->f_offset += u.u_r.r_val1;	/* (c) Update file offset */
+
+
+	When the first process enters this routine, it tries to read
+	from position 0 (a), it enters file-type specific function (ino_rw),
+	and blocks until the block is brought from disk.
+	Then, the second processes gets the cpu and perform the same
+	operation: It enters read()->rwuio(), takes the file offset (a),
+	which is *NOT* modified to reflect the first read.
+	This results in reading the same block twice!
+	Furthermore, when the two processes gets their (same) block,
+	they update the file offset (c) *TWICE*.
+	So... the next read will skip a block.
+
+	Or in the example, the output file will contain the following
+	data blocks (numbered as the block number from the original file):
+		0, 0, 2, 2, ...., n, n
+	Instead of:
+		0, 1, 2, 3, ...., n-1, n
+
+
+Fix:
+	The problem should be fixed by locking the inode before
+	taking the offset (This is the way SystemV does it).
+	This is sort of architectural problem, since rwuio()
+	does not suppose to know the file type and/or recognize
+	ILOCK().
+	So, I leave the right to fix this bug the people who
+	wrote it that way the first place...
+
+
+-- Have Fun!
+-- Gil Shwed
+
+Or one of the following:
+gil%taux01@nsc.com
+gil@hujifh.bitnet
+gil@humus.huji.ac.il
+gil@batata.bitnet
+
+=====================================================================
+Path: lll-winken!ames!haven!adm!smoke!gwyn
+From: gwyn@smoke.BRL.MIL (Doug Gwyn)
+Newsgroups: comp.bugs.4bsd,comp.unix.wizards
+Subject: Re: Shared file descriptors
+Message-ID: <10341@smoke.BRL.MIL>
+Date: 30 May 89 16:09:10 GMT
+References: <1770@taux01.UUCP>
+Reply-To: gwyn@brl.arpa (Doug Gwyn)
+Organization: Ballistic Research Lab (BRL), APG, MD.
+Lines: 13
+Xref: lll-winken comp.bugs.4bsd:993 comp.unix.wizards:15385
+
+In article <1770@taux01.UUCP> gil%taux01@nsc.COM (Gil Shwed) writes:
+>		fork();
+>		while((n = read(0, buf, 8192)) > 0)
+>			write(1, buf, n);
+
+This program has a race condition between the two processes,
+even in the absence of kernel bugs.
+
+>	The problem should be fixed by locking the inode before
+>	taking the offset (This is the way SystemV does it).
+
+Yeah, it's a problem, isn't it.  We begin to see why genuine
+concurrent programming constructs are useful..
+

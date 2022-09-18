@@ -1,0 +1,32 @@
+Acknowledged: <<19-Jan-83 16:24>>
+Date: 11 Jan 1983 2037-PST (Tuesday)
+From: mark@cbosgd.UUCP
+Subject: stdio bug
+
+Index: lib 4.2BSD
+
+Just ran across a nasty stdio bug if you use "r+".  It seems
+that fflush doesn't do anything unless the file has _IOWRT set
+(see the first line of code in fflush in flsbuf.c.)  Well,
+when you fopen a file for "r+" or do an fseek, the flags state
+gets set to _RW; _IOWRT is turned off.  Now, suppose you do some
+writes to the file (which all go through putc.)  putc itself
+does not set _IOWRT, only _flsbuf does.  So if you have the
+following sequence:
+	fd = fopen(file, "r+");
+
+	... fread for a while, remember one position with
+		pos = ftell(fd);
+	...
+	fseek(fd, pos, 0);	/* This should be early in a block. */
+	fprintf(fd, ...);	/* This should be a small string. */
+	fclose(fd);
+the fprintf doesn't cross a block boundary, so _flsbuf is
+never called.  Thus, _IOWRT is never set, and the file is
+never changed.  In fact, an ls -l of the file shows the
+write date is unchanged, because no write ever took place!
+
+I am not sure what the proper fix would be, but making fflush
+willing to accept _RW in place of _IOWRT is a reasonable guess.
+
+	Mark

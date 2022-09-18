@@ -1,0 +1,76 @@
+Bug fix for Liszt V5.0
+Fix #: z5.1
+File affected: liszt/cadr.l
+Author: jkf@berkeley
+
+  There is a problem in the function d-mapconvert in the compiler file
+cadr.l .  Consider the case of
+
+     (mapcar '(lambda (a b) (plus a b)) '(1 10) '(3))
+
+The Franz manual would say that this is illegal since the lists to map over
+are different lengths.  However this is allowed in Maclisp and the rule is
+that the mapping stops whenever any of the lists is exausted.  It happens
+that our interpreter already does this, but in order to make the compiler
+handle it in the `Maclisp style' as well, change d-mapconvert to:
+
+;--- d-mapconvert - access : function to access parts of lists
+;		  - join	 : function to join results
+;		  - resu	 : function to apply to result
+;		- form	 : mapping form
+;	This function converts maps to an equivalent do form.
+;
+;  in this function, the variable vrbls contains a list of forms, one form
+;  per list we are mapping over.  The form of the form is 
+;    (dummyvariable  realarg  (cdr dummyvariable))
+; realarg may be surrounded by (setq <variable which holds result> realarg)
+; in the case that the result is the list to be mapped over (this only occurs
+; with the function mapc).
+;
+(defun d-mapconvert (access join resu form )
+	  (prog (vrbls finvar acc accform compform tmp testform)
+
+		(setq finvar (gensym 'X)   ; holds result
+
+		      vrbls (reverse
+			     (maplist '(lambda (arg)
+					((lambda (temp)
+					    (cond ((or resu (cdr arg))
+						   `(,temp ,(car arg)
+							   (cdr ,temp)))
+						  (t `(,temp 
+						       (setq ,finvar ,(car arg))
+						       (cdr ,temp)))))
+					 (gensym 'X)))
+				    (reverse (cdr form))))
+
+		      acc (mapcar '(lambda (tem)
+					   (cond (access `(,access ,(car tem)))
+						 (t (car tem))))
+				  vrbls)
+
+		      accform (cond ((or (atom (setq tmp (car form)))
+					 (null (setq tmp (d-macroexpand tmp)))
+					 (not (member (car tmp) '(quote function))))
+				     `(funcall ,tmp ,@acc))
+				    (t `(,(cadr tmp) ,@acc)))
+		      ; the testform checks if any of the lists we are mapping
+		      ; over is nil, in which case we quit.
+		      testform (cond ((null (cdr vrbls)) `(null ,(caar vrbls)))
+				     (t `(or ,@(mapcar '(lambda (x)
+							       `(null ,(car  x)))
+						      vrbls))))
+				      )
+		(return
+		 `((lambda (,finvar)
+		    (do ( ,@vrbls)
+			(,testform)
+			,(cond ((eq join 'nconc)
+				`(setq ,finvar (nconc ,finvar ,accform)))
+			       (join `(setq ,finvar (,join ,accform ,finvar)))
+			       (t accform)))
+		    ,(cond ((eq resu 'identity) finvar)
+			   (resu `(,resu ,finvar))
+			   (t finvar)))
+		   nil ))))
+

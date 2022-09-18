@@ -1,0 +1,81 @@
+From sms@ETN-WLV.EATON.COM  Fri May  5 23:58:48 1989
+Date: Fri, 5 May 89 23:58:46 -0700
+From: sms@ETN-WLV.EATON.COM (Steven M. Schultz)
+Subject: security problem with chown syscall
+Index: sys/ufs_syscalls.c 2.10BSD
+
+Description:
+	V1.77 (re-fix for chown security problem).  Originally posted for
+	4.3BSD, this is the 2.10.1BSD counterpart.
+
+>	There's a security problem associated with 4.3BSD and 4.3BSD-tahoe
+>	systems involving the chown(2) system call.  It may exist in
+>	4.3BSD derived systems; contact your vendor for more information.
+
+Fix:
+*** ufs_syscal.old	Sat Apr 29 20:20:18 1989
+--- ufs_syscalls.c	Sat Apr 29 20:24:44 1989
+***************
+*** 3,9 ****
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)ufs_syscalls.c	1.1 (2.10BSD Berkeley) 12/1/86
+   */
+  
+  #include "param.h"
+--- 3,9 ----
+   * All rights reserved.  The Berkeley software License Agreement
+   * specifies the terms and conditions for redistribution.
+   *
+!  *	@(#)ufs_syscalls.c	1.2 (2.10BSD Berkeley) 4/29/89
+   */
+  
+  #include "param.h"
+***************
+*** 577,583 ****
+  		int	gid;
+  	} *uap = (struct a *)u.u_ap;
+  
+! 	if ((ip = owner(uap->fname, NOFOLLOW)) == NULL)
+  		return;
+  	u.u_error = chown1(ip, uap->uid, uap->gid);
+  	iput(ip);
+--- 577,586 ----
+  		int	gid;
+  	} *uap = (struct a *)u.u_ap;
+  
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | NOFOLLOW);
+! 	if (ip == NULL)
+  		return;
+  	u.u_error = chown1(ip, uap->uid, uap->gid);
+  	iput(ip);
+***************
+*** 622,630 ****
+  		uid = ip->i_uid;
+  	if (gid == -1)
+  		gid = ip->i_gid;
+! 	if (uid != ip->i_uid && !suser())
+! 		return (u.u_error);
+! 	if (gid != ip->i_gid && !groupmember((gid_t)gid) && !suser())
+  		return (u.u_error);
+  #ifdef QUOTA
+  	QUOTAMAP();
+--- 625,637 ----
+  		uid = ip->i_uid;
+  	if (gid == -1)
+  		gid = ip->i_gid;
+! 	/*
+! 	 * If we don't own the file, are trying to change the owner
+! 	 * of the file, or are not a member of the target group,
+! 	 * the caller must be superuser or the call fails.
+! 	 */
+! 	if ((u.u_uid != ip->i_uid || uid != ip->i_uid ||
+! 	    !groupmember((gid_t)gid)) && !suser())
+  		return (u.u_error);
+  #ifdef QUOTA
+  	QUOTAMAP();
+
+=============================================================================

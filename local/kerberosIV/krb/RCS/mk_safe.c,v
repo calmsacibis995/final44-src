@@ -1,0 +1,775 @@
+head     4.12;
+branch   ;
+access   ;
+symbols  PATCH8:4.12 PATCH7:4.12 KPATCH6:4.12 ASRSNAP1001:4.12 PATCH5:4.12 KPATCH4:4.12 KPATCH3:4.12 KPATCH2:4.12 KREL1:4.11 BETA5/24/88:4.8;
+locks    ; strict;
+comment  @ * @;
+
+
+4.12
+date     89.03.22.14.50.49;  author jtkohl;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     89.01.23.15.15.27;  author steiner;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     88.12.05.15.21.31;  author steiner;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     88.12.01.14.18.27;  author jtkohl;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     88.02.24.18.14.36;  author steiner;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.01.12.21.22.33;  author steiner;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     87.12.06.11.24.38;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     87.10.28.16.05.00;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.10.28.15.58.54;  author steiner;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.10.20.17.11.55;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.10.16.20.50;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.47.05;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     86.07.02.17.57.14;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.05.14.15.26.34;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     86.05.06.16.30.51;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@reorder protocol
+@
+
+
+4.12
+log
+@fix missing comment end delimiter
+@
+text
+@/*
+ * $Source: /mit/kerberos/src/lib/krb/RCS/mk_safe.c,v $
+ * $Author: steiner $
+ *
+ * Copyright 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * This routine constructs a Kerberos 'safe msg', i.e. authenticated
+ * using a private session key to seed a checksum. Msg is NOT
+ * encrypted.
+ *
+ *      Note-- bcopy is used to avoid alignment problems on IBM RT
+ *
+ *      Returns either <0 ===> error, or resulting size of message
+ *
+ * Steve Miller    Project Athena  MIT/DEC
+ */
+
+#ifndef lint
+static char *rcsid_mk_safe_c=
+"$Header: mk_safe.c,v 4.11 89/01/23 15:15:27 jtkohl Locked $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+
+/* system include files */
+#include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/time.h>
+
+/* application include files */
+#include <des.h>
+#include <krb.h>
+#include <prot.h>
+#include "lsb_addr_comp.h"
+
+extern char *errmsg();
+extern int errno;
+extern int krb_debug;
+
+/* static storage */
+
+static u_long cksum;
+static C_Block big_cksum[2];
+static struct timeval msg_time;
+static u_char msg_time_5ms;
+static long msg_time_sec;
+
+/*
+ * krb_mk_safe() constructs an AUTH_MSG_SAFE message.  It takes some
+ * user data "in" of "length" bytes and creates a packet in "out"
+ * consisting of the user data, a timestamp, and the sender's network
+ * address, followed by a checksum computed on the above, using the
+ * given "key".  The length of the resulting packet is returned.
+ *
+ * The "out" packet consists of:
+ *
+ * Size			Variable		Field
+ * ----			--------		-----
+ *
+ * 1 byte		KRB_PROT_VERSION	protocol version number
+ * 1 byte		AUTH_MSG_SAFE |		message type plus local
+ *			HOST_BYTE_ORDER		byte order in low bit
+ *
+ * ===================== begin checksum ================================
+ * 
+ * 4 bytes		length			length of user data
+ * length		in			user data
+ * 1 byte		msg_time_5ms		timestamp milliseconds
+ * 4 bytes		sender->sin.addr.s_addr	sender's IP address
+ *
+ * 4 bytes		msg_time_sec or		timestamp seconds with
+ *			-msg_time_sec		direction in sign bit
+ *
+ * ======================= end checksum ================================
+ *
+ * 16 bytes		big_cksum		quadratic checksum of
+ *						above using "key"
+ */
+
+long krb_mk_safe(in,out,length,key,sender,receiver)
+    u_char *in;			/* application data */
+    u_char *out;		/*
+				 * put msg here, leave room for header!
+				 * breaks if in and out (header stuff)
+				 * overlap
+				 */
+    u_long length;		/* of in data */
+    C_Block *key;		/* encryption key for seed and ivec */
+    struct sockaddr_in *sender;	/* sender address */
+    struct sockaddr_in *receiver; /* receiver address */
+{
+    register u_char     *p,*q;
+
+    /*
+     * get the current time to use instead of a sequence #, since
+     * process lifetime may be shorter than the lifetime of a session
+     * key.
+     */
+    if (gettimeofday(&msg_time,(struct timezone *)0)) {
+        return  -1;
+    }
+    msg_time_sec = (long) msg_time.tv_sec;
+    msg_time_5ms = msg_time.tv_usec/5000; /* 5ms quanta */
+
+    p = out;
+
+    *p++ = KRB_PROT_VERSION;
+    *p++ = AUTH_MSG_SAFE | HOST_BYTE_ORDER;
+
+    q = p;			/* start for checksum stuff */
+    /* stuff input length */
+    bcopy((char *)&length,(char *)p,sizeof(length));
+    p += sizeof(length);
+
+    /* make all the stuff contiguous for checksum */
+    bcopy((char *)in,(char *)p,(int) length);
+    p += length;
+
+    /* stuff time 5ms */
+    bcopy((char *)&msg_time_5ms,(char *)p,sizeof(msg_time_5ms));
+    p += sizeof(msg_time_5ms);
+
+    /* stuff source address */
+    bcopy((char *) &sender->sin_addr.s_addr,(char *)p,
+          sizeof(sender->sin_addr.s_addr));
+    p += sizeof(sender->sin_addr.s_addr);
+
+    /*
+     * direction bit is the sign bit of the timestamp.  Ok until
+     * 2038??
+     */
+    /* For compatibility with broken old code, compares are done in VAX 
+       byte order (LSBFIRST) */ 
+    if (lsb_net_ulong_less(sender->sin_addr.s_addr, /* src < recv */ 
+			  receiver->sin_addr.s_addr)==-1) 
+        msg_time_sec =  -msg_time_sec; 
+    else if (lsb_net_ulong_less(sender->sin_addr.s_addr, 
+				receiver->sin_addr.s_addr)==0) 
+        if (lsb_net_ushort_less(sender->sin_port,receiver->sin_port) == -1) 
+            msg_time_sec = -msg_time_sec; 
+    /*
+     * all that for one tiny bit!  Heaven help those that talk to
+     * themselves.
+     */
+
+    /* stuff time sec */
+    bcopy((char *)&msg_time_sec,(char *)p,sizeof(msg_time_sec));
+    p += sizeof(msg_time_sec);
+
+#ifdef NOENCRYPTION
+    cksum = 0;
+    bzero(big_cksum, sizeof(big_cksum));
+#else /* Do encryption */
+    /* calculate the checksum of length, timestamps, and input data */
+    cksum = quad_cksum(q,big_cksum,p-q,2,key);
+#endif /* NOENCRYPTION */
+    if (krb_debug)
+        printf("\ncksum = %u",cksum);
+
+    /* stuff checksum */
+    bcopy((char *)big_cksum,(char *)p,sizeof(big_cksum));
+    p += sizeof(big_cksum);
+
+    return ((long)(p - out));	/* resulting size */
+
+}
+@
+
+
+4.11
+log
+@Programmer: jtkohl
+Auditor: steiner
+Fixed address comparisons.
+@
+text
+@d24 1
+a24 1
+"$Header: mk_safe.c,v 4.10 88/12/05 15:21:31 jtkohl Locked $";
+d162 1
+a162 1
+#endif /* NOENCRYPTION
+@
+
+
+4.10
+log
+@Added #ifdef NOENCRYPTION code (to send stuff
+in the clear in case no DES library present).
+Programmer: jtkohl
+Auditor: steiner
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d24 1
+a24 1
+"$Header: mk_safe.c,v 4.9 88/12/01 14:18:27 jtkohl Locked $";
+d40 1
+d138 9
+a146 9
+    if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) {
+        msg_time_sec =  (-msg_time_sec);
+    } else {
+        if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr) {
+            if (sender->sin_port < receiver->sin_port) {
+                msg_time_sec = -msg_time_sec;
+            }
+        }
+    }
+@
+
+
+4.9
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d24 1
+a24 1
+"$Header: mk_safe.c,v 4.8 88/02/24 18:14:36 steiner Locked $";
+d155 4
+d161 1
+@
+
+
+4.8
+log
+@Copyright notice, etc.
+@
+text
+@d24 1
+a24 1
+"$Header: mk_safe.c,v 4.7 88/01/12 21:22:33 steiner Locked $";
+d53 31
+a83 1
+/* routine bodies */
+a84 1
+/* RETURNS long length of the resulting message to be transmitted */
+@
+
+
+4.7
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 1
+ * Copyright    1986    Massachusetts Institute of Technology
+d5 2
+a6 3
+ *      $Source: /mit/kerberos/lib/krb/RCS/mk_safe.c,v $
+ *      $Author: steiner $
+ *      $Locker:  $
+d8 2
+a9 1
+ *      Steve Miller    Project Athena  MIT/DEC
+d18 2
+d22 4
+d27 2
+a45 5
+
+#ifndef lint
+static char *rcsid_mk_safe_msg_c=
+    "$Header: mk_safe.c,v 4.6 87/12/06 11:24:38 steiner Exp $";
+#endif /* lint */
+@
+
+
+4.6
+log
+@Changed user routine names to krb_xxxxxxx
+@
+text
+@d1 2
+a2 1
+/*	Copyright	1986	Massachusetts Institute of Technology	
+d4 3
+a6 8
+ *  $Source: /mit/kerberos/lib/krb/RCS/mk_safe.c,v $
+ *	$Author: steiner $
+ *	$Locker: steiner $
+ * 
+ *	Steve Miller	Project Athena	MIT/DEC
+ * 
+ *	This routine constructs a Kerberos 'safe msg', i.e. authenticated using
+ *  a private session key to seed a checksum. Msg is NOT encrypted.
+d8 1
+a8 1
+ *	Note-- bcopy is used to avoid alignment problems on IBM RT
+d10 7
+a16 1
+ *	Returns either <0 ===> error, or resulting size of message 
+d21 5
+a25 5
+# include	<stdio.h>
+# include	<errno.h>
+# include	<sys/types.h>
+# include	<netinet/in.h>
+# include	<sys/time.h>
+d28 3
+a30 3
+#include	<des.h>
+#include	<krb.h>
+#include	<prot.h>
+d32 3
+a34 3
+extern 	char	*errmsg();
+extern	int 	errno;
+extern	int		krb_debug;
+a35 5
+/* local defines */
+
+/* global storage */
+
+
+d38 4
+a41 4
+#ifndef	lint
+static char		*rcsid_mk_safe_msg_c=
+"$Header: mk_safe.c,v 4.5 87/10/28 16:05:00 steiner Locked $";
+#endif lint
+d43 5
+a47 5
+static	u_long	cksum;
+static	C_Block	big_cksum[2];
+static	struct	timeval	msg_time;
+static	u_char	msg_time_5ms;
+static	long	msg_time_sec;
+a50 11
+long
+krb_mk_safe(in,out,length,key,sender,receiver)
+u_char *in;				/* application data */
+u_char *out;				/* put msg here, leave room for header!
+					 * breaks if in and out (header stuff)
+					 * overlap
+					 */
+u_long length;				/* of in data */
+C_Block *key;				/* encryption key for seed and ivec */
+struct sockaddr_in *sender;		/* sender address */
+struct sockaddr_in *receiver;		/* receiver address */
+d52 11
+d64 1
+a64 1
+	register u_char	*p,*q;
+d66 10
+a75 8
+	/* get the current time to use instead of a sequence #, since process
+	 * lifetime may be shorter than the lifetime of a session key.
+	 */
+	if (gettimeofday(&msg_time,(struct timezone *)0)) {
+		return	-1;
+	}
+	msg_time_sec = (long) msg_time.tv_sec;
+	msg_time_5ms = msg_time.tv_usec/5000; /* 5ms quanta */
+d77 1
+a77 1
+	p = out;
+d79 2
+a80 2
+	*p++ = KRB_PROT_VERSION;
+	*p++ = AUTH_MSG_SAFE | HOST_BYTE_ORDER;
+d82 4
+a85 4
+	q = p;				/* start for checksum stuff */
+	/* stuff input length */
+	bcopy((char *)&length,(char *)p,sizeof(length));
+	p += sizeof(length);
+d87 3
+a89 3
+	/* make all the stuff contiguous for checksum */
+	bcopy((char *)in,(char *)p,(int) length);
+	p += length;
+d91 3
+a93 3
+	/* stuff time 5ms */
+	bcopy((char *)&msg_time_5ms,(char *)p,sizeof(msg_time_5ms));
+	p += sizeof(msg_time_5ms);
+d95 4
+a98 4
+	/* stuff source address */
+	bcopy((char *) &sender->sin_addr.s_addr,(char *)p,
+	      sizeof(sender->sin_addr.s_addr));
+	p += sizeof(sender->sin_addr.s_addr);
+d100 17
+a116 17
+	/* direction bit is the sign bit of the timestamp.  Ok until 2038 ?? */
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) {
+		msg_time_sec =  (-msg_time_sec);
+	} else {
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr) {
+			if (sender->sin_port < receiver->sin_port) {
+				msg_time_sec = -msg_time_sec;
+			}
+		}
+	}
+	/* all that for one tiny bit!
+	 * Heaven help those that talk to themselves.
+	 */
+	
+	/* stuff time sec */
+	bcopy((char *)&msg_time_sec,(char *)p,sizeof(msg_time_sec));
+	p += sizeof(msg_time_sec);
+d118 3
+a120 4
+	/* calculate the checksum of the length, timestamps, and input data*/
+	cksum = quad_cksum(q,big_cksum,p-q,2,key);
+	if (krb_debug)
+		printf("\ncksum = %u",cksum);
+d122 4
+a125 3
+	/* stuff checksum */
+	bcopy((char *)big_cksum,(char *)p,sizeof(big_cksum));
+	p += sizeof(big_cksum);
+d127 6
+a132 2
+	return ((long)(p - out) );	/* resulting size */
+						
+@
+
+
+4.5
+log
+@Took byteorder.h out; that info is now in krb_conf.h.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/mk_safe_msg.c,v $
+d43 1
+a43 1
+"$Header: mk_safe_msg.c,v 4.4 87/10/28 15:58:54 steiner Locked $";
+d55 1
+a55 1
+mk_safe_msg(in,out,length,key,sender,receiver)
+@
+
+
+4.4
+log
+@jtkohl's changes.
+@
+text
+@d3 3
+a5 3
+ *  $Source: /paris/u3/kerberos.new/lib/krb/RCS/mk_safe_msg.c,v $
+ *	$Author: jtkohl $
+ *	$Locker: jtkohl $
+a27 1
+#include	<byteorder.h>
+d42 2
+a43 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 4.3 87/10/20 17:11:55 jtkohl Locked $";
+@
+
+
+4.3
+log
+@lint fixes.
+@
+text
+@d3 2
+a4 2
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/mk_safe_msg.c,v $
+ *	$Author: steiner $
+d33 1
+a33 1
+extern	int		debug;
+d43 1
+a43 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 4.2 87/09/10 16:20:50 jtkohl Locked $";
+d121 1
+a121 1
+	if (debug)
+@
+
+
+4.2
+log
+@Changed include files configuration and referencing.
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/mk_safe_msg.c,v $
+d5 1
+a5 4
+ *	$Locker: steiner $
+ *	$Log:	mk_safe_msg.c,v $
+ * Revision 4.1  87/09/01  15:47:05  steiner
+ * No change; starting version 4.
+a6 13
+ * Revision 1.3  86/07/02  17:57:14  spm
+ * add second arg to gettimeofday
+ * 
+ * Revision 1.2  86/05/14  15:26:34  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.2  86/04/16  12:23:50  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.1  86/04/04  18:08:43  spm
+ * Initial revision
+ * 
+ * 
+d18 1
+a18 1
+/* system include files													   */
+d25 1
+a25 1
+/* application include files											   */
+d28 1
+d35 1
+a35 1
+/* local defines														   */
+d37 1
+a37 1
+/* global storage														   */
+d40 1
+a40 1
+/* static storage														   */
+d43 1
+a43 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 4.1 87/09/01 15:47:05 steiner Locked $";
+a47 2
+static	u_long	c_length;
+static 	C_Block	temp;
+d52 1
+a52 1
+/* routine bodies														   */
+d55 11
+a65 13
+	mk_safe_msg(in,out,length,key,sender,receiver)
+
+	u_char			*in;		/* application data						   */
+	u_char			*out;		/* put msg here, leave room for header!
+								 * breaks if in and out (header stuff)
+								 * overlap
+								 */
+	u_long			length;		/* of in data							   */
+	C_Block			*key;		/* encryption key for seed and ivec		   */
+	struct	sockaddr_in	*sender;	/* sender address					   */
+	struct	sockaddr_in *receiver;	/* receiver address					   */
+
+	/* RETURNS long length of the resulting message to be transmitted	   */
+d72 1
+a72 2
+	if (gettimeofday(&msg_time,NULL))
+		{
+d74 3
+a76 3
+		}
+	 msg_time_sec = (long) msg_time.tv_sec;
+	 msg_time_5ms = msg_time.tv_usec/5000;	/* 5ms quanta				   */
+d83 3
+a85 2
+	q = p;						/* start for checksum stuff			   */
+	bcopy(&length,p,sizeof(length));	/* stuff input length			   */
+d88 2
+a89 2
+	/* make all the stuff contiguous for checksum		   */
+	bcopy(in,p,length);
+d92 2
+a93 1
+	bcopy(&msg_time_5ms,p,sizeof(msg_time_5ms));/* stuff time 5ms		   */
+d96 3
+a98 2
+	/* stuff source address												   */
+	bcopy(&sender->sin_addr.s_addr,p,sizeof(sender->sin_addr.s_addr));
+d101 6
+a106 11
+	/* direction bit is the sign bit  of the timestamp.  Ok until 2038 ?? */
+	if (sender->sin_addr.s_addr < receiver->sin_addr.s_addr) 
+		{
+		msg_time_sec =  -msg_time_sec;
+		}		
+	else 
+		{
+		if (sender->sin_addr.s_addr == receiver->sin_addr.s_addr)
+			{
+			if (sender->sin_port < receiver->sin_port)
+				{
+a107 1
+				}
+d110 1
+d115 2
+a116 1
+	bcopy(&msg_time_sec,p,sizeof(msg_time_sec));/* stuff time sec		   */
+d120 3
+a122 2
+	cksum =  quad_cksum(q,big_cksum,p-q,2,key);
+	if (debug)	printf("\ncksum = %u",cksum);
+d124 2
+a125 1
+	bcopy(big_cksum,p,sizeof(big_cksum));	/* stuff checksum			   */
+d128 1
+a128 1
+	return (p - out );	/* resulting size					   */
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d4 1
+a4 1
+ *	$Author: spm $
+d7 3
+d44 1
+a44 1
+#include	"prot.h"
+d58 1
+a58 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 1.3 86/07/02 17:57:14 steiner Locked $";
+@
+
+
+1.3
+log
+@add second arg to gettimeofday
+@
+text
+@d3 1
+a3 1
+ *  $Source: /mit/projects/auth/src/lib/krb/RCS/mk_safe_msg.c,v $
+d5 1
+a5 1
+ *	$Locker: spm $
+d7 3
+d55 1
+a55 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 1.2 86/05/14 15:26:34 spm Exp $";
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d7 3
+d52 1
+a52 1
+static char		*rcsid_mk_safe_msg_c="$Header: mk_safe_msg.c,v 1.2 86/04/16 12:23:50 spm Exp $";
+d85 1
+a85 1
+	if (gettimeofday(&msg_time))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d98 4
+d131 1
+a131 5
+	/* make all the stuff contiguous for checksum		   */
+	bcopy(in,p,length);
+	p += length;
+
+	/* calculate the checksum of the length, sequence, and input data*/
+@

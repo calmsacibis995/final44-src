@@ -1,0 +1,33 @@
+Return-Path: <mogul@coyote>
+Date: Mon, 27 Feb 84 14:16:33 pst
+From: Jeff Mogul <mogul@coyote>
+Subject: ICMP requests can cause panics
+Index: sys/netinet/ip_icmp.c 4.2BSD
+
+Description:
+	If the ICMP code receives a packet in two or more mbufs,
+	it does an m_pullup to put all the data into one m_buf.
+	However, it has already squirreled away a pointer into the
+	original mbuf, and when it later uses this pointer all
+	sorts of nasty things happen.
+Repeat-By:
+	If you've got an ICMP echo ("ping") program, do "ping localhost".
+	Otherwise, write something to do raw IP output to "localhost"
+	and send an ICMP; also, if you can arrange things so that
+	an ICMP coming from another host is fragmented, you can probably
+	crash your system.
+Fix:
+	Replace the "if" statement in /sys/netinet/ip_icmp.c, icmp_input()
+	that calls m_pullup with these two statements:
+	
+	if ((m->m_off > MMAXOFF || m->m_len < icmplen)
+	   && (m = m_pullup(m, icmplen)) == 0) {
+		icmpstat.icps_tooshort++;
+		return;
+	}
+	ip = mtod(m, struct ip *);	/* m_pullup may have changed this */
+
+	
+	Earlier versions of the code used a different argument
+	to m_pullup; that failed to work if short (but legal) ICMPs were
+	received, but it also partly masked this particular problem.

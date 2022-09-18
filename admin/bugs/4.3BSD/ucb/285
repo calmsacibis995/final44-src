@@ -1,0 +1,369 @@
+From larryw@frodo.bioeng.washington.edu  Wed Feb  7 16:07:36 1990
+Date: Wed, 7 Feb 90 16:06:52 PST
+From: Larry Weissman 5-2011 <larryw@frodo.bioeng.washington.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: fpr bug
+
+Subject: fpr botches overstrike lines
+
+Index: ucb/fpr 4.3BSD
+
+Description:
+	fpr botches overstrike lines and a few other things. This is a generic
+	Berkeley bug (shows up on VAX/BSD 4.3, IBM RT/ACIS 4.3, Sequent/4.2,
+	SunOS 4.0.1).
+
+Repeat-By:
+	Run fpr with the test file included in the shar file below.
+
+Fix:	Needs a major overhaul. A working clone is included in the shar file,
+	but it is not extensively debugged.
+
+---------------------------------------------------------------------------
+Larry Weissman                         Center for Bioengineering, WD-12
+larryw@nsr.bioeng.washington.edu       Univ of Washington, Seattle WA 98195
+(206)685-2011
+
+
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	Makefile
+#	fpr.1
+#	fpr.c
+#	fpr.test
+# This archive created: Wed Feb  7 15:49:57 1990
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f 'Makefile'
+then
+	echo shar: "will not over-write existing file 'Makefile'"
+else
+cat << \SHAR_EOF > 'Makefile'
+#
+# Copyright (c) 1987 Regents of the University of California.
+# All rights reserved.  The Berkeley software License Agreement
+# specifies the terms and conditions for redistribution.
+#
+#	@(#)Makefile	5.1	(Berkeley)	12/12/87
+#
+CFLAGS=	-g
+SRCS=	fpr.c
+OBJS=	fpr.o
+
+all: fpr
+
+fpr:	${SRCS}
+	${CC} -o $@ ${CFLAGS} ${SRCS}
+
+clean: FRC
+	rm -f ${OBJS} core fpr
+
+depend: FRC
+	mkdep -p ${CFLAGS} ${SRCS}
+
+install: FRC
+	install -s -o bin -g bin -m 755 fpr ${DESTDIR}/usr/ucb/fpr
+
+lint: FRC
+	lint ${CFLAGS} ${SRCS}
+
+tags: FRC
+	ctags ${SRCS}
+
+FRC:
+
+# DO NOT DELETE THIS LINE -- mkdep uses it.
+# DO NOT PUT ANYTHING AFTER THIS LINE, IT WILL GO AWAY.
+
+fpr: fpr.c /usr/include/stdio.h
+
+# IF YOU PUT ANYTHING HERE IT WILL GO AWAY
+SHAR_EOF
+fi
+if test -f 'fpr.1'
+then
+	echo shar: "will not over-write existing file 'fpr.1'"
+else
+cat << \SHAR_EOF > 'fpr.1'
+.ds f. fpr.tbl
+.TH FPR 1 "2 February 1990"
+.SH NAME
+fpr \- print FORTRAN file
+.SH SYNOPSIS
+.B fpr
+.RB [ "file ..." ]
+.SH DESCRIPTION
+.IX fpr "print FORTRAN file" "\fLfpr\fP" "print FORTRAN file"
+.IX Print  "FORTRAN file \(em \fLfpr\fR"
+.IX "Programming languages"  "print FORTRAN file \(em \fLfpr\fR"
+.IX FORTRAN  "print file \(em \fLfpr\fR"
+.B fpr
+transforms files formatted according to
+FORTRAN's carriage control conventions into files formatted
+according to UNIX line printer conventions.
+.B fpr
+copies the files listed on the command line to its standard output.
+If no files are given,
+.B fpr
+copies its standard input to the standard output.
+.LP
+.B fpr
+replaces the carriage control characters with characters that will
+produce the intended effects when printed using
+.BR lpr (1).
+The first character of each line determines the vertical spacing as follows:
+.IP (blank)
+one line
+.IP \fB0\fP
+two lines
+.IP \fB1\fP
+to first line of next page
+.IP \fB+\fP
+no advance
+.LP
+A blank line (that is, an empty line) is treated as if its first
+character is a blank. A blank that appears as a carriage control
+character is deleted. A zero is changed to a newline.  A one is
+changed to a form feed. The effects of a "+" are simulated using backspaces.
+.LP
+Note that 
+.B fpr
+is known as 
+.B asa
+in UNIX System V.
+.SH EXAMPLES
+.B a.out\0 | \0 fpr\0 |\0 lpr
+.LP
+.B fpr\0 <\0 f77.output\0 |\0 lpr
+.SH BUGS
+Results are undefined for input lines longer than 132 characters.
+SHAR_EOF
+chmod +x 'fpr.1'
+fi
+if test -f 'fpr.c'
+then
+	echo shar: "will not over-write existing file 'fpr.c'"
+else
+cat << \SHAR_EOF > 'fpr.c'
+/*
+ *	fpr: Fortran print filter
+ *	L. Weissman 1 Feb 90
+ */
+
+#include <stdio.h>
+
+#define TEXTLEN		1024
+#define MAXCOL		132
+#define BS		'\b'
+#define BLANK		' '
+#define FF		'\f'
+#define NL		'\n'
+#define CR		'\r'
+#define TAB		'\t'
+#define TABSKIP		8
+#define MIN(a,b)	( (a) < (b) ? (a) : (b) )
+
+int ll;			/* line length */
+int cc;			/* current carriage control character */
+int ccnext;		/* next carriage control character */
+char text[TEXTLEN];	/* buffer for current line */
+FILE *input;		/* input file pointer */
+
+/*
+ * Read in the next line up to the next carriage control character.
+ * Returns "-1" if end-of-file, else "0".
+ */
+
+int getline()
+{
+	register int i,j,curpos;
+
+	cc = ccnext;
+	ll = 0;
+	while (1) {
+	    switch (i=getc(input)) {
+	    case EOF:
+			ll = MIN(ll,TEXTLEN-1);
+			return -1;
+	    case NL:
+			ll = MIN(ll,TEXTLEN-1);
+			switch (ccnext = getc(input)) {
+			case EOF:
+			    ccnext = 0;
+			    return -1;
+			case NL:
+			    ungetc(ccnext,input);
+			    ccnext = BLANK;
+			}
+			return 0;
+	    case CR:
+			i=getc(input);		/* peak at next character */
+			ungetc(i,input);
+						/* ignore if next is NL or EOF*/
+			if((i==NL) | (i==EOF))
+			    break;
+			curpos = ll;		/* or simulate with BS's */
+			ll *= 2;
+			for (j=curpos; j<ll; j++)
+			    if(j<TEXTLEN)
+				text[j] = BS;
+			break;
+	    case TAB:
+			curpos = ll;
+			ll = ((ll+TABSKIP)/TABSKIP) * TABSKIP - 1;
+			for (j=curpos; j<ll; j++)
+			    if(j < TEXTLEN)
+				text[j] = BLANK;
+			break;
+	    default:
+			if (ll < TEXTLEN)
+			    text[ll] = i;
+			ll++;
+			break;
+	    }
+	}
+}
+
+/*
+ * Print out the current line. Only characters in the window 0 to MAXCOL-1
+ * are printed.
+ */
+
+void putline()
+{
+	register int i,curpos;
+	register char c;
+
+	curpos = i = 0;
+	while (i < ll) {
+	    c = text[i++];
+	    if(curpos >= 0 & curpos < MAXCOL)
+		putchar(c);
+	    c == BS ? --curpos : ++curpos ;
+	}
+}
+
+/*
+ * Copy 1 file to the output
+ */
+
+int dofile()
+{
+	int eofflag;
+
+					/* special handling for 1st char */
+	while((ccnext = getc(input)) == NL)
+	    putchar(NL);
+	if(ccnext == EOF) return 0;
+
+	while(1) {
+	    eofflag = getline();
+	    switch (cc) {
+	    case '1':
+	    case FF:
+			putchar(FF);
+			break;
+	    case '0':
+			putchar(NL);
+			break;
+	    }
+	    putline();
+	    if(ccnext == '+') {
+		while (ll-- > 0)
+		    putchar(BS);
+	    } else
+		putchar(NL);
+	    if(eofflag)
+		return 0;
+	}
+}
+/*
+ * Main program
+ */
+
+void main(argc,argv)
+int    argc;
+char **argv;
+{
+	int i,status;
+
+	status=0;		/* exit status */
+	argc--; argv++;		/* skip program name */
+	if(argc < 1) {		/* nothing on command line: input from stdin */
+	    input = stdin;
+	    status=dofile();
+	} else {		/* filename(s) on command line */
+	    for (i=0; i<argc; i++,argv++) {
+		if((input=fopen(*argv,"r")) == NULL) {
+		    fprintf(stderr,"Cannot open %s\n",*argv);
+		    status = 1;
+		} else {
+		    if(i>0)
+			putchar(FF);
+		    if(dofile())
+			status=1;
+		}
+	    }
+	}
+	exit(status);
+}
+SHAR_EOF
+fi
+if test -f 'fpr.test'
+then
+	echo shar: "will not over-write existing file 'fpr.test'"
+else
+cat << \SHAR_EOF > 'fpr.test'
+
+
+ This is page 1 line   1
+ This is a very long line to test whether fpr will truncate properly at 170characters. I don't know if it will work. But anything is worth a try. Please place your bets!
+ This is page 1 line   2
+ This is page 1 line   3with carriage return
+ This is page 1 line   4
+ This is page 1 line   5
+ This is page 1 line   6 with some overstrikes
+ This is page 1 line   7 shifted left
+ This is page 1 line   8
+ This is page 1 line   9
+ This is page 1 line  10
+ 	tab 1
+  	tab 2
+   	tab 3
+    	tab 4
+      	tab 5
+       	tab 6
+        	tab 7
+         	tab 8
+          	tab 9
+ 2 Blank lines follow
+
+
+ Blank line precedes
+1This is page 2 line   1
+ This is page 2 line   2
+ This is page 2 line   3
+ This is page 2 line   4
+ This is page 2 line   5
+ This is page 2 line   6
+ This is page 2 line   7
+ This is page 2 line   8
+ This is page 2 line   9
+ This is page 2 line  10
++          This is an overstuck line
+ This is page 2 line  12
+0This is page 2 line  13
+0This is page 2 line  14
+0This is page 2 line  15
+0This is page 2 line  16
+0This is page 2 line  17
+0This is page 2 line  18
+0This is page 2 line  19
+0This is page 2 line  20
+SHAR_EOF
+chmod +x 'fpr.test'
+fi
+exit 0
+#	End of shell archive

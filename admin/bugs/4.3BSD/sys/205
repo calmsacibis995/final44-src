@@ -1,0 +1,78 @@
+Subject: socket (2)
+Index: sys 4.3BSD
+
+Description:
+
+Note 105      socket (2)                             1 response 
+mueller@alberto                              4:11 pm  Mar 11, 1986
+
+SHORT BUT DESCRIPTIVE ONE LINE TITLE:
+socket (2)
+
+Operating System:  	UTX/32	
+Hardware Environment:   PN6000 (burt, aka cerberus)
+Organization:		Gould-CSD/Urbana      (217) 384-8500 
+
+                        1101 E. University, Urbana, Il 61801
+
+MODULE NAME:
+	socket (2)
+
+TYPE:
+	software and documentation
+
+DESCRIPTION OF PROBLEM:
+	i found these bugs while being a tester on Secure UNIX.
+	
+	the syntax should also say ->  	#include <sys/types.h>	
+
+	the manpage says that if a TYPE is not supported then
+		the errno value will be set to ESOCKTNOSUPPORT, 
+		but socreate() sets errno to EPROTOTYPE.
+
+	pffindproto() and pffindtype() return zero to socreate()
+		if the FAMILY, TYPE, or PROTOCOL is not supported.  
+		however, regardless of whether it is the FAMILY,
+		TYPE, or PROTOCOL that is not supported errno is
+		set to EPROTONOSUPPORT and then returns without
+		checking if it is the TYPE or FAMILY.  the line
+			if (prp->pr_type != type)
+				return (EPROTOTYPE);
+		will never be reached.  and if pffind*() determine
+		that the FAMILY is not supported, errno is never
+		set to EAFNOSUPPORT.
+
+		errno ENFILE is not listed on the manpage (or any 
+			manpages on the system) altho falloc() may 
+			set errno to ENFILE.
+
+SAMPLE BROKEN OUTPUT:
+	pffind*()
+		if (dp->dom_family == family)
+			goto found;
+		return (0);
+
+	socreate()
+		if (prp == 0)
+			return (EPROTONOSUPPORT);
+		if (prp->pr_type != type)
+			return (EPROTOTYPE);
+
+HOW TO REPRODUCE THE PROBLEM:
+	cd /test/Working/perennial/4.2bsd/testsources/syscallsuite
+	driver filesuite/socketAE.c
+
+SUGGESTED FIX:
+	pffind*() should set errno to EAFNOSUPPORT if family not supported,
+	EPROTONOSUPPORT if protocol not supported, ESOCKTNOSUPPORT if type 
+	not supported.
+
+	socreate() should
+		error = pffind*()
+
+	then 
+		if (error)
+			return(error)
+	or something like this because socket() does
+		u.u_error = socreate(uap->domain, &so, uap->type, uap->protocol)
+

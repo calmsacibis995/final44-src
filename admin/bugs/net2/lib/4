@@ -1,0 +1,187 @@
+From karzes@deshaw.com Thu Jan  7 12:15:14 1993
+Received: from master.deshaw.com by vangogh.CS.Berkeley.EDU (ALPHA-6.5/6.1) id AA06284; Thu, 7 Jan 1993 12:15:11 -0800
+Received: from hyla.deshaw.com by master.deshaw.com with SMTP id AA01191
+  (5.65c/IDA-1.4.4 for <bostic@vangogh.cs.berkeley.edu>); Thu, 7 Jan 1993 15:15:36 -0500
+From: Tom-Karzes@deshaw.com
+Received: by hyla.deshaw.com (5.65c/DESHAWCLIENT-1.0) id AA12500 for karzes; Thu, 7 Jan 1993 15:15:35 -0500
+Date: Thu, 7 Jan 1993 15:15:35 -0500
+Message-Id: <199301072015.AA12500@hyla.deshaw.com>
+To: bostic@vangogh.CS.Berkeley.EDU
+Cc: ado@ncifcrf.gov, christos@deshaw.com
+Subject: ctime normalize bug
+Index: lib/libc/gen/ctime.c net2
+
+While using the timezone conversion package (written by Arthur David Olson),
+I discovered a bug in normalize (in ctime.c), which still exists in the 4.4
+BSD sources.  The bug occurs when *unitsptr is an exact negative multiple of
+base, where the multiple is more than one.  Below if a patch which fixes
+this.
+
+I've also sent this patch to Arthur David Olson.  As per his suggestion, the
+fix I've given here avoids the possiblity of integer overflow on the most
+negative number.
+
+% diff -c ctime.c.orig ctime.c
+*** ctime.c.orig	Thu Jan  7 14:56:11 1993
+--- ctime.c	Thu Jan  7 14:57:53 1993
+***************
+*** 1191,1202 ****
+  		*tensptr += *unitsptr / base;
+  		*unitsptr %= base;
+  	} else if (*unitsptr < 0) {
+! 		--*tensptr;
+! 		*unitsptr += base;
+! 		if (*unitsptr < 0) {
+! 			*tensptr -= 1 + (-*unitsptr) / base;
+! 			*unitsptr = base - (-*unitsptr) % base;
+! 		}
+  	}
+  }
+
+--- 1191,1198 ----
+  		*tensptr += *unitsptr / base;
+  		*unitsptr %= base;
+  	} else if (*unitsptr < 0) {
+! 		*tensptr -= 1 + (-(*unitsptr + 1)) / base;
+! 		*unitsptr = base - 1 - (-(*unitsptr + 1)) % base;
+  	}
+  }
+
+%
+
+
+Here's a test driver which demonstrates the bug:
+
+main()
+{
+	int	i;
+	int	t;
+	int	u;
+
+	for (i = -10; i <= 10; i++) {
+		t = 100;
+		u = i;
+		normalize(&t, &u, 3);
+		printf("%3d %3d (3)  =>  %3d %3d\n", 100, i, t, u);
+	}
+	return 0;
+}
+
+
+The *INCORRECT* output is:
+
+100 -10 (3)  =>   96   2
+100  -9 (3)  =>   96   3        *wrong*
+100  -8 (3)  =>   97   1
+100  -7 (3)  =>   97   2
+100  -6 (3)  =>   97   3        *wrong*
+100  -5 (3)  =>   98   1
+100  -4 (3)  =>   98   2
+100  -3 (3)  =>   99   0
+100  -2 (3)  =>   99   1
+100  -1 (3)  =>   99   2
+100   0 (3)  =>  100   0
+100   1 (3)  =>  100   1
+100   2 (3)  =>  100   2
+100   3 (3)  =>  101   0
+100   4 (3)  =>  101   1
+100   5 (3)  =>  101   2
+100   6 (3)  =>  102   0
+100   7 (3)  =>  102   1
+100   8 (3)  =>  102   2
+100   9 (3)  =>  103   0
+100  10 (3)  =>  103   1
+
+
+The *CORRECT* output is:
+
+100 -10 (3)  =>   96   2
+100  -9 (3)  =>   97   0
+100  -8 (3)  =>   97   1
+100  -7 (3)  =>   97   2
+100  -6 (3)  =>   98   0
+100  -5 (3)  =>   98   1
+100  -4 (3)  =>   98   2
+100  -3 (3)  =>   99   0
+100  -2 (3)  =>   99   1
+100  -1 (3)  =>   99   2
+100   0 (3)  =>  100   0
+100   1 (3)  =>  100   1
+100   2 (3)  =>  100   2
+100   3 (3)  =>  101   0
+100   4 (3)  =>  101   1
+100   5 (3)  =>  101   2
+100   6 (3)  =>  102   0
+100   7 (3)  =>  102   1
+100   8 (3)  =>  102   2
+100   9 (3)  =>  103   0
+100  10 (3)  =>  103   1
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From leres@ee.lbl.gov Sat Jan  9 14:04:59 1993
+Received: from ace.ee.lbl.gov by vangogh.CS.Berkeley.EDU (ALPHA-6.5/6.1) id AA06036; Sat, 9 Jan 1993 14:04:58 -0800
+Received: by ace.ee.lbl.gov for bostic@vangogh.cs.berkeley.edu (5.65/1.43)
+	id AA23583; Sat, 9 Jan 93 14:05:23 -0800
+Message-Id: <9301092205.AA23583@ace.ee.lbl.gov>
+To: Tom-Karzes@deshaw.com
+Cc: bostic@vangogh.CS.Berkeley.EDU, ado@ncifcrf.gov, christos@deshaw.com,
+        torek@ee.lbl.gov (Chris Torek)
+Subject: Re: ctime normalize bug
+In-Reply-To: Your message of Thu, 07 Jan 93 15:15:35 EST.
+Date: Sat, 09 Jan 93 14:05:21 PST
+From: Craig Leres <leres@ee.lbl.gov>
+Status: RO
+
+
+> While using the timezone conversion package (written by Arthur David Olson),
+> I discovered a bug in normalize (in ctime.c), which still exists in the 4.4
+> BSD sources.  The bug occurs when *unitsptr is an exact negative multiple of
+> base, where the multiple is more than one.  Below if a patch which fixes
+> this.
+
+I found this bug back in July (see appended report). Thanks for fixing it!
+
+		Craig
+
+------- Forwarded Message
+
+Date: Tue, 07 Jul 92 15:13:24 PDT
+From: Craig Leres <leres>
+Subject: serious bug in gmtime/localtime
+To: bostic@okeeffe.cs.berkeley.edu (Keith Bostic)
+Cc: torek@ee.lbl.gov (Chris Torek)
+
+I've got a gps receiver and I'm working on making xntpd talk to it.
+In the process I wrote a test program that uses gmtime() or localtime()
+to format kernel timevals. While looking for a 15 second error
+between the gps receiver and Unix time, I discovered that gmtime()
+and localtime() return answers that are offset by 14 seconds
+from what non-bsd systems return.
+
+I have a test program that takes Unix time and formats it (see
+vangogh:~leres/ctime.c). When I run it on elf or vangogh and and SunS
+3 or 4 system, the bsd machines are off:
+
+    # the bsd guys
+    hot 98 % ./ctime 710542168
+    Tue Jul  7 13:49:14 1992
+    vangogh 11 % ./ctime 710542168
+    Tue Jul  7 13:49:14 1992
+
+    # SunOS 3
+    ace 62 % ctime 710542168
+    Tue Jul  7 13:49:28 1992
+    # SunOS 4
+    horse 1 % ctime 710542168
+    Tue Jul  7 13:49:28 1992
+
+I don't understand the code but I played around with the debugger and
+found that the error is in the calculation of "corr" in timesub (in
+libc/gen/ctime.c).
+
+Any suggestions?
+
+		Craig
+
+------- End of Forwarded Message
+

@@ -1,0 +1,480 @@
+Path: seismo!uunet!husc6!tut.cis.ohio-state.edu!triceratops.cis.ohio-state.edu!karl
+From: karl@triceratops.cis.ohio-state.edu (Karl Kleinpaste)
+Newsgroups: comp.bugs.4bsd
+Subject: ruptime(1) limits one to too few hosts +FIX
+Summary: Arbitrary size limitations: Just Say No!
+Sender: news@tut.cis.ohio-state.edu
+Index: ucb/ruptime.c 4.3BSD
+
+Description:
+	Ruptime believes that no local network will ever grow to
+	more than 100 hosts.  This is defined by the constant NHOSTS
+	in ruptime.c, line 24.  We trounced on this limit quite some
+	time ago.  When we reported this bug, our vendor chose not to
+	take the opportunity to fix ruptime The Right Way, but rather
+	merely knocked the NHOSTS limit up a ways.  (Admittedly, QUITE
+	a ways.)  That's The Wrong Way, because the new limit is still
+	too small for our plans a couple years down the line.  I spent
+	less than an hour with the vanilla 4.3BSD ucb/ruptime.c and
+	fixed it so that it uses malloc() to get the space required
+	dynamically.
+
+Repeat-By:
+	Install a network with 500 hosts on it.  Run ruptime.  Get the
+	hopelessly weak diagnostic
+		too many hosts
+
+Fix:
+	Install the following context diff to ucb/ruptime.c.  It works
+	just fine for arbitrary numbers of hosts.  If you've got a
+	million hosts and enough VM, it'll still work.  And it even
+	passes lint without so much as a whimper now as well.
+
+--Karl
+
+*** ruptime.c~	Tue Mar 15 10:24:00 1988
+--- ruptime.c	Tue Mar 15 10:51:11 1988
+***************
+*** 21,27
+  DIR	*dirp;
+! #define	NHOSTS	100
+  int	nhosts;
+  struct	hs {
+  	struct	whod *hs_wd;
+
+--- 21,30 -----
+  DIR	*dirp;
+! /*
+!  * No braindead arbitrary size limits!
+!  * Insist on total generality!
+!  */
+  int	nhosts;
+  struct	hs {
+  	struct	whod *hs_wd;
+***************
+*** 26,32
+  struct	hs {
+  	struct	whod *hs_wd;
+  	int	hs_nusers;
+! } hs[NHOSTS];
+  struct	whod awhod;
+  int	hscmp(), ucmp(), lcmp(), tcmp();
+--- 29,38 -----
+  struct	hs {
+  	struct	whod *hs_wd;
+  	int	hs_nusers;
+! 	struct	hs *hs_next;
+! };
+! struct	hs *hs_head = (struct hs *) NULL,
+! 	   **hs;
+  struct	whod awhod;
+  int	hscmp(), ucmp(), lcmp(), tcmp();
+***************
+*** 30,35
+  struct	whod awhod;
+  int	hscmp(), ucmp(), lcmp(), tcmp();
+  #define	WHDRSIZE	(sizeof (awhod) - sizeof (awhod.wd_we))
+  #define	RWHODIR		"/usr/spool/rwho"
+--- 36,43 -----
+  struct	whod awhod;
+  int	hscmp(), ucmp(), lcmp(), tcmp();
++ extern time_t time();
++ 
+  #define	WHDRSIZE	(sizeof (awhod) - sizeof (awhod.wd_we))
+  #define	RWHODIR		"/usr/spool/rwho"
+***************
+*** 49,55
+  	int f, i, t;
+  	char buf[sizeof(struct whod)]; int cc;
+  	char *name;
+! 	register struct hs *hsp = hs;
+  	register struct whod *wd;
+  	register struct whoent *we;
+  	int maxloadav = 0;
+
+--- 57,63 -----
+  	int f, i, t;
+  	char buf[sizeof(struct whod)]; int cc;
+  	char *name;
+! 	register struct hs *hsp;
+  	register struct whod *wd;
+  	register struct whoent *we;
+  	int maxloadav = 0;
+***************
+*** 55,60
+  	int maxloadav = 0;
+  	int (*cmp)() = hscmp;
+  	name = *argv;
+  	while (*++argv) 
+  		while (**argv)
+
+--- 63,69 -----
+  	int maxloadav = 0;
+  	int (*cmp)() = hscmp;
++ 	argc = argc;
+  	name = *argv;
+  	while (*++argv) 
+  		while (**argv)
+***************
+*** 81,87
+  					name);
+  				exit (1);
+  			}
+! 	time(&t);
+  	if (chdir(RWHODIR) < 0) {
+  		perror(RWHODIR);
+  		exit(1);
+
+--- 90,96 -----
+  					name);
+  				exit (1);
+  			}
+! 	(void) time((time_t *) &t);
+  	if (chdir(RWHODIR) < 0) {
+  		perror(RWHODIR);
+  		exit(1);
+***************
+*** 96,105
+  			continue;
+  		if (strncmp(dp->d_name, "whod.", 5))
+  			continue;
+- 		if (nhosts == NHOSTS) {
+- 			fprintf(stderr, "too many hosts\n");
+- 			exit(1);
+- 		}
+  		f = open(dp->d_name, 0);
+  		if (f > 0) {
+  			cc = read(f, buf, sizeof(struct whod));
+
+--- 105,110 -----
+  			continue;
+  		if (strncmp(dp->d_name, "whod.", 5))
+  			continue;
+  		f = open(dp->d_name, 0);
+  		if (f > 0) {
+  			cc = read(f, buf, sizeof(struct whod));
+***************
+*** 104,109
+  		if (f > 0) {
+  			cc = read(f, buf, sizeof(struct whod));
+  			if (cc >= WHDRSIZE) {
+  				hsp->hs_wd = (struct whod *)malloc(WHDRSIZE);
+  				wd = (struct whod *)buf;
+  				bcopy(buf, hsp->hs_wd, WHDRSIZE);
+
+--- 109,122 -----
+  		if (f > 0) {
+  			cc = read(f, buf, sizeof(struct whod));
+  			if (cc >= WHDRSIZE) {
++ 				/*
++ 				 * Malloc new hs structs as needed.
++ 				 * Stuff into linked list at its head.
++ 				 */
++ 				hsp = (struct hs *) malloc(sizeof(struct hs));
++ 				hsp->hs_next = hs_head;
++ 				hs_head = hsp;
++ 				/* End malloc change. */
+  				hsp->hs_wd = (struct whod *)malloc(WHDRSIZE);
+  				wd = (struct whod *)buf;
+  				bcopy(buf, hsp->hs_wd, WHDRSIZE);
+***************
+*** 115,121
+  				while (--we >= wd->wd_we)
+  					if (aflg || we->we_idle < 3600)
+  						hsp->hs_nusers++;
+! 				nhosts++; hsp++;
+  			}
+  		}
+  		(void) close(f);
+
+--- 128,134 -----
+  				while (--we >= wd->wd_we)
+  					if (aflg || we->we_idle < 3600)
+  						hsp->hs_nusers++;
+! 				nhosts++;
+  			}
+  		}
+  		(void) close(f);
+***************
+*** 120,127
+  		}
+  		(void) close(f);
+  	}
+! 	(void) time(&now);
+! 	qsort((char *)hs, nhosts, sizeof (hs[0]), cmp);
+  	if (nhosts == 0) {
+  		printf("no hosts!?!\n");
+  		exit(1);
+
+--- 133,151 -----
+  		}
+  		(void) close(f);
+  	}
+! 	/*
+! 	 * Now malloc the pointer array and
+! 	 * copy the linked list to it.
+! 	 */
+! 	hs = (struct hs **) malloc((unsigned)(nhosts*sizeof(struct hs *)));
+! 	for (i = 0; i < nhosts; i++) {
+! 		/* (*hs)[i] = hs_head; */
+! 		*(hs+i) = hs_head;
+! 		hs_head = hs_head->hs_next;
+! 	}
+! 	/* End malloc change. */
+! 	(void) time((time_t *) &now);
+! 	qsort((char *)hs, nhosts, sizeof (struct hs *), cmp);
+  	if (nhosts == 0) {
+  		printf("no hosts!?!\n");
+  		exit(1);
+***************
+*** 127,133
+  		exit(1);
+  	}
+  	for (i = 0; i < nhosts; i++) {
+! 		hsp = &hs[i];
+  		if (down(hsp)) {
+  			printf("%-12.12s%s\n", hsp->hs_wd->wd_hostname,
+  			    interval(now - hsp->hs_wd->wd_recvtime, "down"));
+
+--- 151,157 -----
+  		exit(1);
+  	}
+  	for (i = 0; i < nhosts; i++) {
+! 		hsp = *(hs+i);
+  		if (down(hsp)) {
+  			printf("%-12.12s%s\n", hsp->hs_wd->wd_hostname,
+  			    interval(now - hsp->hs_wd->wd_recvtime, "down"));
+***************
+*** 175,181
+  }
+  hscmp(h1, h2)
+! 	struct hs *h1, *h2;
+  {
+  	return (rflg * strcmp(h1->hs_wd->wd_hostname, h2->hs_wd->wd_hostname));
+
+--- 199,205 -----
+  }
+  hscmp(h1, h2)
+! 	struct hs **h1, **h2;
+  {
+  	return (rflg * strcmp((*h1)->hs_wd->wd_hostname,
+***************
+*** 178,184
+  	struct hs *h1, *h2;
+  {
+! 	return (rflg * strcmp(h1->hs_wd->wd_hostname, h2->hs_wd->wd_hostname));
+  }
+  /*
+
+--- 202,209 -----
+  	struct hs **h1, **h2;
+  {
+! 	return (rflg * strcmp((*h1)->hs_wd->wd_hostname,
+! 			      (*h2)->hs_wd->wd_hostname));
+  }
+  /*
+***************
+*** 185,191
+   * Compare according to load average.
+   */
+  lcmp(h1, h2)
+! 	struct hs *h1, *h2;
+  {
+  	if (down(h1))
+
+--- 210,216 -----
+   * Compare according to load average.
+   */
+  lcmp(h1, h2)
+! 	struct hs **h1, **h2;
+  {
+  	if (down(*h1))
+***************
+*** 188,195
+  	struct hs *h1, *h2;
+  {
+! 	if (down(h1))
+! 		if (down(h2))
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+
+--- 213,220 -----
+  	struct hs **h1, **h2;
+  {
+! 	if (down(*h1))
+! 		if (down(*h2))
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+***************
+*** 193,199
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+! 	else if (down(h2))
+  		return (-rflg);
+  	else
+  		return (rflg * 
+
+--- 218,224 -----
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+! 	else if (down(*h2))
+  		return (-rflg);
+  	else
+  		return (rflg * 
+***************
+*** 197,203
+  		return (-rflg);
+  	else
+  		return (rflg * 
+! 			(h2->hs_wd->wd_loadav[0] - h1->hs_wd->wd_loadav[0]));
+  }
+  /*
+
+--- 222,229 -----
+  		return (-rflg);
+  	else
+  		return (rflg * 
+! 			((*h2)->hs_wd->wd_loadav[0] -
+! 			 (*h1)->hs_wd->wd_loadav[0]));
+  }
+  /*
+***************
+*** 204,210
+   * Compare according to number of users.
+   */
+  ucmp(h1, h2)
+! 	struct hs *h1, *h2;
+  {
+  	if (down(h1))
+
+--- 230,236 -----
+   * Compare according to number of users.
+   */
+  ucmp(h1, h2)
+! 	struct hs **h1, **h2;
+  {
+  	if (down(*h1))
+***************
+*** 207,214
+  	struct hs *h1, *h2;
+  {
+! 	if (down(h1))
+! 		if (down(h2))
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+
+--- 233,240 -----
+  	struct hs **h1, **h2;
+  {
+! 	if (down(*h1))
+! 		if (down(*h2))
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+***************
+*** 212,218
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+! 	else if (down(h2))
+  		return (-rflg);
+  	else
+  		return (rflg * (h2->hs_nusers - h1->hs_nusers));
+
+--- 238,244 -----
+  			return (tcmp(h1, h2));
+  		else
+  			return (rflg);
+! 	else if (down(*h2))
+  		return (-rflg);
+  	else
+  		return (rflg * ((*h2)->hs_nusers - (*h1)->hs_nusers));
+***************
+*** 215,221
+  	else if (down(h2))
+  		return (-rflg);
+  	else
+! 		return (rflg * (h2->hs_nusers - h1->hs_nusers));
+  }
+  /*
+
+--- 241,247 -----
+  	else if (down(*h2))
+  		return (-rflg);
+  	else
+! 		return (rflg * ((*h2)->hs_nusers - (*h1)->hs_nusers));
+  }
+  /*
+***************
+*** 222,228
+   * Compare according to uptime.
+   */
+  tcmp(h1, h2)
+! 	struct hs *h1, *h2;
+  {
+  	long t1, t2;
+--- 248,254 -----
+   * Compare according to uptime.
+   */
+  tcmp(h1, h2)
+! 	struct hs **h1, **h2;
+  {
+  	return (rflg * (
+***************
+*** 224,230
+  tcmp(h1, h2)
+  	struct hs *h1, *h2;
+  {
+- 	long t1, t2;
+  	return (rflg * (
+  		(down(h2) ? h2->hs_wd->wd_recvtime - now
+
+--- 250,255 -----
+  tcmp(h1, h2)
+  	struct hs **h1, **h2;
+  {
+  	return (rflg * (
+  		(down(*h2) ? (*h2)->hs_wd->wd_recvtime - now
+***************
+*** 227,234
+  	long t1, t2;
+  	return (rflg * (
+! 		(down(h2) ? h2->hs_wd->wd_recvtime - now
+! 			  : h2->hs_wd->wd_sendtime - h2->hs_wd->wd_boottime)
+  		-
+  		(down(h1) ? h1->hs_wd->wd_recvtime - now
+  			  : h1->hs_wd->wd_sendtime - h1->hs_wd->wd_boottime)
+
+--- 252,260 -----
+  {
+  	return (rflg * (
+! 		(down(*h2) ? (*h2)->hs_wd->wd_recvtime - now
+! 			   : (*h2)->hs_wd->wd_sendtime -
+! 			     (*h2)->hs_wd->wd_boottime)
+  		-
+  		(down(*h1) ? (*h1)->hs_wd->wd_recvtime - now
+  			   : (*h1)->hs_wd->wd_sendtime -
+***************
+*** 230,236
+  		(down(h2) ? h2->hs_wd->wd_recvtime - now
+  			  : h2->hs_wd->wd_sendtime - h2->hs_wd->wd_boottime)
+  		-
+! 		(down(h1) ? h1->hs_wd->wd_recvtime - now
+! 			  : h1->hs_wd->wd_sendtime - h1->hs_wd->wd_boottime)
+  	));
+  }
+
+--- 256,263 -----
+  			   : (*h2)->hs_wd->wd_sendtime -
+  			     (*h2)->hs_wd->wd_boottime)
+  		-
+! 		(down(*h1) ? (*h1)->hs_wd->wd_recvtime - now
+! 			   : (*h1)->hs_wd->wd_sendtime -
+! 			     (*h1)->hs_wd->wd_boottime)
+  	));
+  }

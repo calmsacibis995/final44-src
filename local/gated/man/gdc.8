@@ -1,0 +1,409 @@
+.\"
+.\" $Id: gdc.8,v 1.6 1994/01/13 17:48:13 jch Exp $
+.\"
+.\" %(Copyright.header)
+.\"
+.TH GDC 8 "$Date: 1994/01/13 17:48:13 $ UTC" "%#(RELEASE)" "Cornell GateDaemon Project"
+.SH NAME
+.B gdc
+\- operational user interface for
+.B gated (8)
+.SH SYNOPSIS
+.B gdc
+.RB [ \-q ]
+.RB [ \-n ]
+.RB [ \-c
+.IR coresize ]
+.RB [ \-f 
+.IR filesize ]
+.RB [ \-m 
+.IR datasize ]
+.RB [ \-s 
+.IR stacksize ]
+.RB [ \-t 
+.IR seconds ]
+.I command
+.SH DESCRIPTION
+.B Gdc
+provides a user\-oriented interface for the operation of the
+.I gated (8)
+routing daemon.  It provides support for starting and
+stopping the daemon, for the delivery of signals to manipulate the
+daemon when it is operating, for the maintenance and syntax checking
+of configuration files, and for the production and removal of state dumps
+and core dumps.
+.B Gdc
+can reliably determine 
+.IR gated 's
+running state and produces a reliable
+exit status when errors occur, making it advantageous for use in
+shell scripts which manipulate
+.IR gated .
+Commands executed using
+.B gdc
+and, optionally, error messages produced by the execution of those
+commands, are logged via the same
+.IR syslogd (8)
+facility which
+.I gated
+itself uses, providing an audit trail of operations performed on
+the daemon.
+.PP
+If installed as a setuid root program
+.B gdc
+will allow non-root users who are members of a trusted group (by
+default the
+.B gdmaint
+group) to manipulate the routing daemon while denying access
+to others.  The name of the user is logged along via
+.IR syslogd (8)
+along with an indication of each command executed, for audit purposes.
+.PP
+The command-line options are:
+.IP -n
+Run without changing the kernel forwarding table.  Useful for testing,
+and when operating as a route server which does no forwarding.
+.IP -q
+Run quietly.  With this option informational messages which are normally
+printed to the standard output are suppressed and error messages are
+logged via
+.IR syslogd (8)
+instead of being printed to the standard error output.  This is often
+convenient when running
+.B gdc
+from a shell script.
+.IP -t
+Specifies the time in seconds which
+.B gdc
+will spend waiting for
+.I gated
+to complete certain operations, in particular at termination and
+startup.  By default this value is set to 10 seconds.
+.PP
+These additional command-line options may be present, depending on the
+options used to compile
+.IR gdc :
+.IP -c
+Sets the maximum size of a core dump a
+.I gated
+started with
+.B gdc
+will produce.  Useful on systems where the default maximum core dump
+size is too small for
+.I gated
+to produce a full core dump on errors.
+.IP -f
+Sets the maximum file size a
+.I gated
+started with
+.B gdc
+will produce.  Useful on systems where the default maximum file dump
+size is too small for
+.I gated
+to produce a full state dump when requested.
+.IP -m
+Sets the maximum size of the data segment of a
+.I gated
+started with
+.BR gdc .
+Useful on systems where the default data segment
+size is too small for
+.I gated
+to run.
+.IP -s
+Sets the maximum size of stack of a
+.I gated
+started with
+.BR gdc .
+Useful on systems where the default maximum stack size
+is too small for
+.I gated
+to run.
+.PP
+The following commands cause signals to be delivered to
+.I gated
+for various purpose:
+.IP COREDUMP 10
+Sends an abort signal to
+.IR gated ,
+causing it to terminate with a core dump.
+.IP dump 10
+Signal 
+.I gated
+to dump its current state into the
+file
+.B @(_path_dump) .
+.IP interface 10
+Signal
+.I gated
+to recheck the interface configuration.
+.I gated
+normally does this periodically in any event, but the facility can be
+used to force the daemon to check interface status immediately when
+changes are known to have occured.
+.IP KILL 10
+Cause
+.I gated
+to terminate ungracefully.  Normally useful when the daemon has hung.
+.IP reconfig 10
+Signal
+.I gated
+to reread its configuration file, reconfiguring its current state as
+appropriate.
+.IP term 10
+Signal
+.I gated
+to terminate after shutting down all operating routing protocols gracefully.
+Executing this command a second time should cause 
+.I gated
+to terminate
+even if some protocols have not yet fully shut down.
+.IP toggletrace 10
+If
+.I gated
+is currently tracing to a file, cause tracing to be suspended and
+the trace file to be closed.  If
+.I gated
+tracing is current suspended, cause the trace file to be reopenned and
+tracing initiated.  This is useful for moving trace files.
+.PP
+By default
+.I gated
+obtains its configuration from a file normally named
+.BR @(_path_config) .
+The
+.B gdc
+program also maintains several other versions of the configuration
+file, in particular named:
+.IP \fB@(_path_config)+\fP 10
+The
+.I new
+configuration file.  When
+.B gdc
+is requested to install a new configuration file, this file is
+renamed
+.BR @(_path_config) .
+.IP \fB@(_path_config)\-\fP 10
+The
+.I old
+configuration file.  When
+.B gdc
+is requested to install a new configuration file, the previous
+.B @(_path_config)
+is renamed to this name.
+.IP \fB@(_path_config)\-\-\fP 10
+The \fIreally old\fP configuration file.
+.B Gdc
+retains the previous
+.I old
+configuration file under this name.
+.PP
+The following commands perform operations related to configuration files:
+.IP checkconf 10
+Check
+.B @(_path_config)
+for syntax errors.  This is usefully done after changes to the configuration
+file but before sending a
+.B reconfig
+signal to the currently running
+.IR gated ,
+to ensure that there are no errors in the configuration which would cause
+the running
+.I gated
+to terminate on reconfiguration.  When this command is used,
+.B gdc
+issues an informational message indicating whether there were parse
+errors or not, and if so saves the error output in a file for inspection.
+.IP checknew 10
+Like
+.B checkconf
+except that the
+.I new
+configuration file,
+.BR @(_path_config)+ ,
+is checked instead.
+.IP newconf 10
+Move the
+.B @(_path_config)+
+file into place as
+.BR @(_path_config) ,
+retaining the older versions of the file as described above.
+.B Gdc
+will decline to do anything when given this command if the
+.I new
+configuration file doesn't exist or otherwise looks suspect.
+.IP backout 10
+Rotate the configuration files in the
+.I newer
+direction, in effect moving the
+.I old
+configuration file to
+.BR @(_path_config) .
+The command will decline to perform the operation if
+.B @(_path_config)\-
+doesn't exist or is zero length, or if the operation would delete
+an existing, non-zero length
+.B @(_path_config)+
+file.
+.IP BACKOUT 10
+Perform a
+.B backout
+operation even if
+.B @(_path_config)+
+exists and is of non-zero length.
+.IP modeconf 10
+Set all configuration files to mode 664, owner root, group gdmaint.  This
+allows a trusted non-root user to modify the configuration files.
+.IP createconf 10
+If
+.B @(_path_config)+
+does not exist, create a zero length file with the file mode set to
+664, owner root, group gdmaint.  This allows a trusted non-root user
+to install a new configuration file.
+.PP
+The following commands provide support for starting and stopping
+.IR gated ,
+and for determining its running state:
+.IP running 10
+Determine if
+.I gated
+is currently running.  This is done by checking to see if
+.I gated
+has a lock on the file containing its pid, if the pid in the file
+is sensible and if there is a running process with that pid.  Exits
+with zero status if
+.I gated
+is running, non-zero otherwise.
+.IP start 10
+Start
+.IR gated .
+The command returns an error if
+.I gated
+is already running.  Otherwise it executes the
+.I gated
+binary and waits for up to the delay interval (10 seconds by default,
+as set with the
+.B -t
+option otherwise) until the newly started process obtains a lock on the
+pid file.  A non-zero exit status is returned if an error is detected
+while executing the binary, or if a lock is not obtained on the pid
+file within the specified wait time.
+.IP stop 10
+Stop
+.IR gated ,
+gracefully if possible, ungracefully if not.  The command returns
+an error (with non-zero exit status) if
+.I gated
+is not currently running.  Otherwise it sends a terminate signal
+to
+.I gated
+and waits for up to the delay interval (10 seconds by default, as specified
+with the
+.B -t
+option otherwise) for the process to exit.  Should
+.I gated
+fail to exit within the delay interval it is then signaled again with
+a second terminate signal.  Should it fail to exit by the end of the second
+delay interval it is signalled for a third time with a kill signal.  This
+should force immediate termination unless something is very broken.  The
+command terminates with zero exit status when it detects that
+.I gated
+has terminated, non-zero otherwise.
+.IP restart 10
+If
+.I gated
+is running it is terminated via the same procedure as is used for
+the
+.B stop
+command above.  When the previous
+.I gated
+terminates, or if it was not running prior to command execution,
+a new
+.I gated
+process is executed using the procedures described for the
+.B start
+command above.  A non-zero exit status is returned if any
+step in this procedure appears to have failed.
+.PP
+The following commands allow the removal of files created by
+the execution of some of the commands above:
+.IP rmcore 10
+Removes any existing
+.I gated
+core dump file.
+.IP rmdump 10
+Removes any existing
+.I gated
+state dump file.
+.IP rmparse 10
+Removes the parse error file generated when a
+.B checkconf
+or
+.B checknew
+command is executed and syntax errors are encountered in the
+configuration file being checked.
+.PD
+.SH FILES
+.TP 20
+.B @(SBINDIR)/gated
+the
+.I gated
+binary
+.TP
+.B @(_path_config)
+current 
+.I gated
+configuration file
+.TP
+.B @(_path_config)+
+newer configuration file
+.TP
+.B @(_path_config)\-
+older configuration file
+.TP
+.B @(_path_config)\-\-
+much older configuration file
+.TP
+.B @(_path_pid)
+where 
+.I gated
+stores its pid
+.TP
+.B @(_path_dump)
+.IR gated 's
+state dump file
+.TP
+.B @(_path_dumpdir)/%s_parse
+where config file parse errors go
+.TP
+.B @(_path_dumpdir)
+where 
+.I gated
+drops its core file
+.PD
+.SH AUTHOR
+Dennis Ferguson <dennis@ans.net>
+.SH SEE ALSO
+gated(8),
+gated-config(5),
+gated-copyright(8),
+ripquery(8),
+syslog(8)
+.SH BUGS
+Many commands only work when
+.I gated
+is installed in the system directory it was configured with.
+.PP
+There is not yet any way to tell
+.B gdc
+about systems which name their core dump other than
+.B core
+.RB ( core.gated
+is a less common possibility).
+.PP
+.PD
+.SH COPYRIGHT INFORMATION
+%(Copyright_short)
+.\"
+.\" %(Copyright)
+.\"

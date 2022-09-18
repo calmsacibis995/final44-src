@@ -1,0 +1,162 @@
+From donn@BSDI.COM Wed Mar  3 23:10:31 1993
+Date: Thu, 4 Mar 93 02:10:39 -0500
+From: donn@BSDI.COM (Donn Seeley)
+Message-Id: <9303040710.AA10147@BSDI.COM>
+To: bostic@vangogh.CS.Berkeley.EDU
+Subject: ash vs. bsh imcompatibility with substitution
+Index: bin/sh 4.4BSD-alpha
+
+        a='AA'
+        echo `echo \$a`
+ 
+The original Bourne shell produces AA; ash produces $a.
+
+Offhand, it appears that the Bourne shell performs command substitution
+followed by parameter substitution, while ash does it the other way
+around.  The 4.3 BSD Bourne shell man page describes command
+substitution before variable substitution, but doesn't state explicitly
+what order it uses; the ash man page documents that parameter
+substitution is performed before command substitution.
+
+Hm, actually it's more bizarre than that:
+
+	a=AA
+	echo `echo \$a | tee /tmp/a`
+
+The Bourne shell produces AA in /tmp/a!
+
+Believe it or not, this difference breaks some of our customers'
+shell scripts.  Has anyone been working on ash to give it more of
+these, um, authentic Bourne shell features?  Does POSIX.2 require
+specific substitution behavior different from the original Bourne
+shell?
+
+Donn
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From bsdi-users-request@bsdi.com Thu Mar  4 00:41:01 1993
+Date: Wed, 3 Mar 93 23:33:16 -0800
+From: root@eab.retix.com (Erik Forsberg)
+To: bsdi-users@bsdi.com, problems@bsdi.com
+Errors-To: bsdi-users-request@bsdi.com
+Sender: bsdi-users-request@bsdi.com
+Precedence: bulk
+Index: usr.bin/sed/compile 4.4BSD-alpha
+
+Sigh.
+
+Another problem with sed. The gamma-4 sed failed the following sed
+script found in the brand new GROFF 1.07 release (psstrip.sed)
+
+#!/bin/sed -f
+# Strip a PostScript prologue of unnecessary comments and white space.
+/^%[%!]/b
+s/^[ 	][ 	]*//
+s/[ 	][ 	]*$//
+s/%.*//
+/^$/d
+s/[ 	]*\([][}/{]\)[ 	]*/\1/g
+
+
+The last line fails to compile, sed complaining about unbalanced []'s.
+This is due to compile_delimited not really knowing the traditionally
+rules about [] expressions (namely that inside a [s] expression, the first
+character of s is allowed to be ] and that \ has no special meaning.
+
+The following patch corrects this. I have a vague nasty feeling though
+that we should run sed through a complete set of tests after this change.
+I have done a few tests, but nothing VERY extensive.
+
+*** compile.c	Mon Nov 16 11:51:59 1992
+--- /usr/src/usr.bin/sed/compile.c	Wed Mar  3 23:16:08 1993
+***************
+*** 323,328 ****
+--- 323,329 ----
+  	char *p, *d;
+  {
+  	char c;
++ 	int inbra = 0;
+  
+  	c = *p++;
+  	if (c == '\0')
+***************
+*** 332,338 ****
+  	else if (c == '\n')
+  		err(COMPILE, "newline can not be used as a string delimiter");
+  	while (*p) {
+! 		if (*p == '\\' && p[1] == c)
+  			p++;
+  		else if (*p == '\\' && p[1] == 'n') {
+  			*d++ = '\n';
+--- 333,345 ----
+  	else if (c == '\n')
+  		err(COMPILE, "newline can not be used as a string delimiter");
+  	while (*p) {
+! 		if (*p == '[' && inbra == 0)
+! 			inbra = 1;
+! 		else if (*p == ']' && inbra && p[-1] != '[')
+! 			inbra = 0;
+! 		else if (inbra)
+! 			;
+! 		else if (*p == '\\' && p[1] == c)
+  			p++;
+  		else if (*p == '\\' && p[1] == 'n') {
+  			*d++ = '\n';
+
+
+> Index: bin/sh 4.4BSD-alpha
+> Reference: 4.4BSD-alpha/bin/5
+
+>         a='AA'
+>         echo `echo \$a`
+>  
+> The original Bourne shell produces AA; ash produces $a.
+
+> Offhand, it appears that the Bourne shell performs command substitution
+> followed by parameter substitution, while ash does it the other way
+> around.  The 4.3 BSD Bourne shell man page describes command
+> substitution before variable substitution, but doesn't state explicitly
+> what order it uses; the ash man page documents that parameter
+> substitution is performed before command substitution.
+
+> Hm, actually it's more bizarre than that:
+
+> 	a=AA
+> 	echo `echo \$a | tee /tmp/a`
+
+> The Bourne shell produces AA in /tmp/a!
+
+This makes sense.  The backslash prevents the variable from being expanded
+when the line is initially read, but it is removed when the line is read.
+When the command substitution is done, the internal command line is
+re-evaluated, at which time varible substitution should be done.  It sounds
+like ash is marking the $ as quoted, and remembering the quoting when doing
+the command substitution.
+
+btw, Keith, I don't know if you noticed this, but folks on the bsdi-users
+list were talking about the possibilities of stripping down bash to make
+a suitable /bin/sh!  Scary.
+
+		Mike
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From donn@BSDI.COM Thu Mar  4 12:25:26 1993
+Date: Thu, 4 Mar 93 15:25:35 -0500
+From: donn@BSDI.COM (Donn Seeley)
+To: karels@BSDI.COM
+Subject: Re: ash vs. bsh imcompatibility with substitution
+Cc: bostic@vangogh.CS.Berkeley.EDU
+
+        ...  It sounds like ash is marking the $ as quoted, and
+        remembering the quoting when doing the command substitution.
+        ...
+
+If I understand the model corretly, ash simply performs parameter
+substitution on the line once, before expanding backquoted commands.
+The stripping of the backslash before the dollar sign occurs 'too
+late'.  If you run the result through eval, though, the expansion
+is performed as expected.
+
+Still wondering what POSIX.2 has to say on this issue,
+
+Donn
+

@@ -1,0 +1,265 @@
+From bigbug  Tue Jun 29 20:35:02 1993
+Received: from bloom-beacon.mit.edu (BLOOM-BEACON.MIT.EDU [18.70.0.232]) by vangogh.CS.Berkeley.EDU (8.1B/6.32) with SMTP id UAA29476; Tue, 29 Jun 1993 20:35:01 -0700
+Received:  by bloom-beacon.mit.edu (5.61/25-eef)
+	id AA28914; Tue, 29 Jun 93 23:35:11 EDT
+Received: by kolvir.blrc.ma.us (5.67/1.37) id AA00198; Tue, 29 Jun 93 23:10:05 -0400
+Date: Tue, 29 Jun 93 23:10:05 -0400
+From: John T Kohl <jtkohl@kolvir.blrc.ma.us>
+Message-Id: <9306300310.AA00198@kolvir.blrc.ma.us>
+To: problem@bsdi.com
+Cc: bsdi-users@bsdi.com, 4bsd-bugs@vangogh.CS.Berkeley.EDU
+Subject: WARNING & patches if you don't have your 'a' partition at block 0
+X-Us-Snail: Parlmont Park Apt. 111, N. Billerica, MA  01862
+
+[4bsd-bugs folks: the ufs_disksubr.c patch probably applies to net/2.
+It may be of use to your current system.]
+
+If you share a disk with some other operating system and don't put your
+'a' partition at the front of your drive, the current code runs a
+moderate risk of trashing both your real 'a' partition and the blocks at
+the front of your disk.
+
+Basically, whenever the disk partition table is read (such as on raw
+device open), there's a window during which the offset of the 'a'
+partition is set to zero and the caller may block on a disk I/O.  If
+some other process gets in and schedules an I/O to the disk on the 'a'
+partition, it will get the blocks from the front of the disk!
+
+[I initially noticed this when dumps of my root partition came out broken;
+it got a bad bunch of inodes from this problem.  Jeff Polk, this solves my
+dump problems.  I don't know if it will solve the panic: sdintr problems
+or not.]
+
+You also should beware that the 5th word of "drivedata" in your disk
+label is the offset of the beginning of the partition holding the disk
+label.  (see /usr/include/sys/disklabel.h, d_bsd_startsec) In my hacking
+mine got reset to zero (it may never have been anything else, but I
+can't be sure).  You want to make sure it's the offset of your 'a'
+partition, as shown here:
+
+% disklabel sd0
+# /dev/rsd0c:
+
+...
+drivedata: 0 0 0 0 61440 
+
+8 partitions:
+#        size   offset    fstype   [fsize bsize   cpg]
+  a:    16384    61440    4.2BSD     1024  8192    16   # (Cyl.   57*- 72*)
+...
+(note a.offset == drivedata[4])
+
+Attached are kernel patches to use the C partition (and comments about
+how that assumption is made), and a simple program that will abort() if
+it discovers it's been fooled into I/O on the wrong blocks.
+
+You Just Don't Want Your C Partition To Start At Anything Other Than
+Block Zero.
+
+"reader.c" :
+#include <stdio.h>
+#include <unistd.h>
+#define BSIZ 8192
+
+char buf1[BSIZ];
+char buf2[BSIZ];
+main()
+{
+    if (lseek(0, 64<<9, SEEK_SET) == -1)
+	exit(1);
+    if (read(0, buf1, BSIZ) != BSIZ)
+	exit(1);
+    while (lseek(0, 64<<9, SEEK_SET) == 64<<9) {
+	read(0, buf2, BSIZ);
+	if (bcmp(buf1,buf2,BSIZ)) {
+	    fprintf(stderr,"botch!\n");
+	    write(1, buf1, BSIZ);
+	    write(1, buf2, BSIZ);
+	    abort();
+	}
+    }
+
+}
+
+patches:
+
+*** /tmp/T0000182	Tue Jun 29 22:58:15 1993
+--- ufs/ufs_disksubr.c	Tue Jun 29 22:58:06 1993
+***************
+*** 189,194 ****
+--- 189,210 ----
+   * (e.g., sector size) must be filled in before calling us.
+   * Returns null on success and an error string on failure.
+   */
++ #ifdef BROKEN
++ /*
++  * XXX WARNING WARNING WARNING!
++  * this code adjusts the real disk partition offset for partition 'a'.
++  * If some process tries I/O from partition 'a' while this is in progress,
++  * then the wrong disk blocks will be transferred if the offset of the 'a'
++  * partition is non-zero.
++  */
++ #define PART 0
++ #else
++ /*
++  * XXX code that calls here all use dev == the 'c' partition.
++  * we assume c.offset == 0, and manipulate the partition table entry for passed-in partition.
++  */
++ #define PART part
++ #endif
+  char *
+  readdisklabel(dev, strat, lp, sn)
+  	dev_t dev;
+***************
+*** 196,214 ****
+  	register struct disklabel *lp;
+  	daddr_t sn;
+  {
+  	register struct buf *bp;
+  	struct disklabel *dlp;
+! 	u_long p0size = lp->d_partitions[0].p_size;
+! 	u_long p0off = lp->d_partitions[0].p_offset;
+  	char *msg = NULL;
+  
+  	if (lp->d_secperunit == 0)
+  		lp->d_secperunit = 0x1fffffff;
+! 	if (lp->d_npartitions < 1)
+! 		lp->d_npartitions = 1;
+! 	if (lp->d_partitions[0].p_size == 0)
+! 		lp->d_partitions[0].p_size = 0x1fffffff;
+! 	lp->d_partitions[0].p_offset = 0;
+  
+  	bp = geteblk((int)lp->d_secsize);
+  	bp->b_cylin = bp->b_blkno / lp->d_secpercyl;
+--- 212,234 ----
+  	register struct disklabel *lp;
+  	daddr_t sn;
+  {
++ #ifndef BROKEN
++ #define dkpart(dev)		(minor(dev) & 07) /* XXX */
++ 	int part = dkpart(dev);
++ #endif
+  	register struct buf *bp;
+  	struct disklabel *dlp;
+! 	u_long p0size = lp->d_partitions[PART].p_size;
+! 	u_long p0off = lp->d_partitions[PART].p_offset;
+  	char *msg = NULL;
+  
+  	if (lp->d_secperunit == 0)
+  		lp->d_secperunit = 0x1fffffff;
+! 	if (lp->d_npartitions < PART+1)
+! 		lp->d_npartitions = PART+1;
+! 	if (lp->d_partitions[PART].p_size == 0)
+! 		lp->d_partitions[PART].p_size = 0x1fffffff;
+! 	lp->d_partitions[PART].p_offset = 0;
+  
+  	bp = geteblk((int)lp->d_secsize);
+  	bp->b_cylin = bp->b_blkno / lp->d_secpercyl;
+***************
+*** 239,246 ****
+  	brelse(bp);
+  	if (msg) {
+  		/* restore the software label (it's better than nothing) */
+! 		lp->d_partitions[0].p_size = p0size;
+! 		lp->d_partitions[0].p_offset = p0off;
+  	}
+  	return (msg);
+  }
+--- 259,266 ----
+  	brelse(bp);
+  	if (msg) {
+  		/* restore the software label (it's better than nothing) */
+! 		lp->d_partitions[PART].p_size = p0size;
+! 		lp->d_partitions[PART].p_offset = p0off;
+  	}
+  	return (msg);
+  }
+*** /tmp/T0000186	Tue Jun 29 22:58:30 1993
+--- i386/i386/dos_disksubr.c	Tue Jun 29 22:57:44 1993
+***************
+*** 111,116 ****
+--- 111,133 ----
+   * can use either the starting block number or the cyl/track/sector info
+   * (the geometry may not be known yet).
+   */
++ #ifdef BROKEN
++ /*
++  * XXX WARNING WARNING WARNING!
++  * this code adjusts the real disk partition offset for partition 'a'.
++  * If some process tries I/O from partition 'a' while this is in progress,
++  * then the wrong disk blocks will be transferred if the offset of the 'a'
++  * partition is non-zero.
++  */
++ #define PART 0
++ #else
++ /*
++  * XXX code that calls here all use dev == the 'c' partition.
++  * we assume c.offset == 0, and manipulate the partition table entry for passed-in partition.
++  */
++ #define PART part
++ #endif
++ 
+  getbsdpartition(dev, strat, lp, mpp)
+  	dev_t dev;
+  	int (*strat)();
+***************
+*** 117,125 ****
+  	register struct disklabel *lp;
+  	struct mbpart *mpp;
+  {
+  	register struct buf *bp;
+  	struct masterboot *mbp;
+! 	struct partition *pp = &lp->d_partitions[0];
+  	u_long p0size = pp->p_size;
+  	u_long p0off = pp->p_offset;
+  	int ia, error;
+--- 134,146 ----
+  	register struct disklabel *lp;
+  	struct mbpart *mpp;
+  {
++ #ifndef BROKEN
++ #define dkpart(dev)		(minor(dev) & 07) /* XXX */
++ 	int part = dkpart(dev);
++ #endif
+  	register struct buf *bp;
+  	struct masterboot *mbp;
+! 	struct partition *pp = &lp->d_partitions[PART];
+  	u_long p0size = pp->p_size;
+  	u_long p0off = pp->p_offset;
+  	int ia, error;
+***************
+*** 126,136 ****
+  
+  	if (lp->d_secperunit == 0)
+  		lp->d_secperunit = 0x1fffffff;
+! 	if (lp->d_npartitions < 1)
+! 		lp->d_npartitions = 1;
+! 	if (lp->d_partitions[0].p_size == 0)
+! 		lp->d_partitions[0].p_size = 0x1fffffff;
+! 	lp->d_partitions[0].p_offset = 0;
+  
+  	bp = geteblk((int)lp->d_secsize);
+  	bp->b_dev = dev;
+--- 147,157 ----
+  
+  	if (lp->d_secperunit == 0)
+  		lp->d_secperunit = 0x1fffffff;
+! 	if (lp->d_npartitions < PART+1)
+! 		lp->d_npartitions = PART+1;
+! 	if (lp->d_partitions[PART].p_size == 0)
+! 		lp->d_partitions[PART].p_size = 0x1fffffff;
+! 	lp->d_partitions[PART].p_offset = 0;
+  
+  	bp = geteblk((int)lp->d_secsize);
+  	bp->b_dev = dev;
+***************
+*** 139,144 ****
+--- 160,167 ----
+  	bp->b_flags = B_BUSY | B_READ;
+  	bp->b_cylin = 0;
+  	(*strat)(bp);
++ 	/* XXX biowait() may provide window for someone else to
++ 	   notice our partition table hackery */
+  	if ((error = biowait(bp)) == 0) {
+  		mbp = (struct masterboot *)(bp->b_un.b_addr);
+  		ia = rootpart(mbp);

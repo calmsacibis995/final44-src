@@ -1,0 +1,147 @@
+From ado@elsie.nci.nih.gov  Sat Nov 24 18:35:07 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.65/1.41)
+	id AA27603; Sat, 24 Nov 90 18:35:07 -0800
+Received: from elsie.nci.nih.gov by ucbvax.Berkeley.EDU (5.63/1.42)
+	id AA06602; Sat, 24 Nov 90 18:35:18 -0800
+Received: by elsie.nci.nih.gov (4.1/SMI-4.1)
+	id AA01036; Sat, 24 Nov 90 21:34:03 EST
+Date: Sat, 24 Nov 90 21:34:03 EST
+From: ado@elsie.nci.nih.gov (Arthur David Olson)
+Message-Id: <9011250234.AA01036@elsie.nci.nih.gov>
+To: sunbugs@sun.com
+Subject: SunOS 4.1 malloc dumps core and/or gives wrong result
+Cc: 4bsd-bugs@ucbvax.Berkeley.EDU, more-bugs@mtxinu.com
+
+
+This item was addressed to sunbugs@sun.com.  No reply from Sun is needed.
+
+Workstation-Model:
+	3/60		3/110		3/280		386i/150
+
+Serial-Number:
+	838F0353	827E1216	835E1456	851G0260
+
+Sun-Software-Release-Number:
+	<--------------SunOS 4.1--------------->	SunOS 4.0.2
+
+My-Name:
+	Arthur David Olson
+
+Phone-Number:
+	+1 (301) 496-5688
+
+Electronic-Mail-Address:
+	ado@elsie.nci.nih.gov
+
+Company-Or-Organization-Name-And-Address:
+	National Institutes of Health
+	Building 37, Room 3C28
+	Bethesda, MD  20892
+
+Description:
+	SunOS 4.1's malloc function dumps core and/or gives a wrong
+	(non-NULL) result for some request sizes.  This is true of both
+	the libc.a version and the /usr/lib/debug/malloc.o version.
+	While malloc calls with the given sizes are errors, the errors
+	ought not cause core dumps and give incorrect results.
+
+Repeat-By:
+	Script started on Sat Nov 24 21:11:31 1990
+	elsie$ uname -a
+	SunOS elsie 4.1 1 sun3
+	elsie$ cat try.c
+	int
+	main(argc, argv)
+	int	argc;
+	char *	argv[];
+	{
+		char *		p;
+		int		i;
+		extern char *	malloc();
+
+		(void) sscanf(argv[1], "%x", &i);
+		(void) printf("size is %x (%d) (%u)\n", i, i, i);
+		p = malloc(i);
+		(void) printf("%lx\n", p);
+		return 0;
+	}
+	elsie$ cc try.c -o try
+	elsie$ try 0
+	size is 0 (0) (0)
+	22184
+	elsie$ try 1
+	size is 1 (1) (1)
+	22184
+	elsie$ try 10000000
+	size is 10000000 (268435456) (268435456)
+	0
+	elsie$ try fffd7ffc
+	size is fffd7ffc (-163844) (4294803452)
+	0
+>>>>>	elsie$ try fffd7ffd
+	size is fffd7ffd (-163843) (4294803453)
+	Memory fault - core dumped
+>>>>	elsie$ try ffffdffc
+	size is ffffdffc (-8196) (4294959100)
+	Memory fault - core dumped
+>>>>	elsie$ try ffffdffd
+	size is ffffdffd (-8195) (4294959101)
+>>>>	22184
+	elsie$ try ffffffff
+>>>>	size is ffffffff (-1) (4294967295)
+	22184
+	elsie$ cc try.c /usr/lib/debug/malloc.o -o try
+	elsie$ try 0
+	size is 0 (0) (0)
+	225dc
+	elsie$ try 1
+	size is 1 (1) (1)
+	225dc
+	elsie$ try 10000000
+	size is 10000000 (268435456) (268435456)
+	0
+	elsie$ try fffd7ffc
+	size is fffd7ffc (-163844) (4294803452)
+	0
+	elsie$ try fffd7ffd
+	size is fffd7ffd (-163843) (4294803453)
+>>>>	Memory fault - core dumped
+	elsie$ try ffffdffc
+	size is ffffdffc (-8196) (4294959100)
+>>>>	Memory fault - core dumped
+	elsie$ try ffffdffd
+	size is ffffdffd (-8195) (4294959101)
+>>>>	225dc
+	free: block 0x22550 was already free
+
+>>>>	abort - core dumped
+	elsie$ try fffffff8
+	size is fffffff8 (-8) (4294967288)
+>>>>	225dc
+	free: blocks 0x2254c, 0x225d4 overlap
+
+>>>>	abort - core dumped
+	elsie$ try fffffff9
+	size is fffffff9 (-7) (4294967289)
+>>>>	Memory fault - core dumped
+	elsie$ try fffffffb
+	size is fffffffb (-5) (4294967291)
+>>>>	Memory fault - core dumped
+	elsie$ try fffffffc
+	size is fffffffc (-4) (4294967292)
+>>>>	225dc
+	elsie$ try ffffffff
+	size is ffffffff (-1) (4294967295)
+>>>>	225dc
+	elsie$ exit
+
+	script done on Sat Nov 24 21:16:02 1990
+
+Fix:
+	At the top of the malloc code, do the moral equivalent of
+
+		if ((int) request_size < 0)
+			return NULL;
+-- 
+		Arthur David Olson	ado@elsie.nci.nih.gov
+		ADO and Elsie are Ampex and Borden trademarks

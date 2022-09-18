@@ -1,0 +1,121 @@
+From nowicki@Sun.COM  Tue Mar 21 15:16:52 1989
+Date: Tue, 21 Mar 89 15:16:14 PST
+From: nowicki@Sun.COM (Bill Nowicki)
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: Bug in handling ICMP Port Unreachable for UDP
+Cc: karels@okeeffe.Berkeley.EDU
+Index: sys tahoe
+
+There has been a long-standing problem with BSD based UDP
+implementations.  When an ICMP port unreachable message is received, it
+causes ALL UDP sockets that are connected to the same destination
+address to return with the "Connection Refused" error message.  It
+should only do this to the one that matches the port number in the
+returned packet.  Unfortunately this means modifying icmp to know about
+the format of UDP packets, so that it can pass along the port number,
+and adding another parameter to in_pcbnotify.  There might be a cleaner
+way, but I have verified that this works.
+
+Here are the fixes:
+
+@(#)ip_icmp.c 1.19 88/04/14 SMI; from UCB 7.7 12/7/87
+
+***************
+*** 29,34 ****
+--- 29,38 ----
+  #include <netinet/ip_icmp.h>
+  #include <netinet/icmp_var.h>
+  #include <netinet/in_var.h>
++ #include <netinet/udp.h>
++ #include <netinet/ip_var.h>
++ #include <netinet/in_pcb.h>
++ #include <netinet/udp_var.h>
+  
+  #ifdef ICMPPRINTFS
+  /*
+***************
+*** 223,228 ****
+--- 227,233 ----
+			printf("deliver to protocol %d\n", icp->icmp_ip.ip_p);
+  #endif
+		icmpsrc.sin_addr = icp->icmp_ip.ip_dst;
++ 		icmpsrc.sin_port = ((struct udpiphdr *)&(icp->icmp_ip))->ui_dport;
+		if (ctlfunc = inetsw[ip_protox[icp->icmp_ip.ip_p]].pr_ctlinput)
+			(*ctlfunc)(code, (struct sockaddr *)&icmpsrc);
+		break;
+
+@(#)udp_usrreq.c 1.31 88/05/12 SMI; from UCB 7.5 3/11/88
+
+***************
+--- 191,197 ----
+	case PRC_REDIRECT_HOST:
+	case PRC_REDIRECT_TOSNET:
+	case PRC_REDIRECT_TOSHOST:
+! 		in_pcbnotify(&udb, &sin->sin_addr, 0, 0, in_rtchange);
+		break;
+  
+	default:
+***************
+--- 198,204 ----
+		if (inetctlerrmap[cmd] == 0)
+			return;	 /* XXX */
+		in_pcbnotify(&udb, &sin->sin_addr, (int)inetctlerrmap[cmd],
+! 			sin->sin_port, udp_notify);
+	}
+  }
+  
+@(#)tcp_subr.c 1.13 89/02/14 SMI; from UCB 7.13.1.1 2/7/88
+
+***************
+--- 294,300 ----
+	switch (cmd) {
+  
+	case PRC_QUENCH:
+! 		in_pcbnotify(&tcb, &sin->sin_addr, 0, 0, tcp_quench);
+		break;
+  
+	case PRC_ROUTEDEAD:
+***************
+--- 302,308 ----
+	case PRC_REDIRECT_HOST:
+	case PRC_REDIRECT_TOSNET:
+	case PRC_REDIRECT_TOSHOST:
+! 		in_pcbnotify(&tcb, &sin->sin_addr, 0, 0, in_rtchange);
+		break;
+  
+	default:
+***************
+--- 309,315 ----
+		if (inetctlerrmap[cmd] == 0)
+			return;	 /* XXX */
+		in_pcbnotify(&tcb, &sin->sin_addr, (int)inetctlerrmap[cmd],
+! 			0, tcp_notify);
+	}
+  }
+  
+@(#)in_pcb.c 1.17 88/04/14 SMI; from UCB 7.6 12/7/87
+***************
+--- 266,277 ----
+--- 266,277 ----
+   * Pass some notification to all connections of a protocol
+   * associated with address dst.  Call the protocol specific
+   * routine (if any) to handle each connection.
++  * Note that Berkeley did not check for matching ports, only addresses.
+   */
+! in_pcbnotify(head, dst, errno, fport, notify)
+	struct inpcb *head;
+	register struct in_addr *dst;
++       u_short fport;
+	int errno, (*notify)();
+  {
+	register struct inpcb *inp, *oinp;
+***************
+--- 279,286 ----
+  
+	for (inp = head->inp_next; inp != head;) {
+		if (inp->inp_faddr.s_addr != dst->s_addr ||
+! 		   inp->inp_socket == 0 || 
+! 		   (fport != 0 && inp->inp_fport != fport)) {
+			inp = inp->inp_next;
+			continue;
+		}

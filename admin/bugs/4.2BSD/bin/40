@@ -1,0 +1,79 @@
+Return-Path: <donn@utah-cs>
+Date: Sun, 24 Mar 85 06:52:21 MST
+From: donn@utah-cs (Donn Seeley)
+Subject: assembler bug breaks initialized static arrays under dbx
+Index: bin/as 4.2BSD
+
+Description:
+	The assembler puts out an incorrect address for the location of
+	an initialized static array when creating the symbol table
+	entry corresponding to the '.stabs' directive which defines the
+	array to dbx.  When you ask dbx to print the array, it can
+	get confused and in any case never finds the data.  This bug
+	appears with the current software on monet but is probably
+	quite old.
+
+Repeat-By:
+	Compile the following program with the -g flag to cc:
+
+	----------------------------------------------------------------
+	int nums2[] = {13, 19, 25};
+	static int nums3[] = {1134, 1234, 567};
+	static int nums4 = 531;
+
+	main(argc, argv)
+	int argc;
+	char *argv[];
+	{
+		static int nums1[] = {1, 2, 3, 4, 5};
+		int i;
+
+		printf("Before\n");
+		for (i = 0; i < 5; i++)
+			printf("nums1[%d]=%d\n", i, nums1[i]);
+		for (i = 0; i < 3; i++)
+			printf("nums2[%d]=%d\n", i, nums2[i]);
+		for (i = 0; i < 3; i++)
+			printf("nums3[%d]=%d\n", i, nums3[i]);
+		printf("nums4=%d\n", nums4);
+		nums1[2] = 152;
+		nums2[1] = 927;
+		nums3[1] = 249;
+		nums4 = 100;
+		printf("After\n");
+		for (i = 0; i < 5; i++)
+			printf("nums1[%d]=%d\n", i, nums1[i]);
+		for (i = 0; i < 3; i++)
+			printf("nums2[%d]=%d\n", i, nums2[i]);
+		for (i = 0; i < 3; i++)
+			printf("nums3[%d]=%d\n", i, nums3[i]);
+		printf("nums4=%d\n", nums4);
+	}
+	----------------------------------------------------------------
+
+	If you run dbx on this program, you will find that dbx does not
+	know the initial values of nums1 and nums3.  If you run 'nm
+	-ap' on the binary you should notice that the addresses given
+	for the dbx symbol table entries of nums1 and nums3 are wrong
+	(don't match the actual addresses).  This error can be inferred
+	from the addresses printed by running 'nm -ap' on the object
+	file too.
+
+	For what it's worth, I played around with the assembly language
+	version of the example and found that there are ways to make
+	the problem disappear.  Apparently the '.stabs' directive for
+	an initialized array always follows the definition of the
+	array.  One thing I tried was to move the '.stabs' directives
+	for num1 and num3 so that they immediately preceded their
+	respective definitions, and when I assembled the resulting
+	file, the symbol table entries were correct.
+
+	I thought about modifying the C compiler to emit symbol table
+	directives for arrays before emitting their definitions but
+	decided it was (a) too hard and (b) not really the compiler's
+	problem.
+
+	I've spent some time looking at the assembler trying to find
+	where the problem occurs, but the assembler has proved to be
+	too inscrutable.  I may look at it some more but at the moment
+	I don't have an answer...

@@ -1,0 +1,475 @@
+From menlo70!slu70!ejh  Tue Sep 25 04:22:31 1984
+Date: Tue, 25 Sep 84 04:21:10 pdt
+From: menlo70!slu70!ejh
+Subject: tandem mode does not work with NON RAW/CBREAK modes.
+Index: 	sys/tty*.c 2.9BSD
+
+Description:
+	The normal mode tty handler would never send a ^S/^Q when in tandem mode.
+	The delct parameter does not seem to do anything useful. (Counting the
+	number of delete's typed while input stopped??)
+	The delct parameter is not used by the ttynew code.
+
+Repeat-By:
+	Take another computer, say a micro, login to unix, stty tandem noecho,
+	and start feeding lines of ascii text.  Note that lines are lost/truncated,
+	note that the micro never receives a ^S to force it to stop.
+
+Fix:
+	One possibility is to include code from SCCS 1.17 or so.
+	Included is a diff,  There are also a few other additions not related to
+	the bug fix contained in the diff. And some comments on things tried.
+	This fix was tested on a system WITHOUT TTYOLD being defined.
+*** dev.distr/tty.c	Fri Aug  5 18:06:04 1983
+--- dev/tty.c	Mon Sep 24 09:20:01 1984
+***************
+*** 189,194
+  		flushtty(tp, FREAD|FWRITE);
+  		tp->t_state &= ~TBLOCK;
+  	}
+  	/*
+  	 * Block further input iff:
+  	 * Current input > threshold AND input is available to user program
+
+--- 189,201 -----
+  		flushtty(tp, FREAD|FWRITE);
+  		tp->t_state &= ~TBLOCK;
+  	}
++ #ifdef	SLU70
++ 	/* using TTHIWAT(tp) as limit breaks something else
++ 	if ((tp->t_flags&(CBREAK|RAW) ? tp->t_rawq.c_cc : tp->t_canq.c_cc) > TTYHOG/2) {
++ the above seems like a good idea but fails somehow */
++ 
++ 	if ( x >= TTYHOG/2 ) {
++ #else
+  	/*
+  	 * Block further input iff:
+  	 * Current input > threshold AND input is available to user program
+***************
+*** 194,199
+  	 * Current input > threshold AND input is available to user program
+  	 */
+  	if (x >= TTYHOG/2 && (tp->t_delct>0 || (tp->t_flags&(RAW|CBREAK)))) {
+  		if (putc(tun.t_stopc, &tp->t_outq)==0) {
+  			tp->t_state |= TBLOCK;
+  			ttstart(tp);
+
+--- 201,207 -----
+  	 * Current input > threshold AND input is available to user program
+  	 */
+  	if (x >= TTYHOG/2 && (tp->t_delct>0 || (tp->t_flags&(RAW|CBREAK)))) {
++ #endif
+  		if (putc(tun.t_stopc, &tp->t_outq)==0) {
+  			tp->t_state |= TBLOCK;
+  			ttstart(tp);
+***************
+*** 293,298
+  	case TIOCSPGRP:
+  	case TIOCLBIS:
+  	case TIOCLBIC:
+  	case TIOCLSET:
+  	case TIOCSTI:
+  		while (tp->t_line == NTTYDISC &&
+
+--- 301,310 -----
+  	case TIOCSPGRP:
+  	case TIOCLBIS:
+  	case TIOCLBIC:
++ #ifdef	SLU
++ 	case TIOCXFBIC:
++ 	case TIOCXFBIS:
++ #endif
+  	case TIOCLSET:
+  	case TIOCSTI:
+  		while (tp->t_line == NTTYDISC &&
+***************
+*** 400,406
+  						wakeup((caddr_t)&tp->t_rawq);
+  				}
+  			}
+- #endif
+  		}
+  		if ((tp->t_state&SPEEDS)==0) {
+  			tp->t_ispeed = iocb.sg_ispeed;
+
+--- 412,417 -----
+  						wakeup((caddr_t)&tp->t_rawq);
+  				}
+  			}
+  		}
+  #endif
+  		if ((tp->t_state&SPEEDS)==0) {
+***************
+*** 402,407
+  			}
+  #endif
+  		}
+  		if ((tp->t_state&SPEEDS)==0) {
+  			tp->t_ispeed = iocb.sg_ispeed;
+  			tp->t_ospeed = iocb.sg_ospeed;
+
+--- 413,419 -----
+  				}
+  			}
+  		}
++ #endif
+  		if ((tp->t_state&SPEEDS)==0) {
+  			tp->t_ispeed = iocb.sg_ispeed;
+  			tp->t_ospeed = iocb.sg_ospeed;
+***************
+*** 610,615
+  
+  	case TIOCCIMG:
+  		tp->t_xflags &= ~LIMAGE;
+  		break;
+  #endif
+  
+
+--- 622,642 -----
+  
+  	case TIOCCIMG:
+  		tp->t_xflags &= ~LIMAGE;
++ 		break;
++ #endif
++ #ifdef	SLU
++ 	case TIOCXFBIS:
++ 		if (copyin(addr, (caddr_t)&temp, sizeof (tp->t_xflags)))
++ 			u.u_error = EFAULT;
++ 		else
++ 			tp->t_xflags |= temp;
++ 		break;
++ 
++ 	case TIOCXFBIC:
++ 		if (copyin(addr, (caddr_t)&temp, sizeof (tp->t_xflags)))
++ 			u.u_error = EFAULT;
++ 		else
++ 			tp->t_xflags &= ~temp;
+  		break;
+  #endif
+  
+*** dev.distr/ttyold.c	Fri Aug  5 18:06:11 1983
+--- dev/ttyold.c	Mon Sep 24 09:22:39 1984
+***************
+*** 87,92
+  	(void) b_to_q(bp1, bp-bp1, &tp->t_canq);
+  
+    
+   	/* Unblock output iff:
+   	 * is blocked
+   	 * AND (input < threshold OR (cooked mode AND delim_count == 0))
+
+--- 87,101 -----
+  	(void) b_to_q(bp1, bp-bp1, &tp->t_canq);
+  
+    
++ #ifdef	SLU70
++ 	/* see notes in tty.c ttyblock()
++ 	if (tp->t_state&TBLOCK)
++ 		if ((tp->t_flags&(CBREAK|RAW) ? tp->t_rawq.c_cc : tp->t_canq.c_cc)<TTYHOG/5) {
++ the above seemed like a good idea but fails*/
++ 
++ 	if ( tp->t_state & TBLOCK &&(tp->t_rawq.c_cc < TTYHOG/5 
++ 			|| ((tp->t_flags&(CBREAK|RAW)==0) && tp->t_canq.c_cc==0))) {
++ #else
+   	/* Unblock output iff:
+   	 * is blocked
+   	 * AND (input < threshold OR (cooked mode AND delim_count == 0))
+***************
+*** 94,99
+   	 */
+  	if (tp->t_state&TBLOCK && ((tp->t_rawq.c_cc < TTYHOG/5) ||
+  	   (tp->t_delct==0 && ((tp->t_flags&(CBREAK|RAW)) == 0)))) {
+  		if (putc(tun.t_startc, &tp->t_outq)==0) {
+  			tp->t_state &= ~TBLOCK;
+  			ttstart(tp);
+
+--- 103,109 -----
+   	 */
+  	if (tp->t_state&TBLOCK && ((tp->t_rawq.c_cc < TTYHOG/5) ||
+  	   (tp->t_delct==0 && ((tp->t_flags&(CBREAK|RAW)) == 0)))) {
++ #endif
+  		if (putc(tun.t_startc, &tp->t_outq)==0) {
+  			tp->t_state &= ~TBLOCK;
+  			ttstart(tp);
+***************
+*** 147,152
+  				return;
+  		}
+  		if (c==tun.t_quitc || c==tun.t_intrc) {
+  			if ((tp->t_local & LNOFLSH) == 0)
+  				flushtty(tp, FREAD|FWRITE);
+  			c = (c==tun.t_intrc) ? SIGINT:SIGQUIT;
+
+--- 157,163 -----
+  				return;
+  		}
+  		if (c==tun.t_quitc || c==tun.t_intrc) {
++ #ifdef UCB_NTTY
+  			if ((tp->t_local & LNOFLSH) == 0)
+  				flushtty(tp, FREAD|FWRITE);
+  #endif
+***************
+*** 149,154
+  		if (c==tun.t_quitc || c==tun.t_intrc) {
+  			if ((tp->t_local & LNOFLSH) == 0)
+  				flushtty(tp, FREAD|FWRITE);
+  			c = (c==tun.t_intrc) ? SIGINT:SIGQUIT;
+  #ifdef	MPX_FILS
+  			if (tp->t_chan)
+
+--- 160,166 -----
+  #ifdef UCB_NTTY
+  			if ((tp->t_local & LNOFLSH) == 0)
+  				flushtty(tp, FREAD|FWRITE);
++ #endif
+  			c = (c==tun.t_intrc) ? SIGINT:SIGQUIT;
+  #ifdef	MPX_FILS
+  			if (tp->t_chan)
+***************
+*** 178,183
+  #endif
+  			wakeup((caddr_t)&tp->t_rawq);
+  	}
+  	if (t_flags&ECHO) {
+  		ttyoutput(c, tp);
+  		if (c==tp->t_kill && (t_flags&(RAW|CBREAK))==0)
+
+--- 190,198 -----
+  #endif
+  			wakeup((caddr_t)&tp->t_rawq);
+  	}
++ #ifdef SLU
++ 	if (t_flags&ECHO && !(tp->t_xflags &ECHOCRLF && c == '\r')) {
++ #else
+  	if (t_flags&ECHO) {
+  #endif
+  		ttyoutput(c, tp);
+***************
+*** 179,184
+  			wakeup((caddr_t)&tp->t_rawq);
+  	}
+  	if (t_flags&ECHO) {
+  		ttyoutput(c, tp);
+  		if (c==tp->t_kill && (t_flags&(RAW|CBREAK))==0)
+  			ttyoutput('\n', tp);
+
+--- 194,200 -----
+  	if (t_flags&ECHO && !(tp->t_xflags &ECHOCRLF && c == '\r')) {
+  #else
+  	if (t_flags&ECHO) {
++ #endif
+  		ttyoutput(c, tp);
+  		if (c==tp->t_kill && (t_flags&(RAW|CBREAK))==0)
+  			ttyoutput('\n', tp);
+***************
+*** 328,333
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(-1);
+  	s = spl5();
+  	if (tp->t_canq.c_cc==0) {
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+
+--- 344,352 -----
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(-1);
++ #ifdef	NEWSCHED
++ 	u.u_procp->p_sflag |= STTYIN;
++ #endif
+  	s = spl5();
+  	if (tp->t_canq.c_cc==0) {
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+***************
+*** 331,337
+  	s = spl5();
+  	if (tp->t_canq.c_cc==0) {
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+! 			if ((tp->t_state&CARR_ON)==0 ||
+  #ifdef	MPX_FILS
+  			    (tp->t_chan!=NULL) ||
+  #endif
+
+--- 350,356 -----
+  	s = spl5();
+  	if (tp->t_canq.c_cc==0) {
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+! 			if ((tp->t_state&CARR_ON)==0
+  #ifdef	MPX_FILS
+  			    || (tp->t_chan!=NULL)
+  #endif
+***************
+*** 333,339
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+  			if ((tp->t_state&CARR_ON)==0 ||
+  #ifdef	MPX_FILS
+! 			    (tp->t_chan!=NULL) ||
+  #endif
+  #ifdef	UCB_NET
+  			    (tp->t_state&TS_NBIO)
+
+--- 352,358 -----
+  		while ((canon(tp)<0) && (tp->t_state&CARR_ON)) {
+  			if ((tp->t_state&CARR_ON)==0
+  #ifdef	MPX_FILS
+! 			    || (tp->t_chan!=NULL)
+  #endif
+  #ifdef	UCB_NET
+  			    || (tp->t_state&TS_NBIO)
+***************
+*** 336,342
+  			    (tp->t_chan!=NULL) ||
+  #endif
+  #ifdef	UCB_NET
+! 			    (tp->t_state&TS_NBIO)
+  #endif
+  			    ) {
+  				splx(s);
+
+--- 355,361 -----
+  			    || (tp->t_chan!=NULL)
+  #endif
+  #ifdef	UCB_NET
+! 			    || (tp->t_state&TS_NBIO)
+  #endif
+  			    ) {
+  				splx(s);
+***************
+*** 367,372
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(NULL);
+  	while (u.u_count) {
+  		cc = MIN(u.u_count, OBUFSIZ);
+  		cp = obuf;
+
+--- 386,394 -----
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(NULL);
++ #ifdef	NEWSCHED
++ 	u.u_procp->p_sflag |= STTYOUT;
++ #endif
+  	while (u.u_count) {
+  		cc = MIN(u.u_count, OBUFSIZ);
+  		cp = obuf;
+
+
+*** dev.distr/ttynew.c	Fri Aug  5 18:06:08 1983
+--- dev/ttynew.c	Mon Sep 24 09:21:47 1984
+***************
+*** 454,459
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(0);
+  loop:
+  	(void) _spl5();
+  	if (tp->t_local&LPENDIN)
+
+--- 454,462 -----
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return(0);
++ #ifdef	NEWSCHED
++ 	u.u_procp->p_sflag |= STTYIN;
++ #endif
+  loop:
+  	(void) _spl5();
+  	if (tp->t_local&LPENDIN)
+***************
+*** 566,571
+  		tp->t_lstate &= ~LSBKSL;
+  	}
+  
+   	/*
+   	 * Resume output iff:
+   	 * is blocked
+
+--- 569,583 -----
+  		tp->t_lstate &= ~LSBKSL;
+  	}
+  
++ #ifdef	SLU70
++ 	/* see notes in ttyblock() tty.c
++ 	if (tp->t_state&TBLOCK)
++ 		if ((tp->t_flags&(CBREAK|RAW) ? tp->t_rawq.c_cc : tp->t_canq.c_cc)<TTYHOG/5) {
++ the above seemed like a good idea but fails somehow */
++ 
++ 	if ( tp->t_state & TBLOCK &&(tp->t_rawq.c_cc < TTYHOG/5 
++ 			|| ((tp->t_flags&(CBREAK|RAW)==0) && tp->t_canq.c_cc==0))) {
++ #else
+   	/*
+   	 * Resume output iff:
+   	 * is blocked
+***************
+*** 574,579
+   	 */
+  	if (tp->t_state&TBLOCK && ((tp->t_rawq.c_cc < TTYHOG/5) ||
+  	   (tp->t_delct==0 && ((tp->t_flags&(CBREAK|RAW)) == 0)))) {
+  		if (putc(tun.t_startc, &tp->t_outq)==0) {
+  			tp->t_state &= ~TBLOCK;
+  			ttstart(tp);
+
+--- 586,592 -----
+   	 */
+  	if (tp->t_state&TBLOCK && ((tp->t_rawq.c_cc < TTYHOG/5) ||
+  	   (tp->t_delct==0 && ((tp->t_flags&(CBREAK|RAW)) == 0)))) {
++ #endif
+  		if (putc(tun.t_startc, &tp->t_outq)==0) {
+  			tp->t_state &= ~TBLOCK;
+  			ttstart(tp);
+***************
+*** 603,608
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return (NULL);
+  loop:
+  #ifdef	MENLO_JCL
+  	while (u.u_procp->p_pgrp != tp->t_pgrp && tp == u.u_ttyp &&
+
+--- 616,624 -----
+  
+  	if ((tp->t_state&CARR_ON)==0)
+  		return (NULL);
++ #ifdef	NEWSCHED
++ 	u.u_procp->p_sflag |= STTYOUT;
++ #endif
+  loop:
+  #ifdef	MENLO_JCL
+  	while (u.u_procp->p_pgrp != tp->t_pgrp && tp == u.u_ttyp &&
+***************
+*** 835,840
+  
+  	if ((tp->t_lstate & LSCNTTB) == 0)
+  		tp->t_local &= ~LFLUSHO;
+  	if ((tp->t_flags&ECHO) == 0)
+  		return;
+  	c &= 0377;
+
+--- 851,859 -----
+  
+  	if ((tp->t_lstate & LSCNTTB) == 0)
+  		tp->t_local &= ~LFLUSHO;
++ #ifdef	SLU
++ 	if ((tp->t_flags&ECHO) == 0 && !(tp->t_xflags & ECHOCRLF && c == '\r'))
++ #else
+  	if ((tp->t_flags&ECHO) == 0)
+  #endif
+  		return;
+***************
+*** 836,841
+  	if ((tp->t_lstate & LSCNTTB) == 0)
+  		tp->t_local &= ~LFLUSHO;
+  	if ((tp->t_flags&ECHO) == 0)
+  		return;
+  	c &= 0377;
+  	if (tp->t_flags&RAW) {
+
+--- 855,861 -----
+  	if ((tp->t_flags&ECHO) == 0 && !(tp->t_xflags & ECHOCRLF && c == '\r'))
+  #else
+  	if ((tp->t_flags&ECHO) == 0)
++ #endif
+  		return;
+  	c &= 0377;
+  	if (tp->t_flags&RAW) {

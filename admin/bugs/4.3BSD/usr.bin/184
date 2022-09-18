@@ -1,0 +1,119 @@
+From elsie!ado@ncifcrf.gov  Mon Oct 10 15:35:31 1988
+Received: from FCS280S.NCIFCRF.GOV by okeeffe.berkeley.edu (5.60/1.29)
+	id AA06641; Mon, 10 Oct 88 15:35:31 PDT
+Received: by fcs280s.ncifcrf.gov (4.0/NCIFCRF-1.0)
+	id AA24952; Mon, 10 Oct 88 18:34:51 EDT
+Received: by elsie.UUCP (5.51/4.7)
+	id AA21733; Mon, 10 Oct 88 17:50:39 EDT
+Date: Mon, 10 Oct 88 17:50:39 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Message-Id: <8810102150.AA21733@elsie.UUCP>
+Cc: emoryu1!arnold@emory.arpa
+Cc: bugs@okeeffe.berkeley.edu
+Subject: MORE/bsd 4.3 (10/5/87) uucico can dump core when debugging (with fix)
+Index: 	usr.bin/uucp/conn.c 4.3BSD
+
+Description:
+	4.3BSD's uucico sometimes dumps core if you're debugging.
+
+Repeat-By:
+	Do a "uucico -x9 ..." and try to connect to a system
+	that's feeding back large numbers of characters that aren't what's
+	in the "chat" script.
+
+Analysis:
+	The problem is that the function "expect" in the file "conn.c" contains
+	this code:
+
+/*...*/
+alarmtr()
+{
+	/*...*/
+	longjmp(Sjbuf, 1);
+}
+
+expect(str, fn)
+register char *str;
+int fn;
+{
+	/*...*/
+	signal(SIGALRM, alarmtr);
+	alarm(timo);
+	/*...*/
+	while (notin(str, rdvec)) {
+		/*...*/
+		DEBUG(4, (isprint(c) || isspace(c)) ? "%c" : "\\%03o", c);
+		/*...*/
+	}
+	alarm(0);
+	return SUCCESS;
+}
+/*...*/
+
+	Now when you've done a "uucico -x9" the "DEBUG" statement in the while
+	loop ends up doing a "fprintf(stderr, ...".  Stderr is unbuffered.
+	A look at "/usr/src/lib/libc/stdio/fprintf.c" will show that, in the
+	unbuffered output case, it sets up a temporary buffer, calls
+	"_doprnt", then undoes the setup of the temporary buffer.  Well. . .
+	if a SIGALRM comes in after fprintf sets up the temporary but before
+	it undoes things, the next call to fprintf ends up trying to make use
+	of the previous call's temporary buffer. . .with potentially disastrous
+	consequences.
+
+Fix:
+	Here's a symptom-stomping fix for conn.c; there's almost surely a
+	better one.  It might also be wise to take a look at fprintf and see
+	if there's a way to avoid the temporary buffer fiasco in the general
+	case.  One way to avoid core dump disasters would be to change the
+	"char buffer" in fprintf into a "static char buffer"; doing this would
+	provide protection against ending up with FILE structures that contained
+	pointers into random stack space.
+
+*** 3.3/conn.c	Mon Oct 10 17:37:14 1988
+--- 3.4/conn.c	Mon Oct 10 17:37:23 1988
+***************
+*** 593,599 ****
+--- 593,602 ----
+  	int kr, cnt_char;
+  	char nextch;
+  	int timo = MAXMSGTIME;
++ 	int oldmask;
+  
++ 	oldmask = sigsetmask(~0);
++ 	(void) sigsetmask(oldmask);
+  	if (*str == '\0' || strcmp(str, "\"\"") == SAME)
+  		return SUCCESS;
+  	/* Cleanup str, convert \0xx strings to one char  */
+***************
+*** 631,638 ****
+  	while (notin(str, rdvec)) {
+  		int c;
+  		if(AbortOn != NULL && !notin(AbortOn, rdvec)) {
+- 			DEBUG(1, "Call aborted on '%s'\n", AbortOn);
+  			alarm(0);
+  			return ABORT;
+  		}
+  		kr = read(fn, &nextch, 1);
+--- 634,641 ----
+  	while (notin(str, rdvec)) {
+  		int c;
+  		if(AbortOn != NULL && !notin(AbortOn, rdvec)) {
+  			alarm(0);
++ 			DEBUG(1, "Call aborted on '%s'\n", AbortOn);
+  			return ABORT;
+  		}
+  		kr = read(fn, &nextch, 1);
+***************
+*** 645,651 ****
+--- 648,656 ----
+  		c = nextch & 0177;
+  		if (c == '\0')
+  			continue;
++ 		sigsetmask(oldmask & sigmask(SIGALRM));
+  		DEBUG(4, (isprint(c) || isspace(c)) ? "%c" : "\\%03o", c);
++ 		sigsetmask(oldmask);
+  		*rp++ = c;
+  		if (rp >= rdvec + MR) {
+  			register char *p;
+-- 
+	ado@ncifcrf.gov			ADO is a trademark of Ampex.

@@ -1,0 +1,112 @@
+Path: seismo!uunet!husc6!think!bloom-beacon!jis@BITSY.MIT.EDU
+From: jis@BITSY.MIT.EDU (Jeffrey I. Schiller)
+Newsgroups: comp.bugs.4bsd
+Subject: Re: sendmail aborts with longjmp botch
+Summary: Chris' fix should work running at MIT for 1.5 years
+Sender: daemon@bloom-beacon.MIT.EDU
+Index: usr.lib/sendmail 4.3BSD
+
+	Chris's change should work. We ran into this problem awhile ago here
+(with the "expert" mailing list). I thought we posted the fix (but I guess not).
+In any event here are the diffs (against the version of sendmail we were using
+then). This code has been in service at MIT since November of 1986.
+
+			-Jeff
+
+*** /tmp/,RCSt1005512	Sat Mar 12 21:22:30 1988
+--- /tmp/,RCSt2005512	Sat Mar 12 21:22:37 1988
+***************
+*** 1,4 ****
+--- 1,9 ----
+  /*
++  *	$Source: /source/4.3/usr.lib/sendmail/src/RCS/usersmtp.c,v $
++  *	$Header: usersmtp.c,v 1.2 86/11/04 00:36:34 jis Exp $
++  */
++ 
++ /*
+  **  Sendmail
+  **  Copyright (c) 1983  Eric P. Allman
+  **  Berkeley, California
+***************
+*** 67,74 ****
+  **		creates connection and sends initial protocol.
+  */
+- jmp_buf	CtxGreeting;
+- 
+  smtpinit(m, pvp)
+  	struct mailer *m;
+  	char **pvp;
+--- 72,77 ----
+***************
+*** 76,81 ****
+--- 79,85 ----
+  	register int r;
+  	EVENT *gte;
+  	char buf[MAXNAME];
++ 	time_t saveReadTimeout;
+  	extern greettimeout();
+  	/*
+***************
+*** 127,140 ****
+  	**  Get the greeting message.
+  	**	This should appear spontaneously.  Give it five minutes to
+  	**	happen.
+  	*/
+- 	if (setjmp(CtxGreeting) != 0)
+- 		goto tempfail;
+- 	gte = setevent((time_t) 300, greettimeout, 0);
+  	SmtpPhase = "greeting wait";
+  	r = reply(m);
+! 	clrevent(gte);
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+--- 131,160 ----
+  	**  Get the greeting message.
+  	**	This should appear spontaneously.  Give it five minutes to
+  	**	happen.
++         **
++ 	**  JIS: We change the global variable ReadTimeout to be 5
++ 	**      minutes. This variable is used by the lowlevel routine
++ 	**      sfgets to determine how long to wait for input.
++ 	**      when we get our greeting we return ReadTimeout to its
++ 	**      previous state. IMPORTANT: The older code I replaced
++ 	**      used a separate timeout (via a setjmp and longjmp)
++ 	**      this LOSES REAL BIG if the 5 minute timeout goes off
++ 	**      for then sfgets gets its stack unwound and leaves
++ 	**      a lingering event that will eventually cause a longjmp
++ 	**      to some ancient stack history, sendmail then dies horribly.
++ 	**      This usually happens only when dealing with large mailing
++ 	**      lists ("xpert" in this case > 200 recipients), which is
++ 	**      the LAST place you want to dump core, for then the queue
++ 	**      files are out of date and LOTS of people get a duplicate
++ 	**      copy of the message that was in progress.
++ 	*
+  	*/
+  	SmtpPhase = "greeting wait";
++ 	saveReadTimeout = ReadTimeout;
++ 	ReadTimeout = 300;
+  	r = reply(m);
+! 	ReadTimeout = saveReadTimeout;
+  	if (r < 0 || REPLYTYPE(r) != 2)
+  		goto tempfail;
+***************
+*** 212,225 ****
+    unavailable:
+  	smtpquit(m);
+  	return (EX_UNAVAILABLE);
+- }
+- 
+- 
+- static
+- greettimeout()
+- {
+- 	/* timeout reading the greeting message */
+- 	longjmp(CtxGreeting, 1);
+  }
+  /*
+  **  SMTPRCPT -- designate recipient.
+--- 232,237 ----
+
+---- End of Mesage ---
+--
+

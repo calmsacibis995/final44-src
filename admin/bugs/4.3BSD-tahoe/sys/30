@@ -1,0 +1,99 @@
+From abvax!wrk@uunet.UU.NET  Fri Dec  9 09:03:45 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA00374; Fri, 9 Dec 88 09:03:45 PST
+Received: from uunet.UU.NET by ucbvax.Berkeley.EDU (5.61/1.33)
+	id AA08857; Fri, 9 Dec 88 09:02:59 PST
+Received: from abvax.UUCP by uunet.UU.NET (5.59/1.14) with UUCP 
+	id AA12752; Fri, 9 Dec 88 12:03:13 EST
+Received: by abvax.icd.abnet.com (5.59/1.16);
+	id AA13900; Fri, 9 Dec 88 11:30:52 EST
+Date: Fri, 9 Dec 88 11:30:52 EST
+From: abvax!wrk@uunet.UU.NET (William R. King)
+Message-Id: <8812091630.AA13900@abvax.icd.abnet.com>
+Subject: /sys/stand/copy.c does not correctly size tape blocksize
+Index: sys 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@ucbvax.UUCP
+
+Description:
+	/sys/stand/copy.c does not correctly adjust to a tape
+	blocksize other than the default 10240.
+Repeat-By:
+	use the standalone copy program to load a file with a
+	blocksize other than 10240. It doesn't work.
+Fix:
+	Apply the following patch to /sys/stand/copy.c
+Caveats:
+	This patch assumes that the stand alone device drivers
+	correctly return the number of characters read. See my
+	previous patch to /sys/vaxstand/tmscp.c. 
+
+	I don't know about the 'bug in the ht driver' which has
+	a special piece of code in copy.c to compensate for. This
+	may need bo be modified. If someone does work on this I
+	would appreciate receiving updated code.
+
+	This version has only been tested against the tmscp diver.
+
+
+*** /tmp/,RCSt1013863	Fri Dec  9 11:21:09 1988
+--- copy.c	Fri Dec  9 11:20:36 1988
+***************
+*** 14,26 ****
+  main()
+  {
+  	extern int errno;
+! 	register int from, to, record, rcc, wcc;
+  	char buf[BSIZE];
+  
+  	from = getfile("From", 0);
+  	to = getfile("To", 1);
+  	for (record = 0;; ++record) {
+! 		if (!(rcc = read(from, buf, BSIZE)))
+  			break;
+  		if (rcc < 0) {
+  			printf("Record %d: read error, errno=%d\n",
+--- 14,27 ----
+  main()
+  {
+  	extern int errno;
+! 	register int from, to, record, rcc, wcc, bsize;
+  	char buf[BSIZE];
+  
+  	from = getfile("From", 0);
+  	to = getfile("To", 1);
++ 	bsize = BSIZE;
+  	for (record = 0;; ++record) {
+! 		if (!(rcc = read(from, buf, bsize)))
+  			break;
+  		if (rcc < 0) {
+  			printf("Record %d: read error, errno=%d\n",
+***************
+*** 27,39 ****
+  			    record, errno);
+  			break;
+  		}
+! 		if (!record && rcc != BSIZE) {
+! 			rcc = BSIZE;
+! 			printf("Block size set from input; %d bytes\n", BSIZE);
+  		}
+! 		if (rcc < BSIZE)
+  			printf("Record %d: read short; expected %d, got %d\n",
+! 			    record, BSIZE, rcc);
+  #ifdef vax
+  		/* For bug in ht driver. */
+  		if (rcc > BSIZE)
+--- 28,40 ----
+  			    record, errno);
+  			break;
+  		}
+! 		if (!record && rcc != bsize) {
+! 			bsize = rcc;
+! 			printf("Block size set from input; %d bytes\n", bsize);
+  		}
+! 		if (rcc < bsize)
+  			printf("Record %d: read short; expected %d, got %d\n",
+! 			    record, bsize, rcc);
+  #ifdef vax
+  		/* For bug in ht driver. */
+  		if (rcc > BSIZE)
+

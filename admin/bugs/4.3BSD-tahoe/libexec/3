@@ -1,0 +1,107 @@
+From leres@helios.ee.lbl.gov  Thu May 10 17:47:41 1990
+Received: from ace.ee.lbl.gov by okeeffe.Berkeley.EDU (5.63/1.37)
+	id AA17268; Thu, 10 May 90 17:47:41 -0700
+Received: by helios.ee.lbl.gov (5.63/1.39)
+	id AA17103; Thu, 10 May 90 17:48:19 -0700
+Message-Id: <9005110048.AA17103@helios.ee.lbl.gov>
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: one bug fix and one enhancement to comsat
+Index: libexec/comsat/comsat.c 4.3BSD-tahoe +FIX
+Date: Thu, 10 May 90 17:48:18 PDT
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+
+Description:
+	(1) It's possible to get into an comsat/inetd loop if the mail
+	spool directory is missing.
+
+	(2) Also, it would be nice if comsat didn't clobber the
+	"accessed" time on the mail drop.
+
+Repeat-By:
+	If the mail spool directory is unavailable (perhaps because a
+	filesystem is unmounted) and a biff packet comes in, comsat
+	fails to eat the packet and so inetd fires up a new biff which
+	also fails to eat the packet, etc.
+
+Fix:
+	(1) Insert the missing recv() line to eat the packet.
+
+	(2) Save/restore the accessed time.
+
+*** comsat.c	Thu May 10 17:27:23 1990
+--- comsat.c.new	Thu May 10 17:38:41 1990
+***************
+*** 22,28 ****
+  #endif /* not lint */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)comsat.c	5.18 (Berkeley) 5/10/90";
+  #endif /* not lint */
+  
+  #include <sys/param.h>
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)comsat.c	5.18++ (Berkeley) 5/10/90";
+  #endif /* not lint */
+  
+  #include <sys/param.h>
+***************
+*** 80,85 ****
+--- 80,86 ----
+  	openlog("comsat", LOG_PID, LOG_DAEMON);
+  	if (chdir(_PATH_MAIL)) {
+  		syslog(LOG_ERR, "chdir: %s: %m", _PATH_MAIL);
++ 		(void) recv(0, msgbuf, sizeof(msgbuf) - 1, 0);
+  		exit(1);
+  	}
+  	if ((uf = open(_PATH_UTMP, O_RDONLY, 0)) < 0) {
+***************
+*** 213,221 ****
+--- 214,229 ----
+  	register int linecnt, charcnt, inheader;
+  	char line[BUFSIZ];
+  	off_t fseek();
++ 	struct stat sbuf;
++ 	struct timeval tvp[2];
+  
+  	if ((fi = fopen(name, "r")) == NULL)
+  		return;
++ 	bzero((char *)tvp, sizeof(tvp));
++ 	if (fstat(fileno(fi), &sbuf) >= 0) {
++ 		tvp[0].tv_sec = sbuf.st_atime;
++ 		tvp[1].tv_sec = sbuf.st_mtime;
++ 	}
+  	(void)fseek(fi, offset, L_SET);
+  	/*
+  	 * Print the first 7 lines or 560 characters of the new mail
+***************
+*** 238,244 ****
+  		}
+  		if (linecnt <= 0 || charcnt <= 0) {
+  			(void)fprintf(tp, "...more...%s", cr);
+! 			return;
+  		}
+  		/* strip weird stuff so can't trojan horse stupid terminals */
+  		for (cp = line; (ch = *cp) && ch != '\n'; ++cp, --charcnt) {
+--- 246,252 ----
+  		}
+  		if (linecnt <= 0 || charcnt <= 0) {
+  			(void)fprintf(tp, "...more...%s", cr);
+! 			goto done;
+  		}
+  		/* strip weird stuff so can't trojan horse stupid terminals */
+  		for (cp = line; (ch = *cp) && ch != '\n'; ++cp, --charcnt) {
+***************
+*** 251,254 ****
+--- 259,266 ----
+  		--linecnt;
+  	}
+  	(void)fprintf(tp, "----%s\n", cr);
++ done:
++ 	(void)fclose(fi);
++ 	if (tvp[0].tv_sec != 0 && tvp[1].tv_sec != 0)
++ 		(void)utimes(name, tvp);
+  }

@@ -1,0 +1,58 @@
+From yval@cs.huji.ac.il  Wed Feb 17 04:03:46 1993
+Date: Wed, 17 Feb 93 02:03:46 +0200
+From: Yuval Yarom <yval@CS.HUJI.AC.IL>
+To: 4bsd-bugs@okeeffe.CS.Berkeley.EDU
+Subject: Wrong caching of anonymous memory regions
+Index: sys/vm/vm_mmap.c 4.4BSD-alpha
+
+Shalom,
+  The folowing program quickly eats all swap space (unless you have
+more than 100MB of total core and swap), though it never uses much more
+than 1MB.
+
+#include <sys/types.h>
+#include <sys/mman.h>
+
+main()
+{
+	char *ad;
+	int i,j;
+
+	for (i = 0; i < 100; i++) {
+		ad = mmap(0, 1024*1024, PROT_READ|PROT_WRITE,
+						MAP_ANON|MAP_PRIVATE, -1, 0);
+		if ((int)ad == -1) {
+			perror("mmap");
+			exit(0);
+		}
+		for (j = 0; j< 1024*1024; j+=4096)
+			ad[j] = 1;
+		munmap(ad, 1024*1024);
+		printf("%d\n", i);
+	}
+}
+
+The cause of this problem is that, due to a bug in vm_mmap, unnamed
+anonymous memory objects are marked as persistant, and remain in the
+object cache.  The following patch fixes the problem.
+
+				Yuval
+----------------------------------------------------------------
+*** vm_mmap.c.orig	Tue Feb 16 22:02:12 1993
+--- vm_mmap.c	Tue Feb 16 22:03:59 1993
+***************
+*** 473,478 ****
+--- 473,485 ----
+  			goto out;
+  		}
+  		/*
++ 		 * The object of unnamed anonymous regions was just created
++ 		 * find it for pager_cache.
++ 		 */
++ 		if (handle == NULL)
++ 			object = vm_object_lookup(pager);
++ 
++ 		/*
+  		 * Don't cache anonymous objects.
+  		 * Loses the reference gained by vm_pager_allocate.
+  		 */

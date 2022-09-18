@@ -1,0 +1,68 @@
+Return-Path: <floyd!ihnp4!nuearth!root@ucbvax.Berkeley.EDU>
+Date: Mon, 6 Oct 86 22:05:00 CDT
+From: ihnp4!nuearth!root@ucbvax.Berkeley.EDU (Super-User)
+Subject: Can't do shell escape from tip when running setuid'd
+Index: 	usr.bin/tip/cmds.c 4.3BSD
+
+Description:
+	If tip is run setuid'd or setgid'd, any attempts to do a shell
+    escape produce a `permission denied' message.  This is caused by a
+    new (to 4.3) security feature in the C shell.  The shell now gets
+    angry if the real and effective user (or group) id's are not the
+    same, unless the -b flag is given.
+
+Repeat-By:
+	Do a `chmod u+s /usr/bin/tip', run tip (from an account other
+    than the owner of tip, and try to fork off a subshell with the ~!
+    command.  It won't work.
+
+Fix:
+	The fix is rather trivial (so trivial that it's probably been
+    fixed before); you just make sure the real and effective user
+    (group) id's are the same.  Here's a context diff of the old and
+    new source files.
+
+*** cmds.c.orig	Mon May  5 13:01:56 1986
+--- cmds.c	Fri Sep 26 12:02:22 1986
+***************
+*** 543,548 ****
+--- 543,554 ----
+  	} else {
+  		signal(SIGQUIT, SIG_DFL);
+  		signal(SIGINT, SIG_DFL);
++ 		/*
++ 		 * Set effective user (group) ID to real ID to stop
++ 		 * problems with new protection stuff in the shell.
++ 		 */
++ 		setreuid(uid, uid);
++ 		setregid(gid, gid);
+  		if ((cp = rindex(value(SHELL), '/')) == NULL)
+  			cp = value(SHELL);
+  		else
+
+    There is an identical problem with the user-contributed kermit
+program; the fix is almost the same:
+
+*** ckuusr.c.orig	Mon Oct  6 21:48:01 1986
+--- ckuusr.c		Wed Sep 24 15:45:56 1986
+***************
+*** 973,978 ****
+--- 973,985 ----
+  	extern int getuid();
+  	char *defShel = "/bin/sh";	/* Default */
+  
++ 	/*
++ 	 * This is necessary for the new shell security stuff in 4.3BSD, and
++ 	 * shouldn't (!) cause any problems elsewhere... J. Werner
++ 	 */
++ 	setuid(getuid());
++ 	setgid(getgid());
++ 
+  	p = getpwuid( getuid() );	/* Get login data */
+  	if ( p == (struct passwd *) NULL || !*(p->pw_shell) )
+  	    shpath = defShel;
+
+------------------------------------------------------------------------------
+		John Werner		Northwestern University
+		ihnp4!nuearth!werner	Department of Geological Sci.
+		(312) 491-3238		Evanston, IL  60201

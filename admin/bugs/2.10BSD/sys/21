@@ -1,0 +1,81 @@
+From sms@WLV.IMSD.CONTEL.COM  Wed Jun 28 23:11:52 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA05700; Wed, 28 Jun 89 23:11:52 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.37)
+	id AA21951; Wed, 28 Jun 89 23:10:16 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA02414; Wed, 28 Jun 89 23:10:33 -0700
+Date: Wed, 28 Jun 89 23:10:33 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz(Y))
+Message-Id: <8906290610.AA02414@WLV.IMSD.CONTEL.COM>
+Subject: TIME_WAIT sockets clog system (part 2)
+Index: 	sys/sys/uipc_mbuf.c 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Sockets in a TIME_WAIT state can constipate the networking
+	buffer memory when generated in rapid succession by, for
+	example, an "mget" in an ftp session.  If more than a dozen
+	or so small files are transferred in rapid succession over
+	an ethernet, all the mbufs in the system will be taken up
+	by sockets in a TIME_WAIT state (from the socket opened for
+	each data transfer).
+
+Repeat-By:
+	ftp in to a 2.10.1BSD system, do an "mget *" in a largish
+	directory.  note that the transfer will hang/develope problems
+	after about a dozen to twenty files.  the 2.10.1BSD system
+	has run out of mbufs and will recover in a minute or so (hopefully).
+
+Fix:
+	Apply this patch to /sys/sys/uipc_mbuf.c.  The effect of this fix
+	is to call the drain routines at least once - the earlier version
+	of m_more() checked the waitability state and rejected the 
+	request immediately rather than attempt non-blocking methods
+	of freeing up memory first.
+
+	It is (as far as i can see - and yes, these fixes have been tested)
+	safe to call the drain routines at this point for two reasons:  
+	1) the tcp_drain() routine that existed prior to part 1 of this 
+	fix did nothing AND the NEW tcp_drain() routine is guaranteed not 
+	to sleep(), 2) the ip_drain() routine only releases fragments and 
+	does not sleep() at any point along the way.
+
+	With both part 1 and 2 installed a "ftp mget *" of /etc was done
+	with no problems and 8 calls to the drain routines (as reported
+	by 'netstat -s').
+
+*** uipc_mbuf.old	Tue Jun 27 23:20:46 1989
+--- uipc_mbuf.c	Tue Jun 27 23:23:14 1989
+***************
+*** 164,177 ****
+  {
+  	register struct mbuf *m;
+  
+- 	if (canwait == M_DONTWAIT) {
+- 		mbstat.m_drops++;
+- 		return (NULL);
+- 	}
+  	for(;;) {
+  		m_expand(canwait);
+  		if (mfree)
+  			break;
+  		mbstat.m_wait++;
+  		m_want++;
+  		SLEEP((caddr_t)&mfree, PZERO - 1);
+--- 164,177 ----
+  {
+  	register struct mbuf *m;
+  
+  	for(;;) {
+  		m_expand(canwait);
+  		if (mfree)
+  			break;
++ 		if (canwait == M_DONTWAIT) {
++ 			mbstat.m_drops++;
++ 			return (NULL);
++ 		}
+  		mbstat.m_wait++;
+  		m_want++;
+  		SLEEP((caddr_t)&mfree, PZERO - 1);
+

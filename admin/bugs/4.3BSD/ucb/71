@@ -1,0 +1,89 @@
+From donn@utah-cs.arpa  Mon Mar  9 19:39:58 1987
+Received: from ucbarpa.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA00225; Mon, 9 Mar 87 19:39:58 PST
+Received: by ucbarpa.Berkeley.EDU (5.57/1.23)
+	id AA02537; Mon, 9 Mar 87 20:09:55 PST
+Received: by utah-cs.ARPA (5.31/4.40.2)
+	id AA07401; Mon, 9 Mar 87 21:09:25 MST
+Date: Mon, 9 Mar 87 21:09:25 MST
+From: donn@utah-cs.arpa (Donn Seeley)
+Message-Id: <8703100409.AA07401@utah-cs.ARPA>
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: dbx dereferences zero if it can't determine a program's language
+Cc: linton@amadeus.stanford.edu, merriam%hub.umb.edu@relay.cs.net
+
+Subject: dbx dereferences zero if it can't determine a program's language
+Index:	ucb/dbx/object.c 4.3BSD
+
+Description:
+	[extract from a personal communication by Charles C. Merriam]
+	Date: Fri, 6 Mar 87 16:40:12 EST
+	From: "Charles C. Merriam" <merriam%hub.umb.edu@RELAY.CS.NET>
+	Subject: Re: Ungraceful dbx exit
+
+	...  If one compiles your *.c files with "cc -c *.c" and then
+	compiles the *.o files with "cc -o -g *.o" then [one runs dbx
+	and issues the 'trace' command or a 'stop' command] the error
+	"dbx:  internal error: reference through nil pointer at line
+	119 in file languages.c" is generated.  This isn't a major bug,
+	but caused me problems. ...  On closer inspection however, dbx
+	will fail with any stop command for a file lacking a symbol
+	table.  This is a common error not an internal one.  Changing
+	the error message to something mentioning "inconsistent symbol
+	table in object" or equivilent would help.  Further more, cc
+	should refuse or warn when using the -g option on objects when
+	not all objects contain symbol table information. ...
+
+			Charles Merriam
+			Computer Scientist In Training
+
+Repeat-By:
+	[the remainder is another tedious report from Donn Seeley]
+	% cat foo.c
+	main()
+	{
+		printf("boring\n");
+	}
+	% cc foo.c -o foo
+	% dbx foo
+	dbx version 3.12 of 7/15/86 18:54 (utah-cs).
+	Type 'help' for help.
+	reading symbolic information ...
+	(dbx) trace
+	dbx: internal error: reference through nil pointer at line 119 in file languages.c
+	% 
+
+Fix:
+	If a program has no dbx symbols at all, dbx can't tell what
+	programming language was used and leaves zero the language
+	pointer in the program structure.  When an attempt is made to
+	trace the program, the zero pointer is dereferenced and dbx
+	bombs out.  When dbx encounters object information which
+	doesn't contain dbx symbols, it treats it as coming from
+	assembly language files.  A simple change to readobj() in
+	object.c forces dbx to treat a program that has no dbx symbols
+	as an assembly program:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1006388	Mon Mar  9 20:23:25 1987
+	--- object.c	Mon Mar  9 20:23:01 1987
+	***************
+	*** 203,208 ****
+	--- 203,211 ----
+		setnfiles();
+	      } else {
+		initsyms();
+	+     }
+	+     if (program->language == nil) {
+	+ 	program->language = findlanguage(".s");
+	      }
+	      close(f);
+	  }
+	----------------------------------------------------------------
+
+	It'd be nice if there were some way to default trace to tracei
+	when no symbol information is available...  Or is this possible
+	and I haven't figured it out?  Oh well.
+
+	Donn Seeley    University of Utah CS Dept    donn@cs.utah.edu
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    utah-cs!donn

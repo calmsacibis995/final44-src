@@ -1,0 +1,64 @@
+Date: Fri, 14 Nov 86 04:06:34 PST
+From: Van Jacobson <ucbvax!lbl-csam.arpa!van>
+Subject: 4.3bsd UDP generates ICMP_UNREACH_PORT for broadcast packets
+Index: sys/netinet/{in.c,udp_usrreq.c} 4.3BSD
+Reference: 4.3BSD/sys/72
+
+Description:
+	UDP will generated ICMP_UNREACH_PORT in response to packets
+	sent to the 4.2bsd broadcast address (host part zero).  On
+	mixed 4.2/4.3 ethernets this can generate unnecessary traffic
+	in response to Sun RPC packets or 4.2 rwho packets.
+Repeat-By:
+	Run rwhod on a 4.2 system.  Don't run rwhod on a 4.3 system.
+	Monitor the network & observe one ICMP_UNREACH_PORT is sent
+	by the 4.3 system in response to each 4.2 rwho packet.
+Fix:
+	A check could be added in routine in_broadcast for the
+	4.2 broadcast addresses.  This helps both UDP and the two
+	broadcast checks in tcp_input.  The diffs for netinet/in.c
+	follow.  However, the unreachable port message seems
+	questionable.  My ethernet if very busy.  If someone is
+	using up bandwidth babbling to an unused port, why should
+	I compound the sin by telling him he's a fool?  If he were
+	smart enough to shut up on the unreachable, he'd be smart enough
+	not to cause the original problem.  So, I also ifdef'd out
+	the unreachable message in udp_usrreq.c & just increment
+	a counter noting that a packet for an unused port has been
+	discarded (diffs obvious & not attached).
+	------------
+*** /sys/netinet/in.c	Thu Jun  5 00:25:19 1986
+--- in.c	Fri Nov 14 03:32:45 1986
+***************
+*** 421,429 ****
+  	 * with a broadcast address.
+  	 */
+  	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+! 	    if (((struct sockaddr_in *)&ia->ia_broadaddr)->sin_addr.s_addr ==
+! 		in.s_addr && (ia->ia_ifp->if_flags & IFF_BROADCAST))
+  		     return (1);
+  	return (0);
+  }
+  #endif
+--- 421,441 ----
+  	 * with a broadcast address.
+  	 */
+  	for (ia = in_ifaddr; ia; ia = ia->ia_next)
+! 	    if ((ia->ia_ifp->if_flags & IFF_BROADCAST) && (
+! 	        ((struct sockaddr_in *)&ia->ia_broadaddr)->sin_addr.s_addr ==
+! 		in.s_addr
+! #ifdef COMPAT_42
+! 		|| ntohl(in.s_addr) == ia->ia_subnet
+! 		|| ntohl(in.s_addr) == ia->ia_net
+! #endif COMPAT_42
+! 		))
+  		     return (1);
++ #ifdef COMPAT_42
++ 	if (in.s_addr == (u_long)INADDR_BROADCAST || in.s_addr == INADDR_ANY)
++ #else 
++ 	if (in.s_addr == (u_long)INADDR_BROADCAST)
++ #endif COMPAT_42
++ 		return (1);
+  	return (0);
+  }
+  #endif

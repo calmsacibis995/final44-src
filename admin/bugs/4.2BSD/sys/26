@@ -1,0 +1,148 @@
+Return-Path: <allegra!watmath!arwhite>
+Date: Mon, 20 Feb 84 16:46:38 est
+From: watmath!arwhite (Alex White)
+
+Subject: Crash in PRU_ACCEPT in uipc_usrreq.c when out of mbuf's
+Index:	sys/sys/uipc_usrreq.c 4.2BSD
+
+Description:
+	Accept -> soaccept -> uipc_usrreq(PRU_ACCEPT) -> bcopy
+	Bcopy dies as unp->unp_remaddr == 0
+	Why?  Because the connect which this accept refers to,
+	connect -> soconnect -> uipc_usrreq(PRU_CONNECT) -> unp_connect
+	-> unp_connect2 -> m_copy; m_copy has run out of mbufs and returns
+	zero into unp->unp_remaddr.
+Repeat-By:
+	Ya gotta be kidding, it was after 18,000 requests for memory denied
+	that we got this one. And there seem to be soooo many bugs that
+	occur if you run out, it isn't funny; you'll never get this one
+	a second time! you'll get hit by one of the others.
+	However, for anybody that wants to try, I enclose changes to
+	kern_exit.c so that when you run out of mbufs you won't panic the
+	next time a process exits...
+Plea-for-help:
+	We keep on running out of mbufs - generally ~600 mbufs allocated
+	to socket structures, ~600 allocated to protocol control blocks,
+	and ~100 to socket names and addresses.  (However, we've also
+	had similar crashes without the socket name and address mbufs).
+	We have hundreds of students running a 5-process game communicating
+	via pipes OR sockets in the unix domain.  No, it doesn't seem
+	to be legitimate running out because of too many pipes.
+	There don't seem to be enough sitting around after the crash.
+	I've looked at most student's programmes, and haven't found any
+	yet which seems to cause any problems.
+Fix:
+*** uipc_usrreq.c	Mon Feb 20 16:30:16 1984
+--- /usr/distr/4.2/usr/sys/sys/uipc_usrreq.c	Sun Sep 25 21:06:43 1983
+***************
+*** 371,377
+  
+  	case SOCK_STREAM:
+  		unp2->unp_conn = unp;
+! 		if (sonam) {
+  			unp2->unp_remaddr = m_copy(sonam, 0, (int)M_COPYALL);
+  			if(unp2->unp_remaddr == NULL) {
+  				unp->unp_conn = 0;
+
+--- 368,374 -----
+  
+  	case SOCK_STREAM:
+  		unp2->unp_conn = unp;
+! 		if (sonam)
+  			unp2->unp_remaddr = m_copy(sonam, 0, (int)M_COPYALL);
+  		soisconnected(so2);
+  		soisconnected(so);
+***************
+*** 373,384
+  		unp2->unp_conn = unp;
+  		if (sonam) {
+  			unp2->unp_remaddr = m_copy(sonam, 0, (int)M_COPYALL);
+- 			if(unp2->unp_remaddr == NULL) {
+- 				unp->unp_conn = 0;
+- 				unp2->unp_conn = 0;
+- 				return (ENOBUFS);
+- 			}
+- 		}
+  		soisconnected(so2);
+  		soisconnected(so);
+  		break;
+
+--- 370,375 -----
+  		unp2->unp_conn = unp;
+  		if (sonam)
+  			unp2->unp_remaddr = m_copy(sonam, 0, (int)M_COPYALL);
+  		soisconnected(so2);
+  		soisconnected(so);
+  		break;
+
+*** kern_exit.c	Fri Feb 17 05:10:18 1984
+--- /usr/distr/4.2/usr/sys/sys/kern_exit.c	Fri Jul 29 10:07:18 1983
+***************
+*** 112,124
+  		panic("init died");
+  done:
+  	p->p_xstat = rv;
+! 	if(m == 0)
+! 		printf("No mem for rusage for pid %d\n", p->p_pid);
+! 	else {
+! 		p->p_ru = mtod(m, struct rusage *);
+! 		*p->p_ru = u.u_ru;
+! 		ruadd(p->p_ru, &u.u_cru);
+! 	}
+  	for (q = proc; q < procNPROC; q++)
+  		if (q->p_pptr == p) {
+  			if (q->p_osptr)
+
+--- 112,122 -----
+  		panic("init died");
+  done:
+  	p->p_xstat = rv;
+! if (m == 0)
+! panic("exit: m_getclr");
+! 	p->p_ru = mtod(m, struct rusage *);
+! 	*p->p_ru = u.u_ru;
+! 	ruadd(p->p_ru, &u.u_cru);
+  	for (q = proc; q < procNPROC; q++)
+  		if (q->p_pptr == p) {
+  			if (q->p_osptr)
+***************
+*** 198,204
+  			u.u_r.r_val1 = p->p_pid;
+  			u.u_r.r_val2 = p->p_xstat;
+  			p->p_xstat = 0;
+! 			if (ru  &&  p->p_ru)
+  				*ru = *p->p_ru;
+  			if(p->p_ru) {
+  				ruadd(&u.u_cru, p->p_ru);
+
+--- 196,202 -----
+  			u.u_r.r_val1 = p->p_pid;
+  			u.u_r.r_val2 = p->p_xstat;
+  			p->p_xstat = 0;
+! 			if (ru)
+  				*ru = *p->p_ru;
+  			ruadd(&u.u_cru, p->p_ru);
+  			(void) m_free(dtom(p->p_ru));
+***************
+*** 200,209
+  			p->p_xstat = 0;
+  			if (ru  &&  p->p_ru)
+  				*ru = *p->p_ru;
+! 			if(p->p_ru) {
+! 				ruadd(&u.u_cru, p->p_ru);
+! 				(void) m_free(dtom(p->p_ru));
+! 			}
+  			p->p_ru = 0;
+  			p->p_stat = NULL;
+  			p->p_pid = 0;
+
+--- 198,205 -----
+  			p->p_xstat = 0;
+  			if (ru)
+  				*ru = *p->p_ru;
+! 			ruadd(&u.u_cru, p->p_ru);
+! 			(void) m_free(dtom(p->p_ru));
+  			p->p_ru = 0;
+  			p->p_stat = NULL;
+  			p->p_pid = 0;
+

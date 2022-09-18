@@ -1,0 +1,77 @@
+From peter@cs.utah.edu  Thu Jul 23 15:38:18 1987
+Date: Thu, 23 Jul 87 15:46:56 MDT
+From: peter@cs.utah.edu (Peter S. Ford)
+Subject: sendmail file locking.
+Index: usr.bin/sendmail 4.3BSD
+
+Hi eric, I am sure you are tired about hearing about sendmail, but here
+it goes:
+
+Problem:  Sendmail does not lock the file it is delivering to.  /bin/mail
+	does do locking when delivering mail for a user.
+
+Repeat by:  Put a sleep(30) in between (*CurEnv->e_puthdr)() and 
+	(*CurEnv->e_putbody)() in the routine mailfile()(deliver.c).  Then fire 
+	off two pieces of mail back to back which are destined for file 
+	delivery.  You will lose part of the first piece of mail.
+
+Fix:  use flock().  The following patches need to be applied to 
+	deliver.c and savemail.c.  This needs to be fixed differently if
+	you are using suns lockd and sharing mail spool directories.
+	The patch to savemail.c might be overkill.
+
+diff -c -r1.4 deliver.c
+*** /tmp/,RCSt1012497	Thu Jul 23 13:39:53 1987
+--- deliver.c	Sat Jul 18 16:12:57 1987
+***************
+*** 17,22 ****
+--- 17,23 ----
+  # include "sendmail.h"
+  # include <sys/stat.h>
+  # include <netdb.h>
++ # include <sys/file.h>
+  
+  /*
+  **  DELIVER -- Deliver a message to a list of addresses.
+***************
+*** 1262,1267 ****
+--- 1263,1270 ----
+  		f = dfopen(filename, "a");
+  		if (f == NULL)
+  			exit(EX_CANTCREAT);
++ 		flock(fileno(f), LOCK_EX);
++ 		fseek(f, 0, L_XTND);
+  
+  		putfromline(f, ProgMailer);
+  		(*CurEnv->e_puthdr)(f, ProgMailer, CurEnv);
+***************
+*** 1268,1274 ****
+  		putline("\n", f, ProgMailer);
+  		(*CurEnv->e_putbody)(f, ProgMailer, CurEnv);
+  		putline("\n", f, ProgMailer);
+! 		(void) fclose(f);
+  		(void) fflush(stdout);
+  
+  		/* reset ISUID & ISGID bits for paranoid systems */
+--- 1271,1277 ----
+  		putline("\n", f, ProgMailer);
+  		(*CurEnv->e_putbody)(f, ProgMailer, CurEnv);
+  		putline("\n", f, ProgMailer);
+! 		(void) fclose(f);	/* this will release the lock */
+  		(void) fflush(stdout);
+  
+  		/* reset ISUID & ISGID bits for paranoid systems */
+diff -c -r1.1 savemail.c
+*** /tmp/,RCSt1012543	Thu Jul 23 13:41:00 1987
+--- savemail.c	Sat Jul 18 16:47:19 1987
+***************
+*** 304,309 ****
+--- 304,311 ----
+  				state = ESM_PANIC;
+  				break;
+  			}
++ 			flock(fileno(fp), LOCK_EX);
++ 			fseek(fp, 0, L_XTND);
+  
+  			putfromline(fp, ProgMailer);
+  			(*e->e_puthdr)(fp, ProgMailer, e);

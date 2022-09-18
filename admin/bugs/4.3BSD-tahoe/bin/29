@@ -1,0 +1,135 @@
+From forys@cs.utah.edu  Sat May 27 05:51:39 1989
+Date: Fri, 26 May 89 23:51:07 -0600
+From: forys@cs.utah.edu (Jeff Forys)
+Subject: Protocol Botch in latest rcp.c (V1.82)
+Index: bin/rcp.c 4.3BSD-tahoe
+
+Description:
+
+	The version of `rcp' just posted to "comp.bugs.4bsd.ucb-fixes"
+	will hang or prematurely disconnect under certain circumstances.
+
+	The problem is that routine sink() may return more than one
+	message thus violating the `unwritten' protocol.
+
+Repeat-By:
+
+	This is easy to dup on machines that use Sun NFS 3.0/4.0, where
+	ftruncate() fails if a file doesnt have write permission:
+
+		foreach F (0 1 2 3 4 5 6 7 8 9)
+		cat /etc/motd >$F
+		chmod 400 $F
+		end
+		mkdir todir
+		rcp [0-9] localhost:todir
+
+	We see something like:
+
+		rcp: can't truncate todir/0: Permission denied
+		rcp: can't truncate todir/1: Permission denied
+		rcp: can't truncate todir/2: Permission denied
+		rcp: lost connection
+
+	Sometimes it hangs; depends on what rcp `thinks' is the protocol.
+	Also, the copied files will have `parts' of the protocol in them.
+
+	On other OS's, you'll have to get ftruncate() or utimes() syscall
+	to fail in rcp's sink() routine to see this bug in action.
+
+Fix:
+
+	Only print one error message.
+
+	Either a write error, a ftruncate() error, a utimes() error, or
+	a "" (i.e. no error) will be returned in that order.  I also
+	fixed the ftruncate() to try again if the (errno == EACCES); if
+	the file doesnt have owner/write permission, it gives the file
+	owner/write permission, tries ftruncate() again, and then
+	resets the file modes.  This way, it will work on Sun NFS-based
+	machines without change.
+
+	Oh, there was also a NULL ptr deref in strlen(); fixed this too.
+
+*** /tmp/,RCSt1016065	Fri May 26 22:46:00 1989
+--- rcp.c	Fri May 26 22:45:11 1989
+***************
+*** 208,214 ****
+  			host = index(argv[i], '@');
+  			if (!(bp = malloc((u_int)(strlen(_PATH_RSH) +
+  				    strlen(argv[i]) + strlen(src) +
+! 				    strlen(tuser) + strlen(thost) +
+  				    strlen(targ)) + CMDNEEDS + 20)))
+  					nospace();
+  			if (host) {
+--- 208,214 ----
+  			host = index(argv[i], '@');
+  			if (!(bp = malloc((u_int)(strlen(_PATH_RSH) +
+  				    strlen(argv[i]) + strlen(src) +
+! 				    tuser? strlen(tuser): 0 + strlen(thost) +
+  				    strlen(targ)) + CMDNEEDS + 20)))
+  					nospace();
+  			if (host) {
+***************
+*** 778,797 ****
+  		if (count != 0 && wrerr == 0 &&
+  		    write(ofd, bp->buf, count) != count)
+  			wrerr++;
+! 		if (ftruncate(ofd, size))
+! 			error("rcp: can't truncate %s: %s\n", np,
+! 			    sys_errlist[errno]);
+  		(void)close(ofd);
+  		(void)response();
+  		if (setimes) {
+  			setimes = 0;
+! 			if (utimes(np, tv) < 0)
+  				error("rcp: can't set times on %s: %s\n",
+  				    np, sys_errlist[errno]);
+! 		}				   
+! 		if (wrerr)
+  			error("rcp: %s: %s\n", np, sys_errlist[errno]);
+! 		else
+  			(void)write(rem, "", 1);
+  	}
+  screwup:
+--- 778,817 ----
+  		if (count != 0 && wrerr == 0 &&
+  		    write(ofd, bp->buf, count) != count)
+  			wrerr++;
+! 		if (ftruncate(ofd, size) && wrerr <= 0) {
+! 			/*
+! 			 *  ftruncate() failed, possibly because the owner
+! 			 *  didnt have write permission.  If this is the
+! 			 *  case, give the owner write permission, try the
+! 			 *  ftruncate() again, and then reset permissions.
+! 			 *
+! 			 *  N.B. Only attempt this if no write errors above.
+! 			 *  This implies that we will display a write error
+! 			 *  over an ftruncate error (only one msg allowed).
+! 			 */
+! 			if (errno != EACCES || (mode & 0200) == 0200 ||
+! 			    fchmod(ofd, mode|0200) || ftruncate(ofd, size)) {
+! 				error("nrcp: can't truncate %s: %s\n",
+! 				      np, sys_errlist[errno]);
+! 				wrerr = -1;
+! 			}
+! 			(void)fchmod(ofd, mode);
+! 		}
+  		(void)close(ofd);
+  		(void)response();
+  		if (setimes) {
+  			setimes = 0;
+! 			if (utimes(np, tv) < 0 && wrerr == 0) {
+! 				/* display error message iff no other errors */
+  				error("rcp: can't set times on %s: %s\n",
+  				    np, sys_errlist[errno]);
+! 				wrerr = -1;
+! 			}
+! 		}
+! 		/* if (wrerr == -1), we already displayed an error message */
+! 		if (wrerr > 0)
+  			error("rcp: %s: %s\n", np, sys_errlist[errno]);
+! 		else if (wrerr == 0)
+  			(void)write(rem, "", 1);
+  	}
+  screwup:

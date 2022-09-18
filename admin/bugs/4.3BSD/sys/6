@@ -1,0 +1,45 @@
+Return-Path: <munnari!kre@seismo.CSS.GOV>
+From: Robert Elz <munnari!kre@seismo.CSS.GOV>
+Date: Sat, 5 Oct 85 20:10:27 EST
+Subject: ttyflush can be made a bit faster, very easily...
+Index: 	sys/tty.c 4.3BSD
+
+Description:
+	The Subject just about says it all.
+Repeat-By:
+	Look at code in ttyflush, compare with suggested fix.
+Fix:
+	Replace each of the loops
+
+		while (getc(&tp->t_XXX) >= 0)
+			;
+
+	with
+
+		ndflush(&tp->t_XXX, tp->t_XXX.c_cc);
+
+	2nd speedup, once this technique is used....
+
+	In ndflush, recognise when the whole queue is being deleted,
+	and do it faster.  Insert the following code after the
+	(q->c_cc <= 0) test, and before the while loop:
+
+	if (cc >= q->c_cc) {
+		register struct cblock *np;
+
+		np = bp = (struct cblock *)((int)q->c_cf & ~CROUND);
+		while (np->c_next != NULL) {
+			np = np->c_next;
+			cfreecount += CBSIZE;
+		}
+		np->c_next = cfreelist;
+		cfreelist = bp;
+		cfreecount += CBSIZE;
+		if (cwaiting) {
+			wakeup(&cwaiting);
+			cwaiting = 0;
+		}
+		q->c_cf = q->c_cl = NULL;
+		q->c_cc = 0;
+		goto out;
+	}

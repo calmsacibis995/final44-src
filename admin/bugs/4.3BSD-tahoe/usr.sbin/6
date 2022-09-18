@@ -1,0 +1,176 @@
+From leres@helios.ee.lbl.gov  Sat Jan 13 22:09:44 1990
+To: bugs@okeeffe.Berkeley.EDU (Bugs BSD Bunny)
+Subject: lpd filter errors don't appear in the logfile
+Index: usr.sbin/lpr/printjob.c 4.3BSD-tahoe +FIX
+Date: Sat, 13 Jan 90 22:09:51 PST
+From: Craig Leres <leres@helios.ee.lbl.gov>
+
+Description:
+	Version 4.16 of printjob.c allowed filter errors to be mailed
+	back to the user. Unfortunately, it also broke the error log
+	file.
+
+Repeat-By:
+	Print a file using a filter that reports errors and note that
+	nothing shows up in the file specifed by the "lf" printcap
+	field. A good example is the AppleTalk filter "papif."
+
+Fix:
+	After the child exits, copy the filter output to the logfile.
+	
+	While we're at it, rename the array "tmpfile" to "tempfile"
+	since the former conflicts with a (stupid) declaration in the
+	stdio.h shipped with most versions of SunOS.
+
+*** printjob.c	Sat Jan 13 21:50:43 1990
+--- printjob.c.new	Sat Jan 13 21:50:38 1990
+***************
+*** 16,22 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)printjob.c	5.9 (Berkeley) 8/22/89";
+  #endif /* not lint */
+  
+  /*
+--- 16,22 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)printjob.c	5.9++ (Berkeley) 8/22/89";
+  #endif /* not lint */
+  
+  /*
+***************
+*** 66,72 ****
+  char	pxwidth[10] = "-x";	/* page width in pixels */
+  char	pxlength[10] = "-y";	/* page length in pixels */
+  char	indent[10] = "-i0";	/* indentation size in characters */
+! char	tmpfile[] = "errsXXXXXX"; /* file name for filter output */
+  
+  printjob()
+  {
+--- 66,72 ----
+  char	pxwidth[10] = "-x";	/* page width in pixels */
+  char	pxlength[10] = "-y";	/* page length in pixels */
+  char	indent[10] = "-i0";	/* indentation size in characters */
+! char	tempfile[] = "errsXXXXXX"; /* file name for filter output */
+  
+  printjob()
+  {
+***************
+*** 93,99 ****
+  	signal(SIGQUIT, abortpr);
+  	signal(SIGTERM, abortpr);
+  
+! 	(void) mktemp(tmpfile);
+  
+  	/*
+  	 * uses short form file names
+--- 93,99 ----
+  	signal(SIGQUIT, abortpr);
+  	signal(SIGTERM, abortpr);
+  
+! 	(void) mktemp(tempfile);
+  
+  	/*
+  	 * uses short form file names
+***************
+*** 211,217 ****
+  			if (TR != NULL)		/* output trailer */
+  				(void) write(ofd, TR, strlen(TR));
+  		}
+! 		(void) unlink(tmpfile);
+  		exit(0);
+  	}
+  	goto again;
+--- 211,217 ----
+  			if (TR != NULL)		/* output trailer */
+  				(void) write(ofd, TR, strlen(TR));
+  		}
+! 		(void) unlink(tempfile);
+  		exit(0);
+  	}
+  	goto again;
+***************
+*** 428,433 ****
+--- 428,434 ----
+  	register int n;
+  	register char *prog;
+  	int fi, fo;
++ 	FILE *fp;
+  	char *av[15], buf[BUFSIZ];
+  	int pid, p[2], stopped = 0;
+  	union wait status;
+***************
+*** 582,588 ****
+  	if ((child = dofork(DORETURN)) == 0) {	/* child */
+  		dup2(fi, 0);
+  		dup2(fo, 1);
+! 		n = open(tmpfile, O_WRONLY|O_CREAT|O_TRUNC, 0664);
+  		if (n >= 0)
+  			dup2(n, 2);
+  		for (n = 3; n < NOFILE; n++)
+--- 583,589 ----
+  	if ((child = dofork(DORETURN)) == 0) {	/* child */
+  		dup2(fi, 0);
+  		dup2(fo, 1);
+! 		n = open(tempfile, O_WRONLY|O_CREAT|O_TRUNC, 0664);
+  		if (n >= 0)
+  			dup2(n, 2);
+  		for (n = 3; n < NOFILE; n++)
+***************
+*** 606,611 ****
+--- 607,622 ----
+  		}
+  	}
+  	tof = 0;
++ 
++ 	/* Copy filter output to "lf" logfile */
++ 	if (fp = fopen(tempfile, "r")) {
++ 		char tbuf[512];
++ 
++ 		while (fgets(buf, sizeof(buf), fp))
++ 			fputs(buf, stderr);
++ 		close(fp);
++ 	}
++ 
+  	if (!WIFEXITED(status)) {
+  		syslog(LOG_WARNING, "%s: Daemon filter '%c' terminated (%d)",
+  			printer, format, status.w_termsig);
+***************
+*** 949,956 ****
+  			printf("\ncould not be printed without an account on %s\n", host);
+  			break;
+  		case FILTERERR:
+! 			if (stat(tmpfile, &stb) < 0 || stb.st_size == 0 ||
+! 			    (fp = fopen(tmpfile, "r")) == NULL) {
+  				printf("\nwas printed but had some errors\n");
+  				break;
+  			}
+--- 960,967 ----
+  			printf("\ncould not be printed without an account on %s\n", host);
+  			break;
+  		case FILTERERR:
+! 			if (stat(tempfile, &stb) < 0 || stb.st_size == 0 ||
+! 			    (fp = fopen(tempfile, "r")) == NULL) {
+  				printf("\nwas printed but had some errors\n");
+  				break;
+  			}
+***************
+*** 1009,1015 ****
+   */
+  abortpr()
+  {
+! 	(void) unlink(tmpfile);
+  	kill(0, SIGINT);
+  	if (ofilter > 0)
+  		kill(ofilter, SIGCONT);
+--- 1020,1026 ----
+   */
+  abortpr()
+  {
+! 	(void) unlink(tempfile);
+  	kill(0, SIGINT);
+  	if (ofilter > 0)
+  		kill(ofilter, SIGCONT);

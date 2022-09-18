@@ -1,0 +1,740 @@
+head     4.5;
+branch   ;
+access   ;
+symbols  PATCH8:4.4 PATCH7:4.4 KPATCH6:4.4 ASRSNAP1001:4.4 PATCH5:4.4 KPATCH4:4.4 KPATCH3:4.4 KPATCH2:4.4 KREL1:4.4 BETA5/24/88:4.3;
+locks    ; strict;
+comment  @ * @;
+
+
+4.5
+date     90.06.25.20.56.35;  author kfall;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.12.01.14.07.29;  author jtkohl;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.02.24.18.13.09;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     88.01.12.21.21.13;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.10.29.17.41.00;  author steiner;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     87.10.29.10.43.04;  author jtkohl;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.10.20.17.10.26;  author jtkohl;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@kname_parse.c (original from steiner).
+@
+
+
+4.5
+log
+@include des.h
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/src/lib/krb/RCS/kname_parse.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1987, 1988 by the Massachusetts Institute of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ */
+
+#ifndef lint
+static char rcsid_kname_parse_c[] =
+"$Header: /usr/src/kerberosIV/src/lib/krb/RCS/kname_parse.c,v 4.4 88/12/01 14:07:29 jtkohl Exp Locker: kfall $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+
+#include <stdio.h>
+#include <des.h>
+#include <krb.h>
+#include <strings.h>
+
+/* max size of full name */
+#define FULL_SZ (ANAME_SZ + INST_SZ + REALM_SZ)
+
+#define NAME    0		/* which field are we in? */
+#define INST    1
+#define REALM   2
+
+extern char *krb_err_txt[];
+
+/*
+ * This file contains four routines for handling Kerberos names.
+ *
+ * kname_parse() breaks a Kerberos name into its name, instance,
+ * and realm components.
+ *
+ * k_isname(), k_isinst(), and k_isrealm() check a given string to see if
+ * it's a syntactically legitimate respective part of a Kerberos name,
+ * returning 1 if it is, 0 if it isn't.
+ *
+ * Definition of "syntactically legitimate" names is according to
+ * the Project Athena Technical Plan Section E.2.1, page 7 "Specifying
+ * names", version dated 21 Dec 1987.
+ * /
+
+/*
+ * kname_parse() takes a Kerberos name "fullname" of the form:
+ *
+ *		username[.instance][@@realm]
+ *
+ * and returns the three components ("name", "instance", and "realm"
+ * in the example above) in the given arguments "np", "ip", and "rp".
+ *
+ * If successful, it returns KSUCCESS.  If there was an error,
+ * KNAME_FMT is returned.
+ */
+
+kname_parse(np, ip, rp, fullname)
+    char *np, *ip, *rp, *fullname;
+{
+    static char buf[FULL_SZ];
+    char *rnext, *wnext;	/* next char to read, write */
+    register char c;
+    int backslash;
+    int field;
+
+    backslash = 0;
+    rnext = buf;
+    wnext = np;
+    field = NAME;
+
+    if (strlen(fullname) > FULL_SZ)
+        return KNAME_FMT;
+    (void) strcpy(buf, fullname);
+
+    while (c = *rnext++) {
+        if (backslash) {
+            *wnext++ = c;
+            backslash = 0;
+            continue;
+        }
+        switch (c) {
+        case '\\':
+            backslash++;
+            break;
+        case '.':
+            switch (field) {
+            case NAME:
+                if (wnext == np)
+                    return KNAME_FMT;
+                *wnext = '\0';
+                field = INST;
+                wnext = ip;
+                break;
+            case INST:
+                return KNAME_FMT;
+                /* break; */
+            case REALM:
+                *wnext++ = c;
+                break;
+            default:
+                fprintf(stderr, "unknown field value\n");
+                exit(1);
+            }
+            break;
+        case '@@':
+            switch (field) {
+            case NAME:
+                if (wnext == np)
+                    return KNAME_FMT;
+                *ip = '\0';
+                /* fall through */
+            case INST:
+                *wnext = '\0';
+                field = REALM;
+                wnext = rp;
+                break;
+            case REALM:
+                return KNAME_FMT;
+            default:
+                fprintf(stderr, "unknown field value\n");
+                exit(1);
+            }
+            break;
+        default:
+            *wnext++ = c;
+        }
+    }
+    *wnext = '\0';
+    if ((strlen(np) > ANAME_SZ - 1) ||
+        (strlen(ip) > INST_SZ  - 1) ||
+        (strlen(rp) > REALM_SZ - 1))
+        return KNAME_FMT;
+    return KSUCCESS;
+}
+
+/*
+ * k_isname() returns 1 if the given name is a syntactically legitimate
+ * Kerberos name; returns 0 if it's not.
+ */
+
+k_isname(s)
+    char *s;
+{
+    register char c;
+    int backslash = 0;
+
+    if (!*s)
+        return 0;
+    if (strlen(s) > ANAME_SZ - 1)
+        return 0;
+    while(c = *s++) {
+        if (backslash) {
+            backslash = 0;
+            continue;
+        }
+        switch(c) {
+        case '\\':
+            backslash = 1;
+            break;
+        case '.':
+            return 0;
+            /* break; */
+        case '@@':
+            return 0;
+            /* break; */
+        }
+    }
+    return 1;
+}
+
+
+/*
+ * k_isinst() returns 1 if the given name is a syntactically legitimate
+ * Kerberos instance; returns 0 if it's not.
+ */
+
+k_isinst(s)
+    char *s;
+{
+    register char c;
+    int backslash = 0;
+
+    if (strlen(s) > INST_SZ - 1)
+        return 0;
+    while(c = *s++) {
+        if (backslash) {
+            backslash = 0;
+            continue;
+        }
+        switch(c) {
+        case '\\':
+            backslash = 1;
+            break;
+        case '.':
+            return 0;
+            /* break; */
+        case '@@':
+            return 0;
+            /* break; */
+        }
+    }
+    return 1;
+}
+
+/*
+ * k_isrealm() returns 1 if the given name is a syntactically legitimate
+ * Kerberos realm; returns 0 if it's not.
+ */
+
+k_isrealm(s)
+    char *s;
+{
+    register char c;
+    int backslash = 0;
+
+    if (!*s)
+        return 0;
+    if (strlen(s) > REALM_SZ - 1)
+        return 0;
+    while(c = *s++) {
+        if (backslash) {
+            backslash = 0;
+            continue;
+        }
+        switch(c) {
+        case '\\':
+            backslash = 1;
+            break;
+        case '@@':
+            return 0;
+            /* break; */
+        }
+    }
+    return 1;
+}
+@
+
+
+4.4
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/krb/RCS/kname_parse.c,v $
+ * $Author: steiner $
+d13 1
+a13 1
+"$Header: kname_parse.c,v 4.3 88/02/24 18:13:09 steiner Locked $";
+d19 1
+@
+
+
+4.3
+log
+@Copyright notice, etc.
+@
+text
+@a8 12
+ *
+ * kname_parse breaks up a Kerberos name of the form:
+ *
+ * username[.instance][@@realm]
+ *
+ * into its three parts and returns them in the given arguments.  On
+ * success, KSUCCESS is returned.  If there was an error, KNAME_FMT is
+ * returned.
+ *
+ * k_isname, k_isinst, and k_isrealm check the given string to see if
+ * it's a syntactically legitimate part of a Kerberos name and return
+ * 1 if it is, 0 if it isn't.
+d13 1
+a13 1
+"$Header: kname_parse.c,v 4.2 88/01/12 21:21:13 steiner Locked $";
+d31 27
+d138 2
+a139 2
+ * return 1 if the given name is a syntactically legitimate
+ * Kerberos name; return 0 if it's not.
+d173 3
+a175 2
+/* return 1 if the given name is a syntactically legitimate
+ * Kerberos instance; return 0 if it's not.
+d206 3
+a208 2
+/* return 1 if the given name is a syntactically legitimate
+ * Kerberos realm; return 0 if it's not.
+@
+
+
+4.2
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/lib/krb/RCS/kname_parse.c,v $
+d5 1
+a5 1
+ * Copyright 1987 by the Massachusetts Institute of Technology.
+d7 2
+a8 2
+ * For copying and distribution information,
+ * please see the file <mit-copyright.h>.
+a20 1
+ *
+a22 2
+#include <mit-copyright.h>
+
+d24 2
+a25 2
+static char rcsid_module_c[] =
+    "$Header: kname_parse.c,v 4.1 87/10/29 17:41:00 steiner Locked $";
+d27 2
+@
+
+
+4.1
+log
+@Took out debug stuff.
+@
+text
+@d1 3
+a3 2
+/* $Source: /u3/kerberos.new/lib/krb/RCS/kname_parse.c,v $
+ * $Author: jtkohl $
+d14 3
+a16 3
+ * into its three parts and returns them in the given arguments.
+ * On success, KSUCCESS is returned.  If there was an error, KNAME_FMT
+ * is returned.
+d21 1
+a21 1
+ *	
+d24 1
+a24 1
+#include	<mit-copyright.h>
+d26 1
+a26 1
+#ifndef	lint
+d28 2
+a29 2
+"$Header: kname_parse.c,v 4.0 87/10/29 10:43:04 steiner Locked $";
+#endif	lint
+d31 3
+a33 3
+#include	<stdio.h>
+#include	<krb.h>
+#include	<strings.h>
+d35 2
+a36 1
+#define	FULL_SZ	(ANAME_SZ + INST_SZ + REALM_SZ)	/* max size of full name */
+d38 3
+a40 3
+#define	NAME	0		/* which field are we in? */
+#define	INST	1
+#define REALM	2
+d45 1
+a45 1
+char *np, *ip, *rp, *fullname;
+d47 5
+a51 5
+	static char buf[FULL_SZ];
+	char *rnext, *wnext;	/* next char to read, write */
+	register char c;
+	int backslash;
+	int field;
+d53 4
+a56 4
+	backslash = 0;
+	rnext = buf;
+	wnext = np;
+	field = NAME;
+d58 3
+a60 3
+	if (strlen(fullname) > FULL_SZ)
+		return KNAME_FMT;
+	(void) strcpy(buf, fullname);
+d62 59
+a120 60
+	while (c = *rnext++) {
+
+		if (backslash) {
+			*wnext++ = c;
+			backslash = 0;
+			continue;
+		}
+		switch (c) {
+		case '\\':
+			backslash++;
+			break;
+		case '.':
+			switch (field) {
+			case NAME:
+				if (wnext == np)
+					return KNAME_FMT;
+				*wnext = '\0';
+				field = INST;
+				wnext = ip;
+				break;
+			case INST:
+				return KNAME_FMT;
+				/* break; */
+			case REALM:
+				*wnext++ = c;
+				break;
+			default:
+				fprintf(stderr, "unknown field value\n");
+				exit(1);
+			}
+			break;
+		case '@@':
+			switch (field) {
+			case NAME:
+				if (wnext == np)
+					return KNAME_FMT;
+				*ip = '\0';
+				/* fall through */
+			case INST:
+				*wnext = '\0';
+				field = REALM;
+				wnext = rp;
+				break;
+			case REALM:
+				return KNAME_FMT;
+			default:
+				fprintf(stderr, "unknown field value\n");
+				exit(1);
+			}
+			break;
+		default:
+			*wnext++ = c;
+		}
+	}
+	*wnext = '\0';
+	if (	(strlen(np) > ANAME_SZ - 1) ||
+		(strlen(ip) > INST_SZ  - 1) ||
+		(strlen(rp) > REALM_SZ - 1))
+		return KNAME_FMT;
+	return KSUCCESS;
+d123 2
+a124 1
+/* return 1 if the given name is a syntactically legitimate
+d129 1
+a129 1
+char *s;
+d131 2
+a132 2
+	register char c;
+	int backslash = 0;
+d134 22
+a155 22
+	if (!*s)
+		return 0;
+	if(strlen(s) > ANAME_SZ - 1)
+		return 0;
+	while(c = *s++) {
+		if (backslash) {
+			backslash = 0;
+			continue;
+		}
+		switch(c) {
+		case '\\':
+			backslash = 1;
+			break;
+		case '.':
+			return 0;
+			/* break; */
+		case '@@':
+			return 0;
+			/* break; */
+		}
+	}
+	return 1;
+a156 1
+			
+d158 1
+d164 1
+a164 1
+char *s;
+d166 2
+a167 2
+	register char c;
+	int backslash = 0;
+d169 20
+a188 20
+	if(strlen(s) > INST_SZ - 1)
+		return 0;
+	while(c = *s++) {
+		if (backslash) {
+			backslash = 0;
+			continue;
+		}
+		switch(c) {
+		case '\\':
+			backslash = 1;
+			break;
+		case '.':
+			return 0;
+			/* break; */
+		case '@@':
+			return 0;
+			/* break; */
+		}
+	}
+	return 1;
+d196 1
+a196 1
+char *s;
+d198 2
+a199 2
+	register char c;
+	int backslash = 0;
+d201 19
+a219 19
+	if (!*s)
+		return 0;
+	if(strlen(s) > REALM_SZ - 1)
+		return 0;
+	while(c = *s++) {
+		if (backslash) {
+			backslash = 0;
+			continue;
+		}
+		switch(c) {
+		case '\\':
+			backslash = 1;
+			break;
+		case '@@':
+			return 0;
+			/* break; */
+		}
+	}
+	return 1;
+@
+
+
+4.0
+log
+@lint cleanup; version 4
+@
+text
+@d27 1
+a27 1
+"$Header: kname_parse.c,v 1.1 87/10/20 17:10:26 jtkohl Locked $";
+a218 94
+
+#ifdef	KPARSE_DEBUG
+
+main()
+{
+	char aname[BUFSIZ];
+	char inst [BUFSIZ];
+	char realm[BUFSIZ];
+	int k_errno;
+
+	k_errno = kname_parse(aname, inst, realm, ".nullname@@bags");
+	printf("%s\n", ".nullname@@bags");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "nullinst.@@bags");
+	printf("%s\n", "nullinst.@@bags");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "nother@@bags");
+	printf("%s\n", "nother@@bags");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "@@nullname");
+	printf("%s\n", "@@nullname");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a.ok@@roger.mit.edu");
+	printf("%s\n", "a.ok@@roger.mit.edu");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a\.b\.c.ok@@roger.mit.edu");
+	printf("%s\n", "a\.b\.c.ok@@roger.mit.edu");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a.not.ok@@bork.mit.edu");
+	printf("%s\n", "a.not.ok@@bork.mit.edu");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm,
+"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnametoolong@@mit");
+	printf("%s\n",
+"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnametoolong@@mit");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm,
+"1234567890123456789012345678901234567890.hi");
+	printf("%s\n",
+"1234567890123456789012345678901234567890.hi");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm,
+"realm.toobig@@rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+	printf("%s\n",
+"realm.toobig@@rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm,
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaalllll.tttttttttttooooooooooooo@@bbbbbbbiiiiiigggggggg");
+	printf("%s\n",
+"aaaaaaaaaaaaaaaaaalllll.tttttttttttooooooooooooo@@bbbbbbbiiiiiigggggggg");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a.b@@c");
+	printf("%s\n", "a.b@@c");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a@@b@@c");
+	printf("%s\n", "a@@b@@c");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "a\.a.b\@@b@@c");
+	printf("%s\n", "a\.a.b\@@b@@c");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+
+	k_errno = kname_parse(aname, inst, realm, "back\\\\slash");
+	printf("%s\n", "back\\\\slash");
+	printf("aname is %s, inst is %s, realm is %s\n", aname, inst, realm);
+	printf("%s\n\n", kparse_err_txt[k_errno]);
+}
+#endif	KPARSE_DEBUG
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 2
+a2 2
+/* $Source$
+ * $Author$
+d27 1
+a27 1
+"$Header$";
+d32 1
+d58 1
+a58 1
+	strcpy(buf, fullname);
+d82 1
+a82 1
+				break;
+d147 1
+a147 1
+			break;
+d150 1
+a150 1
+			break;
+d180 1
+a180 1
+			break;
+d183 1
+a183 1
+			break;
+d214 1
+a214 1
+			break;
+@

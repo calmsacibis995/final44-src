@@ -1,0 +1,780 @@
+From guy@auspex.com Wed Jan  1 10:45:47 1992
+Date: Wed, 1 Jan 92 15:48:50 PST
+From: guy@auspex.com (Guy Harris)
+Subject: UFS doesn't maintain the "microsecond" field in inode times
+Index: sys 4.3BSD-reno
+
+Description: 
+	UFS only maintains the time of last access, time of last
+	modification, and time of last change of inodes to a one-second
+	resolution.
+
+	This doesn't affect user-mode code, as (at present!) the "stat"
+	structure doesn't have time fields that are "struct timeval"s
+	(although it *does* leave space for doing so!).
+
+	However, it *can* affect clients mounting NFS file systems from
+	a machine running 4.3-reno.  NFS uses modification times on
+	files to figure out when to invalidate locally cached data.  If
+	a file is modified by one client less than one second after the
+	last modification seen by another client, the modification time
+	won't change if both modifications were within the same second,
+	and thus the other client won't know that its cached data isn't
+	valid.
+Repeat-By:
+	See above.  This may be tricky to reproduce exactly, but it
+	*has* happened - Sun modified their UFS code to maintain times
+	with less-than-one-second resolution, presumably for precisely
+	this reason, and we (Auspex) had to modify our server code to
+	maintain times with less-than-one-second resolution because our
+	customers were seeing this.
+Fix:
+	These changes should fix the problem.  They change "struct
+	dinode", so some user-mode software will have to change as well,
+	such as "fsck".  Changes to some of that software is included.
+
+	I haven't any machines running 4.3-reno here, so I haven't
+	compiled this stuff, much less run it.  You're on your own
+	there, and you may find that other kernel or user-mode code
+	needs to be updated with this change.
+
+	A new version of "stat()" that fills in a structure with "struct
+	timeval"s as times might be nice; however, I think POSIX is
+	moving towards a slightly *different* "struct timeval", with a
+	"nanosecond" field rather than a "microsecond" field, so you may
+	want to wait until the smoke clears on that one.
+
+	Note that any *other* file systems that would be exported over
+	NFS and that would allow modification (i.e., if somebody does
+	High Sierra, they don't have to worry about this) should *also*
+	be changed to maintain less-than-one-second resoultion times.
+
+Changes in "sys/ufs":
+
+*** /home/unix_src/bsd4.3-reno/usr/src/sys/ufs/dinode.h	Sat Jul 28 11:59:14 1990
+--- dinode.h	Wed Jan  1 14:44:16 1992
+***************
+*** 33,44 ****
+  	uid_t	di_uid;		/*  4: owner's user id */
+  	gid_t	di_gid;		/*  6: owner's group id */
+  	u_quad	di_qsize;	/*  8: number of bytes in file */
+! 	time_t	di_atime;	/* 16: time last accessed */
+! 	long	di_atspare;
+! 	time_t	di_mtime;	/* 24: time last modified */
+! 	long	di_mtspare;
+! 	time_t	di_ctime;	/* 32: last time inode changed */
+! 	long	di_ctspare;
+  	daddr_t	di_db[NDADDR];	/* 40: disk block addresses */
+  	daddr_t	di_ib[NIADDR];	/* 88: indirect blocks */
+  	long	di_flags;	/* 100: status, currently unused */
+--- 33,41 ----
+  	uid_t	di_uid;		/*  4: owner's user id */
+  	gid_t	di_gid;		/*  6: owner's group id */
+  	u_quad	di_qsize;	/*  8: number of bytes in file */
+! 	struct timeval di_atime; /* 16: time last accessed */
+! 	struct timeval di_mtime; /* 24: time last modified */
+! 	struct timeval di_ctime; /* 32: last time inode changed */
+  	daddr_t	di_db[NDADDR];	/* 40: disk block addresses */
+  	daddr_t	di_ib[NIADDR];	/* 88: indirect blocks */
+  	long	di_flags;	/* 100: status, currently unused */
+*** /home/unix_src/bsd4.3-reno/usr/src/sys/ufs/ufs_inode.c	Sat Jul 28 11:59:34 1990
+--- ufs_inode.c	Wed Jan  1 14:44:44 1992
+***************
+*** 350,360 ****
+  		return (error);
+  	}
+  	if (ip->i_flag&IACC)
+! 		ip->i_atime = ta->tv_sec;
+  	if (ip->i_flag&IUPD)
+! 		ip->i_mtime = tm->tv_sec;
+  	if (ip->i_flag&ICHG)
+! 		ip->i_ctime = time.tv_sec;
+  	ip->i_flag &= ~(IUPD|IACC|ICHG|IMOD);
+  	dp = bp->b_un.b_dino + itoo(fs, ip->i_number);
+  	*dp = ip->i_din;
+--- 350,360 ----
+  		return (error);
+  	}
+  	if (ip->i_flag&IACC)
+! 		ip->i_atime = *ta;
+  	if (ip->i_flag&IUPD)
+! 		ip->i_mtime = *tm;
+  	if (ip->i_flag&ICHG)
+! 		ip->i_ctime = time;
+  	ip->i_flag &= ~(IUPD|IACC|ICHG|IMOD);
+  	dp = bp->b_un.b_dino + itoo(fs, ip->i_number);
+  	*dp = ip->i_din;
+*** /home/unix_src/bsd4.3-reno/usr/src/sys/ufs/ufs_vnops.c	Sat Jul 28 11:59:46 1990
+--- ufs_vnops.c	Wed Jan  1 14:45:06 1992
+***************
+*** 377,388 ****
+  #else
+  	vap->va_qsize = ip->i_din.di_qsize;
+  #endif
+! 	vap->va_atime.tv_sec = ip->i_atime;
+! 	vap->va_atime.tv_usec = 0;
+! 	vap->va_mtime.tv_sec = ip->i_mtime;
+! 	vap->va_mtime.tv_usec = 0;
+! 	vap->va_ctime.tv_sec = ip->i_ctime;
+! 	vap->va_ctime.tv_usec = 0;
+  	vap->va_flags = ip->i_flags;
+  	vap->va_gen = ip->i_gen;
+  	/* this doesn't belong here */
+--- 377,385 ----
+  #else
+  	vap->va_qsize = ip->i_din.di_qsize;
+  #endif
+! 	vap->va_atime = ip->i_atime;
+! 	vap->va_mtime = ip->i_mtime;
+! 	vap->va_ctime = ip->i_ctime;
+  	vap->va_flags = ip->i_flags;
+  	vap->va_gen = ip->i_gen;
+  	/* this doesn't belong here */
+
+Changes in "sbin/fsck":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/dir.c ./dir.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/dir.c	Mon Jul 23 15:24:39 1990
+--- ./dir.c	Wed Jan  1 15:01:20 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #define KERNEL
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/inode.c ./inode.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/inode.c	Fri Jul 27 14:45:02 1990
+--- ./inode.c	Wed Jan  1 15:04:36 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <ufs/dir.h>
+***************
+*** 415,421 ****
+  	if (preen)
+  		printf("%s: ", devname);
+  	printf("SIZE=%lu ", dp->di_size);
+! 	p = ctime(&dp->di_mtime);
+  	printf("MTIME=%12.12s %4.4s ", p + 4, p + 20);
+  }
+  
+--- 416,422 ----
+  	if (preen)
+  		printf("%s: ", devname);
+  	printf("SIZE=%lu ", dp->di_size);
+! 	p = ctime(&dp->di_mtime.tv_sec);
+  	printf("MTIME=%12.12s %4.4s ", p + 4, p + 20);
+  }
+  
+***************
+*** 485,491 ****
+  		return (0);
+  	}
+  	dp->di_mode = type;
+! 	(void)time(&dp->di_atime);
+  	dp->di_mtime = dp->di_ctime = dp->di_atime;
+  	dp->di_size = sblock.fs_fsize;
+  	dp->di_blocks = btodb(sblock.fs_fsize);
+--- 486,492 ----
+  		return (0);
+  	}
+  	dp->di_mode = type;
+! 	(void)gettimeofday(&dp->di_atime, (struct timezone *)NULL);
+  	dp->di_mtime = dp->di_ctime = dp->di_atime;
+  	dp->di_size = sblock.fs_fsize;
+  	dp->di_blocks = btodb(sblock.fs_fsize);
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/main.c ./main.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/main.c	Fri Jul 20 16:52:09 1990
+--- ./main.c	Wed Jan  1 15:05:06 1992
+***************
+*** 28,33 ****
+--- 28,34 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <fstab.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass1.c ./pass1.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass1.c	Fri Jul 20 16:52:13 1990
+--- ./pass1.c	Wed Jan  1 15:05:21 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <stdlib.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass1b.c ./pass1b.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass1b.c	Fri Jul 20 16:52:16 1990
+--- ./pass1b.c	Wed Jan  1 15:05:33 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <string.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass2.c ./pass2.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass2.c	Tue Dec 18 17:41:04 1990
+--- ./pass2.c	Wed Jan  1 15:05:48 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #define KERNEL
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass3.c ./pass3.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass3.c	Fri Jun  1 16:17:46 1990
+--- ./pass3.c	Wed Jan  1 15:06:02 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include "fsck.h"
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass4.c ./pass4.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass4.c	Fri Jul 20 16:52:07 1990
+--- ./pass4.c	Wed Jan  1 15:06:16 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <stdlib.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass5.c ./pass5.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/pass5.c	Fri Jul 20 16:52:17 1990
+--- ./pass5.c	Wed Jan  1 15:06:28 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <string.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/setup.c ./setup.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/setup.c	Sun Jul 22 19:30:33 1990
+--- ./setup.c	Wed Jan  1 15:06:41 1992
+***************
+*** 23,28 ****
+--- 23,29 ----
+  
+  #define DKTYPENAMES
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <sys/stat.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/utilities.c ./utilities.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsck/utilities.c	Fri Jul 27 14:48:59 1990
+--- ./utilities.c	Wed Jan  1 15:06:54 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <ufs/dir.h>
+
+Changes in "sbin/dump":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dump.h ./dump.h
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dump.h	Fri Jun  1 16:15:22 1990
+--- ./dump.h	Wed Jan  1 15:09:14 1992
+***************
+*** 11,16 ****
+--- 11,17 ----
+  #define MAXNINDIR	(MAXBSIZE / sizeof(daddr_t))
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <sys/stat.h>
+  #include <ufs/fs.h>
+  #include <ufs/dinode.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumpoptr.c ./dumpoptr.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumpoptr.c	Fri Jun  1 16:15:26 1990
+--- ./dumpoptr.c	Wed Jan  1 15:09:28 1992
+***************
+*** 9,15 ****
+  #endif not lint
+  
+  #include "dump.h"
+- #include <sys/time.h>
+  #include "pathnames.h"
+  
+  /*
+--- 9,14 ----
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumprmt.c ./dumprmt.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumprmt.c	Fri Jun  1 16:15:27 1990
+--- ./dumprmt.c	Wed Jan  1 15:11:12 1992
+***************
+*** 9,14 ****
+--- 9,15 ----
+  #endif not lint
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <sys/mtio.h>
+  #include <sys/ioctl.h>
+  #include <sys/socket.h>
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumptraverse.c ./dumptraverse.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/dump/dumptraverse.c	Fri Jun  1 16:15:31 1990
+--- ./dumptraverse.c	Wed Jan  1 15:16:22 1992
+***************
+*** 43,49 ****
+  	BIS(ino, clrmap);
+  	if (f == IFDIR)
+  		BIS(ino, dirmap);
+! 	if ((ip->di_mtime >= spcl.c_ddate || ip->di_ctime >= spcl.c_ddate) &&
+  	    !BIT(ino, nodmap)) {
+  		BIS(ino, nodmap);
+  		if (f != IFREG && f != IFDIR && f != IFLNK) {
+--- 43,50 ----
+  	BIS(ino, clrmap);
+  	if (f == IFDIR)
+  		BIS(ino, dirmap);
+! 	if ((ip->di_mtime.tv_sec >= spcl.c_ddate ||
+! 	     ip->di_ctime.tv_sec >= spcl.c_ddate) &&
+  	    !BIT(ino, nodmap)) {
+  		BIS(ino, nodmap);
+  		if (f != IFREG && f != IFDIR && f != IFLNK) {
+
+Changes in "sbin/restore":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/restore/dirs.c ./dirs.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/restore/dirs.c	Mon Jun  4 09:44:26 1990
+--- ./dirs.c	Wed Jan  1 15:18:36 1992
+***************
+*** 631,640 ****
+  	if (mf == NULL)
+  		return(itp);
+  	node.ino = ino;
+! 	node.timep[0].tv_sec = dip->di_atime;
+! 	node.timep[0].tv_usec = 0;
+! 	node.timep[1].tv_sec = dip->di_mtime;
+! 	node.timep[1].tv_usec = 0;
+  	node.mode = dip->di_mode;
+  	node.uid = dip->di_uid;
+  	node.gid = dip->di_gid;
+--- 631,638 ----
+  	if (mf == NULL)
+  		return(itp);
+  	node.ino = ino;
+! 	node.timep[0] = dip->di_atime;
+! 	node.timep[1] = dip->di_mtime;
+  	node.mode = dip->di_mode;
+  	node.uid = dip->di_uid;
+  	node.gid = dip->di_gid;
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/restore/tape.c ./tape.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/restore/tape.c	Fri Jun  1 16:21:47 1990
+--- ./tape.c	Wed Jan  1 15:21:33 1992
+***************
+*** 407,416 ****
+  
+  	curfile.name = name;
+  	curfile.action = USING;
+! 	timep[0].tv_sec = curfile.dip->di_atime;
+! 	timep[0].tv_usec = 0;
+! 	timep[1].tv_sec = curfile.dip->di_mtime;
+! 	timep[1].tv_usec = 0;
+  	mode = curfile.dip->di_mode;
+  	switch (mode & IFMT) {
+  
+--- 407,414 ----
+  
+  	curfile.name = name;
+  	curfile.action = USING;
+! 	timep[0] = curfile.dip->di_atime;
+! 	timep[1] = curfile.dip->di_mtime;
+  	mode = curfile.dip->di_mode;
+  	switch (mode & IFMT) {
+  
+***************
+*** 878,886 ****
+  	buf->c_dinode.di_gid = u_ospcl.s_ospcl.c_dinode.odi_gid;
+  	buf->c_dinode.di_size = u_ospcl.s_ospcl.c_dinode.odi_size;
+  	buf->c_dinode.di_rdev = u_ospcl.s_ospcl.c_dinode.odi_rdev;
+! 	buf->c_dinode.di_atime = u_ospcl.s_ospcl.c_dinode.odi_atime;
+! 	buf->c_dinode.di_mtime = u_ospcl.s_ospcl.c_dinode.odi_mtime;
+! 	buf->c_dinode.di_ctime = u_ospcl.s_ospcl.c_dinode.odi_ctime;
+  	buf->c_count = u_ospcl.s_ospcl.c_count;
+  	bcopy(u_ospcl.s_ospcl.c_addr, buf->c_addr, (long)256);
+  	if (u_ospcl.s_ospcl.c_magic != OFS_MAGIC ||
+--- 876,887 ----
+  	buf->c_dinode.di_gid = u_ospcl.s_ospcl.c_dinode.odi_gid;
+  	buf->c_dinode.di_size = u_ospcl.s_ospcl.c_dinode.odi_size;
+  	buf->c_dinode.di_rdev = u_ospcl.s_ospcl.c_dinode.odi_rdev;
+! 	buf->c_dinode.di_atime.tv_sec = u_ospcl.s_ospcl.c_dinode.odi_atime;
+! 	buf->c_dinode.di_atime.tv_usec = 0;
+! 	buf->c_dinode.di_mtime.tv_sec = u_ospcl.s_ospcl.c_dinode.odi_mtime;
+! 	buf->c_dinode.di_mtime.tv_usec = 0;
+! 	buf->c_dinode.di_ctime.tv_sec = u_ospcl.s_ospcl.c_dinode.odi_ctime;
+! 	buf->c_dinode.di_ctime.tv_usec = 0;
+  	buf->c_count = u_ospcl.s_ospcl.c_count;
+  	bcopy(u_ospcl.s_ospcl.c_addr, buf->c_addr, (long)256);
+  	if (u_ospcl.s_ospcl.c_magic != OFS_MAGIC ||
+
+Changes in "sbin/icheck":
+
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/icheck/icheck.c	Fri Jun  1 16:17:09 1990
+--- ./icheck.c	Wed Jan  1 15:23:18 1992
+***************
+*** 16,21 ****
+--- 16,22 ----
+  #define	MAXNINDIR	(MAXBSIZE / sizeof (daddr_t))
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #ifndef STANDALONE
+
+Changes in "sbin/ncheck":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/ncheck/ncheck.c ./ncheck.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/ncheck/ncheck.c	Fri Jun  1 16:18:43 1990
+--- ./ncheck.c	Wed Jan  1 15:25:16 1992
+***************
+*** 22,27 ****
+--- 22,28 ----
+  #define	MAXNINDIR	(MAXBSIZE / sizeof (daddr_t))
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <sys/dir.h>
+
+Changes in "sbin/badsect":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/badsect/badsect.c ./badsect.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/badsect/badsect.c	Fri Jun  1 16:14:32 1990
+--- ./badsect.c	Wed Jan  1 15:26:36 1992
+***************
+*** 38,43 ****
+--- 38,44 ----
+   * does not support bad block forwarding.
+   */
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <sys/dir.h>
+  #include <sys/stat.h>
+  #include <ufs/fs.h>
+
+Changes in "sbin/dumpfs":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/dumpfs/dumpfs.c ./dumpfs.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/dumpfs/dumpfs.c	Fri Jun  1 16:15:47 1990
+--- ./dumpfs.c	Wed Jan  1 15:28:22 1992
+***************
+*** 28,33 ****
+--- 28,34 ----
+  #endif /* not lint */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  
+
+Changes in "sbin/fsdb" (doesn't currently deal with the "tv_usec" field;
+you may want to change it to do so):
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/fsdb/fsdb.c ./fsdb.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/fsdb/fsdb.c	Fri Jun  1 16:17:38 1990
+--- ./fsdb.c	Wed Jan  1 15:30:37 1992
+***************
+*** 42,47 ****
+--- 42,48 ----
+   */
+  
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <sys/signal.h>
+  #include <sys/file.h>
+  #include <sys/dir.h>
+***************
+*** 822,828 ****
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_atime;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+--- 823,829 ----
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_atime.tv_sec;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+***************
+*** 964,970 ****
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_ctime;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+--- 965,971 ----
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_ctime.tv_sec;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+***************
+*** 1236,1242 ****
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_mtime;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+--- 1237,1243 ----
+  				acting_on_inode = 2;
+  				should_print = 1;
+  				addr = (long)
+! 					&((struct dinode *)cur_ino)->di_mtime.tv_sec;
+  				value = get(LONG);
+  				type = NULL;
+  				continue;
+***************
+*** 3442,3452 ****
+  				}
+  				if (count == 1) {
+  					printf("\taccessed: %s",
+! 						ctime(&ip->di_atime));
+  					printf("\tmodified: %s",
+! 						ctime(&ip->di_mtime));
+  					printf("\tcreated : %s",
+! 						ctime(&ip->di_ctime));
+  				}
+  				if (tcount)
+  					printf("\n");
+--- 3443,3453 ----
+  				}
+  				if (count == 1) {
+  					printf("\taccessed: %s",
+! 						ctime(&ip->di_atime.tv_sec));
+  					printf("\tmodified: %s",
+! 						ctime(&ip->di_mtime.tv_sec));
+  					printf("\tcreated : %s",
+! 						ctime(&ip->di_ctime.tv_sec));
+  				}
+  				if (tcount)
+  					printf("\n");
+
+Changes in "sbin/newfs":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/newfs/mkfs.c ./mkfs.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/newfs/mkfs.c	Fri Jun 29 19:46:04 1990
+--- ./mkfs.c	Wed Jan  1 15:33:28 1992
+***************
+*** 115,121 ****
+  struct dinode zino[MAXBSIZE / sizeof(struct dinode)];
+  
+  int	fsi, fso;
+! time_t	utime;
+  daddr_t	alloc();
+  
+  mkfs(pp, fsys, fi, fo)
+--- 115,121 ----
+  struct dinode zino[MAXBSIZE / sizeof(struct dinode)];
+  
+  int	fsi, fso;
+! struct timeval utime;
+  daddr_t	alloc();
+  
+  mkfs(pp, fsys, fi, fo)
+***************
+*** 131,137 ****
+  	int ppid, status, started();
+  
+  #ifndef STANDALONE
+! 	time(&utime);
+  #endif
+  	if (mfs) {
+  		ppid = getpid();
+--- 131,137 ----
+  	int ppid, status, started();
+  
+  #ifndef STANDALONE
+! 	(void) gettimeofday(&utime, (struct timezone *)NULL);
+  #endif
+  	if (mfs) {
+  		ppid = getpid();
+***************
+*** 593,599 ****
+  	 * then write out the super-block.
+  	 */
+  	fsinit();
+! 	sblock.fs_time = utime;
+  	wtfs(SBOFF / sectorsize, sbsize, (char *)&sblock);
+  	for (i = 0; i < sblock.fs_cssize; i += sblock.fs_bsize)
+  		wtfs(fsbtodb(&sblock, sblock.fs_csaddr + numfrags(&sblock, i)),
+--- 593,599 ----
+  	 * then write out the super-block.
+  	 */
+  	fsinit();
+! 	sblock.fs_time = utime.tv_sec;
+  	wtfs(SBOFF / sectorsize, sbsize, (char *)&sblock);
+  	for (i = 0; i < sblock.fs_cssize; i += sblock.fs_bsize)
+  		wtfs(fsbtodb(&sblock, sblock.fs_csaddr + numfrags(&sblock, i)),
+***************
+*** 652,658 ****
+  	if (cylno == 0)
+  		dupper += howmany(sblock.fs_cssize, sblock.fs_fsize);
+  	cs = fscs + cylno;
+! 	acg.cg_time = utime;
+  	acg.cg_magic = CG_MAGIC;
+  	acg.cg_cgx = cylno;
+  	if (cylno == sblock.fs_ncg - 1)
+--- 652,658 ----
+  	if (cylno == 0)
+  		dupper += howmany(sblock.fs_cssize, sblock.fs_fsize);
+  	cs = fscs + cylno;
+! 	acg.cg_time = utime.tv_sec;
+  	acg.cg_magic = CG_MAGIC;
+  	acg.cg_cgx = cylno;
+  	if (cylno == sblock.fs_ncg - 1)
+
+Changes in "sbin/quotacheck":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/sbin/quotacheck/quotacheck.c ./quotacheck.c
+*** /home/unix_src/bsd4.3-reno/usr/src/sbin/quotacheck/quotacheck.c	Fri Jun  1 16:20:23 1990
+--- ./quotacheck.c	Wed Jan  1 15:35:09 1992
+***************
+*** 34,39 ****
+--- 34,40 ----
+   * Fix up / report on disk quotas & usage
+   */
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+  #include <ufs/quota.h>
+
+Changes in "usr.sbin/mkproto":
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/usr.sbin/mkproto/mkproto.c ./mkproto.c
+*** /home/unix_src/bsd4.3-reno/usr/src/usr.sbin/mkproto/mkproto.c	Fri Jun  1 18:49:23 1990
+--- ./mkproto.c	Wed Jan  1 15:37:42 1992
+***************
+*** 19,24 ****
+--- 19,25 ----
+   * usage: mkproto filsys proto
+   */
+  #include <sys/param.h>
++ #include <sys/time.h>
+  #include <sys/dir.h>
+  #include <ufs/dinode.h>
+  #include <ufs/fs.h>
+***************
+*** 326,334 ****
+  	daddr_t d, alloc();
+  	int i;
+  	struct dinode buf[MAXBSIZE / sizeof (struct dinode)];
+- 	time_t time();
+  
+! 	ip->di_atime = ip->di_mtime = ip->di_ctime = time((time_t *)NULL);
+  	switch (ip->di_mode&IFMT) {
+  
+  	case IFDIR:
+--- 327,335 ----
+  	daddr_t d, alloc();
+  	int i;
+  	struct dinode buf[MAXBSIZE / sizeof (struct dinode)];
+  
+! 	(void) gettimeofday(&ip->di_ctime, (struct timezone *)NULL);
+! 	ip->di_atime = ip->di_mtime = ip->di_ctime;
+  	switch (ip->di_mode&IFMT) {
+  
+  	case IFDIR:
+
+Changes in "usr.sbin/quot" (you may want to make it worry about
+the microseconds field, but you probably don't):
+
+diff -c /home/unix_src/bsd4.3-reno/usr/src/usr.sbin/quot/quot.c ./quot.c
+*** /home/unix_src/bsd4.3-reno/usr/src/usr.sbin/quot/quot.c	Sat Jun 23 14:31:37 1990
+--- ./quot.c	Wed Jan  1 15:39:16 1992
+***************
+*** 232,242 ****
+  	}
+  	dp->blocks += size;
+  #define	DAY (60 * 60 * 24)	/* seconds per day */
+! 	if (now - ip->di_atime > 30 * DAY)
+  		dp->blocks30 += size;
+! 	if (now - ip->di_atime > 60 * DAY)
+  		dp->blocks60 += size;
+! 	if (now - ip->di_atime > 90 * DAY)
+  		dp->blocks90 += size;
+  	dp->nfiles++;
+  	while (nflg) {
+--- 232,242 ----
+  	}
+  	dp->blocks += size;
+  #define	DAY (60 * 60 * 24)	/* seconds per day */
+! 	if (now - ip->di_atime.tv_sec > 30 * DAY)
+  		dp->blocks30 += size;
+! 	if (now - ip->di_atime.tv_sec > 60 * DAY)
+  		dp->blocks60 += size;
+! 	if (now - ip->di_atime.tv_sec > 90 * DAY)
+  		dp->blocks90 += size;
+  	dp->nfiles++;
+  	while (nflg) {
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From guy@auspex.com Wed Jan  1 10:46:55 1992
+Date: Wed, 1 Jan 92 15:50:33 PST
+From: guy@auspex.com (Guy Harris)
+To: bostic@okeeffe.cs.berkeley.edu, margo@postgres.berkeley.edu
+Subject: I just sent in a bug about keeping <1sec resolution in inodes
+Status: RO
+
+The bug includes changes that should, in theory, be sufficient - changes
+to the kernel, and to various utilities that deal with raw file systems.
+
+Note that *any* file system that can be exported over NFS should
+maintain times with less-than-one-second resolution; This Means You.
+

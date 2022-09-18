@@ -1,0 +1,61 @@
+From cantuar!paul@uunet.uu.net
+Path: ucbvax!ucsd!tut.cis.ohio-state.edu!cica!iuvax!watmath!cantuar!paul
+From: paul@cantuar.UUCP (Paul Ashton)
+Newsgroups: comp.unix.wizards
+Subject: Bug in csh time built-in
+Index: usr.bin/csh 4.3BSD-tahoe
+
+There seems to be a bug in the csh built-in time command.  I noticed it
+in the SunOS 4.0 csh, and it is also present in the 4.3BSD csh. 
+
+The problem is that the csh built-in time command assumes that the clock
+ticks at 100 ticks per second (or 100Hz).  While this is a perfectly
+valid assumption on our Vax 750 (running 4.3 BSD), it is not a valid
+assumption on our Sun 3/50s and 3/60s (running SunOS 4.0.1) where the
+clock ticks at 50Hz. 
+
+The problem manifests itself in the printing of the memory figures
+printed by time in the form X+Yk (where X is average real memory used by
+the text segment, and Y is the average real memory used by both stack
+and data segments).  These figures are calculated from the ru_ixrss
+(text segment memory), ru_idrss (data segment memory), and ru_isrss
+(stack segment memory) fields of the rusage structure returned by
+getrusage(2).  (Note in SunOS 4.0 ru_ixrss and ru_ixrss are always 0,
+with the total physical memory in use stored in ru_idrss.  This is a
+consequence of the fact that in SunOS 4.0 proceses can have an arbitrary
+number of segments.  Also both shared and private physical
+memory is included in the ru_ixdrss total - so that if a process is
+using (say) the shared std C library its ru_idrss includes all pages
+from the shared std C library currently in memory). 
+
+The ru_i?rss fields are in units of page ticks (every time the clock
+ticks it adds the number of pages in use by the current process to the
+ru_i?rss fields of the current process).  To get the average memory
+usage the ru_i?rss fields should be divided by the number of CPU ticks
+recorded. 
+
+The csh time multiplies the CPU time (in seconds) by 100 to convert it to
+ticks, then divides the various ru_i?rss fileds by this to work
+out the average memory usage.  On our Sun 3/50s and 3/60s the CPU time
+should be multiplied by 50 to get the number ticks i.e.
+
+Calculated              Correct
+
+ru_i?rss                ru_i?rss
+--------------          -------------
+CPU secs * 100          CPU secs * 50
+
+This means that the average memory usage reported by the csh time
+on our Sun 3/50s and 3/60s is about half what it should be.
+
+Side note
+
+The time shell variable can take a second value which is a format
+string.  The feature isn't documented in the 4.3 BSD csh(1), but is
+documented in the SunOS 4.0.1 csh(1).
+
+-- 
+Email: paul@cosc.canterbury.ac.nz
+NZ Telecom:     Office: +64 3 667 001 x6350
+NZ Post:        Dept of computer Science
+                University of Canterbury, Christchurch, New Zealand

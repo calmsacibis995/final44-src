@@ -1,0 +1,724 @@
+head     4.11;
+branch   ;
+access   ;
+symbols  PATCH8:4.11 PATCH7:4.9 KPATCH6:4.9 ASRSNAP1001:4.9 PATCH5:4.9 ADAMS_NSA:4.9 KPATCH4:4.9 KPATCH3:4.9 KPATCH2:4.9 KREL1:4.9 BETA5/24/88:4.6;
+locks    ; strict;
+comment  @ * @;
+
+
+4.11
+date     90.01.02.13.46.38;  author jtkohl;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     89.12.19.13.37.04;  author jtkohl;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     89.01.23.15.39.58;  author wesommer;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     89.01.21.16.50.53;  author jtkohl;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     88.11.15.11.38.18;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     88.02.24.14.23.29;  author steiner;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     88.01.14.18.46.37;  author steiner;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     87.11.02.06.24.11;  author raeburn;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     87.09.10.16.17.34;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.09.04.14.55.36;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.42.05;  author steiner;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     87.01.13.11.38.30;  author wesommer;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     86.02.17.17.38.08;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.12.16.13.52.11;  author spm;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+4.11
+log
+@change $Header$ to $Id$
+@
+text
+@/*
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/string_to_key.c,v $
+ * $Author: jtkohl $
+ *
+ * Copyright 1985, 1986, 1987, 1988, 1989 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ *
+ * These routines perform encryption and decryption using the DES
+ * private key algorithm, or else a subset of it-- fewer inner loops.
+ * (AUTH_DES_ITER defaults to 16, may be less.)
+ *
+ * Under U.S. law, this software may not be exported outside the US
+ * without license from the U.S. Commerce department.
+ *
+ * The key schedule is passed as an arg, as well as the cleartext or
+ * ciphertext.  The cleartext and ciphertext should be in host order.
+ *
+ * These routines form the library interface to the DES facilities.
+ *
+ *	spm	8/85	MIT project athena
+ */
+
+#ifndef	lint
+static char rcsid_string_to_key_c[] =
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/string_to_key.c,v 4.10 89/12/19 13:37:04 jtkohl Exp Locker: jtkohl $";
+#endif	lint
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <des.h>
+#include "des_internal.h"
+
+extern int des_debug;
+extern int des_debug_print();
+extern void des_fixup_key_parity();
+
+/*
+ * convert an arbitrary length string to a DES key
+ */
+int
+des_string_to_key(str,key)
+    char *str;
+    register des_cblock *key;
+{
+    register char *in_str;
+    register unsigned temp,i;
+    register int j;
+    register long length;
+    static unsigned char *k_p;
+    static int forward;
+    register char *p_char;
+    static char k_char[64];
+    static des_key_schedule key_sked;
+    extern unsigned long des_cbc_cksum();
+
+    in_str = str;
+    forward = 1;
+    p_char = k_char;
+    length = strlen(str);
+
+    /* init key array for bits */
+    bzero(k_char,sizeof(k_char));
+
+#ifdef DEBUG
+    if (des_debug)
+	fprintf(stdout,
+		"\n\ninput str length = %d  string = %s\nstring = 0x ",
+		length,str);
+#endif
+
+    /* get next 8 bytes, strip parity, xor */
+    for (i = 1; i <= length; i++) {
+	/* get next input key byte */
+	temp = (unsigned int) *str++;
+#ifdef DEBUG
+	if (des_debug)
+	    fprintf(stdout,"%02x ",temp & 0xff);
+#endif
+	/* loop through bits within byte, ignore parity */
+	for (j = 0; j <= 6; j++) {
+	    if (forward)
+		*p_char++ ^= (int) temp & 01;
+	    else
+		*--p_char ^= (int) temp & 01;
+	    temp = temp >> 1;
+	} while (--j > 0);
+
+	/* check and flip direction */
+	if ((i%8) == 0)
+	    forward = !forward;
+    }
+
+    /* now stuff into the key des_cblock, and force odd parity */
+    p_char = k_char;
+    k_p = (unsigned char *) key;
+
+    for (i = 0; i <= 7; i++) {
+	temp = 0;
+	for (j = 0; j <= 6; j++)
+	    temp |= *p_char++ << (1+j);
+	*k_p++ = (unsigned char) temp;
+    }
+
+    /* fix key parity */
+    des_fixup_key_parity(key);
+
+    /* Now one-way encrypt it with the folded key */
+    (void) des_key_sched(key,key_sked);
+    (void) des_cbc_cksum((des_cblock *)in_str,key,length,key_sked,key);
+    /* erase key_sked */
+    bzero((char *)key_sked,sizeof(key_sked));
+
+    /* now fix up key parity again */
+    des_fixup_key_parity(key);
+
+    if (des_debug)
+	fprintf(stdout,
+		"\nResulting string_to_key = 0x%x 0x%x\n",
+		*((unsigned long *) key),
+		*((unsigned long *) key+1));
+}
+@
+
+
+4.10
+log
+@workaround compiler bugs
+from [Steven J. Lunt] at Bellcore
+@
+text
+@d3 1
+a3 1
+ * $Author: wesommer $
+d28 1
+a28 1
+"$Header: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/des/RCS/string_to_key.c,v 4.9 89/01/23 15:39:58 wesommer Exp Locker: jtkohl $";
+@
+
+
+4.9
+log
+@Move odd-parity checking into separate file.
+Programmer: jtkohl.
+@
+text
+@d2 2
+a3 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/string_to_key.c,v $
+ * $Author: jtkohl $
+d28 1
+a28 1
+"$Header: string_to_key.c,v 4.8 89/01/21 16:50:53 jtkohl Locked $";
+d49 2
+a50 1
+    register unsigned temp,i,j;
+@
+
+
+4.8
+log
+@lint cleanups
+(Programmer: John Kohl)
+@
+text
+@d5 1
+a5 1
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+a9 2
+ * $Source: /mit/kerberos/src/lib/des/RCS/string_to_key.c,v $
+ * $Author: jtkohl $
+d28 1
+a28 1
+"$Header: string_to_key.c,v 4.7 88/11/15 11:38:18 jtkohl Locked $";
+a34 1
+#include "odd.h"
+d38 1
+d103 1
+a103 2
+	/* set odd parity in lsb */
+	*k_p++ = odd_parity[temp];
+d106 3
+d116 1
+a116 1
+    k_p = (unsigned char *) key;
+a117 5
+    for (i = 0; i <= 7; i++) {
+	temp = odd_parity[(unsigned long) *k_p];
+	*k_p++ = (unsigned char) temp;
+    }
+
+d120 2
+a121 1
+		"\nResulting key = 0x%x %x",*((unsigned long *) key),
+@
+
+
+4.7
+log
+@Programmer: Bill Sommerfeld
+Auditor: John Kohl
+changes:
+rename routines to des_xxx     
+rename structures likewise
+use local variables and static routines where appropriate
+convert to des_internal.h       
+make debug routines consistent
+@
+text
+@d2 2
+a3 2
+ * $Source: //ra/mit/wesommer/des/RCS/string_to_key.c,v $
+ * $Author: steiner $
+d10 2
+a11 2
+ * $Source: //ra/mit/wesommer/des/RCS/string_to_key.c,v $
+ * $Author: steiner $
+d30 1
+a30 1
+"$Header: string_to_key.c,v 4.6 88/02/24 14:23:29 steiner Exp $";
+a53 1
+    static long *l_p;
+a54 1
+    static int odd;
+d58 1
+d110 2
+a111 2
+    des_key_sched(key,key_sked);
+    des_cbc_cksum(in_str,key,length,key_sked,key);
+d113 1
+a113 1
+    bzero(key_sked,sizeof(key_sked));
+@
+
+
+4.6
+log
+@Copyright notice, etc.
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/tools/RCS/prototype.c,v $
+d10 1
+a10 1
+ * $Source: /mit/kerberos/src/lib/des/RCS/string_to_key.c,v $
+d30 1
+a30 1
+"$Header: prototype.c,v 1.2 88/02/22 18:54:06 steiner Locked $";
+d36 1
+d40 1
+a40 1
+extern int debug_print();
+d46 1
+a46 1
+string_to_key(str,key)
+d48 1
+a48 1
+    register C_Block *key;
+d59 1
+a59 1
+    static Key_schedule key_sked;
+d98 1
+a98 1
+    /* now stuff into the key C_Block, and force odd parity */
+d111 2
+a112 2
+    key_sched(key,key_sked);
+    cbc_cksum(in_str,key,length,key_sked,key);
+@
+
+
+4.5
+log
+@Formatted.
+Programmer: raeburn.
+@
+text
+@d2 2
+a3 2
+ * $Source$
+ * $Author$
+d5 2
+a6 1
+ * des_string_to_key.c
+d8 4
+a11 2
+ *	spm	8/85	MIT project athena
+ *				copyright MIT	1985
+d24 2
+d28 6
+@
+
+
+4.4
+log
+@Changed debug to des_debug.
+@
+text
+@d1 3
+a3 1
+/* des_string_to_key.c
+d5 2
+d10 3
+d14 2
+a15 25
+ *	$Source: /paris/u3/kerberos.new/lib/des/bsd/RCS/des_string_to_key.c,v $
+ *	$Author: steiner $
+ *	$Locker: raeburn $
+ *	$Log:	des_string_to_key.c,v $
+ * Revision 4.3  87/09/10  16:17:34  steiner
+ * Changed include files configuration and referencing.
+ * 
+ * Revision 4.2  87/09/04  14:55:36  steiner
+ * Changes for PC compatibility, from Jerry Saltzer.
+ * 
+ * Revision 1.3  87/01/13  11:38:30  wesommer
+ * More un-checked-in changes.
+ * 
+ * Revision 1.2  86/02/17  17:38:08  spm
+ * includes 1way encryption
+ * 
+ * Revision 1.1  85/12/16  13:52:11  spm
+ * Initial revision
+ * 
+ * Revision 1.2  85/08/19  15:25:26  spm
+ * fix print, int
+ * 
+ * Revision 1.1  85/08/16  12:48:04  spm
+ * Initial revision
+ * 
+d17 2
+a18 3
+ *	These routines perform encryption and decryption using the DES
+ *  private key algorithm, or else a subset of it-- fewer inner loops.
+ *  ( AUTH_DES_ITER defaults to 16, may be less)
+d20 1
+a20 7
+ *	Under U.S. law, this software may not be exported outside the US
+ *  without license from the U.S. Commerce department.
+ *
+ *	The key schedule is passed as an arg, as well as the cleartext or
+ *  ciphertext.  The cleartext and ciphertext should be in host order.
+ *
+ *	These routines form the library interface to the des facilities.
+d23 3
+a25 3
+# include	<stdio.h>
+# include	<des.h>
+# include	"odd.h"
+d27 2
+a28 2
+extern	int	des_debug;
+extern	int	debug_print();
+d30 2
+a31 1
+/* convert an arbitrary length string to a DES key
+d34 3
+a36 4
+	string_to_key(str,key)
+	char	 *str;
+	register C_Block	*key;
+
+d38 10
+a47 10
+	register	char	*in_str;
+	register	unsigned temp,i,j;
+	register 	long length;
+	static		unsigned char	*k_p;
+	static		long	*l_p;
+	static		int		forward;
+	static		int		odd;
+	register	char	*p_char;
+	static		char 	k_char[64];
+	static		Key_schedule	key_sked;
+d49 4
+a52 4
+	in_str = str;
+	forward = 1;
+	p_char = k_char;
+	length = strlen(str);
+d54 2
+a55 2
+	/* init key array for bits											   */
+	bzero(k_char,sizeof(k_char));
+d57 4
+a60 4
+#ifdef	DEBUG
+	if (des_debug)
+		{
+		fprintf(stdout,"\n\ninput str length = %d  string = %s\nstring = 0x ",
+a61 1
+		}
+d64 7
+a70 10
+	/* get next 8 bytes, strip parity, xor								   */
+	for (i = 1; i <= length; i++)
+		{
+		/* get next input key byte										   */
+		temp = (unsigned int) *str++;		
+#ifdef	DEBUG
+		if (des_debug)
+			{
+			fprintf(stdout,"%02x ",temp & 0xff);
+			}
+d72 8
+a79 13
+		/* loop through bits within byte, ignore parity					   */
+		for (j = 0; j <= 6; j++)
+			{
+			if (forward)
+				{
+				*p_char++ ^= (int) temp & 01;
+				}
+			else
+				{
+				*--p_char ^= (int) temp & 01;
+				}	
+			temp = temp >> 1;
+			}	while (--j > 0);
+d81 4
+a84 6
+		/* check and flip direction										   */
+		if ((i%8) == 0)
+			{
+			forward = !forward;
+			}
+		}		
+d86 3
+a88 3
+	/* now stuff into the key C_Block, and force odd parity				   */
+	p_char = k_char;
+	k_p =  (unsigned char *) key;
+d90 7
+a96 10
+	for (i = 0; i <= 7; i++)
+		{
+		temp = 0;
+		for (j = 0; j <= 6; j++)
+			{
+			temp |= *p_char++ << (1+j);
+			}			
+		/* set odd parity in lsb										   */
+		*k_p++ = odd_parity[temp];
+		}
+d98 5
+a102 5
+/* Now one-way encrypt it with the folded key							   */
+	key_sched(key,key_sked);
+	cbc_cksum(in_str,key,length,key_sked,key);
+/* erase key_sked														   */
+	bzero(key_sked,sizeof(key_sked));
+d104 2
+a105 2
+	/* now fix up key parity again					   */
+	k_p =  (unsigned char *) key;
+d107 4
+a110 5
+	for (i = 0; i <= 7; i++)
+		{
+		temp = odd_parity[(unsigned long) *k_p];
+		*k_p++ = (unsigned char) temp;
+		}
+d112 3
+a114 3
+	if	(des_debug)
+		{
+		fprintf(stdout,"\nResulting key = 0x%x %x",*((unsigned long *) key),
+a115 2
+		}
+	
+@
+
+
+4.3
+log
+@Changed include files configuration and referencing.
+@
+text
+@d7 1
+a7 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_string_to_key.c,v $
+d9 1
+a9 1
+ *	$Locker: steiner $
+d11 3
+d50 1
+a50 1
+extern	int	debug;
+d81 1
+a81 1
+	if (debug)
+d94 1
+a94 1
+		if (debug)
+d150 1
+a150 1
+	if	(debug)
+@
+
+
+4.2
+log
+@Changes for PC compatibility, from Jerry Saltzer.
+@
+text
+@d7 3
+a9 3
+ *	$Source: /source/kerberos/lib/des/bsd/RCS/des_string_to_key.c,v $
+ *	$Author: wesommer $
+ *	$Locker:  $
+d11 3
+d44 2
+a45 2
+# include	"./des.h"
+# include	"./odd.h"
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d7 1
+a7 1
+ *	$Source: /mit/s/t/steiner/kerberos/lib/des/bsd/RCS/des_string_to_key.c,v $
+d9 1
+a9 1
+ *	$Locker: steiner $
+a40 1
+# include	<strings.h>
+a42 4
+
+#ifdef	BSDUNIX
+#include	<sys/time.h>
+#endif
+@
+
+
+1.3
+log
+@More un-checked-in changes.
+@
+text
+@d7 3
+a9 3
+ *	$Source: /mit/projects/auth/src/lib/des/vax/RCS/des_string_to_key.c,v $
+ *	$Author: spm $
+ *	$Locker: spm $
+d11 3
+@
+
+
+1.2
+log
+@includes 1way encryption
+@
+text
+@d11 3
+d53 1
+a53 1
+	register char		*str;
+d57 3
+a59 1
+	register	unsigned temp,i,j,length;
+d66 1
+a66 1
+	static		Key_schedule	key_sched;
+d68 1
+d132 4
+a135 4
+	des_set_key(key,key_sched);
+	cbc_cksum(str,key,length,key_sched,key);
+/* erase key_sched														   */
+	bzero(key_sched,sizeof(key_sched));
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+a7 1
+ *	$Source: /usr/mit/spm/auth/deslib/RCS/des_lib.c,v $
+d10 4
+a13 1
+ *	$Log:	des_lib.c,v $
+d37 1
+d39 1
+a39 1
+#ifdef	VAX
+d46 2
+a47 1
+/* convert an arbitrary length string to a DES key						   */
+d54 2
+a55 3
+	register	temp,i,j,length;
+	register	char	*p_char;
+	static		char	*k_p;
+d59 1
+d61 1
+a67 4
+#ifdef	notdef
+	l_p = (long *) k_char;
+	*l_p++ = 0; *l_p = 0;
+#endif
+d73 2
+a74 1
+		fprintf(stdout,"\n\ninput string length = %d  string = %s",length,str);
+a91 1
+#ifndef	notdef
+a100 1
+#endif
+d110 1
+a110 1
+	/* now stuff into the key C_Block, and force odd parity					   */
+d112 1
+a112 1
+	k_p =  (char *) key;
+a115 1
+		odd = 0;
+d119 1
+a119 2
+			temp |= *p_char << (1+j);
+			odd ^= *p_char++; 
+d122 1
+a122 2
+		if (!odd) temp |= 1;
+		*k_p++ = (char) temp;
+d125 21
+@

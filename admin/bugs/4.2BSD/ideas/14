@@ -1,0 +1,205 @@
+Return-Path: <mike@brl-vgr>
+Date:     Thu, 12 Jan 84 2:30:59 EST
+From: Mike Muuss <mike@brl-vgr>
+Subject:  4.2 BSD Signals:  A Proposal
+Index: ideas 4.2BSD
+
+REFRESHER.
+
+On 4.1 and earlier UNIX systems, signal handlers had several attributes:
+
+*)  After a signal was caught, the handler was reset to SIG_DFL.
+
+*)  If the process was executing a (kernel) sleep() at "low" priority,
+    and a signal was processed, the system call would abort, returning
+    an error code (-1), with errno = u.u_error = EINTR (interupted
+    system call).
+
+On 4.2 BSD UNIX, these two aspects of signal handling were altered
+(along with some other, nice improvements, which are not germane).
+
+1)  The signal handler remains "installed" until explicitly changed.
+
+2)  System calls which may (kernel) sleep() at "low" priority will
+    be silently restarted after processing an incomming signal.
+    The signal handler will have no idea if this is happening or not.
+
+PROBLEM.
+
+Clearly, programs written for the old style signal interface will have
+a fair amount of difficulty coping with difference #2 above, if they
+depend on signals (especially timer signals) interrupting a system
+call.  Network software which wishes to run timouts around network
+reads will have to longjmp() in the signal handler, rather than
+being able to depend on just returning, with an EINTR to be returned
+from the read/write sys-call that timed out.  Editors and shells
+will have to expect their I/O to be restarted after SIGINT, etc.
+(You would not believe the crud that Berkeley had to do to /bin/sh
+to make it still capable of re-printing $PS1 after a SIGINT (^C, etc).).
+
+Certainly, change #1 is "mostly harmless";  the number of programs
+which will break is minimal -- the timing windows which this change
+fixes were something that no mortal programmer would dare depend on.
+
+However, change #2 is truely problematic:  Certainly, there are advantages
+to the new style signal interface, and programs which are written with
+this style of operation in mind should work out well.  However, no matter
+how hard we try, few of us will be able to afford the luxury of running
+4.2 BSD on *all* our machines.  Those of you planning on purchasing
+a Cray-2 (as we are), will have to contend with System-V UNIX (at least
+to start with).  Many other vendors will be non-4.2 BSD, and it is too
+late to stomp them all out (pitty, no?).  And somehow, those venerable
+old PDP-11s just keep on refusing to quit!
+
+THEREFORE, the problem of program portability rears it's ugly head.
+4.2 people (true believers) will, of course, deisre to import quality
+software from elsewhere ("expensive, yes, extravagant, no"), without
+having to re-write all the signal code.  Others may wish to be able
+to use 4.2 code on their own system ("rotsa-ruck").  Being in the
+former camp, I would like to offer the following solution:
+
+PROPOSED SOLUTION.
+
+In proc.h, SOUSIG (1 bit in p_flag) is defined to mean "this process is using
+the old signal mechanism".  This piece of information is used in two ways:
+
+1)  To determine resetting of default signal handling after traps
+	(in sys/kern_sig.c and sys/kern_xxx.c).
+
+2)  To determine restartability of interrupted ("slow") system calls
+	(in kern_exit.c, sys_generic.c, sys_inode.c).
+
+By adding another bit to the p_flag word called SDFLSIG and assigning
+it function #1 (above) to this new bit, and then redefining the meaning
+of SOUSIG to JUST function #2 (above), +and+ by adding a new sys-call
+(#151, sigrestartable()) which permits the user to manipulate the
+state of the SOUSIG bit, then a solution can be achieved.
+
+For programs which do not use the new sys-call, standard 4.2 functionality
+occurs.
+
+Programs which wish to avoid having their sys-calls restarted may say:
+
+	sigrestartable( 0 );
+
+and get the 4.2 interface, with continuously installed signal handlers,
+but with sys-calls returning the old familiar EINTR.
+
+Calling sigrestartable() with a non-zero argument restores the 4.2 BSD
+style restartable sys-calls, so that one can "live in both worlds"
+by switching back and forth.  The sys-call is as fast as getpid(),
+so pairs could reasonably be used around old-fashioned code if one
+desires to "blend" signaling style within a single program.
+
+STATUS.
+
+This evening, I installed the change I proposed above, into 2 of our 780s.
+Effort to change:
+	h/proc.h		2 lines
+	sys/init_sysent.c:	1 line
+	sys/syscalls.c:		1 line
+	sys/kern_sig.c		14 lines
+	sys/kern_exec.c		1 line
+	sys/kern_fork.c		1 line
+	sys/kern_xxx.c		1 line
+
+To the best of my ability to test it, this new system call operates
+exactly as I have described above.
+
+QUESTION.
+
+What does the UNIX-community-at-large think of this strategy?
+If people feel that this is a reasonable solution to the 4.2 signal
+"problem", DPK and I will arrange to reproduce many copies of a
+1-page document describing how to install this code into your 4.2
+kernel, and distribute them at UNIFORvM in Washington DC next week.
+
+On the other hand, if a better proposal can be brought forth,
+I am willing to withdraw this proposal and implement something
+else, assuming that it offers a solution of similar generality,
+elegance, and simplicity (pardon the self-admiration).
+
+CREDIT.
+
+The motivation for addressing this problem at this time came from
+a program which Doug Kingston has been working on.  His struggles,
+his requests, and his constructive feedback were instrumental in
+shaping the form of this solution.  Together we evaluated 7 or 8
+different solutions to this problem, before the present solution
+was arrived at.
+
+COMMENTS.
+
+Please mail your responses to this issue back to the full list.
+This issue is too important to discuss privately.
+
+	Best,
+	 -Mike Muuss
+
+SOURCE CODE.
+
+Just in case you desire to try this change yourself, here is the code:
+
+h/proc.h (2 changes):
+
+change comment to:
+#define	SOUSIG	0x0100000	/* old signal semantics: no restart (BRL) */
+
+add at the bottom:
+#define SDFLSIG	0x2000000	/* reset signals to default handling (BRL) */
+
+
+sys/init_sysent.c (2 lines from the bottom):
+
+	1, sigrestartable,		/* 151 = sigrestartable (BRL) */
+
+sys/syscalls.c (1 line from the bottom):
+
+	"sigrestartable",	/* 151 = sigrestartable */
+
+sys/kern_xxx.c (3 lines from the bottom):
+
+from:
+	p->p_flag |= SOUSIG;
+to:
+	p->p_flag |= SOUSIG|SDFLSIG;
+
+sys/kern_exec.c (80% into the file):
+
+from:
+	u.u_procp->p_flag &= ~(SPAGI|SSEQL|SUANOM|SOUSIG);
+to:
+	u.u_procp->p_flag &= ~(SPAGI|SSEQL|SUANOM|SOUSIG|SDFLSIG);
+
+sys/kern_fork.c (50% into the file):
+
+from:
+	rpp->p_flag = SLOAD | (rip->p_flag & (SPAGI|SOUSIG));
+to:
+	rpp->p_flag = SLOAD | (rip->p_flag & (SPAGI|SOUSIG|SDFLSIG));
+
+sys/kern_sig.c (in psig(), 85% into the file):
+
+from:
+		if (p->p_flag & SOUSIG) {
+to:
+		if (p->p_flag & SDFLSIG) {
+
+and, after
+#define	cantmask	(mask(SIGKILL)|mask(SIGCONT)|mask(SIGSTOP))
+near the front of the file, add this routine:
+
+sigrestartable()				/* BRL-specific */
+{
+	register struct a {
+		int	restartable;
+	} *uap = (struct a *)u.u_ap;
+
+	/* BRL syscall to permit non-restartable signal behavior */
+	if( uap->restartable )
+		u.u_procp->p_flag &= ~SOUSIG;	/* Restartable */
+	else
+		u.u_procp->p_flag |= SOUSIG;	/* Non-restartable */
+}
+
+HAPPY HACKING!

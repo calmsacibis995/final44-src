@@ -1,0 +1,440 @@
+/* 
+ * Mach Operating System
+ * Copyright (c) 1989 Carnegie-Mellon University
+ * All rights reserved.  The CMU software License Agreement specifies
+ * the terms and conditions for use and redistribution.
+ */
+/*
+ * HISTORY
+ * $Log:	access.68,v $
+ * Revision 2.5  89/02/25  19:35:03  gm0w
+ * 	Removed else leg of KERNEL conditionals and fixed 
+ * 	includes as part of kernel cleanup.
+ * 	[88/02/08            jjc]
+ * 
+ * Revision 2.4  89/02/17  21:36:10  rpd
+ * 	Moved to sun3/.
+ * 
+ * Revision 2.3  88/09/27  17:30:55  rvb
+ * 	Fixed Log
+ * 
+ * Revision 2.2  88/09/27  16:07:14  rvb
+ * 	If you can not guess the number of args passed in, guess 5 vs 0
+ * 	[88/09/27  15:53:06  rvb]
+ *
+ * 23-Sep-88  Robert Baron (rvb) at Carnegie-Mellon University
+ *	If you can not guess the number of args passed in, guess 5 vs 0
+ *
+ * 04-Feb-88  Jonathan J. Chew (jjc) at Carnegie-Mellon University
+ *	Changed nextframe() not to dig around user stack for 
+ *	no. of args and entry point into kernel on kernel stack
+ *	traces.
+ *
+ * 29-Jan-87  Jonathan J. Chew (jjc) at Carnegie-Mellon University
+ *	Conditionalized kdb code under KERNEL and changed pathnames
+ *	of include files to kernel relative ones in order to make
+ *	kdb part of the kernel rather than a separate library.
+ *
+ *  5-Sep-86  Jonathan J. Chew (jjc) at Carnegie-Mellon University
+ *	Converted into kernel debugger, "kdb".
+ *
+ */
+#ifndef lint
+static	char sccsid_68[] = "@(#)access.68 1.1 86/02/03 Copyr 1985 Sun Micro";
+#endif
+
+/*
+ * Copyright (c) 1985 by Sun Microsystems, Inc.
+ */
+
+#include <sys/proc.h>
+#include <sys/vmmac.h>
+#include <machine/reg.h>
+#include <sys/signal.h>
+#include <sun3/kdb/fpascii.h>
+
+extern struct nlist * trampsym, * funcsym; /* see setup.68 */
+
+#include <machine/reg.h>
+
+extern	struct stackpos exppos;
+
+tbia()
+{
+
+	exppos.k_fp = 0;
+}
+
+writereg(reg, val)
+	register int reg;
+{
+	register int off;
+
+	if (reg >= NREGISTERS) {
+		errno = EIO;
+		return (0);
+	}
+	
+	if (reg >= REG_R0 && reg <= REG_R7) {
+		curpcb->pcb_regs.r_dreg[reg] = val;
+	} else if (reg >= REG_AR0 && reg <= REG_AR7) {
+		curpcb->pcb_regs.r_areg[reg - REG_AR0] = val;
+	} else if (reg == REG_PS) {
+		curpcb->pcb_regs.r_sr = val;
+	} else if (reg == REG_PC) {
+		curpcb->pcb_regs.r_pc = val;
+        } else if (reg >= REG_FP0 && reg < (REG_FP7+3)) {
+		curpcb->pcb_fp_status.fps_regs[(reg - REG_FP0) / 3].
+		fp[(reg - REG_FP0) % 3] = val;
+	} else if (reg == REG_FPC) {
+                curpcb->pcb_fp_status.fps_control 	= val;
+	} else if (reg == REG_FPS) {
+                curpcb->pcb_fp_status.fps_status 	= val;
+	} else if (reg == REG_FPI) {
+                curpcb->pcb_fp_status.fps_iaddr 	= val;
+	} else if (reg == REG_FPG) {
+                curpcb->pcb_fp_status.fps_code = val ;
+	} else if (reg == REG_FPF) {
+                curpcb->pcb_fp_status.fps_flags = val ;
+        }
+	return (4);
+}
+
+readreg(reg)
+int	reg;
+{
+	int val;
+	
+	fp_reg_address = (reg < REG_FP0) 
+		? 4*(reg-REG_R0) + (long) (curpcb->pcb_regs.r_dreg) 
+		: 4*(reg-REG_FP0) + (long) (curpcb->pcb_fp_status.fps_regs) ;
+	if (reg >= REG_R0 && reg <= REG_R7) {
+                val = curpcb->pcb_regs.r_dreg[reg];
+        } else if (reg >= REG_AR0 && reg <= REG_AR7) {
+                val = curpcb->pcb_regs.r_areg[reg - REG_AR0];
+        } else if (reg == REG_PS) {
+                val = curpcb->pcb_regs.r_sr;
+	} else if (reg == REG_PC) {
+                val = curpcb->pcb_regs.r_pc;
+        } else if (reg >= REG_FP0 && reg < (REG_FP7+3)) {
+		val = curpcb->pcb_fp_status.fps_regs[(reg - REG_FP0) / 3].
+		fp[(reg - REG_FP0) % 3];
+	} else if (reg == REG_FPC) {
+                val = curpcb->pcb_fp_status.fps_control;
+	} else if (reg == REG_FPS) {
+                val = curpcb->pcb_fp_status.fps_status;
+	} else if (reg == REG_FPI) {
+                val = curpcb->pcb_fp_status.fps_iaddr;
+	} else if (reg == REG_FPG) {
+                val = curpcb->pcb_fp_status.fps_code;
+	} else if (reg == REG_FPF) {
+                val = curpcb->pcb_fp_status.fps_flags;
+        }
+	return( val);
+}
+
+pc_cheat( newpc )
+{
+	/*
+	   because of the way the 68000 pc is advanced during the execution
+	   of a trap instruction, we must sometimes back up our perceived pc.
+	   The routine bpwait()/runpcs.c knows how and when to do this, and
+	   keeps the variable userpc pointing at the right thing. It can
+	   call us here to keep our image of the pc up-to-date.
+	*/
+	curpcb->pcb_regs.r_pc = newpc;
+}
+
+
+stacktop(sp)
+	register struct stackpos *sp;
+{
+	register int i;
+
+	for (i = 0; i < 14; i++)
+		sp->k_regloc[i] = REGADDR(i);
+	sp->k_fp = readreg(REG_FP);
+	sp->k_pc = readreg(REG_PC);
+	sp->k_flags = 0;
+	findentry( sp );
+}
+
+
+/*
+  The VAX has a very nice calling convention, and it is quite easy to
+  find saved registers, and the number of parameters. We are not nearly
+  so lucky. We must grub around in code for much of this information
+  (remember the PDP-11?), and the saved register list seems to be
+  especially hard to find.
+*/
+
+#define HIWORD	0xffff0000
+#define LOWORD	0x0000ffff
+#define LINKA6	0x4e560000	/* link a6,#x    */
+#define ADDLSP	0xdffc0000	/* addl #x,sp    */
+#define ADDWSP	0xdefc0000	/* addw #x,sp    */
+#define LEASP	0x4fef0000	/* lea	sp@(x),sp*/
+#define TSTBSP	0x4a2f0000	/* tstb sp@(x)   */
+#define INSMSK	0xfff80000
+#define MOVLSP	0x2e800000	/* movl dx,sp@   */
+#define MOVLD0	0x20000000	/* movl d0,dx	 */
+#define MOVLA0	0x20400000	/* movl d0,ax	 */
+#define MVLMSK	0xf1ff0000
+#define MOVEML	0x48d70000	/* moveml #x,sp@ */
+#define JSR	0x4eb80000	/* jsr x.[WL]    */
+#define JSRPC	0x4eba0000	/* jsr PC@( )    */
+#define LONGBIT 0x00010000
+#define BSR	0x61000000	/* bsr x	 */
+#ifdef	mc68020
+#define BSRL	0x61ff0000	/* bsrl x	 */
+#endif	mc68020
+#define BYTE3	0x0000ff00
+#define LOBYTE	0x000000ff
+#define ADQMSK	0xf1ff0000
+#define ADDQSP	0x508f0000	/* addql #x,sp   */
+#define ADDQWSP	0x504f0000	/* addqw #x,sp   */
+
+nextframe(sp, kerneltrace)
+	register struct stackpos *sp;
+	int kerneltrace;
+{
+	int val, regp, i;
+	addr_t addr;
+	addr_t calladdr;
+	register instruc;
+
+	/*
+	 * Find our entry point. Then find out
+	 * which registers we saved, and map them.
+	 * Our entry point is the address our caller called.
+	 */
+
+	calladdr = sp->k_caller;
+	addr     = sp->k_entry;
+	if (sp->k_flags & K_CALLTRAMP){
+	    /*
+	     * caller was sigtramp:
+	     * - no registers were saved;
+	     * - no new frame-pointer
+	     * - caller found in sigcontext structure.
+	     * - WE become sigtramp
+	     * - we have no parameters
+	     * MUCH MAGIC USED IN FINDING CALLER'S PC.
+	     */
+	    sp->k_pc = sp->k_caller;
+	    sp->k_entry = trampsym->n_value;
+	    sp->k_flags = 0;
+	    addr = get( sp->k_fp+(sizeof(int))*(11), DSP );
+	    sp->k_caller = get( &((struct sigcontext *)addr)->sc_pc, DSP );
+	    sp->k_nargs = 0;
+#if DEBUG
+	    printf("nextframe: sigcontext at 0x%X, signaled at 0x%X\n",
+		addr, sp->k_caller);
+#endif
+	    errflg = 0;
+	} else {
+	    if (addr == MAXINT){
+		/* we don't know what registers are involved here--invalidate all */
+		for(i=0; i<14; i++){
+		    sp->k_regloc[i] = -1;
+		}
+	    } else {
+		findregs( sp, addr );
+	    }
+	    /* find caller's pc and fp */
+	    sp->k_pc = calladdr;
+	    sp->k_fp = get(sp->k_fp+FR_SAVFP, DSP);
+
+	    /* 
+	      now that we have assumed the identity of our caller, find
+	      how many longwords of argument WE were called with.
+	    */
+	    sp->k_flags = 0;
+	    /*
+	     *	Don't dig around in user stack to find no. of args
+	     *	and entry point if just tracing the kernel
+	     */
+	    if (kerneltrace && !INKERNEL(sp->k_fp)){
+		sp->k_nargs = 0;
+		sp->k_entry = MAXINT;
+	    }
+	    else
+	    	findentry( sp );
+	}
+	return (sp->k_fp);
+}
+
+findentry( sp )
+    register struct stackpos *sp;
+{ 
+	/* 
+	  set the k_nargs and k_entry fields in the stackpos structure. This
+	  is called from stacktop() and from nextframe().
+	  our caller will do an addq or addl or addw to sp just after
+	  we return to pop off our arguments. find that instruction
+	  and extract the value.
+	*/
+	register instruc;
+	register val;
+	addr_t addr, calladdr, nextword;
+	char *saveflg = errflg; 
+
+	errflg = 0;
+	addr = get(sp->k_fp+FR_SAVPC, DSP);
+	instruc  = get(addr-6, ISP);
+	nextword = get(addr-4, ISP);
+	if (errflg) {
+		/* oops -- we touched something we ought not to have */
+		/* cannot trace caller of "start" */
+		sp->k_entry = MAXINT;
+		sp->k_nargs = 0;
+		errflg = saveflg; /* you didn't see this */
+		return;
+	}
+	errflg = saveflg;
+	if ((instruc&HIWORD) == (JSR | LONGBIT)) {
+	    /* longword offset here */
+	    sp->k_caller = addr-6;
+	    sp->k_entry  = nextword;
+#ifdef	mc68020
+	} else if ((instruc&HIWORD) == BSRL) {
+	    /* longword self-relative offset */
+	    sp->k_caller = addr-6;
+	    sp->k_entry  = nextword + (addr-4);
+#endif	mc68020
+	} else {
+	    instruc = nextword;
+	    if ((instruc&HIWORD) == JSR) {
+		/* short word offset */
+		sp->k_caller = addr-4;
+		sp->k_entry  = instruc & LOWORD;
+	    } else if ((instruc&HIWORD) == BSR ){
+		/* short word, self-relative offset */
+		sp->k_caller = addr-4;
+		sp->k_entry  = (addr-2) + (short)(instruc & LOWORD);
+	    } else if ((instruc&HIWORD) == JSRPC ){
+		/* PC-relative, short word offset */
+		sp->k_caller = addr-4;
+		sp->k_entry  = (addr-2) + (instruc & LOWORD);
+	    } else {
+		if((instruc&BYTE3) == (BSR>>16)){
+		    /* byte, self-relative offset */
+		    sp->k_caller = addr-2;
+		    sp->k_entry  = addr + (char)(instruc&LOBYTE);
+		} else {
+		    /* was a call through a proc parameter */
+		    sp->k_caller = addr-2;
+		    sp->k_entry  = MAXINT;
+		    /*
+		     * we know that sigtramp calls your signal catcher
+		     * this way -- see if this is the tramp: if so then:
+		     *   - set the K_CALLTRAMP flag, for use by nextframe();
+		     *   - take k_entry from __sigfunc array.
+		     */
+		    /*
+		     * the number (9) in the below expression is magic:
+		     * it is the number of stack items below callee's fp and
+		     * sigtramp's copy of the signal number.
+		     */
+		    if (trampsym && (findsym( sp->k_caller, ISYM), cursym == trampsym) ){
+			int signl;
+			sp->k_flags |= K_CALLTRAMP;
+			if (funcsym){
+			    signl = get( sp->k_fp+(sizeof (int))*(9), DSP );
+			    sp->k_entry = get( funcsym->n_value+(sizeof(int(*)()))*signl, DSP);
+			} else {
+			    sp->k_entry = -1;
+			}
+
+			errflg = 0;
+#ifdef DEBUG
+			printf("Caller is sigtramp: signal is %d: entry is %x\n",
+			    signl, sp->k_entry);
+#endif
+		    }
+#ifdef DEBUG
+		    else
+			printf("Non-tramp jsr a0@\n");
+#endif
+		}
+	    }
+	}
+	instruc = get(addr, ISP);
+	/* on bad days, the compiler dumps a register move here */
+	if ((instruc&MVLMSK) == MOVLA0 || (instruc&MVLMSK) == MOVLD0 ){
+	    instruc = get( addr+= 2, ISP);
+	}
+	if ((instruc&ADQMSK) == ADDQSP
+	||  (instruc&ADQMSK) == ADDQWSP){
+	    val = (instruc >> (16+9)) & 07;
+	    if (val==0)
+		val = 8;
+	} else if ((instruc&HIWORD) == ADDLSP){
+	    val = get(addr+2, ISP);
+	} else if ((instruc&HIWORD) == ADDWSP || (instruc&HIWORD) == LEASP ){
+	    val = instruc&LOWORD;
+	} else {
+	    val = 20;
+	}
+	sp->k_nargs = val/4;
+
+
+}
+
+/*
+ * look at the procedure prolog of the current called procedure.
+ * figure out which registers we saved, and where they are
+ */
+
+findregs( sp , addr)
+    register struct stackpos *sp;
+    register addr_t addr;
+{
+    register long instruc, val, i;
+    int  regp;
+
+    instruc = get( addr, ISP);
+    if ( (instruc&HIWORD) != LINKA6 )
+	goto nolink;
+    if (( instruc &= LOWORD) == 0) {
+	/* look for addl */
+	instruc = get(( addr += 4), ISP);
+	if ( (instruc&HIWORD) == ADDLSP){
+	    instruc = get( addr+2, ISP);
+	    addr += 6;
+	}
+	/* else { frame size is zero } */
+    } else {
+	/* link offset was non-zero -- sign extend it */
+	instruc <<= 16 ; instruc >>= 16;
+    }
+    /* we now have the negative frame size */
+    regp = sp->k_fp + instruc;
+nolink:
+    /* find which registers were saved */
+    /* (expecting probe instruction next) */
+    instruc = get( addr, ISP );
+    if ((instruc&HIWORD) == TSTBSP)
+	addr += 4;
+    /* now we expect either a moveml or a movl */
+    instruc = get( addr, ISP );
+    if ((instruc&INSMSK) == MOVLSP){
+	/* only saving one register */
+	i = (instruc>>16) & 07;
+	sp->k_regloc[i] = regp;
+    } else if ((instruc&HIWORD) == MOVEML ) {
+	/* saving multiple registers or unoptimized code */
+	val = instruc & LOWORD;
+	i = 0;
+	while (val) {
+	    if (val & 1) {
+		sp->k_regloc[i] = regp;
+		regp += sizeof (int);
+	    }
+	    val >>= 1;
+	    i++;
+	}
+    }
+    /* else{ no registers saved } */
+
+}

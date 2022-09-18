@@ -1,0 +1,104 @@
+Return-Path: <salkind@nyu>
+Date: Tue, 13 Mar 84 18:52:01 est
+From: salkind@nyu (Lou Salkind)
+Subject: a bug in if_uba.c (not that serious)
+Index: sys/vaxif/if_uba. 4.2BSD
+
+Description:
+	There are two problems in if_uba.c:if_wubaput:
+	(1) there is a superfluous instruction
+	(2) the variable x is used for two different purposes in if_wubaput.
+	This will cause transfers of two full clicks or more to fail.
+	(Luckily the network interfaces don't do this currently.)
+Repeat-By:
+	Transfer 2K packets over your network device...
+Fix:
+	The diff follows.  Note all the routines assume hlen < PGSIZE
+	(a very reasonable assumption, but it should be noted).
+
+*** /tmp/,RCSt1008503	Tue Mar 13 18:30:59 1984
+--- /tmp/,RCSt2008503	Tue Mar 13 18:31:00 1984
+***************
+*** 1,3
+  /*	if_uba.c	6.1	83/07/29	*/
+  
+  #include "../machine/pte.h"
+
+--- 1,7 -----
++ #ifdef	RCSIDENT
++ static char *rcsid = "$Header: /usr/sys/vaxif/RCS/if_uba.c,v 1.2 84/03/13 01:01:40 salkind Exp $";
++ #endif
++ 
+  /*	if_uba.c	6.1	83/07/29	*/
+  
+  #include "../machine/pte.h"
+***************
+*** 31,36
+   * with the header, and nmr more UNIBUS map registers for i/o on the adapter,
+   * doing this twice: once for reading and once for writing.  We also
+   * allocate page frames in the mbuffer pool for these pages.
+   */
+  if_ubainit(ifu, uban, hlen, nmr)
+  	register struct ifuba *ifu;
+
+--- 35,41 -----
+   * with the header, and nmr more UNIBUS map registers for i/o on the adapter,
+   * doing this twice: once for reading and once for writing.  We also
+   * allocate page frames in the mbuffer pool for these pages.
++  * NOTE IT IS IMPLICTLY ASSUMED THAT hlen < PGSIZE.
+   */
+  if_ubainit(ifu, uban, hlen, nmr)
+  	register struct ifuba *ifu;
+***************
+*** 198,204
+  	register caddr_t cp, dp;
+  	register int i;
+  	int xswapd = 0;
+! 	int x, cc;
+  
+  	cp = ifu->ifu_w.ifrw_addr;
+  	while (m) {
+
+--- 203,209 -----
+  	register caddr_t cp, dp;
+  	register int i;
+  	int xswapd = 0;
+! 	int x, cc, t;
+  
+  	cp = ifu->ifu_w.ifrw_addr;
+  	while (m) {
+***************
+*** 234,240
+  	cc = cp - ifu->ifu_w.ifrw_addr;
+  	x = ((cc - ifu->ifu_hlen) + CLBYTES - 1) >> CLSHIFT;
+  	ifu->ifu_xswapd &= ~xswapd;
+- 	xswapd &= ~ifu->ifu_xswapd;
+  	while (i = ffs(ifu->ifu_xswapd)) {
+  		i--;
+  		if (i >= x)
+
+--- 239,244 -----
+  	cc = cp - ifu->ifu_w.ifrw_addr;
+  	x = ((cc - ifu->ifu_hlen) + CLBYTES - 1) >> CLSHIFT;
+  	ifu->ifu_xswapd &= ~xswapd;
+  	while (i = ffs(ifu->ifu_xswapd)) {
+  		i--;
+  		if (i >= x)
+***************
+*** 241,247
+  			break;
+  		ifu->ifu_xswapd &= ~(1<<i);
+  		i *= CLSIZE;
+! 		for (x = 0; x < CLSIZE; x++) {
+  			ifu->ifu_w.ifrw_mr[i] = ifu->ifu_wmap[i];
+  			i++;
+  		}
+
+--- 245,251 -----
+  			break;
+  		ifu->ifu_xswapd &= ~(1<<i);
+  		i *= CLSIZE;
+! 		for (t = 0; t < CLSIZE; t++) {
+  			ifu->ifu_w.ifrw_mr[i] = ifu->ifu_wmap[i];
+  			i++;
+  		}

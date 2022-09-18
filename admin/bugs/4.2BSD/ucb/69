@@ -1,0 +1,79 @@
+Return-Path: <stew@mazama>
+Date: Sat, 11 May 85 11:28:24 pdt
+From: Stewart Levin <stew@mazama>
+Subject: set and display of escape characters unnecessarily difficult
+Index: ucb/telnet.c 4.2BSD
+
+Description:
+	When we first brought up our network software and ethernet
+	interface a few months ago, users, including myself, were
+	finding themselves unable to escape out of a hung telnet
+	connection short of shutting the terminal off and waiting
+	for a few minutes.  The indicated escape character control(^)
+	(at odds with the manual page default of ESC=control([))
+	did not work.  After some experimentation, I found that
+	the escape sequence did work on our datamedia terminals
+	but not on our DEC VK100 terminals.  So I tried to set a
+	different escape character, control([), by the command
+
+		escape ^[
+
+	as indicated in the manual page for telnet.  This didn't
+	work either.  I finally was able to set it using the literal
+	next character string (ctrl(V)) followed by the actual
+	control character.
+
+Repeat-By:
+
+	telnet
+	telnet> escape ^[
+	telnet> open whatever
+
+	and try escaping.  You'll find that the ^ character itself
+	is the escape character now.
+
+	Now try, on a VT100 series terminal,
+
+	telnet
+	telnet> open whatever
+
+	and try escaping.  You'll find that ctrl(~) is the escape
+	character now.  This also works on our datamedias which
+	have ^ and ~ on the same key.
+
+Fix:
+	1) Update the telnet manual page to reflect the correct default
+	   escape character and its keyboard representation on various
+	   local terminals (it's octal 036 if you need to scrounge around
+	   in terminal owner's manuals).
+	2) Add the fix to subroutine setescape() in telnet.c #ifdef'ed
+	   below.  Note that you can't use the CTRL() macro directly
+	   because it puts quotes around its argument before stripping
+	   the high order bits.  sigh ...
+/*
+ * Set the escape character.
+ */
+setescape(argc, argv)
+	int argc;
+	char *argv[];
+{
+	register char *arg;
+	char buf[50];
+
+	if (argc > 2)
+		arg = argv[1];
+	else {
+		printf("new escape character: ");
+		gets(buf);
+		arg = buf;
+	}
+	if (arg[0] != '\0')
+#ifdef MAZAMA
+		if (arg[0] == '^' && arg[1] != '\0')
+			escape = (arg[1])&037;	/* CTRL(arg[1]) */
+		else
+#endif
+		escape = arg[0];
+	printf("Escape character is '%s'.\n", control(escape));
+	fflush(stdout);
+}

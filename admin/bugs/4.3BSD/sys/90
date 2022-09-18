@@ -1,0 +1,103 @@
+From ron@guppy.nosc.mil  Thu Feb 12 17:57:33 1987
+Received: by ucbarpa.Berkeley.EDU (5.57/1.20)
+	id AA14709; Thu, 12 Feb 87 17:14:59 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.20)
+	id AA07081; Thu, 12 Feb 87 15:26:11 PST
+Received: by guppy.nosc.mil (5.54/1.14)
+	id AA01160; Thu, 12 Feb 87 15:20:54 PST
+Date: Thu, 12 Feb 87 15:20:54 PST
+From: ron@guppy.nosc.mil (Ron Broersma)
+Message-Id: <8702122320.AA01160@guppy.nosc.mil>
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Subject: RTI Ingres fails on microvax2 running 4.3BSD
+Index:	sys/vax/emulate.s 4.3BSD
+
+Description:
+	RTI Ingres fails on Microvax2 systems running 4.3 BSD.  Specifically,
+	numeric data is displayed incorrectly while performing queries.  RTI
+	uses the instructions "cvtlp" and "cvtps" to turn a long integer into
+	an ascii string in just 2 instructions.  Cute.  Unfortunately the
+	cvtps instruction is not emulated in 4.3.  In fact there are quite
+	a few instructions that aren't emulated.
+Repeat-By:
+	Use qbf (RTI) to display numeric data.  Note that all the numbers
+	are wrong.
+Fix:
+	Implement "cvtps" instruction (code included here).  You should also
+	grab the fix to emulate.s that Ed Gould (mtxinu!ed) sent out a few 
+	days ago.  Also, someone should make the non implemented microvax
+	instructions return illegal instruction or something.  Programs
+	should blow up rather than give wrong answers!
+
+	Run the following through patch:
+
+*** /tmp/,RCSt1001087	Thu Feb 12 15:02:34 1987
+--- emulate.s	Thu Feb 12 15:01:57 1987
+***************
+*** 1111,1116 ****
+--- 1111,1174 ----
+  	.align	1
+  	.globl	_EMcvtps
+  _EMcvtps:
++ 	arguw(1,r0)			# (1) source length == r0
++ 	argl(2,r1)			# (2) source address == r1
++ 	arguw(3,r2)			# (3) destination length == r2
++ 	argl(4,r3)			# (4) destination address == r3
++ 	ashl	$-1,r0,r0
++ 	addl2	r0,r1			# r1 = address of last byte
++ 	extzv	$0,$4,(r1),r10		# get sign
++ 	cmpl	r10,NEGATIVE
++ 	jeql	Lcvtps_neg
++ 	cmpl	r10,NEGATIVEalt
++ 	jeql	Lcvtps_neg
++ 	movb	$'+,(r3)+		# stuff an ascii "+" if positive
++ 	jbr	Lcvtps_pos
++ Lcvtps_neg:
++ 	movb	$'-,(r3)+		# stuff an ascii "-" if negative
++ Lcvtps_pos:
++ 	addl2	r2,r3			# point at end of dest
++ 	clrl	r11			# use r11 to compute condition code
++ 	jbr	Lcvtps_mid		# start converting
++ Lcvtps_loop:				# main loop to convert digits
++ 	tstl	r2			# is there room in dest?
++ 	jleq	Lcvtps_oflow		# no - overflow
++ 	extzv	$0,$4,-(r1),r10		# grab lower nibble
++ 	addl2	r10,r11			# accumulate something for CC
++ 	addb3	$'0,r10,-(r3)		# make it ascii and stuff it in dest
++ 	decl	r2			# decrement destination counter
++ Lcvtps_mid:
++ 	tstl	r2			# is there room in dest?
++ 	jleq	Lcvtps_oflow		# no - overflow
++ 	extzv	$4,$4,(r1),r10		# grab upper nibble
++ 	addl2	r10,r11			# accumulate something for CC
++ 	addb3	$'0,r10,-(r3)		# make it ascii and stuff it in dest
++ 	decl	r2			# decrement destination counter
++ 	sobgeq	r0,Lcvtps_loop		# next word in source
++ 	tstl	r2			# do we need to zero fill destination?
++ 	jeql	Lcvtps_out
++ Lcvtps_fill:				# loop to zero fill the destination
++ 	movb	$'0,-(r3)
++ 	sobgtr	r2,Lcvtps_fill
++ Lcvtps_out:				# time to get out
++ 	clrl	r0			# fixup registers
++ 	decl	r3
++ 	cmpb	$'+,(r3)		# is it positive?
++ 	jeql	Lcvtps_plus
++ 	mnegl	r11,r11			# fixup condition code
++ Lcvtps_plus:
++ 	tstl	r11			# is it non-zero
++ 	jneq	Lcvtps_nonzero
++ 	movb	$'+,(r3)		# stuff a plus in case of -0
++ Lcvtps_nonzero:
++ 	tstl	r11			# this sets the real condition codes
++ 	savepsl
++ 	return
++ Lcvtps_oflow:
++ 	clrl	r0			# fixup r0 and r1.
++ 	argl(2,r1)
++ 					# r2 and r3 should be OK
++ 	overflowpsl
+  	return
+  
+  

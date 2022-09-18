@@ -1,0 +1,127 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Sun, 29 Jan 84 12:06:27 pst
+To: sdcsvax!ucbvax!4bsd-bugs
+Subject: 'dmesg -' acts like 'dmesg' if '/usr/adm/msgbuf' does not exist
+
+Subject: 'dmesg -' acts like 'dmesg' if '/usr/adm/msgbuf' does not exist
+Index:	etc/dmesg.c 4.2BSD
+
+Description:
+	'dmesg -' is supposed to summarize the kernel messages that
+	have accumulated since the last time 'dmesg -' was run.  If the
+	file '/usr/adm/msgbuf' does not exist then 'dmesg -' acts just
+	like 'dmesg', putting a copy of the entire message buffer on
+	the standard output every time it is run.  No indication of
+	failure is returned or printed by 'dmesg -' when it fails to
+	find '/usr/adm/msgbuf'.
+
+Repeat-By:
+	Remove '/usr/adm/msgbuf' on an active system where 'dmesg - >>
+	/usr/adm/messages' is run every ten minutes by 'cron'.
+	'/usr/adm/messages' will grow by several megabytes a week.
+
+Fix:
+	I changed 'dmesg' so that it tries to create '/usr/adm/msgbuf'
+	if that file does not exist, and to complain to the standard
+	output if the file cannot be opened.  I also changed the places
+	where a 'clever' coder had relied on the fact that a read or a
+	write on a file descriptor of '-1' has no effect.  Here are the
+	differences:
+
+	--------------------------------------------------------------
+	*** /tmp/,RCSt1028637	Sun Jan 29 11:21:27 1984
+	--- dmesg.c	Fri Jan 27 13:20:55 1984
+	***************
+	*** 12,17
+	  #include <nlist.h>
+	  #include <signal.h>
+	  #include <sys/vm.h>
+	  #include <sys/msgbuf.h>
+	  
+	  struct	msgbuf msgbuf;
+
+	--- 12,18 -----
+	  #include <nlist.h>
+	  #include <signal.h>
+	  #include <sys/vm.h>
+	+ #include <sys/file.h>
+	  #include <sys/msgbuf.h>
+	  
+	  struct	msgbuf msgbuf;
+	***************
+	*** 19,24
+	  int	sflg;
+	  int	of	= -1;
+	  
+	  struct	msgbuf omesg;
+	  struct	nlist nl[2] = {
+		{ "_msgbuf" },
+
+	--- 20,27 -----
+	  int	sflg;
+	  int	of	= -1;
+	  
+	+ #define MSGBUF		"/usr/adm/msgbuf"
+	+ 
+	  struct	msgbuf omesg;
+	  struct	nlist nl[2] = {
+		{ "_msgbuf" },
+	***************
+	*** 41,49
+			argv++;
+		}
+		if (sflg) {
+	! 		of = open("/usr/adm/msgbuf", 2);
+	! 		read(of, (char *)&omesg, sizeof(omesg));
+	! 		lseek(of, 0L, 0);
+		}
+		sflg = 0;
+		nlist(argc>2? argv[2]:"/vmunix", nl);
+
+	--- 46,59 -----
+		}
+	  
+		if (sflg) {
+	! 		of = open(MSGBUF, O_RDWR | O_CREAT, 0600);
+	! 		if (of >= 0) {
+	! 			read(of, (char *)&omesg, sizeof(omesg));
+	! 			lseek(of, 0L, 0);
+	! 		} else {
+	! 			pdate();
+	! 			printf("dmesg: can't open '%s'\n", MSGBUF);
+	! 		}
+		}
+		sflg = 0;
+	  
+	***************
+	*** 95,101
+			pdate();
+			printf(s);
+		}
+	! 	write(of, (char *)&msgbuf, sizeof(msgbuf));
+		exit(s!=NULL);
+	  }
+	  
+
+	--- 112,119 -----
+			pdate();
+			printf(s);
+		}
+	! 	if (of >= 0)
+	! 		write(of, (char *)&msgbuf, sizeof(msgbuf));
+		exit(s!=NULL);
+	  }
+	--------------------------------------------------------------
+
+	This modified version of 'dmesg' at least creates the summary
+	file -- I haven't tried forcing the error report yet.
+
+	A small point:  someone should also change the code and
+	documentation to force the summarization flag on 'dmesg' to be
+	'-s' instead of just '-'.  This would bring it in line with the
+	other system programs which create summary files (e.g. 'pac',
+	'sa').
+
+Donn Seeley    UCSD Chemistry Dept. RRCF    ucbvax!sdcsvax!sdchema!donn
+32 52' 30"N 117 14' 25"W  (619) 452-4016    sdcsvax!sdchema!donn@noscvax

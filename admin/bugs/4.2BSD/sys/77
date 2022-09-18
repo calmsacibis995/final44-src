@@ -1,0 +1,78 @@
+Return-Path: <spgggm@ucbopal.CC>
+Date: Thu, 9 Feb 84 10:29:31 pst
+From: spgggm@ucbopal.CC (Greg Minshall)
+Subject: FIN_WAIT_2<>LAST_ACK socket pairs
+Index: 	sys/netinet/tcp_input.c 4.2BSD
+
+Description:
+	TCP sockets get left in FIN_WAIT_2 on one end, and LAST_ACK on the
+the other.  Essentially, A and B are connected.  A does a close (this is
+a unix close (PRU_DISCONNECT), not a TCP close (PRU_SHUTDOWN)).  A sends
+a FIN to B, and also causes the RCV.WND to go to zero.  B goes into
+CLOSE_WAIT, and ACKs A's FIN (causing A to go from FIN_WAIT_1 to FIN_WAIT_2).
+At some point, B would like to FIN (ie: when B's user does a close/shutdown).
+If B has NO DATA, the FIN goes to A, A ACKs and enters TIME_WAIT.  B, now
+in LAST_ACK, gets the ACK, and also enters TIME_WAIT.
+
+	Unfortunately, if B has DATA to send, he refuses (properly) to send
+the FIN, and instead tries to send DATA (length 1, every time the PERSIST
+timer goes off).  A, with a socket window of 0, refuses to ACK this data.
+And so we sit.  Every PERSIST time, a packet flows from B to A.  No traffic
+in the opposite direction.
+
+	Part of the problem is the mapping of unix file operations (in
+particular close()) to TCP operations.  Sometimes, the close() SHOULD be
+PRU_DISCONNECT (ie: when the unix process has inherited a file descriptor,
+not knowing what it was, wrote/read, and the close()'d).  Other times,
+when the unix process is knowledgeable, a close() should probably be
+a PRU_ABORT (because, eg, the unix process has been kill(1)'d); these people
+are supposed to use PRU_SHUTDOWN.
+
+Repeat-By:
+	Oh, do a "netstat -a", and look for WAIT_FIN_2 and/or LAST_ACK.
+Probably you can duplicate it by doing an rlogin(1), cat(1)'ing some large
+file, and doing "~." (but, I don't know).  We caused it by kill(1)'ing
+"rlogind" (trying to understand some other phenomenon).
+
+Fix:
+	in netinet/tcp_input.c, the following code appears:
+
+	/*
+	 * If data is received on a connection after the
+	 * user processes are gone, then RST the other end.
+	 */
+	if ((so->so_state & SS_NOFDREF) && tp->t_state > TCPS_CLOSE_WAIT &&
+	    ti->ti_len) {
+		tp = tcp_close(tp);
+		goto dropwithreset;
+	}
+
+	Unfortunately, this code appears after the following fragment:
+
+	/*
+	 * States other than LISTEN or SYN_SENT.
+	 * First check that at least some bytes of segment are within 
+	 * receive window.
+	 */
+	if (tp->rcv_wnd == 0) {
+		/*
+		 * If window is closed can only take segments at
+		 * window edge, and have to drop data and PUSH from
+		 * incoming segments.
+		 */
+		if (tp->rcv_nxt != ti->ti_seq)
+			goto dropafterack;
+		if (ti->ti_len > 0) {
+			m_adj(m, ti->ti_len);
+			ti->ti_len = 0;
+			ti->ti_flags &= ~(TH_PUSH|TH_FIN);
+		}
+	} else ...
+
+	When we are disconnected, tp->rcv_wnd == 0, so we set ti->ti_len = 0.
+Thus, the first code fragment is a NO-OP.  I would say that positioning the
+first fragment above would prevent FIN_WAIT_2's.  It won't prevent LAST_ACK's;
+those will need the remote socket's system to have this fix installed.
+
+yours,
+	Greg Minshall

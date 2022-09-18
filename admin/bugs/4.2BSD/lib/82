@@ -1,0 +1,81 @@
+Return-Path: <elsie!ado@seismo.CSS.GOV>
+Date: Thu, 12 Sep 85 15:26:09 EDT
+From: elsie!ado@seismo.CSS.GOV
+Subject: 4.?BSC C compiler fails to optimize some expressions (with fix?)
+
+Index:		lib/pcc/code.c 4.2BSD Fix
+
+Description:
+	The 4.?BSD C compiler and optimizer can fail to produce optimized
+	code for expressions that appear just before a value-free "return".
+
+Repeat-By:
+	Compile this source a la "cc -S -O":
+
+		one(i, j, k)
+		{
+			i = j * k;
+			dummy();
+		}
+
+		two(i, j, k)
+		{
+			dummy();
+			i = j * k;
+		}
+
+	...and note the differences in the code produced for the two functions.
+
+Fix:
+	The fix involves changing two files.  As usual, the trade secret status
+	of the code involved precludes a clearer posting.  The idea was
+	suggested by umcp-cs!chris.
+
+	Change the indicated line in "pcc/code.c":
+
+		#ifdef OLDVERSION
+				printf( "	ret\n" );
+		#else
+				if ((retstat & RETVAL) == 0)
+					printf("\tret\t# return;\n");
+				else	printf("\tret\n");
+		#endif
+
+	...and make this change to "c2/c21.c":
+
+		#ifdef OLDVERSION
+				if (p->subop==RET || p->subop==RSB) {uses[0]=p; regs[0][0]= -1; break;}
+		#else
+				if (p->subop == RET || p->subop == RSB) {
+					if (p->code == 0 ||
+						!equstr(p->code, "# return;"))
+							uses[0] = p;
+					regs[0][0] = -1;
+					break;
+				}
+		#endif
+
+	Of course I'm no wizard, so you may want to await the verdict of
+	other readers of net.bugs.4bsd before making this change.
+--
+C is a Mel Blanc/Jack Benny trademark.
+--
+	UUCP: ..decvax!seismo!elsie!ado    ARPA: elsie!ado@seismo.ARPA
+	DEC, VAX and Elsie are Digital Equipment and Borden trademarks
+
+======================================================================
+From donn@cs.utah.edu Mon Apr 13 02:33:21 1987
+Date: Mon, 13 Apr 87 03:50:52 MDT
+From: donn@cs.utah.edu (Donn Seeley)
+To: bostic@okeeffe.Berkeley.EDU
+Subject: Re:  more, more, more!! (4.2BSD/lib/82)
+Status: R
+
+I saw this one before and was loathe to include it.  Basically it
+causes a special comment to be passed to the optimizer telling it not
+to worry about the contents of r0 immediately before returns from void
+functions.  I had some ideas about how this could be done better, but
+as usual never had the time to implement them.
+
+Donn
+

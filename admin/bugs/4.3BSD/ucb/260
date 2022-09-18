@@ -1,0 +1,223 @@
+From serge@okeeffe.Berkeley.EDU  Wed Mar 22 17:43:22 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA26255; Wed, 22 Mar 89 17:43:22 -0800
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA01824; Wed, 22 Mar 89 17:43:19 -0800
+Received: by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA26247; Wed, 22 Mar 89 17:43:15 -0800
+Date: Wed, 22 Mar 89 17:43:15 -0800
+From: serge@okeeffe.Berkeley.EDU (serge)
+Message-Id: <8903230143.AA26247@okeeffe.Berkeley.EDU>
+Subject: vi can overrun its I/O buffer
+Index: ucb/ex 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Vi uses a static MAXBSIZE I/O buffer.  However, it reads
+	st_blksize characters into it.  With NFS, st_blksize can
+	be greater than MAXBSIZE.
+Fix:
+diff -c /usr/src/ucb/ex/ex.h ./ex.h
+*** /usr/src/ucb/ex/ex.h	Mon Aug  8 18:28:29 1988
+--- ./ex.h	Wed Mar 22 17:37:49 1989
+***************
+*** 419,424 ****
+--- 419,425 ----
+  int	vputch();
+  int	vshftop();
+  int	yank();
++ long	blksize();
+  
+  /*
+   * C doesn't have a (void) cast, so we have to fake it for lint's sake.
+diff -c /usr/src/ucb/ex/ex_cmdsub.c ./ex_cmdsub.c
+*** /usr/src/ucb/ex/ex_cmdsub.c	Sat Jan  2 23:12:31 1988
+--- ./ex_cmdsub.c	Wed Mar 22 17:21:34 1989
+***************
+*** 539,551 ****
+  		if (io<0)
+  			continue;
+  		tfcount++;
+! 		if (fstat(io, &sbuf) < 0)
+! 			bsize = LBSIZE;
+! 		else {
+! 			bsize = sbuf.st_blksize;
+! 			if (bsize <= 0)
+! 				bsize = LBSIZE;
+! 		}
+  		while (getfile() == 0) {
+  #endif
+  			/* loop for each tags file entry */
+--- 539,545 ----
+  		if (io<0)
+  			continue;
+  		tfcount++;
+! 		bsize = blksize(io);
+  		while (getfile() == 0) {
+  #endif
+  			/* loop for each tags file entry */
+diff -c /usr/src/ucb/ex/ex_io.c ./ex_io.c
+*** /usr/src/ucb/ex/ex_io.c	Wed Jan  4 17:36:35 1989
+--- ./ex_io.c	Wed Mar 22 17:36:00 1989
+***************
+*** 535,555 ****
+  	rop3(c);
+  }
+  
+  rop2()
+  {
+  	line *first, *last, *a;
+- 	struct stat statb;
+  
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	if (fstat(io, &statb) < 0)
+! 		bsize = LBSIZE;
+! 	else {
+! 		bsize = statb.st_blksize;
+! 		if (bsize <= 0)
+! 			bsize = LBSIZE;
+! 	}
+  	ignore(append(getfile, addr2));
+  	last = dot;
+  	/*
+--- 535,566 ----
+  	rop3(c);
+  }
+  
++ long
++ blksize(fd)
++ 	int		fd;
++ {
++ 	struct	stat	st;
++ 	long		result;
++ 
++ 	if (fstat(fd, &st) == 0)
++ 		result = st.st_blksize;
++ 	else
++ 		result = LBSIZE;
++ 
++ 	if (result <= 0 || result > MAXBSIZE)
++ 		result = MAXBSIZE;
++ 
++ 	return (result);
++ }
++ 
+  rop2()
+  {
+  	line *first, *last, *a;
+  
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	bsize = blksize(io);
+  	ignore(append(getfile, addr2));
+  	last = dot;
+  	/*
+***************
+*** 881,887 ****
+  	line *a1;
+  	register char *fp, *lp;
+  	register int nib;
+- 	struct stat statb;
+  
+  	a1 = addr1;
+  	clrstats();
+--- 892,897 ----
+***************
+*** 888,900 ****
+  	cntln = addr2 - a1 + 1;
+  	if (cntln == 0)
+  		return;
+! 	if (fstat(io, &statb) < 0)
+! 		bsize = LBSIZE;
+! 	else {
+! 		bsize = statb.st_blksize;
+! 		if (bsize <= 0)
+! 			bsize = LBSIZE;
+! 	}
+  	nib = bsize;
+  	fp = genbuf;
+  	do {
+--- 898,904 ----
+  	cntln = addr2 - a1 + 1;
+  	if (cntln == 0)
+  		return;
+! 	bsize = blksize(io);
+  	nib = bsize;
+  	fp = genbuf;
+  	do {
+diff -c /usr/src/ucb/ex/ex_tagio.c ./ex_tagio.c
+*** /usr/src/ucb/ex/ex_tagio.c	Mon Mar  9 12:47:32 1987
+--- ./ex_tagio.c	Wed Mar 22 17:22:01 1989
+***************
+*** 29,46 ****
+  char *file, *buf;
+  {
+  	int fd;
+- 	struct stat statb;
+  
+  	offset = -1;
+  	block = -1;
+  	if ((fd = open(file, O_RDONLY, 0)) < 0)
+  		return(-1);
+- 	if (fstat(fd, &statb) < 0) {
+- 		(void)close(fd);
+- 		return(-1);
+- 	}
+  	ibuf = buf;
+! 	b_size = statb.st_blksize;
+  	return(fd);
+  }
+  
+--- 29,41 ----
+  char *file, *buf;
+  {
+  	int fd;
+  
+  	offset = -1;
+  	block = -1;
+  	if ((fd = open(file, O_RDONLY, 0)) < 0)
+  		return(-1);
+  	ibuf = buf;
+! 	b_size = blksize(fd);
+  	return(fd);
+  }
+  
+diff -c /usr/src/ucb/ex/ex_unix.c ./ex_unix.c
+*** /usr/src/ucb/ex/ex_unix.c	Wed Jan  4 17:39:46 1989
+--- ./ex_unix.c	Wed Mar 22 17:23:18 1989
+***************
+*** 248,254 ****
+  	static int pvec[2];
+  	ttymode f;	/* mjm: was register */
+  	register int lines = lineDOL();
+- 	struct stat statb;
+  
+  	mode++;
+  	if (mode & 2) {
+--- 248,253 ----
+***************
+*** 281,293 ****
+  	if (mode & 1) {
+  		if(FIXUNDO)
+  			undap1 = undap2 = addr2+1;
+! 		if (fstat(io, &statb) < 0)
+! 			bsize = LBSIZE;
+! 		else {
+! 			bsize = statb.st_blksize;
+! 			if (bsize <= 0)
+! 				bsize = LBSIZE;
+! 		}
+  		ignore(append(getfile, addr2));
+  #ifdef TRACE
+  		if (trace)
+--- 280,286 ----
+  	if (mode & 1) {
+  		if(FIXUNDO)
+  			undap1 = undap2 = addr2+1;
+! 		bsize = blksize(io);
+  		ignore(append(getfile, addr2));
+  #ifdef TRACE
+  		if (trace)

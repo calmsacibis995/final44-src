@@ -1,0 +1,44 @@
+Return-Path: <guest@ucbarpa>
+Date: Tue, 19 Jun 84 05:17:15 pdt
+From: guest@ucbarpa (Guest Account)
+Subject: RL02 must be spinning on 11/730 
+Index: sys/vaxuba/idc.c 4.2BSD	
+
+Description:
+	When booting a Vax-11/730 with an RL02 disk drive on the IDC,
+	if the RL02 drive is not loaded and spinning, then autoconfigure
+	will not "see" the drive and you will have to reboot to get it back.
+	The requirement that the RL02 drive be loaded and spun up at boot
+	time is unnecessary.
+Repeat-By:
+	Boot a Vax-11/730 with the RL02 drive spun down.
+Fix:
+	This fix made life easier for us:  in the idcslave() routine
+	in idc.c, replace this code:
+		/* read header to synchronize microcode */
+		(void) idcwait(idcaddr,0);
+		idcaddr->idccsr = (ui->ui_slave<<8)|IDC_RHDR;
+		(void) idcwait(idcaddr,0);
+		if (idcaddr->idccsr & IDC_ERR)
+			return (0);
+		i = idcaddr->idcmpr;		/* read header word 1 */
+		i = idcaddr->idcmpr;		/* read header word 2 */
+	with this code:
+		/*
+		 * if there's an error now, conclude that the drive is not there
+		 */
+		if (idcaddr->idccsr & IDC_ERR) return 0;
+		/* read header to synchronize the microcode */
+		(void) idcwait(idcaddr,0);
+		idcaddr->idccsr = (ui->ui_slave<<8)|IDC_RHDR;
+		(void) idcwait(idcaddr,0);
+		/*
+		 * if drive is spun down, command will fail;
+		 * just ignore the failure
+		 */
+		if ((idcaddr->idccsr & IDC_ERR) == 0) {
+			i = idcaddr->idcmpr;	/* read header word 1 */
+			i = idcaddr->idcmpr;	/* read header word 2 */
+		}
+Submitted-By:
+	Rick Ace, New York Institute of Technology, (516) 686-7644

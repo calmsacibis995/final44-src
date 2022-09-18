@@ -1,0 +1,48 @@
+From moraes@church.csri.toronto.edu  Mon Apr 10 18:55:39 1989
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: sscanf() writes to the input string
+Date: 	Mon, 10 Apr 89 21:56:53 EDT
+From: Mark Moraes <moraes@csri.toronto.edu>
+Index: lib/libc/stdio 4.3BSD
+
+sscanf() pretends the input string (argument 1) to be scanned is an
+input buffer and hands it to _doscan() which may invoke ungetc() on it,
+to push back an identical character as what is already there. This can
+cause a program to fail when compiled with a compiler that puts constant
+strings in read-only text, and sscanf() is called as
+
+	int i;
+	(void) sscanf("3", "%d", &i);
+
+Our fix was to patch ungetc() not to write back the character if it was
+the same (inspection of doscan reveals that this will always be the case
+for when scanning) Other possible fixes include patching doscan not to
+call ungetc at all if some flag is set to indicate that a string is
+being scanned.
+
+Thanks.
+
+*** ungetc.c.orig	Mon Apr 10 21:47:14 1989
+--- ungetc.c	Mon Apr 10 21:48:34 1989
+***************
+*** 18,24 ****
+  			return (EOF);
+  
+  	iop->_cnt++;
+! 	*--iop->_ptr = c;
+  
+  	return (c);
+  }
+--- 18,29 ----
+  			return (EOF);
+  
+  	iop->_cnt++;
+! 	/* 
+! 	 * Don't write to the string if the character is unchanged.
+! 	 * This avoids problems with read-only strings and sscanf.
+! 	 */
+! 	if (*--iop->_ptr != c)
+! 		*iop->_ptr = c;
+  
+  	return (c);
+  }

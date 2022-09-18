@@ -1,0 +1,582 @@
+Date: Tue, 4 Nov 86 15:34:19 PST
+From: muller@sdcsvax.ucsd.edu (Keith Muller)
+Subject: refer can core dump on non vax machines
+Index: usr.bin/refer/glue1.c 4.3BSD (hunt2.c, hunt5.c, hunt6.c)
+
+Description:
+	The problem is that the defination of the "master" variables are
+	not consistant across all the source files.
+	In hunt1.c the variable "master" is declared:
+
+		unsigned *master;
+
+	It is passed as a parameter to doquery.  The definition of
+	doquery in hunt2.c declares the formal parameter "master" to
+	be:
+
+		union ptr {
+			unsigned *a;
+			long *b;
+		} master;
+
+	This creates type conflict in actual and formal parameters that
+	breaks on non-vax type systems (pyramid for one).
+
+Repeat-By:
+	Any attempt to use lookbib results in a Bus Error.
+
+Fix:
+	The fixes do NOT change the behavior of the program on vaxes.
+	In hunt2.c, alleviate the type conflict by declaring the
+	"master" formal parameter of doquery to be "unsigned
+	*master;".  Within doquery delclare a local union varable
+	"umaster", assign the value of master to the appropriate
+	component of umaster.  See file diff.hunt2 in the attached shar
+	archive.
+
+	A similar change is required in the routine "baddrop" defined
+	in hunt6.c, and in the routine "result" defined in hunt5.c.
+	See diff.hunt6 and diff.hunt5 attached.
+
+	Because in glue1.c the refer program also calls "baddrop" the
+	"master" variable it passes must be declared "unsigned
+	*master;".  See diff.glue1 attached.
+
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	diff.glue1
+#	diff.hunt2
+#	diff.hunt5
+#	diff.hunt6
+# This archive created: Fri Oct 24 16:08:19 1986
+export PATH; PATH=/bin:$PATH
+if test -f 'diff.glue1'
+then
+	echo shar: will not over-write existing file "'diff.glue1'"
+else
+cat << \SHAR_EOF > 'diff.glue1'
+*** /tmp/,RCSt1029270	Fri Oct 24 14:39:39 1986
+--- glue1.c	Fri Oct 24 14:37:31 1986
+***************
+*** 11,20 ****
+  FILE *fd = 0;
+  int *hfreq, hfrflg;
+  int colevel = 0;
+! static union firetruck {
+! 	unsigned *a; 
+! 	long *b;
+! } master;
+  int iflong;
+  extern char *fgnames[], **fgnamp;
+  extern FILE *iopen();
+--- 11,17 ----
+  FILE *fd = 0;
+  int *hfreq, hfrflg;
+  int colevel = 0;
+! unsigned *master = 0;
+  int iflong;
+  extern char *fgnames[], **fgnamp;
+  extern FILE *iopen();
+***************
+*** 167,178 ****
+  # if D1
+  			fprintf(stderr,"Read pointer files\n");
+  # endif
+! 			if (master.a == NULL)
+! 				if (iflong)
+! 					master.b = (long *)zalloc(lmaster, sizeof(long));
+! 				else
+! 					master.a = (unsigned *)zalloc(lmaster, sizeof(int));
+! 			if (master.a == NULL)
+  				err ("no space for answer list",0);
+  		}
+  		else
+--- 164,172 ----
+  # if D1
+  			fprintf(stderr,"Read pointer files\n");
+  # endif
+! 			if(master==0)
+! 				master = (unsigned *) zalloc (lmaster, iflong? sizeof(long): sizeof(unsigned));
+! 			if (master == NULL)
+  				err ("no space for answer list",0);
+  		}
+  		else
+SHAR_EOF
+fi # end of overwriting check
+if test -f 'diff.hunt2'
+then
+	echo shar: will not over-write existing file "'diff.hunt2'"
+else
+cat << \SHAR_EOF > 'diff.hunt2'
+*** /tmp/,RCSt1022005	Fri Oct 24 09:59:11 1986
+--- hunt2.c	Fri Oct 24 09:39:38 1986
+***************
+*** 13,23 ****
+  long *hpt;
+  FILE *fb;
+  char *qitem[];
+! union ptr {
+! 	unsigned *a; 
+! 	long *b;
+! } master;
+  {
+  	long k;
+  	union ptr prevdrop;
+  	int nf = 0, best = 0, nterm = 0, i, g, j;
+--- 13,24 ----
+  long *hpt;
+  FILE *fb;
+  char *qitem[];
+! unsigned *master;
+  {
++ 	union ptr {
++ 		unsigned *a; 
++ 		long *b;
++ 	} umaster;
+  	long k;
+  	union ptr prevdrop;
+  	int nf = 0, best = 0, nterm = 0, i, g, j;
+***************
+*** 33,38 ****
+--- 34,43 ----
+  	fprintf(stderr, "first few hashes are %ld %ld %ld %ld %ld\n", hpt[0],hpt[1],hpt[2],hpt[3],hpt[4]);
+  	fprintf(stderr, "and frequencies are  %d %d %d %d %d\n",hfreq[0],hfreq[1],hfreq[2],hfreq[3],hfreq[4]);
+  # endif
++ 	if (iflong)
++ 		umaster.b = (long *) master;
++ 	else
++ 		umaster.a = master;
+  	_assert (lmaster>0);
+  	if (coord==0)
+  		coord = (int *) zalloc(lmaster, sizeof(lmaster));
+***************
+*** 46,52 ****
+  	}
+  	else
+  	{
+! 		prevdrop.a=master.a;
+  		prevcoord=coord;
+  	}
+  # if D1
+--- 51,57 ----
+  	}
+  	else
+  	{
+! 		prevdrop.a=umaster.a;
+  		prevcoord=coord;
+  	}
+  # if D1
+***************
+*** 81,104 ****
+  	for(i=0; i<lmaster; i++)
+  	{
+  		if (iflong)
+! 			master.b[i] = getl(fb);
+  		else
+! 			master.a[i] = getw(fb);
+  		coord[i]=1;
+  # if D2
+  		if (iflong)
+! 			fprintf(stderr,"master has %ld\n",(master.b[i]));
+  		else
+! 			fprintf(stderr,"master has %d\n",(master.a[i]));
+  # endif
+  		_assert (i<lmaster);
+  		if (iflong)
+  		{
+! 			if (master.b[i] == -1L) break;
+  		}
+  		else
+  		{
+! 			if (master.a[i] == -1) break;
+  		}
+  	}
+  	nf= i;
+--- 86,109 ----
+  	for(i=0; i<lmaster; i++)
+  	{
+  		if (iflong)
+! 			umaster.b[i] = getl(fb);
+  		else
+! 			umaster.a[i] = getw(fb);
+  		coord[i]=1;
+  # if D2
+  		if (iflong)
+! 			fprintf(stderr,"umaster has %ld\n",(umaster.b[i]));
+  		else
+! 			fprintf(stderr,"umaster has %d\n",(umaster.a[i]));
+  # endif
+  		_assert (i<lmaster);
+  		if (iflong)
+  		{
+! 			if (umaster.b[i] == -1L) break;
+  		}
+  		else
+  		{
+! 			if (umaster.a[i] == -1) break;
+  		}
+  	}
+  	nf= i;
+***************
+*** 112,120 ****
+  			for(j=0; j<nf; j++)
+  			{
+  				if (iflong)
+! 					prevdrop.b[j] = master.b[j];
+  				else
+! 					prevdrop.a[j] = master.a[j];
+  				prevcoord[j] = coord[j];
+  			}
+  		}
+--- 117,125 ----
+  			for(j=0; j<nf; j++)
+  			{
+  				if (iflong)
+! 					prevdrop.b[j] = umaster.b[j];
+  				else
+! 					prevdrop.a[j] = umaster.a[j];
+  				prevcoord[j] = coord[j];
+  			}
+  		}
+***************
+*** 156,170 ****
+  				{
+  					_assert (g<lmaster);
+  					if (iflong)
+! 						master.b[g] = prevdrop.b[j];
+  					else
+! 						master.a[g] = prevdrop.a[j];
+  					coord[g++] = prevcoord[j++];
+  # if D1
+  					if (iflong)
+! 						fprintf(stderr, " not skip g %d doc %d coord %d note %d\n",g,master.b[g-1], coord[g-1],master.b[j-1]);
+  					else
+! 						fprintf(stderr, " not skip g %d doc %ld coord %d nterm %d\n",g,master.a[g-1], coord[g-1],nterm);
+  # endif
+  					continue;
+  				}
+--- 161,175 ----
+  				{
+  					_assert (g<lmaster);
+  					if (iflong)
+! 						umaster.b[g] = prevdrop.b[j];
+  					else
+! 						umaster.a[g] = prevdrop.a[j];
+  					coord[g++] = prevcoord[j++];
+  # if D1
+  					if (iflong)
+! 						fprintf(stderr, " not skip g %d doc %d coord %d note %d\n",g,umaster.b[g-1], coord[g-1],umaster.b[j-1]);
+  					else
+! 						fprintf(stderr, " not skip g %d doc %ld coord %d nterm %d\n",g,umaster.a[g-1], coord[g-1],nterm);
+  # endif
+  					continue;
+  				}
+***************
+*** 173,187 ****
+  			if (j<nf && (iflong? prevdrop.b[j]: prevdrop.a[j]) == k)
+  			{
+  				if (iflong)
+! 					master.b[g]=k;
+  				else
+! 					master.a[g]=k;
+  				coord[g++] = prevcoord[j++]+1;
+  # if D1
+  				if (iflong)
+! 					fprintf(stderr, " at g %d item %ld coord %d note %ld\n",g,master.b[g-1],coord[g-1],master.b[j-1]);
+  				else
+! 					fprintf(stderr, " at g %d item %d coord %d note %d\n",g,master.a[g-1],coord[g-1],master.a[j-1]);
+  # endif
+  			}
+  			else
+--- 178,192 ----
+  			if (j<nf && (iflong? prevdrop.b[j]: prevdrop.a[j]) == k)
+  			{
+  				if (iflong)
+! 					umaster.b[g]=k;
+  				else
+! 					umaster.a[g]=k;
+  				coord[g++] = prevcoord[j++]+1;
+  # if D1
+  				if (iflong)
+! 					fprintf(stderr, " at g %d item %ld coord %d note %ld\n",g,umaster.b[g-1],coord[g-1],umaster.b[j-1]);
+  				else
+! 					fprintf(stderr, " at g %d item %d coord %d note %d\n",g,umaster.a[g-1],coord[g-1],umaster.a[j-1]);
+  # endif
+  			}
+  			else
+***************
+*** 188,196 ****
+  				if (colevel >= nterm)
+  				{
+  					if (iflong)
+! 						master.b[g]=k;
+  					else
+! 						master.a[g]=k;
+  					coord[g++] = 1;
+  				}
+  		}
+--- 193,201 ----
+  				if (colevel >= nterm)
+  				{
+  					if (iflong)
+! 						umaster.b[g]=k;
+  					else
+! 						umaster.a[g]=k;
+  					coord[g++] = 1;
+  				}
+  		}
+***************
+*** 203,217 ****
+  				{
+  					_assert(g<lmaster);
+  					if (iflong)
+! 						master.b[g] = prevdrop.b[j];
+  					else
+! 						master.a[g] = prevdrop.a[j];
+  					coord[g++] = prevcoord[j];
+  # if D3
+  					if(iflong)
+! 						fprintf(stderr, "copied over %ld coord %d\n",master.b[g-1], coord[g-1]);
+  					else
+! 						fprintf(stderr, "copied over %d coord %d\n",master.a[g-1], coord[g-1]);
+  # endif
+  				}
+  		nf = g;
+--- 208,222 ----
+  				{
+  					_assert(g<lmaster);
+  					if (iflong)
+! 						umaster.b[g] = prevdrop.b[j];
+  					else
+! 						umaster.a[g] = prevdrop.a[j];
+  					coord[g++] = prevcoord[j];
+  # if D3
+  					if(iflong)
+! 						fprintf(stderr, "copied over %ld coord %d\n",umaster.b[g-1], coord[g-1]);
+  					else
+! 						fprintf(stderr, "copied over %d coord %d\n",umaster.a[g-1], coord[g-1]);
+  # endif
+  				}
+  		nf = g;
+***************
+*** 229,237 ****
+  			if (coord[j]==best)
+  			{
+  				if (iflong)
+! 					master.b[g++] = master.b[j];
+  				else
+! 					master.a[g++] = master.a[j];
+  			}
+  		nf=g;
+  # if D1
+--- 234,242 ----
+  			if (coord[j]==best)
+  			{
+  				if (iflong)
+! 					umaster.b[g++] = umaster.b[j];
+  				else
+! 					umaster.a[g++] = umaster.a[j];
+  			}
+  		nf=g;
+  # if D1
+***************
+*** 249,257 ****
+  # if D3
+  	for(g=0;g<nf;g++)
+  		if(iflong)
+! 			fprintf(stderr,":%ld\n",master.b[g]);
+  		else
+! 			fprintf(stderr,":%d\n",master.a[g]);
+  # endif
+  	return(nf);
+  }
+--- 254,262 ----
+  # if D3
+  	for(g=0;g<nf;g++)
+  		if(iflong)
+! 			fprintf(stderr,":%ld\n",umaster.b[g]);
+  		else
+! 			fprintf(stderr,":%d\n",umaster.a[g]);
+  # endif
+  	return(nf);
+  }
+SHAR_EOF
+fi # end of overwriting check
+if test -f 'diff.hunt5'
+then
+	echo shar: will not over-write existing file "'diff.hunt5'"
+else
+cat << \SHAR_EOF > 'diff.hunt5'
+*** /tmp/,RCSt1029303	Fri Oct 24 14:41:08 1986
+--- hunt5.c	Fri Oct 24 14:35:40 1986
+***************
+*** 9,18 ****
+  extern char *soutput, *tagout, usedir[];
+  
+  result(master, nf, fc)
+! union ptr {
+! 	unsigned *a; 
+! 	long *b;
+! } master;
+  FILE *fc;
+  {
+  	int i, c;
+--- 9,15 ----
+  extern char *soutput, *tagout, usedir[];
+  
+  result(master, nf, fc)
+! unsigned *master;
+  FILE *fc;
+  {
+  	int i, c;
+***************
+*** 20,29 ****
+  	long lp;
+  	extern int iflong;
+  	char res[100];
+  
+  	for(i=0; i<nf; i++)
+  	{
+! 		lp = iflong ? master.b[i] : master.a[i];
+  		fseek(fc,lp, 0);
+  		fgets(res, 100, fc);
+  		for(s=res; c = *s; s++)
+--- 17,34 ----
+  	long lp;
+  	extern int iflong;
+  	char res[100];
++ 	union ptr {
++ 		unsigned *a; 
++ 		long *b;
++ 	} umaster;
+  
++ 	if (iflong)
++ 		umaster.b = (long *) master;
++ 	else
++ 		umaster.a = master;
+  	for(i=0; i<nf; i++)
+  	{
+! 		lp = iflong ? umaster.b[i] : umaster.a[i];
+  		fseek(fc,lp, 0);
+  		fgets(res, 100, fc);
+  		for(s=res; c = *s; s++)
+SHAR_EOF
+fi # end of overwriting check
+if test -f 'diff.hunt6'
+then
+	echo shar: will not over-write existing file "'diff.hunt6'"
+else
+cat << \SHAR_EOF > 'diff.hunt6'
+*** /tmp/,RCSt1022034	Fri Oct 24 10:00:18 1986
+--- hunt6.c	Fri Oct 24 09:40:01 1986
+***************
+*** 12,48 ****
+  extern long indexdate;
+  
+  baddrop(master, nf, fc, nitem, qitem, rprog, full)
+! union ptr {
+! 	unsigned *a; 
+! 	long *b; 
+! } 
+! master;
+  FILE *fc;
+  char *qitem[], *rprog;
+  {
+  	/* checks list of drops for real bad drops; finds items with "deliv" */
+  	int i, g, j, need, got, na, len;
+  	long lp;
+  	char res[100], *ar[50], output[TXTLEN];
+  	extern int colevel, reached;
+  # if D1
+  	if (iflong)
+! 		fprintf(stderr,"in baddrop, nf %d master %ld %ld %ld\n",
+! 			nf, master.b[0], master.b[1], master.b[2]);
+  	else
+! 		fprintf(stderr,"in baddrop, nf %d master %d %d %d\n",
+! 			nf, master.a[0], master.a[1], master.a[2]);
+  # endif
+  	for (i=g=0; i<nf; i++)
+  	{
+! 		lp = iflong ? master.b[i] : master.a[i];
+  # if D1
+  		if (iflong)
+! 			fprintf(stderr, "i %d master %lo lp %lo\n",
+! 				i, master.b[i], lp);
+  		else
+! 			fprintf(stderr, "i %d master %o lp %lo\n",
+! 				i, master.a[i], lp);
+  # endif
+  		fseek (fc, lp, 0);
+  		fgets( res, 100, fc);
+--- 12,53 ----
+  extern long indexdate;
+  
+  baddrop(master, nf, fc, nitem, qitem, rprog, full)
+! unsigned *master;
+  FILE *fc;
+  char *qitem[], *rprog;
+  {
+  	/* checks list of drops for real bad drops; finds items with "deliv" */
++ 	union ptr {
++ 		unsigned *a; 
++ 		long *b; 
++ 	} umaster;
+  	int i, g, j, need, got, na, len;
+  	long lp;
+  	char res[100], *ar[50], output[TXTLEN];
+  	extern int colevel, reached;
++ 	
++ 	if (iflong)
++ 		umaster.b = (long *) master;
++ 	else
++ 		umaster.a = master;
+  # if D1
+  	if (iflong)
+! 		fprintf(stderr,"in baddrop, nf %d umaster %ld %ld %ld\n",
+! 			nf, umaster.b[0], umaster.b[1], umaster.b[2]);
+  	else
+! 		fprintf(stderr,"in baddrop, nf %d umaster %d %d %d\n",
+! 			nf, umaster.a[0], umaster.a[1], umaster.a[2]);
+  # endif
+  	for (i=g=0; i<nf; i++)
+  	{
+! 		lp = iflong ? umaster.b[i] : umaster.a[i];
+  # if D1
+  		if (iflong)
+! 			fprintf(stderr, "i %d umaster %lo lp %lo\n",
+! 				i, umaster.b[i], lp);
+  		else
+! 			fprintf(stderr, "i %d umaster %o lp %lo\n",
+! 				i, umaster.a[i], lp);
+  # endif
+  		fseek (fc, lp, 0);
+  		fgets( res, 100, fc);
+***************
+*** 95,103 ****
+  			fprintf(stderr, "fgrep found it\n");
+  # endif
+  			if (iflong)
+! 				master.b[g++] = master.b[i];
+  			else
+! 				master.a[g++] = master.a[i];
+  			if (full >= g)
+  				if (soutput==0)
+  					fputs(output, stdout);
+--- 100,108 ----
+  			fprintf(stderr, "fgrep found it\n");
+  # endif
+  			if (iflong)
+! 				umaster.b[g++] = umaster.b[i];
+  			else
+! 				umaster.a[g++] = umaster.a[i];
+  			if (full >= g)
+  				if (soutput==0)
+  					fputs(output, stdout);
+SHAR_EOF
+fi # end of overwriting check
+#	End of shell archive
+exit 0
+

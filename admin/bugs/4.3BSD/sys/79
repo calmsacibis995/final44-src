@@ -1,0 +1,77 @@
+From decwrl!amdcad!tymix!feldman@ucbvax.Berkeley.EDU  Thu Jan  8 11:38:39 1987
+Received: by ucbarpa.Berkeley.EDU (5.57/1.20)
+	id AA26567; Thu, 8 Jan 87 11:38:39 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.20)
+	id AA13502; Thu, 8 Jan 87 11:38:24 PST
+Received: by decwrl.dec.com (5.54.3/4.7.34)
+	id AA04068; Thu, 8 Jan 87 11:37:50 PST
+Received: by amdcad.AMD.COM (smail2.1)
+	id AA07983; 8 Jan 87 11:34:09 PST (Thu)
+Received: by tymix.Tymnet (5.51/4.7)
+	id AA13563; Thu, 8 Jan 87 11:32:58 PST
+Date: Thu, 8 Jan 87 11:32:58 PST
+From: decwrl!tymix!feldman@ucbvax.Berkeley.EDU (Steve Feldman)
+Message-Id: <8701081932.AA13563@tymix.Tymnet>
+Subject: TANDEM mode problems
+Index: 	sys/sys/tty.c 4.3BSD +FIX
+Apparently-To: amdcad!decwrl!ucbvax!4bsd-bugs
+
+Description:
+	There are two problems in the TANDEM mode handling in the
+	4.3 bsd tty driver.  (They were in 4.2 as well.)
+
+	First, if you have a device which is slow responding to
+	a control-S, the driver can send additional control-S's
+	when the last few characters arrive.
+
+	Second, there is a deadlock condition possible if the tty
+	is in cooked mode.  If input is stopped with more than TTYHOG/5
+	characters left in the rawq, input can't ever be started again
+	since the application won't see those characters.
+
+Repeat-By:
+	Send lots of data to a slow system in cooked mode.
+
+Fix:
+	Apply the following patch to /sys/sys/tty.c:
+		(your line numbers will vary.)
+
+*** tty.c.old	Thu Jan  8 11:09:58 1987
+--- tty.c	Mon Jan  5 17:33:13 1987
+***************
+*** 191,197 ****
+  	 * Current input > threshold AND input is available to user program
+  	 */
+  	if (x >= TTYHOG/2 && 
+! 	    ((tp->t_flags & (RAW|CBREAK)) || (tp->t_canq.c_cc > 0))) {
+  		if (putc(tp->t_stopc, &tp->t_outq)==0) {
+  			tp->t_state |= TS_TBLOCK;
+  			ttstart(tp);
+--- 191,198 ----
+  	 * Current input > threshold AND input is available to user program
+  	 */
+  	if (x >= TTYHOG/2 && 
+! 	    ((tp->t_flags & (RAW|CBREAK)) || (tp->t_canq.c_cc > 0)) &&
+! 	    (tp->t_state&TS_TBLOCK) == 0) {
+  		if (putc(tp->t_stopc, &tp->t_outq)==0) {
+  			tp->t_state |= TS_TBLOCK;
+  			ttstart(tp);
+***************
+*** 1245,1251 ****
+  	 * Look to unblock output now that (presumably)
+  	 * the input queue has gone down.
+  	 */
+! 	if (tp->t_state&TS_TBLOCK && tp->t_rawq.c_cc < TTYHOG/5)
+  		if (putc(tp->t_startc, &tp->t_outq) == 0) {
+  			tp->t_state &= ~TS_TBLOCK;
+  			ttstart(tp);
+--- 1246,1254 ----
+  	 * Look to unblock output now that (presumably)
+  	 * the input queue has gone down.
+  	 */
+! 	if (tp->t_state&TS_TBLOCK &&
+! 	    (tp->t_rawq.c_cc+tp->t_canq.c_cc < TTYHOG/5 ||
+! 	    (t_flags&(RAW|CBREAK)) == 0 && tp->t_canq.c_cc == 0))
+  		if (putc(tp->t_startc, &tp->t_outq) == 0) {
+  			tp->t_state &= ~TS_TBLOCK;
+  			ttstart(tp);

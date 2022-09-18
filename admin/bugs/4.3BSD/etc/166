@@ -1,0 +1,73 @@
+From sms@WLV.IMSD.CONTEL.COM  Sun Mar 11 15:04:36 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA08948; Sun, 11 Mar 90 15:04:36 -0800
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA25554; Sun, 11 Mar 90 15:04:41 -0800
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA01420; Sun, 11 Mar 90 15:04:24 -0800
+Date: Sun, 11 Mar 90 15:04:24 -0800
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9003112304.AA01420@WLV.IMSD.CONTEL.COM>
+Subject: rlogind/BIND undesireable interaction (+FIX)
+Index: 	etc/rlogind/rlogind.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+
+	The version of 'rlogind' is 5.22.1.7 dated 9/11/89, and the problem 
+	is in the "verification" process 'rlogind' performs to make sure
+	the remote host is really himself.
+
+	'Rlogind' does a gethostbyaddr() to look up the name of the
+	client host, receives a successfull response, and then
+	performs a gethostbyname() using the name returned earlier.
+
+	Unfortunately, there is not a trailing '.' at the end of
+	the name returned by gethostbyaddr() and RES_DNSRCH (and RES_DEFNAME)
+	are ON (by default), so the resolving routines merrily start appending 
+	the various domain subcomponents and issuing queries to the 'named'.
+	In turn, 'named' can end up wandering out to the root servers before
+	the domain search path is empty and a query on the ORIGINAL
+	name is done (query ends up back in the local domain finally), at
+	which point the 'rlogin' completes.  Very slow!  Especially if
+	any network links/interfaces are down.
+
+Repeat-By:
+	Probably the easiest way to see this is to turn on the debugging
+	in the name servor with a SIGUSR1 and watch /usr/tmp/named.run.
+
+	Alternatively, use 'nslookup' with RES_DEBUG turned on.
+
+Fix:
+	Apply this patch to rlogind and reinstall rlogind.
+
+*** rlogind.c.old	Fri Oct  6 17:29:38 1989
+--- rlogind.c	Thu Mar  8 10:21:14 1990
+***************
+*** 57,62 ****
+--- 57,64 ----
+  #include <netdb.h>
+  #include <syslog.h>
+  #include <strings.h>
++ #include <arpa/nameser.h>
++ #include <resolv.h>
+  
+  #ifndef TIOCPKT_WINDOW
+  #define TIOCPKT_WINDOW 0x80
+***************
+*** 170,175 ****
+--- 172,185 ----
+  		 */
+  		strncpy(remotehost, hp->h_name, sizeof(remotehost) - 1);
+  		remotehost[sizeof(remotehost) - 1] = 0;
++ #ifdef	RES_DNSRCH
++ 		/*
++ 		 * gethostbyaddr returns a FQDN, so now the domain search
++ 		 * action must be turned off to avoid unwanted queries to
++ 		 * the nameservor.
++ 		*/
++ 		_res.options &= ~RES_DNSRCH;
++ #endif	RES_DNSRCH
+  		hp = gethostbyname(remotehost);
+  		if (hp)
+  #ifdef h_addr	/* 4.2 hack */

@@ -1,0 +1,242 @@
+Return-Path: <cew@Purdue.ARPA>
+Date: Wed, 7 Nov 84 08:59:02 est
+From: Craig E Wills <cew@Purdue.ARPA>
+Subject: w command
+Index: ucb/w 4.2BSD
+
+Description:
+	The w command uses a poor heuristic to determine the last command
+	associated with a terminal.  This causes two types of problems:
+	1.  pid's wrap-around and so the highest pid is not always the last
+	    command
+	2.  w does not check to make sure the process's owner is the same
+	    as the person currently on the terminal resulting occasionally
+	    in erroneous last command.
+Repeat-By:
+	Run w when wraparound of pid's is occuring.
+Fix:
+	First of all check to make sure the owner of the process is the
+	same as the person currently logged into the terminal.
+	Next get the pid of the w program executing and use it as a baseline
+	to determine the latest process on that terminal.  So if the pid
+	of the w program is 2000, a process with pid of 1990 would be later
+	than one with 29980.
+
+===============================================================
+
+Return-Path: <cew@Purdue.ARPA>
+Date: Wed, 7 Nov 84 11:10:54 est
+From: Craig E Wills <cew@Purdue.ARPA>
+Subject: w command (actual fixes)
+Index: 	ucb/w 4.2BSD
+
+Description:
+	Problem with w not using a good heuristic for last command
+	executed.
+Fix:
+	The following is a diff -c of my changes and the original
+	w.c source:
+
+***************
+*** 18,23
+  #include <sys/proc.h>
+  #include <machine/pte.h>
+  #include <sys/vm.h>
+  
+  #define NMAX sizeof(utmp.ut_name)
+  #define LMAX sizeof(utmp.ut_line)
+
+--- 18,24 -----
+  #include <sys/proc.h>
+  #include <machine/pte.h>
+  #include <sys/vm.h>
++ #include <pwd.h>
+  
+  #define NMAX sizeof(utmp.ut_name)
+  #define LMAX sizeof(utmp.ut_line)
+***************
+*** 25,30
+  #define ARGWIDTH	33	/* # chars left on 80 col crt for args */
+  
+  struct pr {
+  	short	w_pid;			/* proc.p_pid */
+  	char	w_flag;			/* proc.p_flag */
+  	short	w_size;			/* proc.p_size */
+
+--- 26,32 -----
+  #define ARGWIDTH	33	/* # chars left on 80 col crt for args */
+  
+  struct pr {
++ 	short	w_uid;			/* proc.p_uid */
+  	short	w_pid;			/* proc.p_pid */
+  	char	w_flag;			/* proc.p_flag */
+  	short	w_size;			/* proc.p_size */
+***************
+*** 80,85
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+  #define	TTYEQ		(tty == pr[i].w_tty)
+  #define IGINT		(1+3*1)		/* ignoring both SIGINT & SIGQUIT */
+  
+  char	*getargs();
+  char	*fread();
+
+--- 82,88 -----
+  #define	DIV60(t)	((t+30)/60)    /* x/60 rounded */ 
+  #define	TTYEQ		(tty == pr[i].w_tty)
+  #define IGINT		(1+3*1)		/* ignoring both SIGINT & SIGQUIT */
++ #define LARGEINT	1000000;
+  
+  char	*getargs();
+  char	*fread();
+***************
+*** 118,123
+  	char *cp;
+  	register int curpid, empty;
+  	char obuf[BUFSIZ];
+  
+  	setbuf(stdout, obuf);
+  	login = (argv[0][0] == '-');
+
+--- 121,129 -----
+  	char *cp;
+  	register int curpid, empty;
+  	char obuf[BUFSIZ];
++ 	int curuid;
++ 	int thispid, mypid;
++ 	struct passwd *pwdptr;
+  
+  	mypid = getpid();
+  	setbuf(stdout, obuf);
+***************
+*** 119,124
+  	register int curpid, empty;
+  	char obuf[BUFSIZ];
+  
+  	setbuf(stdout, obuf);
+  	login = (argv[0][0] == '-');
+  	cp = rindex(argv[0], '/');
+
+--- 125,131 -----
+  	int thispid, mypid;
+  	struct passwd *pwdptr;
+  
++ 	mypid = getpid();
+  	setbuf(stdout, obuf);
+  	login = (argv[0][0] == '-');
+  	cp = rindex(argv[0], '/');
+***************
+*** 255,260
+  			continue;	/* that tty is free */
+  		if (sel_user && strcmpn(utmp.ut_name, sel_user, NMAX) != 0)
+  			continue;	/* we wanted only somebody else */
+  
+  		gettty();
+  		jobtime = 0;
+
+--- 262,270 -----
+  			continue;	/* that tty is free */
+  		if (sel_user && strcmpn(utmp.ut_name, sel_user, NMAX) != 0)
+  			continue;	/* we wanted only somebody else */
++ 		if ((pwdptr = getpwnam(utmp.ut_name)) == NULL)
++ 			continue;
++ 		curuid = pwdptr->pw_uid;
+  
+  		gettty();
+  		jobtime = 0;
+***************
+*** 261,267
+  		proctime = 0;
+  		strcpy(doing, "-");	/* default act: normally never prints */
+  		empty = 1;
+! 		curpid = -1;
+  		idle = findidle();
+  		for (i=0; i<np; i++) {	/* for each process on this tty */
+  			if (!(TTYEQ))
+
+--- 271,277 -----
+  		proctime = 0;
+  		strcpy(doing, "-");	/* default act: normally never prints */
+  		empty = 1;
+! 		curpid = -LARGEINT;
+  		idle = findidle();
+  		for (i=0; i<np; i++) {	/* for each process on this tty */
+  			if (!(TTYEQ))
+***************
+*** 266,271
+  		for (i=0; i<np; i++) {	/* for each process on this tty */
+  			if (!(TTYEQ))
+  				continue;
+  			jobtime += pr[i].w_time + pr[i].w_ctime;
+  			proctime += pr[i].w_time;
+  			if (debug) {
+
+--- 276,283 -----
+  		for (i=0; i<np; i++) {	/* for each process on this tty */
+  			if (!(TTYEQ))
+  				continue;
++ 			if ((short)curuid != pr[i].w_uid)
++ 				continue;
+  			jobtime += pr[i].w_time + pr[i].w_ctime;
+  			proctime += pr[i].w_time;
+  			if (debug) {
+***************
+*** 279,285
+  			}
+  			if (empty && pr[i].w_igintr!=IGINT) {
+  				empty = 0;
+! 				curpid = -1;
+  			}
+  			if(pr[i].w_pid>curpid && (pr[i].w_igintr!=IGINT || empty)){
+  				curpid = pr[i].w_pid;
+
+--- 291,297 -----
+  			}
+  			if (empty && pr[i].w_igintr!=IGINT) {
+  				empty = 0;
+! 				curpid = -LARGEINT;
+  			}
+  			if (pr[i].w_pid <= mypid)
+  				thispid = pr[i].w_pid;
+***************
+*** 281,288
+  				empty = 0;
+  				curpid = -1;
+  			}
+! 			if(pr[i].w_pid>curpid && (pr[i].w_igintr!=IGINT || empty)){
+! 				curpid = pr[i].w_pid;
+  				strcpy(doing, lflag ? pr[i].w_args : pr[i].w_comm);
+  #ifdef notdef
+  				if (doing[0]==0 || doing[0]=='-' && doing[1]<=' ' || doing[0] == '?') {
+
+--- 293,306 -----
+  				empty = 0;
+  				curpid = -LARGEINT;
+  			}
+! 			if (pr[i].w_pid <= mypid)
+! 				thispid = pr[i].w_pid;
+! 			else
+! 				/* make thispid negative with highest pid's
+! 				   begin the least negative */
+! 				thispid = pr[i].w_pid - LARGEINT;
+! 			if(thispid > curpid && (pr[i].w_igintr!=IGINT || empty)){
+! 				curpid = thispid;
+  				strcpy(doing, lflag ? pr[i].w_args : pr[i].w_comm);
+  #ifdef notdef
+  				if (doing[0]==0 || doing[0]=='-' && doing[1]<=' ' || doing[0] == '?') {
+***************
+*** 498,503
+  			continue;
+  
+  		/* save the interesting parts */
+  		pr[np].w_pid = mproc.p_pid;
+  		pr[np].w_flag = mproc.p_flag;
+  		pr[np].w_size = mproc.p_dsize + mproc.p_ssize;
+
+--- 516,522 -----
+  			continue;
+  
+  		/* save the interesting parts */
++ 		pr[np].w_uid = mproc.p_uid;
+  		pr[np].w_pid = mproc.p_pid;
+  		pr[np].w_flag = mproc.p_flag;
+  		pr[np].w_size = mproc.p_dsize + mproc.p_ssize;

@@ -1,0 +1,101 @@
+Return-Path: <mogul@Coyote>
+Date: Fri, 6 Apr 84 18:58:25 pst
+From: Jeff Mogul <mogul@Coyote>
+Subject: Pascal doesn't like mixed-case keywords
+Index: 	ucb/pascal/src/hash.c 4.2BSD Fix
+
+Description:
+	Unless run in "standard" (-s) mode, the Berkeley Pascal
+	language processors (pi, pc, pxp) demand lower-case-only
+	keywords.  In standard mode, case in the source files is
+	ignored.  This leads to a dilemma for people trying to
+	compile code written originally for other compilers, since
+	if they want to use any extensions, they cannot use standard
+	mode.
+Repeat-By:
+	Try running this program through pi, pc, or pxp (don't use -s):
+
+	PROGRAM Test(output);
+	BEGIN
+		writeln('hello')
+	END.
+
+Fix:
+	Since this is, in effect, a change to the Berkeley Pascal
+	language, you might want to think twice about installing
+	it; someone you know might have been stupid enough to write
+	a Pascal program with identifiers that look like keywords,
+	except for case.
+	
+	Otherwise, this fix makes sense: it converts a private
+	copy of each token to lower case when looking up keywords.
+
+	Line numbers are for comparison only; your actual line
+	numbers may vary.
+
+	*** hash.c.old	Mon Jan 10 10:32:53 1983
+	--- hash.c	Fri Apr  6 16:32:11 1984
+	***************
+	*** 117,122
+		int *sym;
+		struct ht *htp;
+		int sh;
+
+		/*
+		 * The hash function is a modular hash of
+
+	--- 124,131 -----
+		int *sym;
+		struct ht *htp;
+		int sh;
+	+ 	static char lc_buf[sizeof(token)];	/* for lower-case-ifying */
+	+ 	register char *lc_bp = lc_buf;
+
+		/*
+		 * The hash function is a modular hash of
+	***************
+	*** 128,135
+		if (cp == NIL)
+			cp = token;	/* default symbol to be hashed */
+		i = 0;
+	! 	while (*cp)
+	! 		i = i*2 + *cp++;
+		sh = (i&077777) % HASHINC;
+		cp = s;
+		if (cp == NIL)
+
+	--- 137,149 -----
+		if (cp == NIL)
+			cp = token;	/* default symbol to be hashed */
+		i = 0;
+	! 	while (*cp) {
+	! 		register int c_tmp = *cp++;
+	! 		if (isupper(c_tmp))	/* all keywords are lower-case */
+	! 			c_tmp = tolower(c_tmp);
+	! 		*lc_bp++ = c_tmp;	/* construct a lower-case copy */
+	! 		i = i*2 + c_tmp;
+	! 	}
+		sh = (i&077777) % HASHINC;
+		*lc_bp = 0;
+		cp = lc_buf;
+	***************
+	*** 131,139
+		while (*cp)
+			i = i*2 + *cp++;
+		sh = (i&077777) % HASHINC;
+	! 	cp = s;
+	! 	if (cp == NIL)
+	! 		cp = token;
+		/*
+		 * There are as many as MAXHASH active
+		 * hash tables at any given point in time.
+
+	--- 145,152 -----
+			i = i*2 + c_tmp;
+		}
+		sh = (i&077777) % HASHINC;
+	! 	*lc_bp = 0;
+	! 	cp = lc_buf;
+		/*
+		 * There are as many as MAXHASH active
+		 * hash tables at any given point in time.

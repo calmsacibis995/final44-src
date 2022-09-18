@@ -1,0 +1,122 @@
+Return-Path: <cbosgd!mark>
+Date: 4 Jun 83 01:03:04 EDT (Sat)
+From: cbosgd!mark (Mark Horton)
+Subject: /bin/mail locking bug
+Date: June 4, 1983
+From: cbosgd!mark
+Subject: /bin/mail locking bug
+Index: bin/mail.c 4.1BSD Fix
+
+Description:
+	The following appeared on Usenet - the bug is still in 4.1c:
+
+	From phil@sequel.UUCP Wed Dec 31 19:00:00 1969
+	Relay-Version: version B 2.10 5/3/83; site cbosgd.UUCP
+	Posting-Version: version B 2.10 5/3/83; site sequel.UUCP
+	Path: cbosgd!mhuxi!mhuxa!houxm!hogpc!houti!ariel!vax135!cornell!uw-beaver!tektronix!ogcvax!sequel!phil
+	From: phil@sequel.UUCP
+	Newsgroups: net.unix-wizards,net.bugs.4bsd
+	Subject: YAMB (Yet Another Mail Bug)
+	Message-ID: <154@sequel.UUCP>
+	Date: Thu, 2-Jun-83 16:11:26 EDT
+	Article-I.D.: sequel.154
+	Posted: Thu Jun  2 16:11:26 1983
+	Date-Received: Fri, 3-Jun-83 20:15:39 EDT
+	Organization: Sequel Computer Systems, Portland
+	Lines: 93
+
+	There is another bug in  4.1  /bin/mail.  I  just  had  my  third
+	complaint  of  mail  getting  mixed together so decided to fix it
+	once and for all.  I looked through my bug files and  found  only
+	the  comsat  problem (fwrite to mail but no flush or close before
+	writing to comsat).  I had already fixed the comsat bug.
+
+Repeat-By:
+	I suspected the locking protocol was fubar  (was  running  setuid
+	root,  etc).  This  proved  not  to  be the case.  I tested it by
+	running the following script:
+
+	(mail -s "Try number 1" phil  < /etc/passwd ) &
+	(mail -s "Try number 2" phil  < /etc/passwd ) &
+	(mail -s "Try number 3" phil  < /etc/passwd ) &
+	(mail -s "Try number 4" phil  < /etc/passwd ) &
+	(mail -s "Try number 5" phil  < /etc/passwd ) &
+
+	I found that usually only 1 to 3  copies  arrived  usually  in  a
+	jumbled order.  Humm.  Must be failing to lock the mailbox right?
+	WRONG!  I crawled through the routine lock(), and  lock1().  They
+	appear  to  be  100% ok.  In looking at where mail does the local
+	delivery I noticed the following sequence of code:
+Fix:
+
+		mask = umask(MAILMODE);
+	--->	malf = fopen(file, "a");
+		umask(mask);
+		if (malf == NULL) {
+			fprintf(stdout, "mail: cannot append to %s\n", file);
+			return(0);
+		}
+	--->	lock(file);
+		chown(file, pw->pw_uid, pw->pw_gid);
+		{
+			f = open("/dev/mail", 1);
+			sprintf(buf, "%s@%d\n", name, ftell(malf)); 
+		}
+		copylet(n, malf, ORDINARY);
+		 fclose(malf);			/* here so comsat works! */
+		if (f >= 0) {
+			write(f, buf, strlen(buf)+1);
+			close(f);
+		}
+		/* fclose(malf);	not here bozo */
+		unlock();
+		return(1);
+
+
+	Notice how the file is opened for appending BEFORE being  locked.
+	This  presents a race condition where several mail's all open the
+	file for appending (all using the current  length  of  the  file)
+	then  take  turns locking the file overwriting each other.
+
+	The fix of course is to move the lock() above the fopen and add a
+	unlock() if you can't open the file.
+
+	--->	lock(file);		/* Bug fix.  sequel!phil */
+		mask = umask(MAILMODE);
+	--->	malf = fopen(file, "a");
+		umask(mask);
+		if (malf == NULL) {
+			unlock();	/* Bug fix.  see above */
+			fprintf(stdout, "mail: cannot append to %s\n", file);
+			return(0);
+		}
+		/* lock(file);	not early enough */
+		chown(file, pw->pw_uid, pw->pw_gid);
+		{
+			f = open("/dev/mail", 1);
+			sprintf(buf, "%s@%d\n", name, ftell(malf)); 
+		}
+		copylet(n, malf, ORDINARY);
+		 fclose(malf);			/* here so comsat works! */
+		if (f >= 0) {
+			write(f, buf, strlen(buf)+1);
+			close(f);
+		}
+		/* fclose(malf);	not here bozo */
+		unlock();
+		return(1);
+
+	After this fix, my test ran 10 times without a fail.  If you  are
+	concerned  about your mail you should fix this one.  I don't know
+	if someone else already posted this bug but I have never seen it.
+	I don't have a copy of V7 /bin/mail handy but I suspect it exists
+	there also.
+
+
+		Phil Hochstetler
+		Sequel Computer Systems, Inc.
+		Portland, Oregon
+		
+		(503) 626-5700
+	uucp:	ogcvax!sequel!phil
+		pur-ee!sequel!phil

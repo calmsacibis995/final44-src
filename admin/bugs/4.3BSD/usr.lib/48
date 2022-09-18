@@ -1,0 +1,365 @@
+From jason@violet.berkeley.edu Wed May  6 11:29:07 1987
+Subject: You have to try this one to believe it. (curses bug)
+Date: Wed, 06 May 87 10:47:07 PDT
+From: jason@violet.berkeley.edu
+Index: usr.lib/curses 4.3BSD
+
+if you have some code..
+
+a = newwin( ...
+b = newwin( ...
+c = subwin( curscr, ...
+
+if you don't delwin c (subwin) BEFORE a and b (the newwins) not all of
+the memory allocated is return to the free pool
+
+if you have ...
+c = subwin( curscr, ...
+a = newwin( ...
+b = newwin( ...
+
+you have to delwin c (subwin) last or all the memory is not released.
+
+The following program is something that you can use to illustrate the
+problem by switching the orders of the delwins and the {sub,new}wins.
+
+Jason
+4.3Beta is the actual os version here.
+
+#include	<curses.h>
+#include	<sys/types.h>
+#include	<signal.h>
+
+main( argc, argv )
+int	argc;
+char	**argv;
+{
+
+	WINDOW	*Sub;
+	WINDOW	*Save;
+	WINDOW	*Error;
+	caddr_t	where;
+	caddr_t	sbrk();
+	void	bye();
+	extern	int	end;
+
+	signal( SIGINT, SIG_IGN );
+	if( initscr() == ERR ) {
+		perror( "Unable to init windows" );
+		exit( 1 );
+	}
+	crmode();
+	signal( SIGINT, bye );
+	for( ; ; ) {
+		if( (where = sbrk((caddr_t) 0 )) == -1 ) {
+			perror( "\r\nUnable to get brk\r" );
+			bye();
+		}
+		printf( "Data size is %d\r\n",  where - (caddr_t) &end );
+		if( (Save = newwin( 2, 60, 5, 5 )) == ERR ) {
+			perror( "save" );
+			bye();
+		}
+		if( (Error = newwin( 2, 60, 5, 5 )) == ERR ) {
+			perror( "error" );
+			bye();
+		} 
+		if( (Sub = subwin( curscr, 2, 60, 5, 5 )) == ERR ) {
+			perror( "sub" );
+			bye();
+		}
+		/*overwrite( Sub, Save );*/
+/*		wprintw( Error, "Hellow there, size is %d", where - (caddr_t)&end );
+		wrefresh( Error );*/
+		delwin( Sub );
+		delwin( Save );
+		delwin( Error );
+/*		touchwin( Save );
+		wrefresh( Save );*/
+	}
+}
+
+void
+bye()
+{
+	
+	endwin();
+	exit( 0 );
+}
+=======================================================================
+From jason@violet.berkeley.edu Wed May  6 17:19:59 1987
+Date: Wed, 6 May 87 17:19:03 PDT
+From: jason@violet.berkeley.edu (Jason Venner)
+Subject: overwrite problem
+
+#include	<curses.h>
+#include	<signal.h>
+
+main( argc, argv )
+int	argc;
+char	**argv;
+{
+
+
+	WINDOW	*large;
+	WINDOW	*small;
+	WINDOW*	newwin();
+	void	bus();
+
+	if( initscr() == ERR ) {
+		perror( "Unable to initalize windows" );
+		exit( 1 );
+	}
+
+	if( (large = newwin( 15, 60, 5, 5 )) == ERR ) {
+		endwin();
+		perror( "\nUnable to allocate large window" );
+		exit( 2 );
+	}
+	if( (small = newwin( 5, 30, 8, 15)) == ERR ) {
+		endwin();
+		perror( "\nUnable to allocate small window" );
+		exit( 3 );
+	}
+	(void) signal( SIGBUS, bus );
+	overwrite( large, small );
+	endwin();
+	exit( 0 );
+}
+
+void
+bus()
+{
+
+	endwin();
+	fprintf( stderr, "\nTaking a bus error, but being nice to ttys\n" );
+	(void) signal( SIGBUS, SIG_DFL );
+	if( kill( getpid(), SIGBUS ) == -1 ) {
+		perror( "Unable to kill -BUS process, looping kill with ^\?" );
+		(void) signal( SIGQUIT, SIG_DFL );
+		for( ; ; ) {
+			sleep( 30000 );
+		}
+	}
+}
+
+=======================================================================
+From jason@violet.berkeley.edu Wed May  6 19:26:01 1987
+Date: Wed, 6 May 87 19:25:00 PDT
+From: jason@violet.berkeley.edu (Jason Venner)
+Subject: overwrite.
+
+first problem (causes cores) is that it does not get the clipping regions
+right before doing the overlays.
+
+second problem:
+		  What I use overwwrite for....
+		  I want to steal part of the screen to put stuff on it,
+		  but when I am don, I want to restore the screen to what it
+		  was previously (ie give status messages and the like.)
+
+		  to do that I would ideally make two new windows of the size I
+		  want the output to be, and at the location I want (same loc.).
+		  overwrite curscr (what curses thinks is on the screen) onto
+		  one of them, then use the other for display.
+
+		  when done, refresh the one that curscr was overwritten to, and
+		  you are whistling dixey.
+
+		  the bus error prevents the overwrite, so what you do is
+		  make a subwin of curscr (the same size and loc as the window
+		  you want to display) and write that onto one of the window...
+
+		  The 4.3 overwrite? leaves the second and last line of the displayed
+		  area garbaged, while the 4.2 overwrite works okay.
+
+I know, I know, you want code that you can see run.. but I am feeling lazy.
+if you can't work with above,  bitch a bit at me, and I will send code.
+
+Jason
+
+=======================================================================
+From jason@violet.berkeley.edu Thu May  7 01:39:32 1987
+Date: Thu, 7 May 87 01:38:22 PDT
+From: jason@violet.berkeley.edu (Jason Venner)
+Subject: overwrite? bugs
+
+I broke down and wrote some code that demos the bugs.
+follows a shar file with make file.
+
+What to notice:
+		  ovr tends to not replace the text that is under the reverse
+		  	  video text, while ovr4 does.
+
+Jason
+
+
+makes ovr and ovr4.
+ovr is the 4.3 overwrite routine
+ovr4 has the 4.2 overwrite routine.
+
+Jason
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	Makefile
+#	ovr.c
+#	overwrite.c
+# This archive created: Thu May  7 01:36:36 1987
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f 'Makefile'
+then
+	echo shar: "will not over-write existing file 'Makefile'"
+else
+cat << \SHAR_EOF > 'Makefile'
+CFLAGS=-g
+
+all: ovr ovr4
+
+ovr: ovr.o
+	cc -g -o ovr ovr.o -lcurses -ltermlib
+
+ovr4: ovr.o overwrite.o
+	cc -g -o ovr4 ovr.o overwrite.o -lcurses -ltermlib
+SHAR_EOF
+fi
+if test -f 'ovr.c'
+then
+	echo shar: "will not over-write existing file 'ovr.c'"
+else
+cat << \SHAR_EOF > 'ovr.c'
+#include	<curses.h>
+#include	<signal.h>
+
+main( argc, argv )
+int	argc;
+char	**argv;
+{
+
+	void	bye();
+	int	line;
+	int	size;
+	char	buf[BUFSIZ];
+	char*	fgets();
+	FILE	*fd;
+	FILE*	fopen();
+	WINDOW	*SubWin;
+	WINDOW	*SaveWin;
+	WINDOW	*PrnWin;
+	WINDOW*	subwin();
+	WINDOW*	newwin();
+	
+	if( (fd = fopen( "/etc/termcap", "r" )) == (FILE*) 0 ) {
+		perror( "Unable to open background file, /etc/termcap" );
+		exit( 1 );
+	}
+	(void) signal( SIGINT, SIG_IGN );
+	if( initscr() == ERR ) {
+		perror( "Unable to intialize windows" );
+		exit( 2 );
+	}
+	(void) signal( SIGINT, bye );
+	noecho();
+	if( BUFSIZ > COLS ) {
+		size = COLS-1;
+	} else {
+		size = BUFSIZ -1;
+	}
+	for( line = 0; fgets( buf, size, fd ) && line < LINES; line++ ) {
+		if( mvwprintw( stdscr, line, 0, "%-*.*s\n", size, size, buf ) == ERR ) {
+			break;
+		}
+	}									  /* Don't really care why it failed */
+										  /* assume something made it onto the screen*/
+	(void) fclose( fd );
+	wrefresh( stdscr );
+	if( (SubWin = subwin( curscr, 4, 50, 12, 10 )) == ERR ) {
+		endwin();
+		perror( "\nsubwin failed" );
+		exit( 3 );
+	}
+	if( (SaveWin = newwin( 4, 50, 12, 10 )) == ERR ) {
+		endwin();
+		perror( "\newwin on SaveWin failed" );
+		exit( 3 );
+	}
+	if( (PrnWin = newwin( 4, 50, 12, 10 )) == ERR ) {
+		endwin();
+		perror( "\newwin on PrnWin failed" );
+		exit( 3 );
+	}
+	overwrite( SubWin, SaveWin );
+	wstandout( PrnWin );
+	box( PrnWin, '|', '-' );
+	mvwaddstr( PrnWin, 1, 1,
+				 "Line 1, hit a character to continue ...... here" );
+	mvwaddstr( PrnWin, 2, 1,
+				 "Line 2 after redraw hit a character to continue" );
+	wstandend( PrnWin );
+	wrefresh( PrnWin );
+	(void) mvwgetch( PrnWin, 2, 25 );
+	touchwin( SaveWin );
+	wrefresh( SaveWin );
+	delwin( SaveWin );
+	delwin( PrnWin );
+	delwin( SubWin );
+	(void) wgetch( curscr );
+	endwin();
+	exit( 0 );
+}
+
+void
+bye()
+{
+
+	endwin();
+	exit( -1 );
+}
+	
+SHAR_EOF
+fi
+if test -f 'overwrite.c'
+then
+	echo shar: "will not over-write existing file 'overwrite.c'"
+else
+cat << \SHAR_EOF > 'overwrite.c'
+#if	defined(SHORTC)
+#include	<short.h>
+#endif
+# include	<curses.h>
+
+# define	min(a,b)	(a < b ? a : b)
+
+/*
+ *	This routine writes win1 on win2 destructively.
+ *
+ * 3/27/83 (Berkeley) @(#)overwrite.c	1.3
+ */
+overwrite(win1, win2)
+reg WINDOW	*win1, *win2; {
+
+	reg int		x, y, minx, miny, startx, starty;
+
+# ifdef DEBUG
+	fprintf(outf, "OVERWRITE(0%o, 0%o);\n", win1, win2);
+# endif
+	miny = min(win1->_maxy, win2->_maxy);
+	minx = min(win1->_maxx, win2->_maxx);
+# ifdef DEBUG
+	fprintf(outf, "OVERWRITE:\tminx = %d,  miny = %d\n", minx, miny);
+# endif
+	starty = win1->_begy - win2->_begy;
+	startx = win1->_begx - win2->_begx;
+	if (startx < 0)
+		startx = 0;
+	for (y = 0; y < miny; y++)
+		if (wmove(win2, y + starty, startx) != ERR)
+			for (x = 0; x < minx; x++)
+				waddch(win2, win1->_y[y][x]);
+}
+SHAR_EOF
+fi
+exit 0
+#	End of shell archive

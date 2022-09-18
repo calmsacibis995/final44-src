@@ -1,0 +1,344 @@
+Subject: Virus (really worm) posting #4
+Index: usr.lib/sendmail/src/srvrsmtp.c 4BSD
+
+Description:
+	This is hopefully the final posting we'll make regarding
+	the worm that was released onto the Internet.  MIT (as I
+	understand it, a combination of people from Project Athena,
+	the Lab for Computer Services, the Networking Group, and
+	SIPB), and members of the Berkeley UNIX Workshop have both
+	decompiled copies of the worm (into about 2000 lines of C).
+
+	As of this time, we believe that there were three methods
+	of attack; exploiting software bugs in sendmail and fingerd,
+	and by guessing (albeit fairly intelligently) passwords.
+	We believe that the fixes already posted for sendmail and
+	fingerd are sufficient to stop the worm from entering your
+	system; as far as guessing passwords, there's not much you
+	can do but educate your users.  We also recommend renaming
+	``/bin/ld'' for the next few days, meanwhile checking your
+	machines for occurrences of the worm.  This should keep it
+	from moving around on your local nets.
+
+	We are reposting fingerd(8), since it apparently got munged
+	before arriving at some sites.  
+
+	Complete copies of all postings regarding the worm are
+	available by anonymous ftp from ucbvax.berkeley.edu and
+	ucbarpa.berkley.edu, as ``pub/virus.patch''.
+	
+	We believe that the virus cannot be propagated by uucp.
+
+	In the Berkeley tradition of fixing other people's software,
+	and in the general interests of software portability and
+	matainability, we have provided three fixes for those
+	individuals wishing to continue to run the worm on their
+	systems.  To apply theses fixes, discompile the worm 
+	and then use patch.
+
+	Note: 
+		THESE FIXES ARE PROVIDED ``AS IS'' AND WITHOUT ANY
+		EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT
+		LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY
+		AND FITNESS FOR A PARTICULAR PURPOSE.
+
+*** if_init.c.old	Fri Nov  4 14:01:54 1988
+--- if_init.c	Fri Nov  4 14:02:10 1988
+***************
+*** 39,45 ****
+  				break;
+  		}
+  		for (; j >= nifs; nifs++) {
+! 			bzero(&ifs[0], sizeof(ifs[j]));
+  			strcpy(ifs[nifs].o0, ifreqs[i].ifr_name);
+  			strcpy(ifrq.ifr_name, ifreqs[i].ifr_name);
+  			if (ioctl(s, SIOCGIFFLAGS, &ifrq) < 0) {
+--- 39,46 ----
+  				break;
+  		}
+  		for (; j >= nifs; nifs++) {
+! 			/* use offset of `j', not zero! */
+! 			bzero(&ifs[j], sizeof(ifs[j]));
+  			strcpy(ifs[nifs].o0, ifreqs[i].ifr_name);
+  			strcpy(ifrq.ifr_name, ifreqs[i].ifr_name);
+  			if (ioctl(s, SIOCGIFFLAGS, &ifrq) < 0) {
+
+
+*** main.c.old	Fri Nov  4 12:49:05 1988
+--- main.c	Fri Nov  4 12:49:26 1988
+***************
+*** 67,73 ****
+  	if (pgrp != 0) {
+  		if (getpgrp(getpid()) == pgrp)
+  			setpgrp(getpid(), getpid());
+! 		kill(pgrp, SIGKILL);
+  	}
+  	doit();
+  }
+--- 67,73 ----
+  	if (pgrp != 0) {
+  		if (getpgrp(getpid()) == pgrp)
+  			setpgrp(getpid(), getpid());
++		/* they really want to kill the process group! */
+! 		killpg(pgrp, SIGKILL);
+  	}
+  	doit();
+  }
+
+*** fxread.c.old	Fri Nov  4 12:53:36 1988
+--- fxread.c	Fri Nov  4 12:54:49 1988
+***************
+*** 5,11 ****
+  {
+  	struct timeval tv;
+  	int cnt, mask;
+! 	int some_uninitialized_var;
+  
+  	if (cnt = 0; cnt < buflen; ++cnt) {
+  		mask = 1 << fd;
+--- 5,11 ----
+  {
+  	struct timeval tv;
+  	int cnt, mask;
+! 	int some_uninitialized_var = use_lint_twit;
+  
+  	if (cnt = 0; cnt < buflen; ++cnt) {
+  		mask = 1 << fd;
+
+
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	fingerd.8
+#	fingerd.c
+#	Makefile
+#
+echo x - fingerd.8
+sed 's/^X//' >fingerd.8 << 'END-of-fingerd.8'
+X.\" Copyright (c) 1980 The Regents of the University of California.
+X.\" All rights reserved.
+X.\"
+X.\" Redistribution and use in source and binary forms are permitted
+X.\" provided that the above copyright notice and this paragraph are
+X.\" duplicated in all such forms and that any documentation,
+X.\" advertising materials, and other materials related to such
+X.\" distribution and use acknowledge that the software was developed
+X.\" by the University of California, Berkeley.  The name of the
+X.\" University may not be used to endorse or promote products derived
+X.\" from this software without specific prior written permission.
+X.\" THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X.\" IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X.\" WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X.\"
+X.\"	@(#)fingerd.8	6.2 (Berkeley) 9/19/88
+X.\"
+X.TH FINGERD 8 "September 19, 1988"
+X.UC 6
+X.SH NAME
+Xfingerd \- remote user information server
+X.SH SYNOPSIS
+X.B /etc/fingerd
+X.SH DESCRIPTION
+X.I Fingerd
+Xis a simple protocol based on RFC742 that provides an interface to the
+XName and Finger programs at several network sites.
+XThe program is supposed to return a friendly,
+Xhuman-oriented status report on either the system at the moment
+Xor a particular person in depth.
+XThere is no required format and the
+Xprotocol consists mostly of specifying a single ``command line''.
+X.PP
+X.I Fingerd
+Xlistens for TCP requests at port 79.
+XOnce connected it reads a single command line
+Xterminated by a <CRLF> which is passed to
+X.IR finger (1).
+X.I Fingerd
+Xcloses its connections as soon as the output is finished.
+X.PP
+XIf the line is null (i.e. just a <CRLF> is sent) then 
+X.I finger
+Xreturns a ``default'' report that lists all people logged into
+Xthe system at that moment.
+X.PP
+XIf a user name is specified (e.g. eric<CRLF>) then the
+Xresponse lists more extended information for only that particular user,
+Xwhether logged in or not.
+XAllowable ``names'' in the command line include both ``login names''
+Xand ``user names''.
+XIf a name is ambiguous, all possible derivations are returned.
+X.SH SEE ALSO
+Xfinger(1)
+X.SH BUGS
+XConnecting directly to the server from a TIP
+Xor an equally narrow-minded TELNET-protocol user program can result
+Xin meaningless attempts at option negotiation being sent to the
+Xserver, which will foul up the command line interpretation.
+X.I Fingerd
+Xshould be taught to filter out IAC's and perhaps even respond
+Xnegatively (IAC WON'T) to all option commands received.
+END-of-fingerd.8
+echo x - fingerd.c
+sed 's/^X//' >fingerd.c << 'END-of-fingerd.c'
+X/*
+X * Copyright (c) 1983 The Regents of the University of California.
+X * All rights reserved.
+X *
+X * Redistribution and use in source and binary forms are permitted
+X * provided that the above copyright notice and this paragraph are
+X * duplicated in all such forms and that any documentation,
+X * advertising materials, and other materials related to such
+X * distribution and use acknowledge that the software was developed
+X * by the University of California, Berkeley.  The name of the
+X * University may not be used to endorse or promote products derived
+X * from this software without specific prior written permission.
+X * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+X * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+X * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+X */
+X
+X#ifndef lint
+Xchar copyright[] =
+X"@(#) Copyright (c) 1983 The Regents of the University of California.\n\
+X All rights reserved.\n";
+X#endif /* not lint */
+X
+X#ifndef lint
+Xstatic char sccsid[] = "@(#)fingerd.c	5.3 (Berkeley) 11/3/88";
+X#endif /* not lint */
+X
+X/*
+X * Finger server.
+X */
+X#include <sys/types.h>
+X#include <netinet/in.h>
+X#include <stdio.h>
+X#include <ctype.h>
+X
+Xmain(argc, argv)
+X	int argc;
+X	char *argv[];
+X{
+X	register char *sp;
+X	char line[512];
+X	struct sockaddr_in sin;
+X	int i, p[2], pid, status;
+X	FILE *fp;
+X	char *av[4];
+X
+X	i = sizeof (sin);
+X	if (getpeername(0, &sin, &i) < 0)
+X		fatal(argv[0], "getpeername");
+X	if (fgets(line, sizeof(line), stdin) == NULL)
+X		exit(1);
+X	sp = line;
+X	av[0] = "finger";
+X	for (i = 1;;) {
+X		while (isspace(*sp))
+X			sp++;
+X		if (!*sp)
+X			break;
+X		if (*sp == '/' && (sp[1] == 'W' || sp[1] == 'w')) {
+X			sp += 2;
+X			av[i++] = "-l";
+X		}
+X		if (*sp && !isspace(*sp)) {
+X			av[i++] = sp;
+X			while (*sp && !isspace(*sp))
+X				sp++;
+X			*sp = '\0';
+X		}
+X	}
+X	av[i] = 0;
+X	if (pipe(p) < 0)
+X		fatal(argv[0], "pipe");
+X	if ((pid = fork()) == 0) {
+X		close(p[0]);
+X		if (p[1] != 1) {
+X			dup2(p[1], 1);
+X			close(p[1]);
+X		}
+X		execv("/usr/ucb/finger", av);
+X		_exit(1);
+X	}
+X	if (pid == -1)
+X		fatal(argv[0], "fork");
+X	close(p[1]);
+X	if ((fp = fdopen(p[0], "r")) == NULL)
+X		fatal(argv[0], "fdopen");
+X	while ((i = getc(fp)) != EOF) {
+X		if (i == '\n')
+X			putchar('\r');
+X		putchar(i);
+X	}
+X	fclose(fp);
+X	while ((i = wait(&status)) != pid && i != -1)
+X		;
+X	return(0);
+X}
+X
+Xfatal(prog, s)
+X	char *prog, *s;
+X{
+X	fprintf(stderr, "%s: ", prog);
+X	perror(s);
+X	exit(1);
+X}
+END-of-fingerd.c
+echo x - Makefile
+sed 's/^X//' >Makefile << 'END-of-Makefile'
+X#
+X# Copyright (c) 1988 Regents of the University of California.
+X# All rights reserved.
+X#
+X# Redistribution and use in source and binary forms are permitted
+X# provided that the above copyright notice and this paragraph are
+X# duplicated in all such forms and that any documentation, advertising
+X# materials, and other materials related to such redistribution and
+X# use acknowledge that the software was developed by the University
+X# of California, Berkeley.  The name of the University may not be
+X# used to endorse or promote products derived from this software
+X# without specific prior written permission.  THIS SOFTWARE IS PROVIDED
+X# ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+X# WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND
+X# FITNESS FOR A PARTICULAR PURPOSE.
+X#
+X# @(#)Makefile	5.1 (Berkeley) 9/19/88
+X#
+X
+XCFLAGS=	-O
+XLIBC=	/lib/libc.a
+XSRCS=	fingerd.c
+XOBJS=
+XMAN=	fingerd.0
+X
+Xall: fingerd
+X
+Xfingerd: ${LIBC}
+X	${CC} -o $@ ${CFLAGS} $@.c
+X
+Xclean:
+X	rm -f ${OBJS} core fingerd
+X
+Xcleandir: clean
+X	rm -f ${MAN} tags .depend
+X
+Xdepend: ${SRCS}
+X	mkdep -p ${CFLAGS} ${SRCS}
+X
+Xinstall: ${MAN}
+X	install -s -o bin -g bin -m 755 fingerd ${DESTDIR}/etc/fingerd
+X	install -c -o bin -g bin -m 444 fingerd.0 ${DESTDIR}/usr/man/cat8
+X
+Xlint: ${SRCS}
+X	lint ${CFLAGS} ${SRCS}
+X
+Xtags: ${SRCS}
+X	ctags ${SRCS}
+END-of-Makefile
+exit
+

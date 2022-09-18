@@ -1,0 +1,258 @@
+From bostic@okeeffe.Berkeley.EDU  Thu Mar  5 11:11:03 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA09091; Thu, 5 Mar 87 11:11:03 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.23)
+	id AA01909; Thu, 5 Mar 87 11:11:10 PST
+Received: by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA09071; Thu, 5 Mar 87 11:10:04 PST
+Date: Thu, 5 Mar 87 11:10:04 PST
+Message-Id: <8703051910.AA09071@okeeffe.Berkeley.EDU>
+Path: seismo!columbia!rutgers!mit-eddie!bacchus!wesommer
+From: wesommer@ATHENA.MIT.EDU (William Sommerfeld)
+Newsgroups: comp.bugs.4bsd
+Subject: Race condition in Berkeley server-side TCP
+Summary: 45 seconds later, the server falls apart...
+Sender: daemon@BACCHUS.MIT.EDU
+Index: sys/netinet/tcp_input.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	If a packet to a TCP socket arrives in between the time that
+the bind(2) call is done and the time a listen(2) call is done, the
+socket behaves strangely; in particular, if the host trying to connect
+to the socket is another BSD host, the listening socket is
+mysteriously closed off after 45 seconds (the length of the TCP
+keepalive timer); this bug is known to exist in 4.3BSD Beta, 4.3BSD
+release, Ultrix 1.1, and Ultrix T2.0.
+
+Repeat-By:
+	Compile the attached programs (server.c and client.c); then
+start the server (which does the bind, sleeps 10 seconds, and then
+does the listen) and then the client (within 10 seconds).  Then wait a
+minute or so; the server will start spewing error messages (returned
+from the accept(2) system call).
+
+Fix:
+	The problem is that tcp_input assumes that the presence of a
+TCB means that the TCB is not closed, whereas a bind(2) call can
+create a closed TCB which does not go into the LISTEN state until a
+listen(2) call is done; if a packet comes in and matches the TCB, some
+amount of input processing (including setting the keepalive timer) is
+done on the packet and TCB before the kernel gives up.  Apply the
+enclosed patch (tcp_input.c.diff) to sys/netinet/tcp_input.c to solve
+this problem.
+
+					Bill Sommerfeld
+					MIT Project Athena
+				  ARPA: wesommer@athena.mit.edu
+				  UUCP: ...!mit-eddie!wesommer
+
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	Makefile
+#	client.c
+#	server.c
+#	tcp_input.c.diff
+# This archive created: Wed Mar  4 21:26:33 1987
+export PATH; PATH=/bin:/usr/bin:$PATH
+echo shar: "extracting 'Makefile'" '(136 characters)'
+if test -f 'Makefile'
+then
+	echo shar: "will not over-write existing file 'Makefile'"
+else
+sed 's/^XX//' << \SHAR_EOF > 'Makefile'
+XX
+XXall: client server
+XX
+XXclient: client.o
+XX	cc -o client client.o
+XX
+XXserver: server.o
+XX	cc -o server server.o
+XX
+XXclean:
+XX	rm -f *.o client server
+XX
+SHAR_EOF
+if test 136 -ne "`wc -c < 'Makefile'`"
+then
+	echo shar: "error transmitting 'Makefile'" '(should have been 136 characters)'
+fi
+fi
+echo shar: "extracting 'client.c'" '(1087 characters)'
+if test -f 'client.c'
+then
+	echo shar: "will not over-write existing file 'client.c'"
+else
+sed 's/^XX//' << \SHAR_EOF > 'client.c'
+XX#include <sys/types.h>
+XX#include <sys/socket.h>
+XX#include <netinet/in.h>
+XX#include <netdb.h>
+XX#include <sys/param.h>
+XX
+XXmain()
+XX{
+XX	struct sockaddr_in address;
+XX	struct hostent *hp;
+XX	int s;
+XX	char buf[10];
+XX	char hostname[MAXHOSTNAMELEN];
+XX
+XX	if (gethostname(hostname, MAXHOSTNAMELEN) < 0) {
+XX		perror("gethostname");
+XX		exit(1);
+XX	}
+XX	if(!(hp = gethostbyname(hostname))) {
+XX		printf("Unknown host %s\n",hostname);
+XX		exit(1);
+XX	}
+XX	bzero((caddr_t)&address, sizeof(address));
+XX
+XX	address.sin_family = AF_INET;
+XX	bcopy((caddr_t)hp->h_addr, (caddr_t)&address.sin_addr,
+XX	      sizeof(struct in_addr));
+XX	address.sin_port = htons(3000);
+XX	
+XX	if ((s = socket(AF_INET, SOCK_STREAM,0)) < 0) {
+XX		perror("socket");
+XX		exit(1);
+XX	}
+XX
+XX	if (connect(s, (caddr_t)&address, sizeof(address)) < 0) {
+XX		perror("connect");
+XX		exit(1);
+XX	}
+XX	printf("Reading..\n");
+XX	{
+XX		int count;
+XX		do {
+XX			if ((count = read(s, buf, sizeof(buf))) < 0) {
+XX				perror("read");
+XX				break;
+XX			}
+XX			if (count == 0) {
+XX				printf("End of file\n");
+XX				break;
+XX			}
+XX			printf("Read %d bytes\n", count);
+XX		} while (count > 0);
+XX	}
+XX
+XX	printf("Exiting..\n");
+XX	exit(0);
+XX}
+SHAR_EOF
+if test 1087 -ne "`wc -c < 'client.c'`"
+then
+	echo shar: "error transmitting 'client.c'" '(should have been 1087 characters)'
+fi
+fi
+echo shar: "extracting 'server.c'" '(793 characters)'
+if test -f 'server.c'
+then
+	echo shar: "will not over-write existing file 'server.c'"
+else
+sed 's/^XX//' << \SHAR_EOF > 'server.c'
+XX#include <sys/types.h> 
+XX#include <sys/socket.h>
+XX#include <netinet/in.h>
+XX#include <netdb.h>
+XX
+XXmain()
+XX{
+XX	struct sockaddr_in address;
+XX	int s;
+XX
+XX
+XX	if ((s = socket(AF_INET, SOCK_STREAM,0)) < 0) {
+XX		perror("socket");
+XX		exit(1);
+XX	}
+XX	bzero((caddr_t)&address, sizeof(address));
+XX
+XX	address.sin_family = AF_INET;
+XX	address.sin_addr.s_addr = INADDR_ANY;
+XX	address.sin_port = htons(3000);
+XX
+XX	if (bind(s, (caddr_t)&address, sizeof(address)) < 0) {
+XX		perror("bind");
+XX		exit(1);
+XX	}
+XX	printf("Sleeping.\n");
+XX	sleep(10);
+XX	if (listen(s, 5) < 0) {
+XX		perror("listen");
+XX		exit(1);
+XX	}
+XX	printf("Accepting.\n");
+XX        while(1) {
+XX		int len = sizeof(address);
+XX		int fd = accept(s, (caddr_t)&address, &len);
+XX		if (fd < 0) {
+XX			perror("accept");
+XX			continue;
+XX		}
+XX		printf("Accepted\n");
+XX		close(fd);
+XX		printf("Closed\n");
+XX	}
+XX}
+SHAR_EOF
+if test 793 -ne "`wc -c < 'server.c'`"
+then
+	echo shar: "error transmitting 'server.c'" '(should have been 793 characters)'
+fi
+fi
+echo shar: "extracting 'tcp_input.c.diff'" '(850 characters)'
+if test -f 'tcp_input.c.diff'
+then
+	echo shar: "will not over-write existing file 'tcp_input.c.diff'"
+else
+sed 's/^XX//' << \SHAR_EOF > 'tcp_input.c.diff'
+XX*** /tmp/,RCSt1026529	Wed Mar  4 21:23:16 1987
+XX--- tcp_input.c	Wed Mar  4 21:22:01 1987
+XX***************
+XX*** 173,180 ****
+XX  		INPLOOKUP_WILDCARD);
+XX  
+XX  	/*
+XX! 	 * If the state is CLOSED (i.e., TCB does not exist) then
+XX! 	 * all data in the incoming segment is discarded.
+XX  	 */
+XX  	if (inp == 0)
+XX  		goto dropwithreset;
+XX--- 173,181 ----
+XX  		INPLOOKUP_WILDCARD);
+XX  
+XX  	/*
+XX! 	 * If the state is CLOSED (i.e., either the TCB does not exist or
+XX! 	 * the state is CLOSED) then all data in the incoming segment 
+XX! 	 * is discarded.
+XX  	 */
+XX  	if (inp == 0)
+XX  		goto dropwithreset;
+XX***************
+XX*** 181,186 ****
+XX--- 182,191 ----
+XX  	tp = intotcpcb(inp);
+XX  	if (tp == 0)
+XX  		goto dropwithreset;
+XX+ 	if (tp->t_state == TCPS_CLOSED) {
+XX+ 		tp = 0;
+XX+ 		goto dropwithreset;
+XX+ 	}
+XX  	so = inp->inp_socket;
+XX  	if (so->so_options & SO_DEBUG) {
+XX  		ostate = tp->t_state;
+SHAR_EOF
+if test 850 -ne "`wc -c < 'tcp_input.c.diff'`"
+then
+	echo shar: "error transmitting 'tcp_input.c.diff'" '(should have been 850 characters)'
+fi
+fi
+exit 0
+#	End of shell archive

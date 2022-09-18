@@ -1,0 +1,45 @@
+Return-Path: <sun!pugs>
+Date: 12 Nov 83 13:51:42 PST (Sat)
+From: sun!pugs (Tom Lyon)
+Subject: Bugs fixes for routing daemon
+Index: etc/in.routed 4.2BSD
+
+Description:
+	1) Routed would not broadcast information to gateway interfaces
+	   that were configured for no trailers (via ifconfig).  New
+	   bits that were added to the if_flags for ifconfig conflicted
+	   with usage of the bits internal to routed.  Other symptoms
+	   may be caused by the same problem.
+	2) Routed did not sanity check hop counts or address information.
+Repeat-By:
+	1) Attempt to use gateway with trailers disabled.
+	2) Unknown.
+Fix:
+For (1) - turn off kernel flags bits not relevant to routed:
+
+------- interface.h -------
+42a43
+> #define	IFF_FROMKERNEL	0x1F		/* only kernel flags allowed */
+
+------- startup.c -------
+105c105
+< 		ifp->int_flags = ifs.if_flags | IFF_INTERFACE;
+---
+> 		ifp->int_flags = (ifs.if_flags&IFF_FROMKERNEL) | IFF_INTERFACE;
+
+For (2) - clear MBZ fields in inet_canon; check for negative metrics
+in receive packets.
+
+------- af.c -------
+100a101
+> 	register int i;
+102a104,105
+> 	for (i=0; i < sizeof(sin->sin_zero); i++)
+> 		sin->sin_zero[i] = 0;
+
+------- input.c -------
+107c107,108
+< 			if (n->rip_metric >= HOPCNT_INFINITY)
+---
+> 			if (n->rip_metric < 0 ||
+> 			    n->rip_metric >= HOPCNT_INFINITY)

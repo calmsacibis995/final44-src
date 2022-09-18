@@ -1,0 +1,216 @@
+Return-Path: <salkind@nyu-cmcl2>
+Date: Sun, 9 Dec 84 20:51:07 est
+From: salkind@nyu-cmcl2 (Lou Salkind)
+Subject: 4.2 vgrind fixes for Pyramid
+Index: 	ucb/vgrind 4.2BSD
+
+Description:
+	There a few bugs in vgrind that do not show up on the VAX but do on the
+	Pyramid.  Also, the code does not go through lint well.
+Repeat-By:
+	Run vfontedpr on the Pyramid.  For a typical file it will go into
+	an infinite loop on the first line.
+Fix:
+	Apply the following diffs.  It will also help lint a bit.
+RCS file: RCS/regexp.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1029604	Sun Dec  9 20:38:51 1984
+--- /tmp/,RCSt2029604	Sun Dec  9 20:38:52 1984
+***************
+*** 133,138
+  
+      /* let the conversion begin */
+      acs = NIL;
+      while (*ure != NIL) {
+  	switch (c = *ure++) {
+  
+
+--- 133,139 -----
+  
+      /* let the conversion begin */
+      acs = NIL;
++     cs = NIL;
+      while (*ure != NIL) {
+  	switch (c = *ure++) {
+  
+***************
+*** 141,147
+  
+  	    /* escaped characters are just characters */
+  	    default:
+! 		if ((*cs & STR) == 0) {
+  		    cs = ccre;
+  		    *cs = STR;
+  		    SCNT(cs) = 1;
+
+--- 142,148 -----
+  
+  	    /* escaped characters are just characters */
+  	    default:
+! 		if (cs == NIL || (*cs & STR) == 0) {
+  		    cs = ccre;
+  		    *cs = STR;
+  		    SCNT(cs) = 1;
+***************
+*** 191,197
+  
+  	/* mark the last match sequence as optional */
+  	case '?':
+! 	    *cs = *cs | OPT;
+  	    break;
+  
+  	/* recurse and define a subexpression */
+
+--- 192,199 -----
+  
+  	/* mark the last match sequence as optional */
+  	case '?':
+! 	    if (cs)
+! 	    	*cs = *cs | OPT;
+  	    break;
+  
+  	/* recurse and define a subexpression */
+***************
+*** 246,252
+  
+  	/* if its not a metasymbol just build a scharacter string */
+  	default:
+! 	    if ((*cs & STR) == 0) {
+  		cs = ccre;
+  		*cs = STR;
+  		SCNT(cs) = 1;
+
+--- 248,254 -----
+  
+  	/* if its not a metasymbol just build a scharacter string */
+  	default:
+! 	    if (cs == NIL || (*cs & STR) == 0) {
+  		cs = ccre;
+  		*cs = STR;
+  		SCNT(cs) = 1;
+
+
+RCS file: RCS/vfontedpr.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1029616	Sun Dec  9 20:40:02 1984
+--- /tmp/,RCSt2029616	Sun Dec  9 20:40:04 1984
+***************
+*** 28,33
+  char	*expmatch();		/* match a string to an expression */
+  char	*STRNCMP();		/* a different kindof strncmp */
+  char	*convexp();		/* convert expression to internal form */
+  
+  boolean	isproc();
+  
+
+--- 28,34 -----
+  char	*expmatch();		/* match a string to an expression */
+  char	*STRNCMP();		/* a different kindof strncmp */
+  char	*convexp();		/* convert expression to internal form */
++ char	*tgetstr();
+  
+  boolean	isproc();
+  
+***************
+*** 448,454
+  		ps("\\c\n'-C\n");
+  		continue;
+  	    } else {
+! 		putKcp (s, s + strlen(s) -1);
+  		s = s + strlen(s);
+  		continue;
+  	    }
+
+--- 449,455 -----
+  		ps("\\c\n'-C\n");
+  		continue;
+  	    } else {
+! 		putKcp (s, s + strlen(s) -1, TRUE);
+  		s = s + strlen(s);
+  		continue;
+  	    }
+
+
+RCS file: RCS/vgrindefs.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1029630	Sun Dec  9 20:40:58 1984
+--- /tmp/,RCSt2029630	Sun Dec  9 20:40:59 1984
+***************
+*** 24,29
+   */
+  
+  static	char *tbuf;
+  static	int hopcount;	/* detect infinite loops in termcap, init 0 */
+  char	*tskip();
+  char	*tgetstr();
+
+--- 24,30 -----
+   */
+  
+  static	char *tbuf;
++ static	char *filename;
+  static	int hopcount;	/* detect infinite loops in termcap, init 0 */
+  char	*tskip();
+  char	*tgetstr();
+***************
+*** 35,42
+   * from the termcap file.  Parse is very rudimentary;
+   * we just notice escaped newlines.
+   */
+! tgetent(bp, name, filename)
+! 	char *bp, *name, *filename;
+  {
+  	register char *cp;
+  	register int c;
+
+--- 36,43 -----
+   * from the termcap file.  Parse is very rudimentary;
+   * we just notice escaped newlines.
+   */
+! tgetent(bp, name, file)
+! 	char *bp, *name, *file;
+  {
+  	register char *cp;
+  	register int c;
+***************
+*** 47,52
+  
+  	tbuf = bp;
+  	tf = 0;
+  	tf = open(filename, 0);
+  	if (tf < 0)
+  		return (-1);
+
+--- 48,54 -----
+  
+  	tbuf = bp;
+  	tf = 0;
++ 	filename = file;
+  	tf = open(filename, 0);
+  	if (tf < 0)
+  		return (-1);
+***************
+*** 121,127
+  		write(2, "Infinite tc= loop\n", 18);
+  		return (0);
+  	}
+! 	if (tgetent(tcbuf, tcname) != 1)
+  		return(0);
+  	for (q=tcbuf; *q != ':'; q++)
+  		;
+
+--- 123,129 -----
+  		write(2, "Infinite tc= loop\n", 18);
+  		return (0);
+  	}
+! 	if (tgetent(tcbuf, tcname, filename) != 1)
+  		return(0);
+  	for (q=tcbuf; *q != ':'; q++)
+  		;
+

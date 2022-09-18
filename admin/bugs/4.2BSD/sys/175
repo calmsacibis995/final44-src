@@ -1,0 +1,92 @@
+Return-Path: <network@cmu-cs-h.arpa>
+From: Dave Rosenthal <cmuitca!dave@cmu-cs-h.arpa>
+Date: 6 Jul 1984 17:31-EST
+Subject: SOCK_DGRAM socketpair() not connected
+Index: sys/sys/uipc_syscalls.c 4.2BSD Fix
+
+Description:
+
+	The pair of datagram sockets returned by:
+	
+		socketpair(AF_UNIX, SOCK_DGRAM, 0, sv);
+	
+	are not in fact connected.
+
+Repeat-by:
+
+#include	<stdio.h>
+#include	<sys/types.h>
+#include	<sys/socket.h>
+#include	<sys/file.h>
+
+main(argc,argv)
+	int	argc;
+	char	**argv;
+{
+    int     sv[2],
+	    res;
+
+    printf("socketpair() returns %d\n",
+    	socketpair (AF_UNIX, SOCK_DGRAM, 0, sv));
+    if (fork()) {
+	if (send(sv[0], "Hello\n", 6, 0) != 6) {
+	    perror("send");
+	    exit(1);
+	}
+    } else {
+	char data[8];
+	int size;
+
+	size = recv(sv[1], data, 6, 0);
+	printf("Size %d data %.6s\n", size, data);
+    }
+    exit(0);
+}
+
+
+Fix:	/*	uipc_syscalls.c	6.2	83/09/25	*/
+*** /tmp/,RCSt1000122	Fri Jul  6 17:27:17 1984
+--- uipc_syscalls.c	Fri Jul  6 17:00:36 1984
+***************
+*** 249,254
+  	u.u_error = soconnect2(so1, so2);
+  	if (u.u_error)
+  		goto free4;
+  	u.u_r.r_val1 = 0;
+  	(void) copyout((caddr_t)sv, (caddr_t)uap->rsv, 2 * sizeof (int));
+  	return;
+
+--- 249,262 -----
+  	u.u_error = soconnect2(so1, so2);
+  	if (u.u_error)
+  		goto free4;
++ 	if (uap->type == SOCK_DGRAM) {
++ 		/*
++ 		 *  NB - datagram connect not symmetric
++ 		 */
++ 		u.u_error = soconnect2(so2, so1);
++ 		if (u.u_error)
++ 			goto free4;
++ 	}
+  	u.u_r.r_val1 = 0;
+  	(void) copyout((caddr_t)sv, (caddr_t)uap->rsv, 2 * sizeof (int));
+  	return;
+*** /tmp/,RCSt1000122	Fri Jul  6 17:27:26 1984
+--- uipc_usrreq.c	Fri Jul  6 17:00:37 1984
+***************
+*** 364,369
+  	case SOCK_DGRAM:
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
+  		break;
+  
+  	case SOCK_STREAM:
+
+--- 364,370 -----
+  	case SOCK_DGRAM:
+  		unp->unp_nextref = unp2->unp_refs;
+  		unp2->unp_refs = unp;
++ 		soisconnected(so);
+  		break;
+  
+  	case SOCK_STREAM:

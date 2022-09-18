@@ -1,0 +1,91 @@
+From loverso@Xylogics.COM  Tue May 15 15:51:41 1990
+Date: Tue, 15 May 90 18:53:36 edt
+From: John Robert LoVerso <loverso@Xylogics.COM>
+Subject: passwd.c calculates salt wrong
+Index: bin 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@Berkeley.EDU
+
+[This was apparently originally reported in 1986 to net.crypt, and
+has just again been brought up in alt.security.  If you've fixed this
+already, please ignore.
+Original report/description by Tim Shepard and Bob Baldwin of MIT]
+
+Description:
+
+	>From: shep@mit-eddie.UUCP
+	Newsgroups: net.crypt
+	Subject: password salt
+	Date: 1 Aug 86 00:28:31 GMT
+	Organization: M.I.T. EE/CS Computer Facility, Cambridge MA
+
+	There is a flaw in the Berkeley 4.3 Unix passwd program that makes a
+	tape attack on a password feasible.  (We haven't looked at any other
+	versions of Unix.)  From passwd.c:
+
+		time(&salt);
+		salt = 9 * getpid();
+		saltc[0] = salt & 077;
+		saltc[1] = (salt>>6) & 077;
+		for (i = 0; i < 2; i++) {
+			c = saltc[i] + '.';
+			if (c > '9')
+				c += 7;
+			if (c > 'Z')
+				c += 6;
+			saltc[i] = c;
+		}
+		pw = crypt(pwbuf, saltc);
+
+	What does the salt depend on?  Well, the paper on unix password
+	security by Morris and Thompson states that the choice of seed is based
+	upon the time of day clock and that there are 4096 different possible
+	seeds.  (See "Password Security: A Case History" CACM, v 22, n 11,
+	November 1979, p. 594.  That paper is often distributed with Unix
+	manuals.)  On first glance at the above code, we were surprised to
+	find a call to getpid() in addition to the expected call to time().  A
+	close inspection of the first two lines of the above code reveals that
+	result of the call to time() is completely thrown out in the next line
+	of code.  The salt depends only on the process ID number of the passwd
+	program!
+
+	But, lets go ahead and assume that a call to getpid() produces a
+	sufficiently random 16 bit number.  What's the effect of multiplying
+	by 9?  Well, since on the next two lines, only the low 12 bits of the
+	variable "seed" are used, the multiplying by 9 reduces the number of
+	possible seeds by a factor of nine.  For example, after the second
+	line of code above, the variable "seed" could be 0, 9, 18, 27, etc,
+	but it could never be any value that is not a multiple of 9.  Thus the
+	passwd program can only produce 4096/9 (= 456) of the 4096 possible
+	salt values.  (It's amusing to note that without the second line, or
+	if the operator was "+=" instead of just "=" in the second line, the
+	code would generate all 4096 different seeds with about evenly
+	distributed probabilities.)
+
+	So what?  Well, imagine taking a dictionary of 30,000 likely passwords
+	and producing 456 different files, one for each different salt, and
+	each containing 30,000 hashed passwords, each on a separate line, and
+	in the same order as the words in your dictionary.  Each file would be
+	about 270 thousand bytes long (including line-feeds) and all the files
+	together could be kept on two 6250bpi tapes (which hold about 100
+	megabytes each).  Now, to determine somebody's password from their
+	entry in the password file (assuming that their password is in your
+	original dictionary), position the appropriate tape at the start of
+	the file corresponding to the that user's salt and grep -n the tape
+	for the hashed password.  (This will be vastly faster than 30,000
+	calls to crypt(), even the faster versions described in an earlier
+	message.)
+
+	If the salt could take on all 4096 possible values, you would need
+	instead need around 15 tapes to hold all the files.
+
+	All this underlies the importance of choosing a password which is not
+	in any dictionary and which is long enough.
+
+Repeat-By:
+	Inspection of code.
+
+Fix:
+	Change the following line from:
+		salt = 9 * getpid();
+	to:
+		salt += getpid();

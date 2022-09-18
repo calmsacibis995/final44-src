@@ -1,0 +1,29 @@
+Path: seismo!ll-xn!ames!amdcad!sun!shannon
+From: shannon@sun.uucp (Bill Shannon)
+Newsgroups: comp.bugs.4bsd
+Subject: exec (really vinifod) can scribble random kernel data
+Index: sys/kern_exec.c 4.3BSD
+
+Description:
+	vinifod (in vm_subr.c) is called with a pointer to pte's.  vinifod
+	calls bmap, which can sleep.  While the process is sleeping in bmap,
+	it can be swapped out.  When it is swapped back in, the pte's can
+	be allocated at a different kernel virtual address.  vinifod will
+	then use the old pte address and scribble on random kernel data.
+Repeat-By:
+	Lotsa luck.  While debugging new hardware we had just the right
+	combination of events to make this occur repeatably.  I wouldn't
+	expect it to occur very often in general.
+Fix:
+	The quick fix is to prevent the process from being swapped during the
+	time the pte's are being initialized.  (Sorry I don't have better
+	diff's or something.)
+
+	In kern_exec.c, change line 453 to
+
+		u.u_procp->p_flag |= pagi | SKEEP;
+
+	After line 469 (after the call to vinifod) add:
+
+		u.u_procp->p_flag &= ~SKEEP;
+

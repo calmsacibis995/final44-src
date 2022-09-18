@@ -1,0 +1,50 @@
+Return-Path: <spgggm@ucbopal.CC>
+Date: Fri, 2 Nov 84 20:03:54 pst
+From: spgggm@ucbopal.CC (Greg Minshall)
+Subject: DBX(1) doesn't know enough about the terminal modes.
+Index:	ucb/dbx/main.c 4.2BSD
+
+Description:
+	If you run dbx against a program that does fancy things with the
+    newer tty structures, then a breakpoint or bus error or whatever will
+    leave the fancy changes in place.  In particular, if the process sets
+    stdin for non-blocking I/O, then dbx will exit, as will csh, leaving
+    you feeling fairly unloved by the computer.
+Repeat-By:
+	Oh, do a dbx again telnet, and breakpoint in telrcv.
+Fix:
+	Change main.c to know more about terminals.  Note that you MUST
+    remove process.o when you are rebuilding the new dbx, since process.c
+    includes main.h (created from main.c), but no one ever told the
+    makefile.  The following is a diff between the original and my version:
+	27d26
+	< #include <fcntl.h>
+	29,36c28
+	< typedef struct {
+	< 	struct sgttyb	sg;		/* standard sgttyb structure */
+	< 	struct tchars	tc;		/* terminal characters */
+	< 	struct ltchars	ltc;		/* local special characters */
+	< 	int		ldisc;		/* line discipline */
+	< 	int		local;		/* TIOCLGET */
+	< 	int		fcflags;	/* fcntl(2) F_GETFL, F_SETFL */
+	< } Ttyinfo;
+	---
+	> typedef struct sgttyb Ttyinfo;
+	373,378c365
+	<     gtty(fileno(f), &(t->sg));
+	<     ioctl(fileno(f), TIOCGETC, &(t->tc));
+	<     ioctl(fileno(f), TIOCGLTC, &(t->ltc));
+	<     ioctl(fileno(f), TIOCGETD, &(t->ldisc));
+	<     ioctl(fileno(f), TIOCLGET, &(t->local));
+	<     t->fcflags = fcntl(fileno(f), F_GETFL, 0);
+	---
+	>     gtty(fileno(f), t);
+	385,390c372
+	<     stty(fileno(f), &(t->sg));
+	<     ioctl(fileno(f), TIOCSETC, &(t->tc));
+	<     ioctl(fileno(f), TIOCSLTC, &(t->ltc));
+	<     ioctl(fileno(f), TIOCSETD, &(t->ldisc));
+	<     ioctl(fileno(f), TIOCLSET, &(t->local));
+	<     (void) fcntl(fileno(f), F_SETFL, t->fcflags);
+	---
+	>     stty(fileno(f), t);

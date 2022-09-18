@@ -1,0 +1,107 @@
+From tef@cgl.ucsf.edu  Fri Sep 11 15:20:38 1987
+Date: Fri, 11 Sep 87 15:17:53 PDT
+From: tef@cgl.ucsf.edu
+Subject: ARP code for negotiating use of trailers is broken
+Index: sys/netinet/if_ether.c 4.3BSD
+
+Description:
+	The ARP code for negotiating the use of trailers with another host
+	is broken.  If the remote host cannot understand trailers, the
+	algorithm can get stuck in a loop continually exchanging ARP_REPLY
+	packets with the remote host.  This floods the ethernet with LOTS
+	of packets for several minutes until the algorithm gives up trying.
+
+	The scenario is as follows: 1) the local host tries to resolve a
+	ethernet address that is not in it's arp table by sending out a
+	ARPOP_REQUEST packet; 2) the remote host sends a ARPOP_REPLY with
+	the ETHERTYPE_IP protocol field set indicating that it does
+	not wish to receive trailers; 3) local host sends a ARPOP_REPLY
+	announcing that it does wish to receive trailers; 4) remote host
+	sends another ETHERTYPE_IP reply indicating it does not wish to
+	send trailers either.  This reply is indistinguishable from #2
+	above and the whole cycle repeats.
+
+	It can be argued that the remote host should just ignore the reply
+	packet it receives requesting it to send trailers and not "reply
+	to the reply".  On the other hand, the same argument can be made
+	for 4.3BSD.  Neither RFC826 nor RFC893 say anything about replying
+	to a reply.
+
+Repeat-By:
+	Put a network monitor on the ethernet.  A Sun running etherfind
+	will do nicely.  Try to open a TCP connection with a host that does
+	not wish to use trailers (we used an Evans & Sutherland PS390).
+	Watch the continual flood of ARP packets run rampart on the network.
+
+Fix:
+	Another flag is needed to differentiate which end of a connection has
+	requested the use of trailers.  Diffs follow (yes, these have been
+	tested):
+
+RCS file: RCS/if_arp.h,v
+retrieving revision 1.1
+diff -c -r1.1 if_arp.h
+*** /tmp/,RCSt1015008	Thu Sep 10 19:55:48 1987
+--- if_arp.h	Thu Sep 10 14:54:13 1987
+***************
+*** 48,51
+  #define ATF_COM		0x02	/* completed entry (enaddr valid) */
+  #define	ATF_PERM	0x04	/* permanent entry */
+  #define	ATF_PUBL	0x08	/* publish entry (respond for other host) */
+! #define	ATF_USETRAILERS	0x10	/* has requested trailers */
+
+--- 48,52 -----
+  #define ATF_COM		0x02	/* completed entry (enaddr valid) */
+  #define	ATF_PERM	0x04	/* permanent entry */
+  #define	ATF_PUBL	0x08	/* publish entry (respond for other host) */
+! #define	ATF_USETRAILERS	0x10	/* other side has requested trailers */
+! #define	ATF_ASKTRAILERS	0x20	/* we have requested trailers */
+
+RCS file: RCS/if_ether.c,v
+retrieving revision 1.1
+diff -c -r1.1 if_ether.c
+*** /tmp/,RCSt1014988	Thu Sep 10 19:52:11 1987
+--- if_ether.c	Thu Sep 10 14:54:28 1987
+***************
+*** 330,335
+  			    at->at_hold, (struct sockaddr *)&sin);
+  			at->at_hold = 0;
+  		}
+  	}
+  	if (at == 0 && itaddr.s_addr == myaddr.s_addr) {
+  		/* ensure we have a table entry */
+
+--- 330,344 -----
+  			    at->at_hold, (struct sockaddr *)&sin);
+  			at->at_hold = 0;
+  		}
++ 		/* 
++ 		 * If we've already asked the other side about
++ 		 * trailers, just give up now and go home.
++ 		 */
++ 		if (at->at_flags & ATF_ASKTRAILERS) {
++ 			splx(s);
++ 			goto out;
++ 		}
++ 		at->at_flags |= ATF_ASKTRAILERS;
+  	}
+  	if (at == 0 && itaddr.s_addr == myaddr.s_addr) {
+  		/* ensure we have a table entry */
+***************
+*** 336,342
+  		if (at = arptnew(&isaddr)) {
+  			bcopy((caddr_t)ea->arp_sha, (caddr_t)at->at_enaddr,
+  			    sizeof(ea->arp_sha));
+! 			at->at_flags |= ATF_COM;
+  		}
+  	}
+  	splx(s);
+
+--- 345,351 -----
+  		if (at = arptnew(&isaddr)) {
+  			bcopy((caddr_t)ea->arp_sha, (caddr_t)at->at_enaddr,
+  			    sizeof(ea->arp_sha));
+! 			at->at_flags |= ATF_COM | ATF_ASKTRAILERS;
+  		}
+  	}
+  	splx(s);

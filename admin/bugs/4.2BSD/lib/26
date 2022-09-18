@@ -1,0 +1,365 @@
+Return-Path: <root%oregon-grad.csnet@csnet-relay.arpa>
+Date: Sun, 18 Aug 85 03:41:28 pdt
+From: Bruce Jerrick <root%oregon-grad.csnet@csnet-relay.arpa>
+Subject: Further bugs in RCHECK realloc()
+Index: lib/libc/gen/malloc.c 4.2BSD
+
+Description:
+	Even with the RCHECK bug fix from Jay Lepreau/Spencer Thomas
+	applied, realloc() with RCHECK (range checking) compiled in
+	has two bugs:
+	1.  ov_size is calculated incorrectly, leading to subsequent
+	    "botched assertion".
+	2.  Range checking is not done in some places where it should
+	    be (for a realloc(), checking is done only if the block
+	    has to be moved, when the old block is free'd).  Hence, some
+	    problems will either go unreported, or will be reported
+	    long after the problem actually occurred.
+	More details are in the rlog below.
+
+Repeat-By:
+	Get a copy of /usr/src/lib/libc/gen/malloc.c, and with "main.c"
+	included below, compile and run:
+
+	% cc -DRCHECK -c malloc.c
+	% cc main.c malloc.o -o alloc_test
+	% alloc_test
+
+	Even with the Jay Lepreau/Spencer Thomas bug fix applied
+	(e.g., as supplied by Mt. Xinu 4.2 bug fix tape), it will
+	abort with a "botched assertion".
+
+------------------------------------------------------------------------
+/* Demonstrate realloc() ov_size (et al.) bugs.
+ */
+
+#include <stdio.h>
+
+extern char *malloc();
+extern char *realloc();
+
+char *area;
+
+main()
+{
+    /* Call realloc() repeatedly, and write into all of the user's
+     *  area each time.
+     * Eventually there will be an assert failure from malloc.c
+     *  if it has RCHECK compiled in, due to a bug in malloc.c.
+     */
+    area = malloc(12);
+    fill(12);
+    area = realloc(area, 24);
+    fill(24);
+    area = realloc(area, 36);	/* this realloc will result in incorrect
+				 *  op->ov_size */
+    fill(36);
+    area = realloc(area, 48);
+    fill(48);
+    area = realloc(area, 60);	/* due to second bug in malloc.c,
+				 *  botched assertion won't be reported
+				 *  until here. */
+}
+
+/* Write "n" bytes into "area", starting at beginning of "area" */
+fill(n)
+    int n;
+{
+    int i;
+    char *p = area;
+
+    for (i=0; i<n; i++) {
+	*p++ = '\1';
+    }
+}
+------------------------------------------------------------------------
+
+Fix:
+	Below are the pertinent parts of an rlog of several stages of
+	changes, and then a diff -c1 from the original 4.2BSD malloc.c
+	(i.e., all changes).  The bug fixes by Jay Lepreau/Spencer
+	Thomas are incorporated, though reworked.
+
+------------------------------------------------------------------------
+
+description:
+Storage allocation routines.
+Initial revision is as distributed with 4.2 BSD,
+    file dated Sep 25 1983.
+----------------------------
+revision 2.1        
+date: 85/08/17 23:00:15;  author: root;  state: Exp;  lines added/del: 23/19
+Fixed RCHECK code (calculation of offset to trailing RMAGIC was
+incorrect in some places, due to confused use of several variables):
+    Changed definition of ovu_size -- it formerly included unnecessary
+	sizes of overhead (which are constant).  New definition allows
+	range checking with up to 64k user data area.
+    Added block_size variable and changed used of nbytes variable in
+	malloc(), so use of nbytes is consistent with other routines,
+	and to clarify difference between sizes of user's data area vs.
+	entire block including overhead.
+    Calculation of offset to trailing RMAGIC standardized in the several
+	places used.
+Moved #include <stdio.h> to avoid doing it twice of both RCHECK and
+    MSTATS are defined.
+----------------------------
+revision 1.3        
+date: 85/08/17 20:02:13;  author: root;  state: Exp;  lines added/del: 7/2
+Added additional RCHECK near top of realloc(), to detect corrupted
+    arena as soon as possible.  Before, corruption would not be
+    detected unless a free() was done (which doesn't happen if
+    relloc() re-uses the same area), resulting in misleading
+    indication of when trouble occurred.
+----------------------------
+revision 1.2        
+date: 85/08/16 22:44:32;  author: root;  state: Exp;  lines added/del: 23/6
+Bug fixes from Mt. Xinu 4.2 bug list (lib/21):
+
+Date: Wed, 9 Nov 83 22:45:39 MST
+From: lepreau@utah-cs (Jay Lepreau)
+Subject: Fix RCHECKing in malloc.c and other debug cleanup
+
+Description:
+	1. When RCHECK is defined, realloc needs to move the trailing
+	RMAGIC and adjust the recorded ov_size when it uses the same
+	block.  Otherwise got false assertion failures.  Spencer Thomas
+	found this one.
+	2. botch() printout needs cleaning up: it used to print to
+	stdout and w/o an fflush (so never saw it), and it needs to bracket
+	the msg with \r\n's cause terminal state may be funny.
+	3. If one defined RCHECK but not debug you didn't get any checking.
+	4. minor lint in morecore().
+	(5. There seems to be some redundant code in morecore(), i.e.
+	"can't happen" stuff, but why mess with working code?)
+----------------------------
+revision 1.1        
+date: 85/08/16 22:29:37;  author: root;  state: Exp;  
+Initial revision
+=============================================================================
+
+*** /tmp/,RCSt1020623	Sun Aug 18 03:27:29 1985
+--- malloc.c	Sat Aug 17 23:00:21 1985
+***************
+*** 1,3
+  #ifndef lint
+! static char sccsid[] = "@(#)malloc.c	4.3 (Berkeley) 9/16/83";
+  #endif
+
+--- 1,5 -----
+  #ifndef lint
+! static char sccsid[] = "@(#)malloc.c 4.3 +OGC/RCS $Revision: 2.1 $ (orig. Berkeley 9/16/83) $Date: 85/08/17 23:00:15 $";
+! static char RCSid[] =
+! "$Header: malloc.c,v 2.1 85/08/17 23:00:15 root Exp $";
+  #endif
+***************
+*** 17,18
+  #include <sys/types.h>
+  
+
+--- 19,23 -----
+  #include <sys/types.h>
++ #if defined(RCHECK) || defined(MSTATS)
++ #include <stdio.h>
++ #endif
+  
+***************
+*** 25,29
+   * byte is the size index.  The remaining bytes are for alignment.
+!  * If range checking is enabled and the size of the block fits
+!  * in two bytes, then the top two bytes hold the size of the requested block
+!  * plus the range checking words, and the header word MINUS ONE.
+   */
+
+--- 30,36 -----
+   * byte is the size index.  The remaining bytes are for alignment.
+!  * If range checking is enabled and the size of the block can be
+!  *  expressed in two bytes (i.e., <= 64k), then ovu_size holds
+!  *  the size of the *  user's data area MINUS ONE (minus one is
+!  *  to allow 64k to be expressed as two bytes; expressing zero size
+!  *  is never needed).
+   */
+***************
+*** 35,37
+  #ifdef RCHECK
+! 		u_short	ovu_size;	/* actual block size */
+  		u_int	ovu_rmagic;	/* range magic number */
+
+--- 42,44 -----
+  #ifdef RCHECK
+! 		u_short	ovu_size;	/* size of user's data area - 1 */
+  		u_int	ovu_rmagic;	/* range magic number */
+***************
+*** 48,50
+  #ifdef RCHECK
+! #define	RSLOP		sizeof (u_int)
+  #else
+
+--- 55,57 -----
+  #ifdef RCHECK
+! #define	RSLOP		sizeof (u_int)	/* trailing RMAGIC */
+  #else
+***************
+*** 68,70
+  static	u_int nmalloc[NBUCKETS];
+- #include <stdio.h>
+  #endif
+
+--- 75,76 -----
+  static	u_int nmalloc[NBUCKETS];
+  #endif
+***************
+*** 71,73
+  
+! #ifdef debug
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
+
+--- 77,79 -----
+  
+! #if defined(debug) || defined(RCHECK)
+  #define	ASSERT(p)   if (!(p)) botch("p"); else
+***************
+*** 78,80
+  
+! 	printf("assertion botched: %s\n", s);
+  	abort();
+
+--- 84,87 -----
+  
+! 	fprintf(stderr, "\r\nassertion botched: %s\r\n", s);
+! 	(void) fflush(stderr);		/* just in case user buffered it */
+  	abort();
+***************
+*** 87,89
+  malloc(nbytes)
+! 	register unsigned nbytes;
+  {
+
+--- 94,96 -----
+  malloc(nbytes)
+! 	unsigned nbytes;
+  {
+***************
+*** 89,90
+  {
+    	register union overhead *p;
+
+--- 96,98 -----
+  {
++ 	register unsigned block_size;	/* includes all overhead */
+    	register union overhead *p;
+***************
+*** 99,103
+  	 */
+!   	nbytes += sizeof (union overhead) + RSLOP;
+!   	nbytes = (nbytes + 3) &~ 3; 
+!   	shiftr = (nbytes - 1) >> 2;
+  	/* apart from this loop, this is O(1) */
+
+--- 107,111 -----
+  	 */
+!   	block_size = sizeof (union overhead) + nbytes + RSLOP;
+!   	block_size = (block_size + 3) &~ 3; 
+!   	shiftr = (block_size - 1) >> 2;
+  	/* apart from this loop, this is O(1) */
+***************
+*** 122,124
+  	/*
+! 	 * Record allocated size of block and
+  	 * bound space with magic numbers.
+
+--- 130,132 -----
+  	/*
+! 	 * Record nbytes (size of user's data area) and
+  	 * bound space with magic numbers.
+***************
+*** 128,130
+  	p->ov_rmagic = RMAGIC;
+!   	*((u_int *)((caddr_t)p + nbytes - RSLOP)) = RMAGIC;
+  #endif
+
+--- 136,138 -----
+  	p->ov_rmagic = RMAGIC;
+! 	*((u_int *)((caddr_t)p + sizeof (union overhead) + nbytes)) = RMAGIC;
+  #endif
+***************
+*** 153,156
+    	op = (union overhead *)sbrk(0);
+!   	if ((int)op & 0x3ff)
+!   		sbrk(1024 - ((int)op & 0x3ff));
+  	/* take 2k unless the block is bigger than that */
+
+--- 161,164 -----
+    	op = (union overhead *)sbrk(0);
+!   	if ((int)op & 0x3ff)		/* if this sbrk fails next will too */
+!   		(void) sbrk(1024 - ((int)op & 0x3ff));
+  	/* take 2k unless the block is bigger than that */
+***************
+*** 202,204
+  	if (op->ov_index <= 13)
+! 		ASSERT(*(u_int *)((caddr_t)op + op->ov_size + 1 - RSLOP) == RMAGIC);
+  #endif
+
+--- 210,212 -----
+  	if (op->ov_index <= 13)
+! 		ASSERT(*(u_int *)((caddr_t)op + sizeof (union overhead) + op->ov_size + 1) == RMAGIC);
+  #endif
+***************
+*** 243,244
+  		i = op->ov_index;
+  	} else {
+
+--- 251,257 -----
+  		i = op->ov_index;
++ #ifdef RCHECK
++ 		ASSERT(op->ov_rmagic == RMAGIC);
++ 		if (op->ov_index <= 13)
++ 			ASSERT(*(u_int *)((caddr_t)op + sizeof (union overhead) + op->ov_size + 1) == RMAGIC);
++ #endif
+  	} else {
+***************
+*** 262,264
+  	if (was_alloced &&
+! 	    nbytes <= onb && nbytes > (onb >> 1) - sizeof(*op) - RSLOP)
+  		return(cp);
+
+--- 275,282 -----
+  	if (was_alloced &&
+! 	    nbytes <= onb && nbytes > (onb >> 1) - sizeof(*op) - RSLOP) {
+! #ifdef RCHECK
+! 		if (nbytes <= 0x10000)
+! 			op->ov_size = nbytes - 1;
+! 		*((u_int *)((caddr_t)op + sizeof (union overhead) + nbytes)) = RMAGIC;
+! #endif
+  		return(cp);
+***************
+*** 264,265
+  		return(cp);
+    	if ((res = malloc(nbytes)) == NULL)
+
+--- 282,284 -----
+  		return(cp);
++ 	}
+    	if ((res = malloc(nbytes)) == NULL)
+***************
+*** 268,269
+  		bcopy(cp, res, (nbytes < onb) ? nbytes : onb);
+    	if (was_alloced)
+
+--- 287,295 -----
+  		bcopy(cp, res, (nbytes < onb) ? nbytes : onb);
++ #ifdef RCHECK
++ 	else {
++ 		if (nbytes <= 0x10000)
++ 			op->ov_size = nbytes - 1;
++ 		*((u_int *)((caddr_t)op + sizeof (union overhead) + nbytes)) = RMAGIC;
++ 	}
++ #endif
+    	if (was_alloced)
+
+------------------------------------------------------------------------
+
+        Bruce Jerrick
+        Oregon Graduate Center
+	(503) 690-1157
+        CSNet:  bruce@Oregon-Grad
+        UUCP:   ...tektronix!ogcvax!bruce

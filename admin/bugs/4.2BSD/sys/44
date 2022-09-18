@@ -1,0 +1,69 @@
+Return-Path: <jrs@Purdue.ARPA>
+Date: Fri, 25 May 84 13:37:05 est
+From: Jeff Schwab <jrs@Purdue.ARPA>
+Subject: Minor problems with the pcl-11 driver
+Index: 	sys/vaxif/if_pcl.c 4.2BSD
+
+Description:
+	The pcl-11 network driver has some timing problems with
+	re-initialization after error conditions.  The driver is not
+	truely at fault, the device does not reset quickly enough
+	when an INIT is issued after a device error.  The code needs
+	juggling for error recovery and there is a small typo
+	in setting up the receive control register.
+Repeat-By:
+	Have some hardware errors.  Eventually the timing problem will
+	hit and you will continuously receive/send errors.
+Fix:
+	The following diff's move the INIT sets around such that there
+	is a little time to allow the device to settle before trying
+	to set a device register.  Also a fix to a typo in setting
+	up for a packet receive.
+
+------ pcl_start() --------
+  	 * Have request mapped to UNIBUS for transmission.
+  	 * Purge any stale data from this BDP, and start the output.
+  	 */
++ #ifdef	PUCC
++ 	addr = (struct pcldevice *)ui->ui_addr;
++ 	addr->pcl_tcr = PCL_TXINIT;
++ #endif	PUCC
+  	if (sc->sc_ifuba.ifu_flags & UBA_NEEDBDP)
+  		UBAPURGE(sc->sc_ifuba.ifu_uba, sc->sc_ifuba.ifu_w.ifrw_bdp);
++ #ifndef	PUCC
+	addr = (struct pcldevice *)ui->ui_addr;
+  	addr->pcl_tcr = PCL_TXINIT;
++ #endif	PUCC
+  	addr->pcl_tsba = (int)sc->sc_ifuba.ifu_w.ifrw_info;
+------ pcl_rint() --------
+  			unit, addr->pcl_rcr, PCL_RCSRBITS,
+  			addr->pcl_rsr, PCL_RERRBITS);
+  		sc->sc_if.if_ierrors++;
++ #ifdef	PUCC
++ 		addr->pcl_rcr = PCL_RCINIT;
++ #endif	PUCC
+  		goto setup;
+  	}
+  	len = PCLMTU + addr->pcl_rdbc;
++ #ifdef	PUCC
++ 	addr->pcl_rcr = PCL_RCINIT;
++ #endif	PUCC
+  	if (len <= 0 || len > PCLMTU) {
+  		printf("pcl%d: bad len=%d.\n", unit, len);
+  		sc->sc_if.if_ierrors++;
+***************
+  	/*
+  	 * Reset for next packet.
+  	 */
++ #ifndef	PUCC
+  	addr->pcl_rcr = PCL_RCINIT;
++ #endif	PUCC
+  	addr->pcl_rdba = (int)sc->sc_ifuba.ifu_r.ifrw_info;
+  	addr->pcl_rdbc = -PCLMTU;
++ #ifdef	PUCC
++ 	addr->pcl_rcr = (((int)(sc->sc_ifuba.ifu_r.ifrw_info>>12))&0x0030) |
++ #else	PUCC
+  	addr->pcl_rcr = (((int)(sc->sc_ifuba.ifu_w.ifrw_info>>12))&0x0030) |
++ #endif	PUCC
+  		PCL_RCNPR | PCL_RCVWD | PCL_RCVDAT | PCL_IE;
+  }

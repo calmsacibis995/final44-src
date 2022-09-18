@@ -1,0 +1,556 @@
+From afb@j.cc.purdue.edu  Sat May  7 09:57:12 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.59/1.28)
+	id AA02805; Sat, 7 May 88 09:57:12 PDT
+Received: from j.cc.purdue.edu by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA18917; Sat, 7 May 88 09:55:43 PDT
+Received: by j.cc.purdue.edu (5.54/1.14)
+	id AA09635; Sat, 7 May 88 11:53:39 EST
+Date: Sat, 7 May 88 11:53:39 EST
+From: afb@j.cc.purdue.edu (Matthew Bradburn)
+Message-Id: <8805071653.AA09635@j.cc.purdue.edu>
+Subject: Short summary of the problem
+Index: 	ucb/ex 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Concerning the 'ex' editor:  we have made a couple of additions
+	and fixes that you may be interested in.
+
+	1.  Fixed a "bug" with respect to READONLY.
+	2.  Additon of file locking.
+
+Explanations follow:
+
+	1)  We fixed something that we considered a bug with respect
+to READONLY mode...  Repeat-by:
+
+		1. Edit READONLY file.
+		2. ':n' to a new file.
+		3. Try to add some text and write file.
+		   
+		READONLY is still set.  This should never happen.  You
+		should be able to open a new file, regardless of the
+		modes of the one you are presently working on.
+
+	2)  We have added a new feature that will flock() files if
+you request it.  It may be implemented by simply using "vi -L" or setting
+"lock" in your EXINIT.  You may also lock them manually with ":set lock".
+This sets advisory locking, thus if always invoked with locking, you will
+be informed if a file is already being edited.  This has proven very useful
+for group projects, where you may have many people changing many different
+files at once.  Note: a file will not be locked if it is READONLY, or if
+editor is invoked with "view".
+
+Context diffs to the sources involved follow.
+
+Repeat-By:
+	See above.
+Fix:
+#	This is a shell archive.
+#	Remove everything above and including the cut line.
+#	Then run the rest of the file through sh.
+#----cut here-----cut here-----cut here-----cut here----#
+#!/bin/sh
+# shar:	Shell Archiver
+#	Run the following text with /bin/sh to create:
+#	ex.c.diff
+#	ex.h.diff
+#	ex_data.c.diff
+#	ex_io.c.diff
+#	ex_subr.c.diff
+#	ex_unix.c.diff
+#	ex_vars.h.diff
+# This archive created: Fri May  6 15:51:56 1988
+# By:	MatthewBradburn (pinheads without porkpies)
+cat << \SHAR_EOF > ex.c.diff
+*** /tmp/,RCSt1014426	Fri May  6 14:32:13 1988
+--- /tmp/,RCSt2014426	Fri May  6 14:32:18 1988
+***************
+*** 12,18 ****
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex.c	7.5 (Berkeley) 8/29/85";
+! static char *rcsid = "$Id: ex.c,v 4.3.1.2 86/12/16 16:39:11 mjs Local $";
+  #endif not lint
+  
+  #include "ex.h"
+--- 12,18 ----
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex.c	7.5 (Berkeley) 8/29/85";
+! static char *rcsid = "$Id: ex.c,v 4.3.1.3 88/03/03 16:41:07 ray Exp $";
+  #endif not lint
+  
+  #include "ex.h"
+***************
+*** 121,129 ****
+  	/*
+  	 * Figure out how we were invoked: ex, edit, vi, view.
+  	 */
+  	ivis = any('v', av[0]);	/* "vi" */
+! 	if (any('w', av[0]))	/* "view" */
+! 		value(READONLY) = 1;
+  	if (any('d', av[0])) {	/* "edit" */
+  		value(OPEN) = 0;
+  		value(REPORT) = 1;
+--- 121,131 ----
+  	/*
+  	 * Figure out how we were invoked: ex, edit, vi, view.
+  	 */
++ 	viewinv = 0; 
+  	ivis = any('v', av[0]);	/* "vi" */
+! 	if (any('w', av[0])) {	/* "view" */
+! 		value(READONLY) = viewinv = 1; /* aht */
+! 	}
+  	if (any('d', av[0])) {	/* "edit" */
+  		value(OPEN) = 0;
+  		value(REPORT) = 1;
+***************
+*** 175,181 ****
+  		} else switch (c) {
+  
+  		case 'R':
+! 			value(READONLY) = 1;
+  			break;
+  
+  #ifdef TRACE
+--- 177,183 ----
+  		} else switch (c) {
+  
+  		case 'R':
+! 			value(READONLY) = viewinv = 1; /* aht */
+  			break;
+  
+  #ifdef TRACE
+***************
+*** 209,214 ****
+--- 211,220 ----
+  
+  		case 'r':
+  			recov++;
++ 			break;
++ 
++ 		case 'L':       		/* aht */
++ 			value(LOCK) = 1;
+  			break;
+  
+  		case 't':
+SHAR_EOF
+cat << \SHAR_EOF > ex.h.diff
+*** /tmp/,RCSt1014440	Fri May  6 14:32:31 1988
+--- /tmp/,RCSt2014440	Fri May  6 14:32:38 1988
+***************
+*** 4,10 ****
+   * specifies the terms and conditions for redistribution.
+   *
+   *	@(#)ex.h	7.7 (Berkeley) 5/31/85
+!  *	$Id: ex.h,v 4.3.1.2 86/12/16 16:49:24 mjs Local $
+   */
+  
+  #ifdef V6
+--- 4,10 ----
+   * specifies the terms and conditions for redistribution.
+   *
+   *	@(#)ex.h	7.7 (Berkeley) 5/31/85
+!  *	$Id: ex.h,v 4.3.1.3 88/03/03 16:55:20 ray Exp $
+   */
+  
+  #ifdef V6
+***************
+*** 267,272 ****
+--- 267,273 ----
+   * Environment like memory
+   */
+  var	char	altfile[FNSIZE];	/* Alternate file name */
++ short	int	viewinv;		/* aht - for view */
+  extern	 char	direct[ONMSZ];		/* Temp file goes here */
+  extern	 char	shell[ONMSZ];		/* Copied to be settable */
+  extern	 char	ttytype[ONMSZ];		/* A long and pretty name */
+SHAR_EOF
+cat << \SHAR_EOF > ex_data.c.diff
+*** /tmp/,RCSt1014585	Fri May  6 14:34:52 1988
+--- /tmp/,RCSt2014585	Fri May  6 14:35:01 1988
+***************
+*** 6,12 ****
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_data.c	7.5 (Berkeley) 8/29/85";
+! static char *rcsid = "$Id: ex_data.c,v 4.3.1.2 86/12/16 17:02:58 mjs Local $";
+  #endif not lint
+  
+  #include "ex.h"
+--- 6,12 ----
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_data.c	7.5 (Berkeley) 8/29/85";
+! static char *rcsid = "$Id: ex_data.c,v 4.3.1.3 88/03/03 16:41:40 ray Exp $";
+  #endif not lint
+  
+  #include "ex.h"
+***************
+*** 62,67 ****
+--- 62,68 ----
+  	"ignorecase",	"ic",	ONOFF,		0,	0,	0,
+  	"lisp",		0,	ONOFF,		0,	0,	0,
+  	"list",		0,	ONOFF,		0,	0,	0,
++ 	"lock",		"lk",	ONOFF,		0,	0,	0,
+  	"magic",	0,	ONOFF,		1,	1,	0,
+  	"mesg",		0,	ONOFF,		1,	1,	0,
+  	"modeline",	0,	ONOFF,		0,	0,	0,
+SHAR_EOF
+cat << \SHAR_EOF > ex_io.c.diff
+*** /tmp/,RCSt1014664	Fri May  6 14:36:09 1988
+--- /tmp/,RCSt2014664	Fri May  6 14:36:17 1988
+***************
+*** 6,13 ****
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_io.c	7.11 (Berkeley) 6/7/85";
+! static char *rcsid = "$Id: ex_io.c,v 4.3.1.2 86/12/16 17:32:37 mjs Local $";
+  #endif not lint
+  
+  #include "ex.h"
+  #include "ex_argv.h"
+--- 6,14 ----
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_io.c	7.11 (Berkeley) 6/7/85";
+! static char *rcsid = "$Id: ex_io.c,v 4.3.1.3 88/03/03 16:51:51 ray Exp $";
+  #endif not lint
++ #include <sys/file.h>
+  
+  #include "ex.h"
+  #include "ex_argv.h"
+***************
+*** 37,42 ****
+--- 38,45 ----
+  long	cntnull;		/* Count of nulls " */
+  long	cntodd;			/* Count of non-ascii characters " */
+  
++ int fd_flock = -1;		/* file descriptor holding flock (ksb) */
++ 
+  /*
+   * Parse file name for command encoded by comm.
+   * If comm is E then command is doomed and we are
+***************
+*** 238,243 ****
+--- 241,248 ----
+  		dup(pvec[1]);
+  		close(pvec[0]);
+  		close(2);	/* so errors don't mess up the screen */
++ 		if (fd_flock != -1)
++ 			close(fd_flock);
+  		open("/dev/null", 1);
+  		execl(svalue(SHELL), "sh", "-c", genbuf, 0);
+  		oerrno = errno; close(1); dup(2); errno = oerrno;
+***************
+*** 322,331 ****
+  	int (*oldsusp)();
+  #endif SIGTSTP
+  
+  	io = open(file, 0);
+  	if (io < 0) {
+  		if (c == 'e' && errno == ENOENT) {
+! 			edited++;
+  			/*
+  			 * If the user just did "ex foo" he is probably
+  			 * creating a new file.  Don't be an error, since
+--- 327,352 ----
+  	int (*oldsusp)();
+  #endif SIGTSTP
+  
++ 	if ('e' == c && fd_flock != -1) {	/* drop lock */
++ 		close(fd_flock);
++ 		fd_flock = -1;
++ 	}
++ 
+  	io = open(file, 0);
++ 	if (io >= 0 && value(LOCK) == 1 && !value(READONLY) && 'r' != c) {
++ 		if (-1 == flock(io, LOCK_EX|LOCK_NB)) {
++ 			if (EWOULDBLOCK == errno) {
++ 				printf(" [File is busy]");
++ 			}
++ 			close(io);
++ 			fd_flock = io = -1;
++ 		} else {
++ 			fd_flock = dup(io);
++ 		}
++ 	}
+  	if (io < 0) {
+  		if (c == 'e' && errno == ENOENT) {
+! 			++edited;
+  			/*
+  			 * If the user just did "ex foo" he is probably
+  			 * creating a new file.  Don't be an error, since
+***************
+*** 338,343 ****
+--- 359,365 ----
+  			}
+  		}
+  		syserror();
++ 		return;
+  	}
+  	if (fstat(io, &stbuf))
+  		syserror();
+***************
+*** 400,405 ****
+--- 422,428 ----
+  			break;
+  		}
+  	}
++ 	/*if (1) {*/
+  	if (c != 'r') {
+  		if (value(READONLY) && denied) {
+  			value(READONLY) = ovro;
+***************
+*** 412,417 ****
+--- 435,445 ----
+  		}
+  	}
+  	if (value(READONLY)) {
++ 		if ('e' == c && fd_flock != -1) {	/* drop lock */
++ 			value(LOCK) = 0;
++ 			close(fd_flock);
++ 			fd_flock = -1;
++ 		}
+  		printf(" [Read only]");
+  		flush();
+  	}
+***************
+*** 441,449 ****
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	if (fstat(io, &statb) < 0)
+  		bsize = LBSIZE;
+! 	else {
+  		bsize = statb.st_blksize;
+  		if (bsize <= 0)
+  			bsize = LBSIZE;
+--- 469,477 ----
+  	deletenone();
+  	clrstats();
+  	first = addr2 + 1;
+! 	if (fstat(io, &statb) < 0) {
+  		bsize = LBSIZE;
+! 	} else {
+  		bsize = statb.st_blksize;
+  		if (bsize <= 0)
+  			bsize = LBSIZE;
+SHAR_EOF
+cat << \SHAR_EOF > ex_subr.c.diff
+*** /tmp/,RCSt1017385	Fri May  6 15:46:05 1988
+--- /tmp/,RCSt2017385	Fri May  6 15:46:08 1988
+***************
+*** 6,12 ****
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_subr.c	7.10 (Berkeley) 6/7/85";
+! static char *rcsid = "$Id: ex_subr.c,v 4.3.1.4 88/03/03 16:52:07 ray Exp $";
+  #endif not lint
+  
+  #include "ex.h"
+--- 6,12 ----
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_subr.c	7.10 (Berkeley) 6/7/85";
+! static char *rcsid = "$Id: ex_subr.c,v 4.3.1.3 86/12/19 17:09:00 mjs Local $";
+  #endif not lint
+  
+  #include "ex.h"
+***************
+*** 933,943 ****
+  	if (pid < 0)
+  		return (0);
+  	if (pid == 0) {
+- 		extern int fd_flock;
+  		close(0);
+  		dup(tfile);
+- 		if (-1 != fd_flock)
+- 			close(fd_flock);
+  		execl(EXPRESERVE, "expreserve", (char *) 0);
+  		exit(1);
+  	}
+--- 933,940 ----
+SHAR_EOF
+cat << \SHAR_EOF > ex_unix.c.diff
+*** /tmp/,RCSt1014825	Fri May  6 14:38:38 1988
+--- /tmp/,RCSt2014825	Fri May  6 14:38:41 1988
+***************
+*** 6,12 ****
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_unix.c	7.6 (Berkeley) 10/22/85";
+! static char *rcsid = "$Id: ex_unix.c,v 4.3.1.2 86/12/17 17:13:29 mjs Local $";
+  #endif not lint
+  
+  #include <sys/file.h>
+--- 6,12 ----
+  
+  #ifndef lint
+  static char *sccsid = "@(#)ex_unix.c	7.6 (Berkeley) 10/22/85";
+! static char *rcsid = "$Id: ex_unix.c,v 4.3.1.3 88/03/03 16:55:02 ray Exp $";
+  #endif not lint
+  
+  #include <sys/file.h>
+***************
+*** 169,174 ****
+--- 169,175 ----
+  		error("No more processes");
+  	}
+  	if (pid == 0) {
++ 		extern int fd_flock;
+  		if (mode & 2) {
+  			close(0);
+  			dup(newstdin);
+***************
+*** 186,191 ****
+--- 187,194 ----
+  		}
+  		if (io)
+  			close(io);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		if (tfile)
+  			close(tfile);
+  #ifndef VMUNIX
+***************
+*** 261,266 ****
+--- 264,270 ----
+  			error("No more processes");
+  		}
+  		if (pid == 0) {
++ 			extern int fd_flock;
+  			setrupt();
+  			io = pvec[1];
+  			close(pvec[0]);
+***************
+*** 268,273 ****
+--- 272,279 ----
+  			/* bug fix to give child a different file descriptor
+  				--mjs, PUCC */
+  			close(tfile);
++ 			if (-1 != fd_flock)
++ 				close(fd_flock);
+  			if((tfile = open(tfname, O_RDONLY, 0)) < 1) {
+  				perror(tfname);  /* should never happen */
+  				exit(1);
+***************
+*** 324,334 ****
+--- 330,343 ----
+  		error(" Can't fork to execute recovery");
+  	}
+  	if (pid == 0) {
++ 		extern int fd_flock;
+  		close(2);
+  		dup(1);
+  		close(1);
+  		dup(pvec[1]);
+  	        close(pvec[1]);
++ 		if (-1 != fd_flock)
++ 			close(fd_flock);
+  		execl(EXRECOVER, "exrecover", svalue(DIRECTORY), file, (char *) 0);
+  		close(1);
+  		dup(2);
+SHAR_EOF
+cat << \SHAR_EOF > ex_vars.h.diff
+*** /tmp/,RCSt1014866	Fri May  6 14:39:08 1988
+--- /tmp/,RCSt2014866	Fri May  6 14:39:10 1988
+***************
+*** 4,10 ****
+   * specifies the terms and conditions for redistribution.
+   *
+   *	@(#)ex_vars.h	7.5 (Berkeley) 8/29/85
+!  *	$Id: ex_vars.h,v 4.3.1.2 86/12/17 17:38:29 mjs Local $
+   */
+  
+  #define AUTOINDENT      0
+--- 4,10 ----
+   * specifies the terms and conditions for redistribution.
+   *
+   *	@(#)ex_vars.h	7.5 (Berkeley) 8/29/85
+!  *	$Id: ex_vars.h,v 4.3.1.3 88/03/03 16:55:43 ray Exp $
+   */
+  
+  #define AUTOINDENT      0
+***************
+*** 18,54 ****
+  #define IGNORECASE      8
+  #define LISP            9
+  #define LIST            10
+! #define MAGIC           11
+! #define MESG            12
+! #define MODELINE        13
+! #define NUMBER          14
+! #define OPEN            15
+! #define OPTIMIZE        16
+! #define PARAGRAPHS      17
+! #define PROMPT          18
+! #define READONLY        19
+! #define REDRAW          20
+! #define REMAP           21
+! #define REPORT          22
+! #define SCROLL          23
+! #define SECTIONS        24
+! #define SHELL           25
+! #define SHIFTWIDTH      26
+! #define SHOWMATCH       27
+! #define SLOWOPEN        28
+! #define SOURCEANY       29
+! #define TABSTOP         30
+! #define TAGLENGTH       31
+! #define TAGS            32
+! #define TERM            33
+! #define TERSE           34
+! #define TIMEOUT         35
+! #define TTYTYPE         36
+! #define VARIABLETAB	37
+! #define WARN            38
+! #define WINDOW          39
+! #define WRAPSCAN        40
+! #define WRAPMARGIN      41
+! #define WRITEANY        42
+  
+! #define	NOPTS	43
+--- 18,55 ----
+  #define IGNORECASE      8
+  #define LISP            9
+  #define LIST            10
+! #define LOCK		11
+! #define MAGIC           12
+! #define MESG            13
+! #define MODELINE        14
+! #define NUMBER          15
+! #define OPEN            16
+! #define OPTIMIZE        17
+! #define PARAGRAPHS      18
+! #define PROMPT          19
+! #define READONLY        20
+! #define REDRAW          21
+! #define REMAP           22
+! #define REPORT          23
+! #define SCROLL          24
+! #define SECTIONS        25
+! #define SHELL           26
+! #define SHIFTWIDTH      27
+! #define SHOWMATCH       28
+! #define SLOWOPEN        29
+! #define SOURCEANY       30
+! #define TABSTOP         31
+! #define TAGLENGTH       32
+! #define TAGS            33
+! #define TERM            34
+! #define TERSE           35
+! #define TIMEOUT         36
+! #define TTYTYPE         37
+! #define VARIABLETAB	38
+! #define WARN            39
+! #define WINDOW          40
+! #define WRAPSCAN        41
+! #define WRAPMARGIN      42
+! #define WRITEANY        43
+  
+! #define	NOPTS	44
+SHAR_EOF
+#	End of shell archive
+exit 0

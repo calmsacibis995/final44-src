@@ -1,0 +1,356 @@
+head	1.1;
+access;
+symbols;
+locks
+	margo:1.1; strict;
+comment	@ * @;
+
+
+1.1
+date	94.10.11.17.13.39;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@Revision 1, unported from 4.4BSD
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@#include <stdio.h>
+#include <stddef.h>
+#include <db.h>
+#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/time.h>
+#include <sys/dirent.h>
+#include <ufs/ufs/dir.h>
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ffs/fs.h>
+#include "fsck.h"
+#include <logging/lffs.h>
+#include <logging/lffs_auto.h>
+#include "lffs_globs.h"
+#include "lffs_roll.h"
+
+#define INVALID_INO 1
+
+struct	dirtemplate dirhead = {
+	0, 12, DT_DIR, 1, ".",
+	0, DIRBLKSIZ - 12, DT_DIR, 2, ".."
+};
+struct	dirtemplate emptydir = { 0, DIRBLKSIZ };
+
+struct bufarea	*getdirblk();
+
+
+/*
+ * Create a new directory. (Fill in the data blocks for . and ..)
+ */
+void
+make_newdir(ino_t newino, ino_t parentino, daddr_t lbn, int mode)
+{
+	char *cp;
+	struct dinode *dp;
+	struct bufarea *bp;
+	struct dirtemplate *dirp;
+
+	if (verbose)
+		fprintf(stderr, "make_newdir: creating %d in %d\n", newino,
+		    parentino);
+	lffs_inode_setclr(newino, IFDIR|mode, 1);
+	dirp = &dirhead;
+
+	dirp->dot_ino = newino;
+	dirp->dotdot_ino = parentino;
+	dp = ginode(newino);
+	bp = getdirblk(lbn, fs->fs_fsize);
+	if (bp->b_errs) {
+		/* I have no idea how to handle this */
+		recover_fail();
+	}
+	bcopy((char *)dirp, bp->b_un.b_buf, sizeof(struct dirtemplate));
+	for (cp = &bp->b_un.b_buf[DIRBLKSIZ];
+	     cp < &bp->b_un.b_buf[sblock.fs_fsize];
+	     cp += DIRBLKSIZ)
+		bcopy((char *)&emptydir, cp, sizeof emptydir);
+	dirty(bp);
+	dp->di_nlink = 2;
+	inodirty();
+	/* cacheino(dp, ino); */
+}
+
+/*
+ * Returns the directory entry associated with the given name
+ * in the directory.  Just as the FFS code does, while it is
+ * searching for the specific directory entry, it keeps track
+ * of any place in the directory it might add the entry if
+ * it does not exist.  This information is all returned in
+ * the "slot" structure referenced by freep.
+ */
+struct dirent *
+finddir(struct dinode *dip, char *name, int name_length, struct slot *freep)
+{
+	register struct dirent *dp;
+	register struct bufarea *bp;
+	struct dirent newdir;
+	daddr_t lastbn, bn, lbn;
+	long bytes;
+	long off;
+	int needed;
+
+	needed = 0;
+	if (freep) {
+		newdir.d_namlen = name_length + 1;
+		freep->found = 0;
+		needed = DIRSIZ(0, &newdir);
+	}
+
+	lastbn = lblkno(fs, dip->di_size);
+
+	for (lbn = 0; lbn <= lastbn; lbn++) {
+		off = 0;
+		bn = bmap(dip, lbn);
+		if (bn == 0)
+			break;
+		bytes = dblksize(fs, dip, lbn);
+		bp = getdirblk(bn, bytes);
+		if (bp->b_errs)
+			recover_fail();
+		if (lbn == lastbn) {
+			bytes = blkoff(fs, dip->di_size);
+			if (bytes == 0)
+				bytes = fs->fs_bsize;
+		}
+		for (; off < bytes; off += DIRSIZ(0, dp)) {
+			dp = (struct dirent *)(bp->b_un.b_buf + off);
+			if (!dirok(dp, off % DIRBLKSIZ)) {
+				fprintf(stderr, "Truncating directory\n");
+				truncate_inode(dip, lblktosize(fs, lbn) + off);
+				return(NULL);
+			}
+			if (strcmp(dp->d_name, name) == 0)
+				return(dp);
+			if (needed && freep &&
+			    dp->d_reclen - DIRSIZ(0, dp) >= needed)
+				freep->block = lbn;
+				freep->off = off;
+				freep->found = 1;
+				needed = 0;
+		}
+	}
+	if (bn == 0) {
+		fprintf(stderr, "Truncating directory\n");
+		truncate_inode(dip, lblktosize(fs, lbn - 1));
+	}
+	return(NULL);
+}
+
+
+/*
+ * Add an entry to a directory.  If freep->found is set, then it
+ * indicates where in the directory you can add the entry. If 
+ * freep->found is not set, then we assume there are no holes
+ * in the directory and we add the entry at the end of the directory.
+ */
+int
+add_entry(struct dinode *dip, ino_t new_ino, char *name, int namelen,
+    int mode, struct slot *freep)
+{
+	struct dirent newdir, *dp;
+	struct bufarea *bp;
+	int off, size;
+	daddr_t lastbn, bn;
+
+	if (verbose)
+		fprintf(stderr,
+		    "add_entry: adding directory entry <%s/%d> in %d\n",
+		    name, new_ino, dip->di_inumber);
+	newdir.d_fileno = new_ino;
+	newdir.d_namlen = namelen + 1;
+	bcopy(name, newdir.d_name, newdir.d_namlen + 1);
+	newdir.d_type = IFTODT(mode);
+
+	if (freep && freep->found) {
+		/* We already found space for this one. */
+		bp = getdirblk(freep->block, dblksize(fs, dip, freep->block));
+		dp = (struct dirent *)(bp->b_un.b_buf + freep->off);
+		size = DIRSIZ(0, dp);
+		newdir.d_reclen = dp->d_reclen - size;
+		dp->d_reclen = size;
+		dp = (struct dirent *)((char *)dp + size);
+		bcopy(&newdir, dp, newdir.d_reclen);
+		return(0);
+	}
+
+	/* 
+	 * If we need to add a directory entry and there was
+	 * in sufficient space in any existing entries, then
+	 * there are 4 potential cases.
+	 * 1. We can use another DIRBLKSIZ bytes in the currently
+	 *	allocated fragment/block.
+	 * 2. We need to extend the current fragment and can do
+	 * 	so in place.
+	 * 3. We need to extend the current fragment and must
+	 *	move the fragment.
+	 * 4. We need to allocate a new block.
+	 * We will handle case 1 here.  In all other cases,
+	 * we will let the caller figure out what to do.
+	 */
+
+	if (fragroundup(fs, dip->di_size) != 
+	    fragroundup(fs, dip->di_size + DIRBLKSIZ))
+		return(1);
+
+	lastbn = lblkno(fs, dip->di_size);
+	off = blkoff(fs, dip->di_size);
+	dip->di_size += DIRBLKSIZ;
+
+	bn = bmap(dip, lastbn);
+	if (bn == 0)
+		recover_fail();
+
+	bp = getdirblk(bn, fragroundup(fs, dip->di_size));
+	if (bp->b_errs)
+		recover_fail();
+
+	newdir.d_reclen = DIRBLKSIZ;
+	bcopy(&newdir, bp->b_un.b_buf + off);
+	inodirty();
+	dirty(bp);
+	return(0);
+}
+
+/*
+ * Verify that a directory entry is valid.  Validity means that the
+ * size of the entry is correct for the contents (and 4-byte aligned),
+ * the name length is within bounds, there are no illegal characters
+ * in the entry and the type is a valid type.
+ */
+int
+dirok(struct dirent *dp, int space)
+{
+	char *cp;
+	int size;
+
+	if (dp->d_fileno < maxino &&
+	    dp->d_reclen != 0 &&
+	    dp->d_reclen <= space &&
+	    (dp->d_reclen & 0x3) == 0 &&
+	    dp->d_reclen >= DIRSIZ(0, dp) &&
+	    dp->d_namlen <= MAXNAMLEN &&
+	    dp->d_type <= DT_SOCK) {
+		if (dp->d_fileno == 0)
+			return(1);
+		/* Check for valid name */
+		for (cp = dp->d_name, size = 0; size < dp->d_namlen;
+		    size++) 
+			if ((*cp == 0) || (*cp++ =='/'))
+				return(0);
+		if (*cp == 0)
+			return(1);
+	}
+	return(0);
+}
+
+/*
+ * Truncate this inode to the designated size.
+ */
+void
+truncate_inode(struct dinode *dip, off_t size)
+{
+	if (verbose)
+		fprintf(stderr, "truncate_inode: not yet implemented.\n");
+	return;
+}
+
+
+daddr_t
+bmap(struct dinode *dip, daddr_t lbn)
+{
+	return(bindex(dip, lbn, FATAL_DADDR));
+}
+
+daddr_t
+bindex(struct dinode *dip, daddr_t lbn, daddr_t bn)
+{
+	struct bufarea *bp;
+	daddr_t indir;
+	int ndx;
+	long nblocks;
+
+	if (lbn < NDADDR) {
+		if (bn != FATAL_DADDR) {
+			dip->di_db[lbn] = bn;
+			inodirty();
+		}
+
+		return(dip->di_db[lbn]);
+	}
+
+	lbn -= NDADDR;
+
+	
+	nblocks = 1;
+	for (ndx = 0; ndx < NIADDR; ndx++) {
+		nblocks *= fs->fs_nindir;
+		if (lbn < nblocks)
+			break;
+		lbn -= nblocks;
+	}
+
+	if (ndx >= NIADDR)
+		return(0);
+
+	if ((indir = dip->di_ib[ndx]) == 0) {
+		if (bn == FATAL_DADDR)
+			return(0);
+		indir = lffs_findblock(fs->fs_frag, bn);
+		lffs_frag_setclr(indir, fs->fs_frag, 1);
+		dip->di_ib[ndx] = indir;
+		inodirty();
+	}
+	bp = getdatablk(indir, fs->fs_bsize);
+	for (; ndx > 0; ndx--) {
+		indir = bp->b_un.b_indir[lbn / fs->fs_nindir];
+		bp = getdatablk(indir, fs->fs_bsize);
+		if (indir == 0) {
+			if (bn == FATAL_DADDR)
+				return(0);
+			indir = lffs_findblock(fs->fs_frag, bn);
+			lffs_frag_setclr(indir, fs->fs_frag, 1);
+			bp->b_un.b_indir[lbn / fs->fs_nindir] = indir;
+			dirty(bp);
+		}
+		lbn /= fs->fs_nindir;
+	}
+	if (bn != FATAL_DADDR) {
+		bp->b_un.b_indir[lbn] = bn;
+		dirty(bp);
+	}
+	return(bp->b_un.b_indir[lbn]);
+}
+
+/*
+ * Get a directory block.
+ * Insure that it is held until another is requested.
+ * Taken from fsck/dir.c
+ */
+struct bufarea *
+getdirblk(blkno, size)
+	daddr_t blkno;
+	long size;
+{
+
+	if (pdirbp != 0)
+		pdirbp->b_flags &= ~B_INUSE;
+	pdirbp = getdatablk(blkno, size);
+	return (pdirbp);
+}
+@

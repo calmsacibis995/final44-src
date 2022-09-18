@@ -1,0 +1,88 @@
+From paul@uxc.cso.uiuc.edu  Tue Sep 29 16:54:10 1987
+Date: Tue, 29 Sep 87 17:19:46 CDT
+From: paul@uxc.cso.uiuc.edu (Paul Pomes - The Wonder Llama)
+Subject: /usr/bin/awk can't read commands from standard input
+Index: bin/awk/{main.c,lib.c} 4.3BSD
+
+Description:
+	The awk man page states the patters may be read from a file
+	specified by "-f file".  Later on it states that the - file
+	name means the standard input.  The command "awk -f - somefile"
+	dies with the "Command not found" error.
+Repeat-By:
+	Type the command "awk -f - /etc/motd"
+Fix:
+	Apply the two patches below.  The first adds an extra case
+	to the argument parser that assigns stdin to yyin when
+	"-f -" is found.  The second patch to lib.c insures that
+	stdin isn't used for both commands and data.
+
+         Paul Pomes
+
+UUCP:     {ihnp4,uunet}!uiucuxc!paul     Phone: +1 217 333 6262
+Internet: paul@uxc.cso.uiuc.edu   BITNET: paul@uxc.cso.uiuc.edu
+MILNET:   paul@uiucuxc.arpa       CSNET:  paul%uxc@uiuc.csnet
+US Mail:  UofIllinois, CSO, MC-256, 1304 W Springfield Ave, Urbana, IL  61801
+
+*** /tmp/,RCSt1004018	Tue Sep 29 17:01:04 1987
+--- main.c	Tue Sep 29 16:56:53 1987
+***************
+*** 33,41 ****
+  		/* character after f to see if it's -f file or -Fx.
+  		*/
+  		if (argv[0][0] == '-' && TOLOWER(argv[0][1]) == 'f' && argv[0][2] == '\0') {
+! 			yyin = fopen(argv[1], "r");
+! 			if (yyin == NULL)
+! 				error(FATAL, "can't open %s", argv[1]);
+  			argc--;
+  			argv++;
+  			break;
+--- 33,45 ----
+  		/* character after f to see if it's -f file or -Fx.
+  		*/
+  		if (argv[0][0] == '-' && TOLOWER(argv[0][1]) == 'f' && argv[0][2] == '\0') {
+! 			if (argv[1][0] == '-' && argv[1][1] == '\0')
+! 				yyin = stdin;
+! 			else {
+! 				yyin = fopen(argv[1], "r");
+! 				if (yyin == NULL)
+! 					error(FATAL, "can't open %s", argv[1]);
+! 			}
+  			argc--;
+  			argv++;
+  			break;
+*** /tmp/,RCSt1004040	Tue Sep 29 17:01:30 1987
+--- lib.c	Tue Sep 29 16:54:30 1987
+***************
+*** 7,12 ****
+--- 7,13 ----
+  #include "awk.h"
+  #include "ctype.h"
+  
++ extern FILE	*yyin;	/* lex input file */
+  FILE	*infile	= NULL;
+  char	*file;
+  #define	RECSIZE	(5 * 512)
+***************
+*** 55,62 ****
+  			}
+  			*FILENAME = file = *svargv;
+  			dprintf("opening file %s\n", file, NULL, NULL);
+! 			if (*file == '-')
+! 				infile = stdin;
+  			else if ((infile = fopen(file, "r")) == NULL)
+  				error(FATAL, "can't open %s", file);
+  		}
+--- 56,67 ----
+  			}
+  			*FILENAME = file = *svargv;
+  			dprintf("opening file %s\n", file, NULL, NULL);
+! 			if (*file == '-') {
+! 				if (yyin == stdin)
+! 					error(FATAL, "standard input already used for reading commands");
+! 				else
+! 					infile = stdin;
+! 			}
+  			else if ((infile = fopen(file, "r")) == NULL)
+  				error(FATAL, "can't open %s", file);
+  		}

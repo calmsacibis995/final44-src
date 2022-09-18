@@ -1,0 +1,79 @@
+From fluke!daemon@uw-vlsi  Thu Dec  8 13:05:17 1983
+Date: Mon, 5 Dec 83 16:25:16 pst
+From: root@BERKELEY (Fluke )
+Subject: sendmail can trash its alias database
+Index: usr.lib/sendmail 4.2BSD
+
+Description:
+	If the sendmail alias database is out of date, two concurrent
+	invocations of sendmail could each begin to update it in parallel.
+	The resultant database may be garbaged.
+
+Repeat-By:
+	The following procedure is slightly non-deterministic, but it has
+	been effective for us in provoking the problem 50% of the time:
+	    Configure /usr/lib/sendmail.cf for automatic database rebuilding:
+		# rebuild alias database if out-of-date:
+		OD
+	    Create /usr/lib/aliases.{dir,pag}
+	    % touch /usr/lib/aliases.
+	    % mail root </dev/null &
+	    % mail root </dev/null &
+	Now the tricky part -- test for bad aliases.  A short C program using
+	the dbm(3) routines may be helpful.
+	
+Fix:
+	----- /usr/src/usr.lib/sendmail/alias.c -----
+1a2
+> # include <sys/file.h>
+155a157
+> 	int aliaslock;
+218a221,256
+> 	**
+> 	**  FLUKE jps 28-sept-83 - Modified to provide some file locking
+> 	**	on the alias database:
+> 	**
+> 	**	We have observed that concurrent sendmail's will rebuild
+> 	**	the database in parallel, leading to trashed .{dir,pag} files.
+> 	**	This code seeks to prevent that by using file locking as a
+> 	**	semaphore.
+> 	**
+> 	**	Ideally we would like to lock the dbm version of the
+> 	**	database - either the .dir or .pag file (or both).
+> 	**	The database routines should always open the .pag file
+> 	**	with an advisory lock, which would be upgraded to an
+> 	**	exclusive one while the database is being updated.
+> 	**	Unfortunately that's difficult because the file is opened
+> 	**	by dbminit and we never see the file descriptor.  We could
+> 	**	open it a second time ourself solely for locking purposes,
+> 	**	but there's an alternative.  We lock the unencoded alias
+> 	**	file instead.  If you think about it, it really doesn't
+> 	**	matter *what* file we lock, so long as all instantiations
+> 	**	of sendmail agree upon it (and we retain the convention of
+> 	**	having a distinguished alias for "@").
+> 	**
+> 	**	Note that we open the alias file here solely for the purposes
+> 	**	of hanging a lock around it.  Within readaliases() it will
+> 	**	be opened a second time for actual processing.  I did it this
+> 	**	way to minimize the amount of modified code.
+> 	**
+> 	**	Note also that this code could be better written to save
+> 	**	sequential updatings.  As it is, several concurrent sendmails
+> 	**	could each see the need for rebuilding the database, and each
+> 	**	will do so, but now they'll do it sequentially, not in parallel.
+> 	**	With a bit more smarts, we could prevent that, but it's not
+> 	**	worth the bother to save *work*.  We're trying to prevent
+> 	**	trashed alias files.
+> 	**
+222a261,263
+> 		if(((aliaslock = open(aliasfile, O_RDONLY)) < 0) ||
+> 			flock(aliaslock, LOCK_EX) < 0)
+> 			syserr("can't lock alias file for rebuilding");
+256a298
+> 		(void) close(aliaslock);
+
+
+		Jeff Stearns, John Fluke Mfg. Co, Inc.
+		P.O. Box C9090, Everett WA.  98043
+		...!decvax!microsoft!fluke!jeff
+

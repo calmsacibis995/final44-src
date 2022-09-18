@@ -1,0 +1,92 @@
+From leres@ee.lbl.gov  Fri Feb 21 13:18:34 1992
+To: bostic@okeeffe.cs.berkeley.edu (Keith Bostic)
+Cc: torek@ee.lbl.gov (Chris Torek)
+Subject: vangogh:/usr/src/usr.bin/locate/code/locate.code.c
+Date: Fri, 31 Jan 92 21:30:55 PST
+From: Craig Leres <leres@ee.lbl.gov>
+Index: usr.bin/locate/code/locate.code.c net2
+
+I just fixed a long standing bug in this guy; main() was missing an
+explicit exit(). It also wasn't checking to see if there were problems
+writing the data. I added:
+
+		/* Non-zero status if there were errors */
+		if (fflush(stdout) != 0 || ferror(stdout))
+			exit(1);
+		exit(0);
+
+to the end of main(). Note that you'll now want to fix updatedb.csh to
+check the return status and only update the $FCODE file if locate.code
+is successful. (I'd give you that too but my debugged updatedb script
+uses /bin/sh and I'm too lazy to debug a csh version...)
+
+		Craig
+
+P.S. This hacking was motivated by having a locate database clobbered
+for the Nth time because a filesystem was full.
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+From leres@ee.lbl.gov  Fri Feb 21 13:18:43 1992
+To: bostic@okeeffe.cs.berkeley.edu (Keith Bostic)
+Subject: Re: vangogh:/usr/src/usr.bin/locate/code/locate.code.c
+In-Reply-To: Your message of Tue, 04 Feb 92 18:50:35 PST.
+Date: Wed, 05 Feb 92 18:09:33 PST
+From: Craig Leres <leres@ee.lbl.gov>
+
+
+> Thanks.  However, you added it *inside* the mail while loop.  Why?
+
+Because I bozoed?
+
+> If your updatedb script is backward compatible, let me have it and I'll
+> use it instead.
+
+The problem is that it's started as the Sun updatedb (and still says
+SMI in it). I'll eventuallly port the bsd updatedb to my Sun's but for
+now, I don't really want to spend the time to fix the pathnames, debug
+it, etc.
+
+The basic idea
+is to change:
+
+	# code the file list
+
+	if { grep -s -v 0 $errs } then
+		printf 'locate: updatedb failed\n\n'
+	else
+		$LIBDIR/locate.code $bigrams < $filelist > $FCODES
+		chmod 644 $FCODES
+		rm $bigrams $filelist $errs
+	endif
+
+to something like:
+
+	set TEMP = $FCODES.temp
+	[...]
+	# code the file list
+
+	if { grep -s -v 0 $errs } then
+		printf 'locate: updatedb failed\n\n'
+	else
+		if { $LIBDIR/locate.code $bigrams < $filelist > $TEMP } then
+			printf 'locate: updatedb code failed\n\n'
+			rm $TEMP
+		else
+			mv $TEMP $FCODES
+			chmod 644 $FCODES
+		endif
+		rm $bigrams $filelist $errs
+	endif
+
+(This isn't tested, but you get the idea.)
+
+> I just "cleaned" up the entire program, and check writes as they happened
+> instead of waiting until the program finishes.  I'd appreciate it if you'd
+> run it too.  I left the source checked out, let me know what you think.
+
+Porting it points out some deficiencies in the gcc setup on my SunOS
+3.5 system. stdlib.h doesn't define the __P macro. It doesn't define
+optind. There are other annoying problems. Anyway, your version looks
+ok and is installed on one of my fileservers.
+
+		Craig
+

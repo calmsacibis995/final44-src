@@ -1,0 +1,1772 @@
+.\"
+.\" $Id: gated-config.5,v 1.36 1994/02/23 01:12:18 jch Exp $
+.\"
+.\" %(Copyright.header)
+.\"
+.TH GATED-CONFIG 5 "$Date: 1994/02/23 01:12:18 $ UTC" "%#(RELEASE)" "Cornell GateDaemon Project"
+.SH NAME
+gated-config \- Gated configuration file syntax
+.SH SYNOPSIS
+@(_path_config)
+.SH DESCRIPTION
+.PP
+The gated config file consists of a sequence of statements
+terminated by a semi-colon (;).  Statements are composed of
+tokens separated by white space, which can be any combination
+of blanks, tabs and newlines.
+.sp
+Comments may be specified in either of
+two forms.  One form starts with a
+pound-sign (#) and runs to the end of the 
+line.  The other form is \fIC\fR style, which
+starts with a \fI/*\fR and continues until it
+reaches \fI*/\fR. 
+.sp
+There are seven classes of statements. The
+first two classes may be specified in
+the configuration file in any order:
+.RS
+.IP directives
+These statements are immediately acted upon by
+the parser.  They are used to specify included
+files and the directory in which they reside.
+Unlike other statements which terminate a semi-colon (;),
+directive statements terminate with a newline.
+.IP trace
+These statements control tracing options.
+.RE
+.PP
+The six remaining classes must be specified in order.
+.RS
+.IP options
+These statements allow specification of some global options.
+.IP interface
+These statements specify interface options.
+.IP definition
+These statements specify options, the
+autonomous system and martian networks.
+.IP protocol
+These statements enable or disable protocols
+and set protocol options.
+.IP route
+Static routes are defined by route statements.
+.IP control
+Control statements define routes that are
+imported from routing peers and routes that
+are exported to these peers.
+.RE
+.PP
+Detailed definitions of these classes of statements follow.
+Primitives that are used in the following definitions are:
+.IP host 2c
+Any host.  A host may be specified by its IP
+address or by a domain name.  If a domain name
+is specified that has multiple IP addresses it
+is considered an error.  The host bits in the
+IP address must be non-zero.
+.IP network
+Any network.  A network may be specified by
+its IP address or a network name.  The host
+bits in a network specification must be zero.
+\fIDefault\fR may also be used to specify the
+default network (0.0.0.0).
+.IP destination
+Any host or network.
+.IP dest_mask
+.PD 0
+Any host or network with an optional mask.  The \fIexact\fR and \fIrefines\fR
+keywords are only available when gated is used on a network policy
+list, such as \fImartians\fR, \fIimport\fR, \fIexport\fR and \fIaggregate\fR.  When
+used to match routes in these statements the mask is applied to the
+destination before it is compared with the network provided in the
+list.  By default, the mask of the destination is not examined.  If
+\fIexact\fR is specified, the mask of the destination must match the mask
+provided in the list.  If \fIrefines\fR is specified, the provided mask
+must refine that specified in the list, i.e. it must be longer (more
+specific).  This allows policy to match hosts on a subnet, but not the
+subnet itself, for example.
+.RS
+.IP "" 8
+.nf
+all
+default
+@BEGIN:	PROTO_ISO
+iso default
+@END:	PROTO_ISO
+<network> [exact|refines]
+<network> mask <mask> [exact|refines]
+<network> mask-length <bits> [exact|refines]
+host <host>
+.fi
+.RE
+.PD
+.IP "autonomous system"
+A number between 1 and 65534 assigned by the
+Internet Assigned Numbers Authority
+to represent an autonomous system.
+.IP ""
+A mask is a dotted quad specifying which bits of
+the destination are significant.  \fIAll\fR may be
+used to specify any IP address may be matched.
+The number of contiguous bits may be used instead
+an explicit mask.
+.IP gateway
+A gateway must be a host on an attached network.
+.IP interface
+An interface may be specified by IP address,
+domain name, or interface name.  Be careful
+with the use of interface names as future Unix
+operating systems may allow more than one
+address per interface.
+.IP gateway_list
+A gateway list is a list of one or more gateways. 
+.IP interface_list
+An interface list is a list of one or more
+interface names, wildcard names (names without a number)
+or addresses, or the token \fIall\fR, which refers
+to all interfaces.
+.IP preference
+A preference is used to determine the order of
+routes to the same destination in routing
+table.  Gated allows one route to a
+destination per protocol/per autonomous system.  In the case
+of multiple routes the route to use is chosen
+by preference, which is a number between 0 and
+255, with 0 being the most preferred and 255
+being the least preferred.
+.IP ""
+In case of a preference tie, if the two routes are from the same
+protocol and from the same autonomous system, gated will chose the route
+with the lowest metric.  Otherwise gated will choose the route with the
+lowest numeric next-hop gateway address.
+.IP metric
+Is a valid metric for the specified protocol.
+.SH "DIRECTIVE STATEMENTS"
+.TP
+\fB%directory\fR "<path_name>"
+Sets the current directory to <path_name>.  This is
+the directory where gated looks for included files
+that do not begin with "/".
+.IP ""
+Note that this statement does not actually change the current
+directory, it just specifies the prefix applied to included file
+names. 
+.TP
+\fB%include\fR "filename"
+Causes the specified file to be parsed completely
+before resuming with this file.  Nesting up to 10
+levels is supported.  The maximum nesting level may be
+increased by changing the definition of FI_MAX in
+parse.h.
+.SH "TRACE STATEMENTS"
+Gated's tracing options may be configured at many
+levels.  Tracing options include the file
+specifications, control options (currently just
+nostamp), global and protocol specific tracing
+options.  Unless overridden, tracing options from
+the next higher level are inherited by lower
+levels.
+.PP
+For example, global BGP tracing options are
+inherited from global gated tracing options.  BGP
+group tracing options are inherited from global
+BGP tracing options.  And BGP peer tracing options
+are inherited from BGP group tracing options.
+.PP
+There are two types of global options, those which
+have potential significance to protocols and those
+that only affect global operations such as parsing
+the configuration file.  The global flags that
+have potential significance to protocols are:
+.RS
+.IP all 1i
+Turn on all of the following options.
+.IP general
+Shorthand notation for specifying both ``normal''
+and ``route''.
+.IP state
+Trace state machine transitions in the protocols.
+.IP normal
+Trace normal protocols occurances.  Abnormal
+protocol occurances are always traced.
+.IP policy
+Trace application of protocol and user specified policy
+to routes being imported and exported.
+.IP task
+Trace system interface and processing associated with
+this protocol, or peer.
+.IP timer
+Trace timer usage by this protocol or peer.
+.IP route
+Trace routing table changes for routes installed by this
+peer. 
+.RE
+.PP
+Note that not all of the above options apply to
+all the protocols.  In some cases their use does
+not make sense (for instance, RIP does not have a
+state machine) and in some instances the requested
+tracing has not been implemented (such as RIP
+support of the \fIpolicy\fR option). 
+.PP
+The trace flags that only have global significance are:
+.RS
+.IP parse
+Trace the lexical analyzer and parser.  Mostly used by
+the gated developers for debugging.
+.IP adv
+Trace the allocation of and freeing of policy
+blocks. Mostly use by the gated developers for
+debugging.
+.IP symbols
+Used to trace symbols read from the kernel at startup.
+The only useful way to specify this level of
+tracing is via the \fI-t\fR option on the command
+line because the symbols are read from the kernel
+before parsing the configuration file.
+.IP iflist
+Uses to trace the reading of the kernel interface list.
+It is useful to specify this with the \fI-t\fR option on the command
+line since the first interface scan is done before reading
+the configuration file.
+.PP
+Note that it is not currently possible to specify
+packet tracing from the command line.  This is
+because a global option for packet tracing would 
+potentially create too much output.
+.PP
+When protocols inherit their tracing options from
+the global tracing options, tracing levels that
+don't make sense (such as \fIparse\fR, \fIadv\fR and
+packet tracing options) are masked out.
+.PP
+Global tracing statements have an immediate effect, especially parsing
+options that effect the parsing of the configuration file.  Tracing
+values inherited by protocols specified in the configuration file are
+inherited from the global options in effect as they are parsed, unless
+they are overridden by more specific options.  Tracing options
+inherited by protocols not specified in the configuration file are
+inherited from the last global options parsed while reading the
+configuration file.
+.SS Traceoptions syntax
+.PP
+.nf
+	\fBtraceoptions\fR ["trace_file" [replace] [size <size>[k|m] files <files>]]
+		 [nostamp]
+		 <trace_options> [except <trace_options>];
+
+	\fBtraceoptions\fR ["trace_file" [replace] [size <size>[k|m] files <files>]] 
+		[nostamp] none;
+.fi
+.RS
+.IP replace 1i
+Overwrite the specified file.  The default is to
+append to an existing file. 
+.IP "size <size> files <files>"
+Limit the maximum size of the trace file to
+the specifed size (minimum 10k).  When the
+file reaches the specified size, it is
+renamed as \fIfile.0\fR, then \fIfile.1\fR,
+\fIfile.2\fR up to the maximum number of files
+(minimum specification is 2).
+.IP nostamp
+Specifies that a timestamp should not be prepended
+to trace lines. 
+.IP except
+This parameter can be used to enable a broad class
+of tracing and then disable more specific options.
+One example would be the OSPF options to trace all
+packets except sent and received hellos:
+`traceoptions packets except hello'.
+.RE
+.SS Packet tracing
+.PP			
+Tracing of packets is very flexible.  For any
+given protocol there are one or more options for
+tracing packets.  In general the \fIpackets\fR keyword
+allows for tracing *all* packets sent and received
+by the protocol.  Many protocols have other
+options for limiting tracing to a useful subset of
+packet types.  These tracing options can be
+further modified with the following keywords: 
+.RS
+.IP detail 1i
+This  must be specified before \fIsend\fR or \fIrecv\fR.
+Normally packets are traced in a terse form of one
+or two lines.  When \fIdetail\fR is specified, a more
+verbose format is used to provide further detail
+on the contents of the packet.
+.IP send
+.IP recv
+These options limit the tracing to packets sent or
+received.  Normaly packets both sent and received
+are traced.
+.RE
+Note that \fIdetail\fR, if specified, must be before
+\fIsend\fR or \fIrecv\fR.  If a protocol allows for
+several different types of packet tracing,
+modifiers may be applied to each individual type.
+But be aware that within on trace file the trace
+flags are summed up, so specifying \fIdetail
+packets\fR will turn on full tracing for all packets.
+.SH "OPTIONS STATEMENTS"
+.IP "\fBoptions\fR <option_list> ;" 10
+Sets gated options:
+.RS
+.IP noinstall 10
+Do not change kernel's routing table.  Useful for verifying
+configuration files.
+.IP "\fBgendefault\fR [preference <preference>] [gateway <gateway>]" 10
+BGP and EGP neighbors should cause the internal generation of a
+default route when up.  By default, this route will not be installed
+in the kernel's routing table, but may be announced by other
+protocols.  If a gateway is specified, the route is installed in the
+kernel pointing to that gateway.  Announcement is controlled by
+referencing the special protocol \fIdefault\fR.
+.IP nosend 10
+Do not send any packets.  This allows running gated on a live network
+to test protocol interactions without actually participating in the
+routing protocols.  The packet traces in the gated log can be examined
+to verify that gated is functioning properly.  This is most useful for
+RIP and HELLO and possibly the SMUX SNMP interface.  This does not yet
+apply to BGP packets.
+.IP noresolv 10
+Do not try to resolv symbolic names into IP addresses by using the
+host/network tables or Domain Name System.  This is intended for
+systems where a lack of routing information could cause a DNS lookup
+to hang.
+.IP "\fBsyslog\fR [upto <log_level>] <log_level>" 10
+Controls the amount of data gated logs via syslog on systems where
+setlogmask() is supported.  The log_levels and other terminology are
+as defined in the setlogmask(3) man page.  The default is equivalent
+to \fIsyslog upto info\fR.
+.IP "mark <interval>"
+Output a message to the trace log at the specified interval (default
+is 10 minutes)  to insure gated is still running.
+.RE
+.SH "INTERFACE STATEMENTS"
+.PP
+.nf
+\fBinterfaces\fR {
+	\fBoptions\fR [strictinterfaces] [scaninterval <time>] ;
+	\fBinterface\fR <interface_list> <interface_options> ;
+	\fBdefine\fR <address> [broadcast <broadaddr>|pointopoint
+		<lcladdr>] [netmask <netmask>] [multicast] ;
+} ;
+.fi
+.IP "\fBoptions\fR" 10
+Sets some global options related to interfaces.
+.RS
+.PP
+Options are:
+.IP "strictinterfaces" 10
+Indicates that it is a fatal error to reference an interface in the
+configuration file that is not listed in a \fBdefine\fR statement or
+not present when gated is started.  Without this option a warning
+message will be issued and gated will continue.
+.IP "scaninterval <time>" 10
+Specifies how often gated scans the kernel interface list for changes.
+The default is every 15 seconds on most systems, 60 seconds on systems
+that pass interface status changes through the routing socket (i.e.
+BSD 4.4).  Note that gated will also scan the interface list on
+receipt of a SIGUSR2.
+.RE
+.IP "\fBdefine\fR" 10
+Defines interfaces that may not be present when gated is
+started.  Gated considers it an error to reference a
+non-existent interface in the config file.  This clause
+allows specification of that interface so it can be
+referenced in the config file.
+.RS
+.PP
+Definition keywords are:
+.IP "broadcast <broad_addr>" 10
+Defines the interface as broadcast capable (i.e. Ethernet
+and Token Ring) and specifies the broadcast
+address.
+.IP "pointopoint <local_addr>" 10
+Defines the interface as a point to point interface (i.e.
+SLIP and PPP) and specifies the address on the local side.
+For this type of interface the <interface_addr> specifies
+the address of the remote host.
+.PP
+An interface not defined as broadcast or pointopoint is
+assumed to be non-broadcast multiaccess (NBMA), such as an
+X.25 network.
+.IP "netmask <subnetmask>" 10
+Specifies the non-standard subnet mask to be used on this
+interface.  Note that this currently ignored on pointopoint
+interfaces.
+.IP "multicast" 10
+Specifies the interface is multicast capable.
+.RE
+.PP
+.IP "\fBinterface\fR" 10
+Sets interface options on the specified interfaces.
+An interface list is \fIall\fR or a list of interface
+names (see warning about interface names), domain
+names, or numeric addresses.
+.IP "" 10
+.RS
+.PP
+Options are:
+.IP "preference <pref>"
+Sets the preference for routes
+to this interface when it is up, defaults to 0.
+.IP "down preference <pref>"
+Sets the preference for routes to this
+interface when gated believes it to be down
+due to lack of received routing information, defaults to 120.
+.IP passive	
+Prevents gated from changing the preference of
+the route to this interface if it is believed to be down due
+to lack of received routing information.
+.IP simplex
+Defines an interface as unable to hear it's
+own broadcast packets.  Currently defining an interface as
+simplex is functionally equivalent to defining it as passive.
+.IP reject
+Specifies that the address loopback interfaces which match these
+criteria will be used as the local address when installing reject
+routes in the kernel.  Should only used with systems based on BSD 4.3 
+Tahoe or earlier which have installed a reject/blackhole pseudo
+interface. 
+.IP blackhole
+Specifies that the address loopback interfaces which match these
+criteria will be used as the local address when installing blackhole
+routes in the kernel.  Should only used with systems based on BSD 4.3 
+Tahoe or earlier which have installed a reject/blackhole pseudo
+interface. 
+.RE
+.SH "DEFINITION STATEMENTS"
+@BEGIN:	AUTONOMOUS_SYSTEM
+@BEGIN:	PROTO_ASPATHS
+.IP "\fBautonomoussystem\fR <autonomous system> [\fBloops\fR <loops>];" 10
+Sets the autonomous system of this router to be <autonomous system>.
+This option is required if BGP or EGP are in use.  The number of times
+this autonomous system may appear in an AS path is controlled by <loops>
+and defaults to 1 (one).
+@END:	PROTO_ASPATHS
+@BEGIN:	NOT PROTO_ASPATHS
+.IP "\fBautonomoussystem\fR <autonomous system> ;" 10
+Sets the autonomous system of this router to be <autonomous system>.
+This option is required if BGP or EGP are in use.
+@END:	NOT PROTO_ASPATHS
+@END:	AUTONOMOUS_SYSTEM
+.IP "\fBrouterid\fR <ip address> ;" 10
+Sets the router identifier for use by the BGP and OSPF protocols.  The
+default is the address of the first interface encountered by
+gated.  The address of a non-POINTOPOINT interface is prefered over
+the local address of a  POINTOPOINT interface and an address on a
+loopback interface that is not the loopback address (127.0.0.1) is
+most perfered.
+.PP
+.nf
+\fBmartians\fR {
+	<martian_list>
+} ;
+.fi
+.IP "" 10
+Defines a list of martian addresses about which all
+routing information is ignored.  The <martian_list> is
+a semi-colon separated list of symbolic or numeric
+hosts with optional masks.  See dest_mask.  Also, the `allow'
+parameter may be specified to explicitly allow a subset of a range
+that was disallowed.
+.SH "PROTOCOL STATEMENTS"
+.PP
+Enables or disables use of a protocol and controls protocol
+options.  These may be specified in any order.
+.PP
+For all protocols, \fIpreference\fR controls the choice of routes learned
+via this protocol or from this autonomous system in relation to routes
+learned from other protocols/autonomous systems.  The default metric
+used when propagating routes learned from other protocols is specified
+with \fIdefaultmetric\fR which itself defaults to the highest valid metric
+for this protocol, for many protocols this signifies a lack of
+reachability.
+.PP
+For distance vector IGPs with no explicit connections or
+authentication (RIP and HELLO) and redirects (ICMP),
+the \fItrustedgateways\fR clause supplies a list of gateways providing
+valid routing information; routing packets from other gateways are ignored.
+This defaults to all gateways on the attached networks.
+.PP
+Routing packets may be sent not only to the remote end of point-to-point
+links and the
+broadcast address of broadcast-capable interfaces, but also to specific
+gateways if they are listed in a \fIsourcegateways\fR
+clause and \fIyes\fR or \fIon\fR is specified.  If \fInobroadcast\fR
+is specified, routing updates will be sent
+only to gateways listed in the \fIsourcegateways\fR clause, and not at all
+to the broadcast address.  Disabling the
+transmission and reception of routing packets for a particular protocol
+may be 
+specified with the \fIinterface\fR clause.  An \fIinterface\fR clause which
+disables sending or receiving protocol packets may be
+overridden for specific peers using the \fItrustedgateways\fR and
+\fIsourcegateways\fR clauses.
+.PP
+For exterior protocols (BGP, EGP), the autonomous system advertised to
+the peer is specified by the global \fIautonomoussystem\fR clause unless
+overridden by the \fIasout\fR parameter.  The incoming autonomous system
+number is not verified unless \fIpeeras\fR is specified.  Specifying
+\fImetricout\fR fixes the outgoing metric for all routes propagated to
+this peer.  If the peer does not share a network, \fIinterface\fR can be
+used to specify which interface address to use when communicating with
+this peer and \fIgateway\fR can be used to specify the next hop to use for
+all routes learned from this peer.  An internal default is generated
+when routing information is learned from a peer unless the
+\fInogendefault\fR parameter is specified.
+.PP
+Any protocol can have a \fItraceoptions\fR clause,
+which enables tracing for a particular protocol,
+group or peer.  The allowable protocol-specific
+options are: all, general, internal, external,
+route, update, task, timer, protocol, or kernel.
+@BEGIN:	PROTO_RIP
+.SS RIP protocol syntax
+.PP
+.nf
+\fBrip\fR yes|no|on|off [ {
+	broadcast ;
+	nobroadcast ;
+	nocheckzero;
+	preference <preference> ;
+	defaultmetric <metric> ;
+	interface <interface_list> [noripin] [noripout] 
+		[metricin <metric>] [metricout <metric>]
+		[version 1]|[version 2 [multicast|broadcast]]
+		[authentication [none|<password>]];
+	...
+	trustedgateways <gateway_list> ;
+	sourcegateways <gateway_list> ;
+	traceoptions ... ;
+} ] ;
+.fi
+.RS
+.PP
+If the \fBrip\fR clause is not specified the default is \fIrip on\fR.
+\fINobroadcast\fR specifies that RIP packets will only be sent to gateways
+listed in the \fIsourcegateways\fR clause, if there are any.
+If \fIyes\fR or
+\fIon\fR is specified, RIP will assume \fInobroadcast\fR if there is only one
+interface and \fIbroadcast\fR if there is more than one.  \fIBroadcast\fR
+specifies that RIP packets will always be generated.
+\fINocheckzero\fR specifies
+that RIP should not make sure that the reserved fields in RIP packets
+are zero.
+.IP ""
+Note that using \fIbroadcast\fR with only one interface is useful
+only when propagating static routes or routes learned 
+from another protocol.
+This will cause data packets
+to travel across the same network twice, which may be
+tolerable in certain configurations.
+.PP
+The default metricout is zero, the default metricin is the kernel
+interface metric plus 1 (the default RIP hop count).
+.PP
+The default authentication type is NONE (this only applies to RIP-2
+packets, and is ignored for RIP-1 packets).  If a password is
+specified, the authentication type used will be SIMPLE.  The password
+ should be a quoted string with between zero and 16 characters.
+.PP
+If the version is specified as or defaults to 1, RIP version 2 packets
+will never be sent except in response to a v2 POLL packet.  If the
+version is specified as 2, RIP version 2 packets will be sent to the
+RIP multicast address if possible, or to the broadcast addresss,
+unless the method is explicitly specified.
+.PP
+The default metric is 16; the default preference is 100.
+.PP
+RIP Packet tracing options (which may be modified with \fIdetail\fR,
+\fIsend\fR and \fIrecv\fR):
+.RS
+.IP packets 1i
+All RIP packets.
+.IP request
+RIP information request packets, such as REQUEST,
+POLL, POLLENTRY.
+.IP response
+RIP RESPONSE packets, which is the type	of packet
+that actually contains routing information.
+.IP other 
+Any other type of packet.  The only valid ones are
+TRACE_ON and TRACE_OFF which are ignored.
+.RE
+@END:	PROTO_RIP
+@BEGIN:	PROTO_HELLO
+.SS HELLO protocol syntax
+.PP
+.nf
+\fBhello\fR yes|no|on|off [ {
+	broadcast ;
+	nobroadcast ;
+	preference <preference> ;
+	defaultmetric <metric> ;
+	interface <interface_list> [nohelloin] [nohelloout]
+		[metricin <metric>] [metricout <metric>];
+	...
+	trustedgateways <gateway_list> ;
+	sourcegateways <gateway_list> ;
+	traceoptions ... ;
+} ] ;
+.fi
+.RS
+.PP
+If \fIyes\fR or \fIon\fR is specified, HELLO will assume \fInobroadcast\fR if
+there is only one interface and \fIbroadcast\fR if there is more than one.
+If the HELLO clause is not specified the default is \fIhello off\fR.
+\fIBroadcast\fR specifies that HELLO packets will be generated.
+\fINobroadcast\fR specifies
+that HELLO packets will only be sent to gateways listed in the
+\fIsourcegateways\fR clause, if there are any.
+.IP ""
+Note that using \fIbroadcast\fR with only one interface is useful
+only when propagating static routes or routes learned 
+from another protocol.
+This will cause data packets
+to travel across the same network twice, which may be
+tolerable in certain configurations.
+.PP
+The default metricout is zero, the default metricin is a translation
+of the kernel interface metric into a hello metric plus 100 (the
+default HELLO hop count).
+.PP
+The default metric is 30000; the default preference is 90.
+.PP
+HELLO packet tracing options (which may be
+modified with \fIdetail\fR, \fIsend\fR and \fIrecv\fR):
+.RS
+.IP packets 1i
+All HELLO packets.
+.RE
+.RE
+@END:	PROTO_HELLO
+@BEGIN:	PROTO_OSPF
+.SS OSPF protocol syntax
+.PP
+.nf
+\fBospf\fR yes|no|on|off [ {
+	[ defaults {
+		preference <preference> ;
+		cost <cost> ;
+		tag [<tag> | as [<as_tag>]] ;
+		type <1|2> ;
+	} ] ;
+	[exportlimit <routes> ;]
+	[exportinterval <time> ;]
+	[traceoptions ... ;]
+	[monitorauthkey <authkey> ;]
+	[area <area> {
+		authtype <0|1|none|simple> ;
+		stub [cost <cost>];
+		networks {
+			network [mask <mask>] ;
+		} ;
+		stubhosts {
+			<host> cost <cost> ;
+		} ;
+		interface <interface> [cost <cost>] {
+			[enable|disable] ;
+			retransmitinterval <time> ;
+			transitdelay <time> ;
+			priority <priority> ;
+			hellointerval <time> ;
+			routerdeadinterval <time> ;
+			authkey <auth_key> ;
+		} ;
+		interface <interface> nonbroadcast [cost <cost>] {
+			pollinterval <time> ;
+			routers {
+				<gateway> [eligible] ;
+				...
+			} ;
+			[enable|disable] ;
+			retransmitinterval <time> ;
+			transitdelay <time> ;
+			priority <priority> ;
+			hellointerval <time> ;
+			routerdeadinterval <time> ;
+			authkey <auth_key> ;
+		} ;
+	} ; ]
+	[ backbone {
+		authtype <0|1|none|simple> ;
+		networks {
+			network [mask <mask>] ;
+		} ;
+		subhosts {
+			<host> cost <cost> ;
+		} ;
+		interface <interface> [cost <cost>] {
+			[enable|disable] ;
+			retransmitinterval <time> ;
+			transitdelay <time> ;
+			priority <priority> ;
+			hellointerval <time> ;
+			routerdeadinterval <time> ;
+			authkey <auth_key> ;
+		} ;
+		. . .
+		interface <interface> nonbroadcast [cost <cost>] {
+			pollinterval <time> ;
+			routers {
+				<gateway> [eligible] ;
+				...
+			} ;
+			[enable|disable] ;
+			retransmitinterval <time> ;
+			transitdelay <time> ;
+			priority <priority> ;
+			hellointerval <time> ;
+			routerdeadinterval <time> ;
+			authkey <auth_key> ;
+		} ;
+		. . .
+		virtuallink neighborid <address> transitarea <area> {
+			[enable|disable] ;
+			retransmitinterval <time> ;
+			transitdelay <time> ;
+			priority <priority> ;
+			hellointerval <time> ;
+			routerdeadinterval <time> ;
+			authkey <auth_key> ;
+		} ;
+		. . .
+	} ; ]
+} ] ;
+.fi
+.RS
+.IP interface
+An interface is specified with an address, a name, a wildcard name (name
+without any number), or \fIall\fR.  Multiple interface clauses may be
+specified with different parameters, the parameters used are
+accumlated from the interface clauses.  If a parameter is specified
+more than once the instance with the most specific interface reference
+is used.  The order of precedence is address, name, wildcard name,
+\fIall\fR.
+.IP cost
+A number between 0 and 65535 specifying
+an OSPF internal cost.
+.IP tag
+The OSPF tag (an unsigned 31-bit number) to be placed on all routes
+exported by gated into OSPF.
+.IP as_tag
+The OSPF-BGP tag (an unsigned 12-bit number) to be placed on all
+routes export by gated into OSPF.  When \fItag as [<as_tag>]\fR is used,
+tag fields are automatically generated and the as_tag field is
+assigned if specified.
+.IP metric
+A number between 0 and 16777215
+specifying an OSPF external (ASE) cost.
+.IP area
+A dotted quad or a number between 1 and
+4294967295.  Area 0 is always
+referred to as the \fIbackbone\fR.
+.IP auth_key
+One to eight decimal digits separated by
+periods, a one to eight byte hexadecimal
+string preceded by "0x", or a one to
+eight character string in double quotes.
+.IP priority
+A number between 0 and 255 specifying
+the priority of becoming the designated
+router on this interface.
+.IP 
+.PP
+OSPF inter and intra area are always
+imported into the gated routing table
+with a preference of 10.  It would be a
+violation of the protocol to do
+otherwise so it is not possible to
+override this.  OSPF Autonomous System
+External (ASE) routes are imported with
+a preference of 150.  This default may
+be changed with the preference keyword
+in the defaults section.  ASE routes are
+imported at a rate of 100 ASEs every 1
+second, these parameters can be tuned with
+the \fIexportlimit\fR and
+\fIexportinterval\fR parameters.
+.PP
+Gated routes are exported to OSPF as
+ASEs with a default cost of 0 and a type
+of 1.  By default, the tag is calculated
+from the AS path of the route being
+exported (tag as).  These may all be
+changed in the defaults section.
+.PP
+OSPF areas may be specified in any
+order, but the \fIbackbone\fR area must be
+specified last.
+.PP
+Reconfiguration (SIGHUP) currently causes OSPF to
+shutdown and restart.  This will have an impact on
+the local and possibly global routing so it should
+be done with care.  Full reconfigurability of OSPF
+will hopefully be available in a future release. 
+.PP
+The following OSPF specific trace flags are supported:
+.RS
+.IP lsabuild 1i
+Link State Advertisement creation.
+.IP spf
+Shortest Path First (SPF) calculations.
+.IP lsatransmit
+Link State Advertisement (LSA) transmision.
+.IP lsareceive
+LSA reception.
+.IP state
+OSPF state transitions.
+.RE
+.PP
+OSPF packet tracing options (which may be modified
+with \fIdetail\fR, \fIsend\fR and \fIrecv\fR):
+.RS
+.IP hello 1i
+OSPF HELLO packets which are used to determine
+neighbor reachability.
+.IP dd
+OSPF Database Description packets which are used
+in syncronizing OSPF databases. 
+.IP request
+OSPF Link State Request packets which are used in
+syncronizing OSPF databases. 
+.IP update
+OSPF Link State Update packets which are used in
+syncronizing OSPF databases. 
+.IP ack
+OSPF Link State Ack packets whic are used in
+syncronizing OSPF databases.
+.RE
+.RE
+@END:	PROTO_OSPF
+@BEGIN:	PROTO_ISIS
+.SS ISIS protocol syntax
+.nf
+\fBisis\fR no|dual|ip|iso {
+	level 1|2 ;
+	[traceoptions ... ;]
+	[systemid <systemid> ;]
+	[area <hexstring>;]
+	[set <isis_parm> <value> ; ... ]
+	circuit <string>
+		metric [level 1|2] <1..63>
+		...
+		priority [level 1|2] <0..127>
+		...
+		;
+	...
+} ;
+.fi
+.PP
+.RS
+.IP level 1i
+Indicates the type of IS, either level 1
+(intra-area) or level 2 (inter-area).
+.IP traceoptions
+Can be one or more of the following: all, iih, lanadj,
+p2padj, lspdb, lspcontent, lspinput, flooding, buildlsp,
+csnp, psnp, route, update, paths, spf, or events.
+.IP systemid
+Is a six digit hex string which overrides any
+system ID taken from the list of circuits over
+which IS-IS runs. 
+.IP area
+supplements areas derived from the list of circuits over which IS-IS
+runs. 
+.IP set
+Allows configuration of various implementation parameters.
+.IP icircuit
+Describes the metric and priority for a circuit
+over which IS-IS runs.
+.RE
+.PP
+Further details of IS-IS configuration are currently described
+in a companion document (ISIS-config.ps) included in the gated
+distribution.  A typical configuration may specify mode (e.g.,
+dual, iso), system level, traceoptions, and circuits and their
+metrics.
+@END:	PROTO_ISIS
+@BEGIN:	PROTO_EGP
+.SS EGP protocol syntax
+.PP
+.nf
+\fBegp\fR yes|no|on|off [ {
+	[preference <preference> ;]
+	[defaultmetric <metric> ;]
+	[packetsize <maxpacketsize> ;]
+	[traceoptions ... ;]
+	[group		[peeras <autonomous system>]
+			[localas <autonomous system>]
+			[maxup <number>]
+	{
+		neighbor <host>
+			[metricout <metric>]
+			[nogendefault]
+			[importdefault]
+			[exportdefault]
+			[gateway <gateway>]
+			[lcladdr <local_address>]
+			[preference <preference>]
+			[preference2 <preference2>]
+			[ttl <ttl>]
+			[sourcenet <network>]
+			[minhello <min_hello>]
+			[minpoll <min_poll>]
+			[traceoptions ...] {
+			;
+		...
+	 } ;
+	...]
+} ] ;
+.fi
+.RS
+.PP
+\fIPacketsize\fR estimates the size, in bytes, of the largest EGP packet
+that gated is expected to send and receive.  The actual size will be
+increased as needed.
+A \fIgroup\fR lists a group of EGP peers
+in one autonomous system.  \fIMaxup\fR specifies the maximum number of
+peers that will be maintained in the Up state.  \fIImportdefault\fR and
+\fIexportdefault\fR tell gated to import or export the default route
+(0.0.0.0) in updates exchanged with an EGP neighbor.  If not
+specified, the the default network is ignored when exchanging EGP
+updates.  \fISourcenet\fR specifies the network to query in EGP Poll
+packets, this is normally the shared network.  The minimum EGP hello
+and poll intervals acceptable may be specified with the \fIminhello\fR and
+\fIminpoll\fR arguments, respectively.  These are both specified as a time
+in seconds, minutes:seconds or hours:minutes:seconds.  Any number of
+\fIgroup\fR clauses may be specified containing any number of \fIneighbor\fR
+clauses.  Any parameters from the \fIneighbor\fR clause may be specified
+on the \fIgroup\fR clause to provide defaults for the group.
+.PP
+The \fIlocal_address\fR is used to set the address the local address to be
+used when there is a choice of interfaces.  If not specified it
+defaults to whichever interface is shared with the neighbor.
+If a network is not shared with the neighbor, \fIgateway\fR may be used to
+specify the next-hop gateway to use when installing routes learned
+from this neighbor.  In this case the default interface is the one
+shared with the specified gateway.
+.PP
+The default metric is 255; the default preference is 200.   The
+default TTL is 1 for local peers and 255 for remote peers.
+.PP
+Note that the \fIstate\fR and \fIpolicy\fR tracing
+options work with EGP. 
+.PP
+EGP packet tracing options (which may be modified
+with \fIdetail\fR, \fIsend\fR and \fIrecv\fR):
+.RS
+.IP packets 1i
+All EGP packets.
+.IP hello
+EGP HELLO/I-HEARD-U packets which are used to
+determine neighbor reachability. 
+.IP acquire
+EGP ACQUIRE/CEASE packets which are used to
+initiate and terminate EGP sessions.
+.IP update
+EGP POLL/UPDATE packets which are used to request
+and receive reachability updates.
+.RE
+.RE
+@END:	PROTO_EGP
+@BEGIN:	PROTO_BGP
+.SS BGP protocol syntax
+.PP
+.nf
+\fBbgp\fR yes|no|on|off [ {
+	[preference <preference> ;]
+	[defaultmetric <metric> ;]
+	[traceoptions ... ;]
+	[group type external|internal|igp|routing|test peeras <peeras> [proto <routing_proto>]
+		[metricout <metric>]
+		[localas <localas>]
+		[nogendefault]
+		[gateway <gateway>]
+		[preference <preference>]
+		[preference2 <preference2>]
+		[ttl <ttl>]
+		[lcladdr <local_address>]
+		[holdtime <time>]
+		[traceoptions ...]
+		[version <version>]
+		[passive]
+		[sendbuffer <bufsize>]
+		[recvbuffer <bufsize>]
+		[indelay <time>]
+		[outdelay <time>]
+		[keep [all|none]]
+		[analretentive]
+		[noaggregatorid]
+		[keepalivesalways]
+		{
+			[allow { dest_mask ... } ;]
+			[peer <host>
+				[metricout <metric>]
+				[localas <localas>]
+				[nogendefault]
+				[gateway <gateway>]
+				[preference <preference>]
+				[preference2 <preference2>]
+				[ttl <ttl>]
+				[lcladdr <local_address>]
+				[holdtime <time>]
+				[traceoptions ...]
+				[version <version>]
+				[passive]
+				[sendbuffer <bufsize>]
+				[recvbuffer <bufsize>]
+				[indelay <time>]
+				[outdelay <time>]
+				[keep [all|none]]
+				[analretentive]
+				[noaggregatorid]
+				[keepalivesalways]
+		       ;]
+		       ...
+		} ;
+	....]
+} ] ;
+.fi
+.RS
+.PP
+BGP peers are assigned to groups based on the type and peeras, it is
+not possible to have two groups with the same type and peeras.
+Peer specifies the address of each BGP peer.  Group options provide
+the defaults for all peers within that group.
+.PP
+\fIPeeras\fR is the autonomous system expected from a peer.  \fIMetricout\fR
+is the default metric to use when sending to this peer.  \fILocalas\fR
+specifies the autonomous system advertised to this peer, the default
+is that which has been set globally.  \fINogendefault\fR specifies that
+this peer should not cause the automatic default to be generated.
+.PP
+The \fIlocal_address\fR specifies the address to be used on the local
+end of the TCP connection with the peer.  For \fIexternal\fR peers
+the local address must be on an interface which is shared with
+the peer (or for a non-local peer's configured next-hop gateway when
+the \fIgateway\fR option is used to specify this) and a session with the
+peer will be opened only when an interface with the appropriate local
+address through which the peer (gateway) address is directly
+reachable is operating.  For other types of peers a peer session
+will be maintained when any interface with the specified local address
+is operating.  In either case incoming connections will only be
+recognized as matching a configured peer if they are addressed to
+the configured local address.
+.PP
+\fIHoldtime\fR specifies the BGP holdtime to use with this peer.
+Version specifies the version of the BGP protocol to
+use with this peer.  If not specified, the highest supported version
+is used first and version negotiation is attempted.  \fIPassive\fR
+specifies that active opens to this peer should not be attempted.
+\fIKeepall\fR is used to retain routes learned from a peer that
+contain one of our autonomous system numbers in their path.
+.PP
+\fIAnalretentive\fR causes gated to issue warning messages when
+receiving questionable BGP updates, such as duplicate routes and/or
+deletions of non-existing routes.  \fINoaggregatorid\fR causes gated
+to specify the routerid in the aggregator attribute as zero (instead
+of my routerid) in order to prevent different routers in an AS from
+creating aggregate routes with different AS paths. 
+\fiKeepalivesalways\fR causes gated to always send a keepalive, even
+when an update could have correctly substituted for one.  This allows
+interoperability with routers that do not obey the spec on this point.
+.PP
+\fISendbuffer\fR and \fIRecvbuffer\fR control the amount of buffering asked of
+the kernel, the default is to configure the maximum supported, up to
+65535 bytes.  These options are normally not needed on
+properly functioning systems..
+.PP
+\fIIndelay\fR and \fIOutdelay\fR are used to dampen route
+fluctuations.  \fIIndelay\fR is the amount of time a route learned
+from a BGP peer must be stable before it is accepted into the gated
+routing table.  \fIOutdelay\fR is the amount of time a route must be
+present in the gated routing table before it is exported to other BGP
+peers.  The default value, zero, means that these features are
+disabled.
+.PP
+If a metric is not specified, the default is not to send a metric.
+The default preference is 170, the default holdtime is 180 and the
+default version is 3.  The default TTL is 1 for local peers and 255
+for remote peers.
+.PP 
+Note that the \fIstate\fR option works with BGP.
+.PP
+Packet tracing options (which may be modified with
+\fIdetail\fR, \fIsend\fR and \fIrecv\fR):
+.RS
+.IP packets 1i
+All BGP packets.
+.IP open
+BGP Open packets which are used to establish a
+peer relationship. 
+.IP update
+BGP Update packets which are used to pass network
+reachability information. 
+.IP keepalive
+BGP Keepalive packets which are used to verify peer reachability.
+.RE
+.RE
+@END:	PROTO_BGP
+.SS Redirect statement syntax
+.PP
+.nf
+\fBredirect\fR yes|no|on|off [ {
+	preference <preference> ;
+	interface <interface_list> [noredirects] ;
+	trustedgateways <gateway_list> ;
+	traceoptions ... ;
+} ] ;
+.fi
+.RS
+.PP
+Controls whether gated makes routing table changes
+based on ICMP redirects when not functioning as a
+router.  When functioning as a router (i.e. any
+interior routing protocols (RIP, HELLO, OSPF) are
+participating in routing on any interface, ICMP
+redirects are disabled.  When ICMP redirects are
+disabled, gated must actively remove the effects
+of redirects from the kernel as the kernel always
+processes ICMP redirects.
+.PP
+The default preference is 30.
+.PP
+There are no \fIredirect\fR specific tracing
+options.  All non-error messages are traced under
+the \fInormal\fR class.
+.RE
+@BEGIN:	PROTO_ICMP
+.SS ICMP protocol interface syntax
+.nf
+\fBicmp\fR {
+	traceoptions ... ;
+} ;
+.fi
+.PP
+On systems without the BSD routing socket, 
+gated listens to ICMP packets received by the
+system.  Currently gated only does processing on
+ICMP redirect packets, but more functionality may
+be added in the future, such as support for the
+router discovery messages.
+.PP
+While tracing the processing of ICMP redirect
+messages is handled by the \fIredirect\fR clause,
+the \fIicmp\fR clause may be used to trace received ICMP
+packets.
+.PP
+Packet tracing options (which may be modified with
+\fIdetail\fR and \fIrecv\fR):
+.RS
+.IP packets 1i
+All ICMP packets received.
+.IP redirect
+Only ICMP REDIRECT packets.
+.IP routerdiscovery
+Only ICMP ROUTER DISCOVERY packets.
+.IP info
+Only ICMP informational packets, which include
+mask request/response, info request/response, echo
+request/response and time stamp request/response.
+.IP error 
+Only ICMP error packets, which include time
+exceeded, parameter problem, unreachable and
+source quench.
+.RE
+@END:	PROTO_ICMP
+@BEGIN:	PROTO_SNMP
+.SS SNMP protocol interface syntax
+.PP
+.nf
+\fBsnmp\fR yes|no|on|off [ {
+	preference <preference> ;
+	traceoptions ... ;
+	port <port> ;
+} ] ;
+.fi
+.RS
+.PP
+Controls whether gated tries to contact the SMUX SNMP daemon
+to register supported variables.  The default is \fIon\fR.  The default
+preference is 50.  The default port is 199 (SMUX).
+.PP
+SNMP requests received via the SMUX protocol from the SNMP
+daemon are not quite like packets and are currently handled
+differently.  The \fIdetail\fR, \fIsend\fR, and \fIrecv\fR options are not
+supported.
+.RS
+.IP receive 1i
+SNMP requests received from the SMUX daemon and
+the associated responses. 
+.IP register
+Protocol requests to register variables.
+.IP resolve
+Protocol requests to resolve variable names.
+.IP trap
+SNMP trap requests from protocols.
+.RE
+.RE
+@END:	PROTO_SNMP
+.SS Kernel interface syntax
+.PP
+.nf
+\fBkernel\fR {
+	traceoptions ... ;
+	routes <route_limit> ;
+	flash [limit <flash_limit>] [interface|interior|all] ;
+	background [limit <bg_limit>] [flash|higher|lower] ;
+} ;
+.fi
+.RS
+.PP
+While the kernel interface isn't technically a
+routing protocol, it has many characteristics of one, and gated
+handles handles it similarly to one.
+The routes gated chooses to install in the kernel forwarding table are
+those that will actually be used by the kernel to forward packets.
+.PP
+The add, delete and change operations gated must use to update the
+typical kernel forwarding table take a non-trivial amount of time.
+This does not present a problem older routing protocols (RIP, EGP),
+which are not particularly time critical and do not easily handle
+very large numbers of routes.  The newer routing protocols (OSPF, BGP)
+have stricter timing requirements and are often used to process many
+more routes.  The speed of the kernel interface becomes critical when
+these protocols are used.
+.PP
+To prevent gated from locking up for significant periods of time (up
+to a minute or more) installing large numbers of routes, the
+processing of these routes is now done in batches.  The size of these
+batches may be controlled by the tuning parameters described in the
+next two paragraphs, but normally the default parameters will provide
+the proper functionality.
+.PP
+When routes change, the process of notifying the protocols is called
+a \fIflash update\fR.  The kernel routing table interface is the first to
+be notified.  At this point, the kernel interface installs
+20 \fIinterface\fR routes.  The \fBflash\fR statement allows this number to
+be changed and the ability to install more types of routes.
+\fIInterior\fR specifies that \fIinterior\fR routes (learned from igps like
+RIP and OSPF) will also be installed.  \fIAll\fR specifies the inclusion
+of \fIexterior\fR routes.  Specifying \fIflash limit -1 all\fR mimics the
+behavoir of previous versions of gated.
+.PP
+Since only \fIinterface\fR routes are normally installed during a
+\fIflash update\R, the remaining routes are processed in batches in
+the \fIbackground\fR.  That is, when no routing protocol traffic is
+being received.  Normally, 120 routes are installed at a time to
+allow other tasks to be performed.  Normally this \fIbackground\fR is
+done at lower priority than \fIflash updates\fR, but the priority
+keyword may be used to adjust this scheduling.
+.PP
+The following two tracing options make sense when
+entered from the command line since the code that
+uses them is executed before the trace file is
+parsed.
+.RS
+.IP symbols 1i
+Symbols read from the kernel, by the nlist()
+or similar interface.
+.IP iflist
+Interface list scan.  This option is useful
+when entered from the command line as the first
+interface list scan is performed before the
+configuration file is parsed.
+.RE
+.PP
+The following tracing options may only be
+specified in the configuration file, they are not
+valid from the command line.
+.RS
+.IP remnants 1i
+Routes read from the kernel when gated starts.
+.IP request
+Requests by gated to Add/Delete/Change routes in
+the kernel forwarding table. 
+@BEGIN:	KRT_RT_SOCK
+.IP info
+Informational messages received from the routing
+socket, such as TCP lossage, routing lookup
+failure, and route resolution requests.  Gated
+does not currently do processing on these
+messages, just logs the information if requested.
+@END:	KRT_RT_SOCK
+.RE
+@BEGIN:	KRT_RT_SOCK
+.PP
+Packet tracing options (which may be modified with
+\fIdetail\fR, \fIsend\fR and \fIrecv\fR):
+.RS
+.IP routes 1i
+Routes exchanged with the kernel, including
+Add/Delete/Change messages and Add/Delete/Change
+messages received from other processes.
+.IP redirect
+Redirect messages received from the kernel.
+.IP interface
+Interface status messages received from the
+kernel.  These are only supported on systems with
+networking code derrived from BSD 4.4.
+.IP other
+Other messages received from the kernel, including
+those mentioned in the \fIinfo\fR type above.
+@END:	KRT_RT_SOCK
+.RE
+.RE
+.SH "STATIC STATEMENTS"
+.PP
+Static routes are specified with \fIstatic\fR clauses.
+.RS
+.nf
+\fBstatic\fR {
+	<dest_mask> gateway <gateway> [<gateway2> [<gateway3> [...]]]
+		[interface <interface_list>]
+		[preference <preference>]
+		[retain] [reject] [blackhole] [noinstall] ;
+	...
+	<dest_mask> interface <interface> [preference
+		<preference>] [retain] [reject] [blackhole] [noinstall] ;
+	...
+} ;
+.fi
+.PP
+Any number of \fIstatic\fR statements may be specified,
+each containing any number of static route
+definitions.  The first form defines a static route
+through one or more gateways.  If multiple gateways are specified,
+they are limited by the number of multipath destinations supported (on
+Unix this is almost always one).  Only gateways on interfaces that are
+configured and up are used.
+.PP
+The second defines a static
+interface route which is used for primitive support of
+multiple networks on one interface.
+.PP
+The interface list on the first form restricts static routes to a
+specific set of interfaces.
+.PP
+\fIRetain\fR causes the route to be retained in the kernel after gated is
+shut down.  \fIReject\fR causes all packets to this route to be rejected.
+\fIBlackhole\fR causes all packets to this route to be silently discarded.
+\fIReject\fR and \fIblackhole\fR are not supported by all systems.
+\fINoinstall\fR is used to prevent this route from being installed in the
+kernel
+.PP
+The preference for static routes defaults to 60.
+.RE
+.SH "CONTROL STATEMENTS"
+.PP
+Importation of routes from routing
+protocol peers and exportation of 
+routes to routing protocol peers are
+controlled  by \fIimport\fR and
+\fIexport\fR clauses. 
+.RS
+.RE
+.PP
+.nf
+\fBimport\fR proto bgp|egp as <autonomous system> restrict ;
+
+\fBimport\fR proto bgp|egp as <autonomous system>
+	[preference <preference>] {
+	<import_list>
+} ;
+
+\fBimport\fR proto bgp aspath <aspath_spec> restrict ;
+
+\fBimport\fR proto bgp aspath <aspath_spec>
+	[preference <preference>] {
+	<import_list>
+} ;
+
+\fBimport\fR proto rip|hello|redirect restrict ;
+
+\fBimport\fR proto rip|hello|redirect
+	[preference <preference>] {
+	<import_list>
+} ;
+
+\fBimport\fR proto rip|hello|redirect interface <interface_list> restrict ;
+
+\fBimport\fR proto rip|hello|redirect interface <interface_list>
+	[preference <preference>] {
+	<import_list>
+} ;
+
+\fBimport\fR proto rip|hello|redirect gateway <gateway_list> restrict ;
+
+\fBimport\fR proto rip|hello|redirect gateway <gateway_list>
+	[preference <preference>] {
+	<import_list>
+} ;
+
+@BEGIN:	PROTO_OSPF
+\fBimport\fR proto ospfase [tag <ospf_tag>] restrict ;
+
+\fBimport\fR proto ospfase [tag <ospf_tag>]
+	[preference <preference>] [{
+	<import_list>
+}] ;
+.fi
+@BEGIN:	PROTO_OSPF
+.PP
+If an OSPF type is specified, only
+routes of that type will be considered
+for import, otherwise either type will
+be considered.  If an ospf_tag specification is given,
+only routes matching that tag specification will be
+considered, otherwise any tag will be
+considered.
+An OSPF tag specification may is a decimal, hexidecimal
+or dotted quad number.
+@END:	PROTO_OSPF
+.PP
+If more than one import statement relevant to a protocol is
+specified, they are processed most specific to least
+specific (i.e. for RIP and HELLO, gateway, interface and
+protocol), then in the order specified in the config file.
+.IP import_list
+An import_list consists of zero or
+more destinations (with optional mask).
+One of two parameters may be specified,
+\fIrestrict\fR to prevent a set of
+destinations from being imported or a
+specific preference for this set of
+destinations.
+.nf
+
+<dest_mask> [[restrict] | [preference <preference>]] ;
+
+.fi
+.IP
+Note that the contents of an import_list are
+sorted internally so that entries with the most specific masks are
+examined first.  The order 
+in which dest_mask entries are specified does not
+matter. 
+.IP
+If no import list is specified, all routes
+will be accepted.  If an import list is
+specified, the import list is scanned for
+a match.  If no match is found, the route is
+discarded.  Rephrased, a \fIall restrict\fR entry
+is assumed in an import list.
+.PP
+.nf
+\fBexport\fR proto bgp|egp as <autonomous system> restrict ;
+
+\fBexport\fR proto bgp|egp as <autonomous system>
+	[metric <metric>] {
+	<export_list>
+} ;
+
+\fBexport\fR proto rip|hello restrict ;
+
+\fBexport\fR proto rip|hello [metric <metric>] {
+	<export_list>
+} ;
+
+\fBexport\fR proto rip|hello interface <interface_list> restrict ;
+
+\fBexport\fR proto rip|hello interface <interface_list>
+	[metric <metric>] {
+	<export_list>
+} ;
+
+\fBexport\fR proto rip|hello gateway <gateway_list> restrict ;
+
+\fBexport\fR proto rip|hello gateway <gateway_list>
+	[metric <metric>] {
+	<export_list>
+} ;
+
+@BEGIN:	PROTO_OSPF
+\fBexport\fR proto ospfase [type 1|2] [tag <ospf_tag>] restrict ;
+
+\fBexport\fR proto ospfase [type 1|2] [tag <ospf_tag>]
+	[cost <ospf_cost>] {
+	<export_list>
+} ;
+@END:	PROTO_OSPF
+.fi
+.IP export_list
+The export list specifies exportation
+based on the origin of a route to a destination:
+.nf
+
+proto bgp|egp as <autonomous system>
+	[restrict] | [metric <metric>] [ {
+	<announce_list>
+} ] ;
+
+proto rip|hello|direct|static|default
+	[restrict] | [metric <metric>] [ {
+	<announce_list>
+} ] ;
+
+proto rip|hello|direct|static|default interface <interface_list>
+	[restrict] | [metric <metric>] [ {
+	<announce_list>
+} ] ;
+
+proto rip|hello gateway <gateway_list>
+	[restrict] | [metric<metric>] [ {
+	<announce_list>
+} ] ;
+
+@BEGIN:	PROTO_OSPF
+proto ospf [restrict] | [metric <metric>] [ {
+	<announce_list> ;
+} ] ;
+
+proto ospfase [restrict | metric <metric>]] [ {
+	<announce_list> ;
+} ] ;
+
+@END:	PROTO_OSPF
+@BEGIN:	PROTO_ASPATHS
+proto <proto> aspath <aspath_spec>
+	[restrict] | [metric <metric>] [ {
+	<announce_list>
+} ] ;
+
+proto <proto> tag <tag> 
+	[restrict] | [metric <metric>] [ {
+	<announce_list>
+} ] ;
+
+@END:	PROTO_ASPATHS
+.fi
+.IP ""
+If a tag is specified, only routes with
+that tag will be considered, otherwise
+any tag will be considered.  An OSPF tag
+on an export statement may be a decimal,
+hexidecimal, or \fIAS\fR to generate a tag
+based on the AS path of route being
+announced.  An OSPF tag on an export
+list is just an 31 bit number that is
+matched against the tag present (if any)
+on that route.
+.IP
+If more than one export statement
+relevant to a protocol is specified,
+they are processed most specific to
+least specific (i.e. for RIP and HELLO,
+gateway, interface and protocol), then
+in the order specified in the config
+file.
+.IP
+By default interface routes are exported to
+all protocols.  RIP and HELLO also export their
+own routes.  An export specification with just
+a restrict will prevent these defaults from being
+exported.  Note that it is not possible to change
+the metric RIP and HELLO use for their own routes;
+any attempt to override it will be silently ignored.
+.IP
+Any protocol may be specified for import
+lists refering to aspaths and tags.  AS
+paths are most meaningful with BGP and
+OSPF ASE routes, but are generated for
+all routes.  Tags are currently only
+meaningful for OSPF ASE routes.
+.IP announce_list
+An announce_list consists of zero or
+more destinations (with optional mask).
+One of two parameters may be specified,
+\fIrestrict\fR to prevent a set of
+destinations from being exported or a
+specific metric for this set of
+destinations.
+.nf
+
+<dest_mask> [[restrict] | [metric <metric>]] ;
+. . .
+
+.fi
+.PP
+Note that the contents of an announce_list are
+sorted internally so that entries with the most specific masks are
+examined first.  The order 
+in which dest_mask entries are specified does not
+matter. 
+.IP
+If no announce_list is specified, all
+destinations are announced.  If an announce
+list is specified, an \fIall restict\fR is
+assumed.  Therefore, an empty
+announce list is the equivalent of \fIall
+restrict\fR.
+.IP
+Note that to announce routes which specify a next
+hop of the loopback interface (i.e. static and
+internally generated default routes) via RIP or
+HELLO it is necessary to specify the metric at
+some level in the propagate clause.  Just setting
+a default metric for RIP or HELLO is not
+sufficient.
+@BEGIN:	PROTO_ASPATHS
+.IP aspath_spec
+An AS path specification is used to match one
+or more AS paths.
+.nf
+
+aspath <regexp> origin [igp|egp|incomplete|any]
+
+.fi
+where the regexp is a regular expression
+over the set of AS numbers as defined in
+RFC-1164 section 4.2.
+@END:	PROTO_ASPATHS
+.IP Aggregation
+Route aggregation is a method of
+generating a more general route given
+the presence of a specific route.  It is
+used, for example, at an autonomous
+system border to generate a route to a
+network to be advertised via EGP given
+the presence of one or more subnets of
+that network learned via RIP.  Previous
+version of gated automatically preformed
+this function, generating an aggregate
+route to a network given an interface to
+a subnet.  But that was the wrong thing
+to do in many cases so aggregation must
+be configured.
+.PP
+Route aggregation is also used by
+regional and national networks to reduce
+the amount of routing information passed
+around.  With careful allocation of
+networks to clients, regional networks
+can just announce one route to regional
+networks instead of hundreds.
+.PP
+Aggregate routes are not actually used
+for packet forwarding,  packets that do
+not match one of the components of an
+aggregate route are suposed to generate
+a network unreachable packet.  This is
+only possible on systems with support
+for reject routes.
+This is necessary to prevent packets for
+unknown components of a reject route
+from following a default route into
+another network where they would be
+forwarded back to the border router and
+around again until their TTL expires.
+.PP
+A slight variation of aggregation is the
+generation of a route, sometimes know as
+the \fIroute of last resort\fR.  This
+route inherit's the next hops and aspath
+from the contributor specified with the
+lowest (most favorable) preference.
+The most common usage for this is to
+generate a default based on the presence
+of a route from a peer on a neighboring
+backbone.
+.IP
+The default prference for aggregate
+routes is 130 and have a protocol of
+\fIaggregate\fR.
+.nf
+
+\fB aggregate \fR <network_mask> [preference <preference>] [brief] {
+	<aggregate_list> ;
+} ;
+
+\fB generate \fR <network_mask> [preference <preference>] {
+	<aggregate_list> ;
+} ;
+
+.fi
+.IP
+The \fIbrief\fR option is used to specify
+that the AS path should be truncated to
+the longest common AS path, the default
+is to build an AS path consisting of
+SETs and SEQUENCES of all the
+contributing AS paths.
+.IP aggregate_list
+The Aggregate list specifies all routes
+which may contribute to this aggregate.
+The actual aggregate route is not
+created until at least one contributing
+route is found and will be deleted if
+all the contributing routes go away.
+.IP
+A route may only contribute to an
+aggregate route which is more general
+than itself, they must match the
+aggregate network under it's mask.
+Any given route can only contribute to
+one aggregate route, which will be the
+most specific one configured.  But an
+aggregate route many contribute to a
+more generate aggregate.
+.nf
+
+proto [all|direct|static|kernel|aggregate|<proto>] restrict ;
+
+proto [all|direct|static|kernel|aggregate|<proto>]
+	[preference <preference>] {
+	<import_list> ;
+} ;
+
+.fi
+.IP
+The \fIrestrict\fR keyword indicates that
+these routes are not to be considered as
+contributors of the specified aggregate.
+The specified protocol may be any of the
+protocols supported by gated.
+.SH FILES
+@(_path_config)
+.PD
+.SH AUTHORS
+See gated(8).
+.SH SEE ALSO
+arp(8),
+gated(8),
+gated-copyright(8),
+gdc(8),
+ifconfig(8),
+netstat(8)
+ripquery(8)
+routed(8)
+syslog(3)
+.PP
+.PD 0
+.IP RFC\ 891 16
+DCN Local-Network Protocols (HELLO)
+.IP RFC\ 904
+Exterior Gateway Protocol Formal Specification
+.IP RFC\ 911
+EGP Gateway under Berkeley UNIX 4.2
+.IP RFC\ 1058
+Routing Information Protocol
+.IP RFC\ 1163
+A Border Gateway Protocol (BGP)
+.IP RFC\ 1164
+Application of the Border Gateway Protocol in the Internet
+.IP RFC\ 1247
+OSPF Specification, Version 2
+.IP RFC\ 1227
+SNMP MUX Protocol and MIB
+.PD
+.SH COPYRIGHT INFORMATION
+%(Copyright_short)
+.PP
+%(Copyright_short.OSPF)
+.PP
+%(Copyright_short.ISIS)
+.\"
+.\" %(Copyright)
+.\"

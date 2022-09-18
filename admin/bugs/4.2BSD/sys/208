@@ -1,0 +1,53 @@
+Return-Path: <aat@purdue-asc.arpa>
+Date: Mon, 16 Dec 85 14:08:59 est
+From: Jeff Smith <aat@purdue-asc.arpa>
+Subject: vi/quotas interaction (not really a bug)
+Index: sys/sys/ufs_syscalls.c 4.2BSD
+
+Description:
+	Here's the scenario.  A user creates a large file that puts him
+over his soft disk quota limit, and then logs off and on 3 times so that
+his hard limit is set to his soft limit.  He then decides to use vi and
+edit the large file to make is smaller, thereby getting under his quota
+limits.  He deletes a number of lines, tries to write the file, gets an
+understated message from vi that "foo may be incomplete", and exits vi
+via ":q!" in the belief that his file will be left in it's pre-edited
+state.  Much to his surprise, the file is length 0.  The problem is that
+vi opens the file via creat(), which truncates it.  When the write fails
+there's nothing to do to recover from the situation short of tape backups.
+
+Repeat-By:
+	See the "Description" above.
+Fix:
+	We've thought of several ways to fix this.  One class of solutions
+involves vi, and one involves copen() in the kernel.  The vi solutions all
+have the disadvantage that this problem probably applies to other editors
+that we may run in the future, and we don't want to have to make local
+hacks to every editor we decide to run.  Therefore we'd prefer to change
+copen() (which is called by creat() and open (..., O_TRUNC, ...)) in the
+following way.  
+	Make copen() look at a user's in-core quota structure if he's
+going to truncate a file, and if he has 0 warnings left (on the file system
+in which he's trying to open the file) return an error instead of truncating
+and opening the file.  The reasoning behind this is "why should I open
+this file for you if I know you can't write a single byte in this file
+system?".  So far, the only program we've thought of that this would
+affect is cp.  If you have been over quotas 3 times, "cp /dev/null bigfile"
+wouldn't work anymore, but most people use rm for this.  Hypothetically,
+some programs might want to validly create 0 length lock files, but then
+they should be using flock instead.  Further, this would only affect the
+way creat() and open() work if you've been over quotas 3 times, which is
+rare.  We've concluded that the benefits to our users (e.g., vi could check
+the return status of the creat() call and print an appropriate error message)
+outweigh the small change in functionality this would cause.
+	Do you see any problems with this that we haven't thought of?
+If we go ahead and get it working, are you interested in incorporating
+it into your distribution, or is it destined to become a local hack?
+
+Thanks,
+Jeff Smith	aat@asc.purdue.edu aat@purdue-asc.arpa pur-ee!pucc-j!aat
+
+Purdue University
+210 Math-Science
+West Lafayette, IN 47907
+phone (317) 494-7954

@@ -1,0 +1,419 @@
+Return-Path: <sun!gorodish!guy>
+Return-Path: <guy@gorodish>
+Date: Mon, 15 Jul 85 15:11:42 PDT
+From: sun!gorodish!guy (Guy Harris)
+Subject: Several problems with "mille"
+Index: games 4.2BSD
+	games/mille/init.c games/mille/mille.c games/mille/misc.c
+	games/mille/move.c games/mille/roll.c games/mille/save.c
+	games/mille/varpush.c 4.2BSD (probably 4.3BSD also)
+To: 4bsd-bugs@BERKELEY
+
+Description:
+	1) The 'o' command toggles a flag indicating whether to order
+	the hand or not.  The version supplied in binary form, both in
+	4.1BSD and 4.2BSD, also toggled the menu item for 'o' between
+	"order hand" and "stop ordering".  Neither the source supplied with
+	4.1BSD nor the source supplied with 4.2BSD built this version;
+	the versions built with the source left the menu item as "order hand".
+
+	2) Several "lint" errors show up when "mille" is "lint"ed.  There
+	are a couple of unused variables, and several cases where an integer
+	is passed to a routine expecting a pointer.  This causes problems
+	on machines with 16-bit "int"s and 32-bit pointers.  There are a
+	couple of "char" variables which should be "int"s, which might
+	cause problems on machines with no signed "char"s (like the AT&T
+	3B machines).  The time of day is declared as a "struct tm" rather
+	than a "long" or "time_t" which causes considerable confusion, as
+	well as forcing the module to include <time.h> which, for no good
+	reason, is not present on 4.2BSD (it's moved to <sys/time.h> with
+	no <time.h> left around).
+
+	3) "rand" is assumed to return a number in the range 0 to 2^31 - 1
+	on VAXes and a number in the range 0 to 2^15 - 1 on all other
+	machines.  On 4.2BSD machines other than the VAX "rand" also returns
+	numbers in the range 0 to 2^31 - 1.  We add a #define constant
+	BSD, and assume 31-bit random numbers if it's defined and 15-bit
+	random number otherwise.  (Make sure you #define this if building
+	for 4.xBSD, including 4.1BSD.)
+
+Repeat-By:
+	1) Just try using the 'o' key and notice that the menu item doesn't
+	change.
+
+	2) Just try porting "mille" to a 16-bit-"int"/32-bit-pointer machine
+	(like, to pick a random example, a CCI Power 5/20).
+
+	3) Just try porting "mille" to a 4.2BSD machine other than a VAX
+	(like, to pick a random example, a Sun or a CCI Power 6/32).
+Fix:
+
+*** init.c.orig	Mon Jul 15 14:30:13 1985
+--- init.c	Mon Jul 15 14:34:42 1985
+***************
+*** 152,158
+  		mvaddstr(13, 2, "d: discard #");
+  		mvaddstr(14, 2, "w: toggle window");
+  		mvaddstr(11, 21, "q: quit");
+! 		mvaddstr(12, 21, "o: order hand");
+  		mvaddstr(13, 21, "s: save");
+  		mvaddstr(14, 21, "r: reprint");
+  	}
+
+--- 152,161 -----
+  		mvaddstr(13, 2, "d: discard #");
+  		mvaddstr(14, 2, "w: toggle window");
+  		mvaddstr(11, 21, "q: quit");
+! 		if (!Order)
+! 			mvaddstr(12, 21, "o: order hand");
+! 		else
+! 			mvaddstr(12, 21, "o: stop ordering");
+  		mvaddstr(13, 21, "s: save");
+  		mvaddstr(14, 21, "r: reprint");
+  	}
+
+*** mille.c.orig	Mon Jul 15 14:30:37 1985
+--- mille.c	Mon Jul 15 14:35:47 1985
+***************
+*** 21,27
+  
+  	if (strcmp(av[0], "a.out") == 0) {
+  		outf = fopen("q", "w");
+! 		setbuf(outf, 0);
+  		Debug = TRUE;
+  	}
+  	restore = FALSE;
+
+--- 21,27 -----
+  
+  	if (strcmp(av[0], "a.out") == 0) {
+  		outf = fopen("q", "w");
+! 		setbuf(outf, (char *)0);
+  		Debug = TRUE;
+  	}
+  	restore = FALSE;
+***************
+*** 116,122
+   */
+  rub() {
+  
+! 	signal(SIGINT, 1);
+  	if (getyn("Really? "))
+  		die();
+  	signal(SIGINT, rub);
+
+--- 116,122 -----
+   */
+  rub() {
+  
+! 	signal(SIGINT, SIG_IGN);
+  	if (getyn("Really? "))
+  		die();
+  	signal(SIGINT, rub);
+***************
+*** 127,133
+   */
+  die() {
+  
+! 	signal(SIGINT, 1);
+  	if (outf)
+  		fflush(outf);
+  	mvcur(0, COLS - 1, LINES - 1, 0);
+
+--- 127,133 -----
+   */
+  die() {
+  
+! 	signal(SIGINT, SIG_IGN);
+  	if (outf)
+  		fflush(outf);
+  	mvcur(0, COLS - 1, LINES - 1, 0);
+
+*** misc.c.orig	Mon Jul 15 14:30:27 1985
+--- misc.c	Mon Jul 15 14:33:31 1985
+***************
+*** 26,32
+  CARD
+  getcard()
+  {
+! 	reg char	c, c1;
+  
+  	for (;;) {
+  		while ((c = readch()) == '\n' || c == '\r' || c == ' ')
+
+--- 26,32 -----
+  CARD
+  getcard()
+  {
+! 	reg int		c, c1;
+  
+  	for (;;) {
+  		while ((c = readch()) == '\n' || c == '\r' || c == ' ')
+
+*** move.c.orig	Mon Jul 15 14:30:35 1985
+--- move.c	Mon Jul 15 14:36:34 1985
+***************
+*** 324,329
+  			goto ret;
+  		  case 'O':		/* Order */
+  			Order = !Order;
+  			Movetype = M_ORDER;
+  			goto ret;
+  		  case 'Q':		/* Quit */
+
+--- 324,334 -----
+  			goto ret;
+  		  case 'O':		/* Order */
+  			Order = !Order;
++ 			if (!Order)
++ 				mvwaddstr(Score, 12, 21, "o: order hand");
++ 			else
++ 				mvwaddstr(Score, 12, 21, "o: stop ordering");
++ 			wclrtoeol(Score);
+  			Movetype = M_ORDER;
+  			goto ret;
+  		  case 'Q':		/* Quit */
+***************
+*** 396,402
+  					leaveok(Board, TRUE);
+  					if ((outf = fopen(buf, "w")) == NULL)
+  						perror(buf);
+! 					setbuf(outf, 0);
+  				}
+  				Debug = !Debug;
+  				break;
+
+--- 401,407 -----
+  					leaveok(Board, TRUE);
+  					if ((outf = fopen(buf, "w")) == NULL)
+  						perror(buf);
+! 					setbuf(outf, (char *)0);
+  				}
+  				Debug = !Debug;
+  				break;
+***************
+*** 461,467
+  reg CARD	*hand;
+  {
+  	reg CARD	*cp, *tp;
+- 	reg int		j;
+  	reg CARD	temp;
+  
+  	cp = hand;
+
+--- 466,471 -----
+  reg CARD	*hand;
+  {
+  	reg CARD	*cp, *tp;
+  	reg CARD	temp;
+  
+  	cp = hand;
+
+*** roll.c.orig	Mon Jul 15 14:30:28 1985
+--- roll.c	Mon Jul 15 14:33:35 1985
+***************
+*** 7,13
+  
+  # define	reg	register
+  
+! # ifndef vax
+  # define	MAXRAND	32767L
+  
+  roll(ndie, nsides)
+
+--- 7,13 -----
+  
+  # define	reg	register
+  
+! # ifndef BSD
+  # define	MAXRAND	32767L
+  
+  roll(ndie, nsides)
+***************
+*** 14,20
+  int	ndie, nsides; {
+  
+  	reg long	tot;
+! 	reg unsigned	n, r;
+  
+  	tot = 0;
+  	n = ndie;
+
+--- 14,20 -----
+  int	ndie, nsides; {
+  
+  	reg long	tot;
+! 	reg unsigned	n;
+  
+  	tot = 0;
+  	n = ndie;
+
+*** save.c.orig	Mon Jul 15 14:30:38 1985
+--- save.c	Mon Jul 15 14:50:35 1985
+***************
+*** 1,7
+  #include	"mille.h"
+  #include	<sys/types.h>
+  #include	<sys/stat.h>
+- #include	<sys/time.h>
+  # ifdef	attron
+  #	include	<term.h>
+  #	define	_tty	cur_term->Nttyb
+
+--- 1,6 -----
+  #include	"mille.h"
+  #include	<sys/types.h>
+  #include	<sys/stat.h>
+  # ifdef	attron
+  #	include	<term.h>
+  #	define	_tty	cur_term->Nttyb
+***************
+*** 12,18
+   */
+  
+  typedef	struct stat	STAT;
+- typedef	struct tm	TIME;
+  
+  char	*ctime();
+  
+
+--- 11,16 -----
+   */
+  
+  typedef	struct stat	STAT;
+  
+  char	*ctime();
+  
+***************
+*** 28,34
+  
+  	reg char	*sp;
+  	reg int		outf;
+! 	reg TIME	*tp;
+  	char		buf[80];
+  	TIME		tme;
+  	STAT		junk;
+
+--- 26,32 -----
+  
+  	reg char	*sp;
+  	reg int		outf;
+! 	reg long	*tp;
+  	char		buf[80];
+  	long		tme;
+  	STAT		junk;
+***************
+*** 30,36
+  	reg int		outf;
+  	reg TIME	*tp;
+  	char		buf[80];
+! 	TIME		tme;
+  	STAT		junk;
+  
+  	tp = &tme;
+
+--- 28,34 -----
+  	reg int		outf;
+  	reg long	*tp;
+  	char		buf[80];
+! 	long		tme;
+  	STAT		junk;
+  
+  	tp = &tme;
+
+*** varpush.c.orig	Mon Jul 15 14:30:23 1985
+--- varpush.c	Mon Jul 15 14:37:47 1985
+***************
+*** 16,34
+  
+  	int	temp;
+  
+! 	(*func)(file, &Debug, sizeof Debug);
+! 	(*func)(file, &Finished, sizeof Finished);
+! 	(*func)(file, &Order, sizeof Order);
+! 	(*func)(file, &End, sizeof End);
+! 	(*func)(file, &On_exit, sizeof On_exit);
+! 	(*func)(file, &Handstart, sizeof Handstart);
+! 	(*func)(file, &Numgos, sizeof Numgos);
+! 	(*func)(file,  Numseen, sizeof Numseen);
+! 	(*func)(file, &Play, sizeof Play);
+! 	(*func)(file, &Window, sizeof Window);
+! 	(*func)(file,  Deck, sizeof Deck);
+! 	(*func)(file, &Discard, sizeof Discard);
+! 	(*func)(file,  Player, sizeof Player);
+  	if (func == read) {
+  		read(file, &temp, sizeof temp);
+  		Topcard = &Deck[temp];
+
+--- 16,34 -----
+  
+  	int	temp;
+  
+! 	(*func)(file, (char *)&Debug, sizeof Debug);
+! 	(*func)(file, (char *)&Finished, sizeof Finished);
+! 	(*func)(file, (char *)&Order, sizeof Order);
+! 	(*func)(file, (char *)&End, sizeof End);
+! 	(*func)(file, (char *)&On_exit, sizeof On_exit);
+! 	(*func)(file, (char *)&Handstart, sizeof Handstart);
+! 	(*func)(file, (char *)&Numgos, sizeof Numgos);
+! 	(*func)(file, (char *)Numseen, sizeof Numseen);
+! 	(*func)(file, (char *)&Play, sizeof Play);
+! 	(*func)(file, (char *)&Window, sizeof Window);
+! 	(*func)(file, (char *)Deck, sizeof Deck);
+! 	(*func)(file, (char *)&Discard, sizeof Discard);
+! 	(*func)(file, (char *)Player, sizeof Player);
+  	if (func == read) {
+  		read(file, (char *)&temp, sizeof temp);
+  		Topcard = &Deck[temp];
+***************
+*** 30,36
+  	(*func)(file, &Discard, sizeof Discard);
+  	(*func)(file,  Player, sizeof Player);
+  	if (func == read) {
+! 		read(file, &temp, sizeof temp);
+  		Topcard = &Deck[temp];
+  		if (Debug) {
+  			char	buf[80];
+
+--- 30,36 -----
+  	(*func)(file, (char *)&Discard, sizeof Discard);
+  	(*func)(file, (char *)Player, sizeof Player);
+  	if (func == read) {
+! 		read(file, (char *)&temp, sizeof temp);
+  		Topcard = &Deck[temp];
+  		if (Debug) {
+  			char	buf[80];
+***************
+*** 42,48
+  				goto over;
+  			}
+  			if (strcmp(buf, "/dev/null") != 0)
+! 				setbuf(outf, 0);
+  		}
+  	}
+  	else {
+
+--- 42,48 -----
+  				goto over;
+  			}
+  			if (strcmp(buf, "/dev/null") != 0)
+! 				setbuf(outf, (char *)0);
+  		}
+  	}
+  	else {
+***************
+*** 47,52
+  	}
+  	else {
+  		temp = Topcard - Deck;
+! 		write(file, &temp, sizeof temp);
+  	}
+  }
+
+--- 47,52 -----
+  	}
+  	else {
+  		temp = Topcard - Deck;
+! 		write(file, (char *)&temp, sizeof temp);
+  	}
+  }

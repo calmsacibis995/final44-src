@@ -1,0 +1,777 @@
+From voder!jeff@ucbvax.Berkeley.EDU  Fri Feb 26 16:05:12 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.26)
+	id AA14503; Fri, 26 Feb 88 16:05:12 PST
+Received: by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA05505; Fri, 26 Feb 88 16:02:38 PST
+Received: by voder.nsc.com (5.51/NSC 1.4)
+	id AA04337; Fri, 26 Feb 88 15:34:50 PST
+Date: Fri, 26 Feb 88 15:34:50 PST
+From: voder!jeff@ucbvax.Berkeley.EDU (Jeff Gilliam)
+Message-Id: <8802262334.AA04337@voder.nsc.com>
+Subject: raw I/O enhancement
+Index: 	sys/{h,sys,vax,vaxuba,vaxmba}/... 4.3BSD
+Apparently-To: ucbvax!4bsd-bugs
+
+Description:
+	Since the beginning of time each mass storage device driver has
+	statically allocated one buf structure per controller (disk
+	controller or tape formatter) exclusively for use by raw I/O.
+	As noted by Don Speck, the new multi-process dump program
+	encounters contention as the multiple reader processes all fight
+	over a single buf structure.  Also, as noted by Chris Torek, many
+	of the drivers have raw read and write routines that are identical
+	except for the names of the raw I/O buffer and strategy routine.
+
+Repeat-By:
+	Examine code.
+
+Fix:
+	The changes below add a new field in the cdevsw structure for the
+	strategy routine, and new generic raw I/O routines.  physio() is
+	changed to allocate a buffer from the pool of swap buffers if no
+	buffer pointer is passed to it.  Driver specific raw I/O routines
+	are removed where appropriate, and cdevsw[] is set up to call the
+	generic raw I/O routines instead.
+
+	To apply these patches:
+
+		cd /sys
+		patch -p1 < thisfile
+
+Index: sys/h/conf.h
+
+Add a new field to the cdevsw structure which points to the device's
+strategy routine.
+
+RCS file: RCS/conf.h,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1001410	Fri Feb 26 10:47:00 1988
+--- /tmp/,RCSt2001410	Fri Feb 26 10:47:00 1988
+***************
+*** 43,48 ****
+--- 43,49 ----
+  	struct tty *d_ttys;
+  	int	(*d_select)();
+  	int	(*d_mmap)();
++ 	int	(*d_strategy)();
+  };
+  #ifdef KERNEL
+  struct	cdevsw cdevsw[];
+
+Index: sys/vax/conf.c
+
+Change the cdevsw[] to initialize the new strategy fields properly.  Also
+use the generic raw I/O routines instead of device specific routines wherever
+possible.
+
+RCS file: RCS/conf.c,v
+retrieving revision 1.2
+retrieving revision 1.6
+diff  -r1.2 -r1.6
+21c21
+< int	hpopen(),hpstrategy(),hpread(),hpwrite(),hpdump(),hpioctl(),hpsize();
+---
+> int	hpopen(),hpstrategy(),hpdump(),hpioctl(),hpsize();
+25,26d24
+< #define	hpread		nodev
+< #define	hpwrite		nodev
+47c45
+< int	rkopen(),rkstrategy(),rkread(),rkwrite(),rkintr();
+---
+> int	rkopen(),rkstrategy(),rkintr();
+52,53d49
+< #define	rkread		nodev
+< #define	rkwrite		nodev
+77c73
+< int	tmscpopen(),tmscpclose(),tmscpstrategy(),tmscpread(),tmscpwrite();
+---
+> int	tmscpopen(),tmscpclose(),tmscpstrategy();
+83,84d78
+< #define	tmscpread	nodev
+< #define	tmscpwrite	nodev
+121c115
+< int	udopen(),udstrategy(),udread(),udwrite(),udreset(),uddump(),udsize();
+---
+> int	udopen(),udstrategy(),udreset(),uddump(),udsize();
+125,126d118
+< #define	udread		nodev
+< #define	udwrite		nodev
+134c126
+< int	upopen(),upstrategy(),upread(),upwrite(),upreset(),updump(),upsize();
+---
+> int	upopen(),upstrategy(),upreset(),updump(),upsize();
+138,139d129
+< #define	upread		nodev
+< #define	upwrite		nodev
+162c152
+< int	idcopen(),idcstrategy(),idcread(),idcwrite();
+---
+> int	idcopen(),idcstrategy();
+167,168d156
+< #define	idcread		nodev
+< #define	idcwrite	nodev
+208c196
+< int	rlopen(),rlstrategy(),rlread(),rlwrite();
+---
+> int	rlopen(),rlstrategy();
+213,214d200
+< #define	rlread		nodev
+< #define	rlwrite		nodev
+511a498
+> int	rawread(), rawwrite();
+517c504
+< 	ttselect,	nodev,
+---
+> 	ttselect,	nodev,		nodev,
+520c507
+< 	ttselect,	nodev,
+---
+> 	ttselect,	nodev,		nodev,
+523c510
+< 	syselect,	nodev,
+---
+> 	syselect,	nodev,		nodev,
+526,527c513,514
+< 	mmselect,	nodev,
+< 	hpopen,		nulldev,	hpread,		hpwrite,	/*4*/
+---
+> 	mmselect,	nodev,		nodev,
+> 	hpopen,		nulldev,	rawread,	rawwrite,	/*4*/
+529c516
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		hpstrategy,
+532c519
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+535c522
+< 	vpselect,	nodev,
+---
+> 	vpselect,	nodev,		nodev,
+538c525
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+541,542c528,529
+< 	seltrue,	nodev,
+< 	udopen,		nulldev,	udread,		udwrite,	/*9*/
+---
+> 	seltrue,	nodev,		nodev,
+> 	udopen,		nulldev,	rawread,	rawwrite,	/*9*/
+544c531
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		udstrategy,
+547,548c534,535
+< 	vaselect,	nodev,
+< 	rkopen,		nulldev,	rkread,		rkwrite,	/*11*/
+---
+> 	vaselect,	nodev,		nodev,
+> 	rkopen,		nulldev,	rawread,	rawwrite,	/*11*/
+550c537
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+553,554c540,541
+< 	ttselect,	nodev,
+< 	upopen,		nulldev,	upread,		upwrite,	/*13*/
+---
+> 	ttselect,	nodev,		nodev,
+> 	upopen,		nulldev,	rawread,	rawwrite,	/*13*/
+556c543
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+559c546
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+562c549
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+565c552
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+568c555
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+571c558
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+574c561
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+577c564
+< 	ttselect,	nodev,
+---
+> 	ttselect,	nodev,		nodev,
+580c567
+< 	ptcselect,	nodev,
+---
+> 	ptcselect,	nodev,		nodev,
+583,584c570,571
+< 	ttselect,	nodev,
+< 	idcopen,	nulldev,	idcread,	idcwrite,	/*23*/
+---
+> 	ttselect,	nodev,		nodev,
+> 	idcopen,	nulldev,	rawread,	rawwrite,	/*23*/
+586c573
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+589c576
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+593c580
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+596c583
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+599c586
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+602c589
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+605c592
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+608c595
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+611,612c598,599
+< 	seltrue,	nodev,
+< 	rlopen,		nodev,		rlread,		rlwrite,	/*32*/
+---
+> 	seltrue,	nodev,		nodev,
+> 	rlopen,		nodev,		rawread,	rawwrite,	/*32*/
+614c601
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+617c604
+< 	logselect,	nodev,
+---
+> 	logselect,	nodev,		nodev,
+620c607
+< 	ttselect,       nodev,
+---
+> 	ttselect,       nodev,		nodev,
+623c610
+<  	seltrue,	nodev,
+---
+>  	seltrue,	nodev,		nodev,
+626c613
+< 	vsselect,	nodev,
+---
+> 	vsselect,	nodev,		nodev,
+629,630c616,617
+< 	ttselect,       nodev,
+< 	tmscpopen,	tmscpclose,	tmscpread,	tmscpwrite,	/*38*/
+---
+> 	ttselect,       nodev,		nodev,
+> 	tmscpopen,	tmscpclose,	rawread,	rawwrite,	/*38*/
+632c619
+< 	seltrue,	nodev,
+---
+> 	seltrue,	nodev,		nodev,
+635c622
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+638c625
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+641c628
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+645c632
+< 	nodev,		nodev,
+---
+> 	nodev,		nodev,		nodev,
+
+Index: sys/sys/vm_swp.c
+
+Add the new generic raw I/O routines rawread() and rawwrite().  Change
+physio() so that when the buffer pointer passed to it is null, it allocates
+a buffer from the swap I/O pool.
+
+RCS file: RCS/vm_swp.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1001343	Fri Feb 26 10:34:42 1988
+--- /tmp/,RCSt2001343	Fri Feb 26 10:34:43 1988
+***************
+*** 200,205 ****
+--- 200,206 ----
+  	register int c;
+  	char *a;
+  	int s, error = 0;
++ 	int localbuf = 0;
+  
+  nextiov:
+  	if (uio->uio_iovcnt == 0)
+***************
+*** 208,213 ****
+--- 209,223 ----
+  	if (useracc(iov->iov_base,(u_int)iov->iov_len,rw==B_READ?B_WRITE:B_READ) == NULL)
+  		return (EFAULT);
+  	s = splbio();
++ 	if (bp == (struct buf *)NULL) {
++ 		while (bswlist.av_forw == NULL) {
++ 			bswlist.b_flags |= B_WANTED;
++ 			sleep((caddr_t)&bswlist, PRIBIO+1);
++ 		}
++ 		bp = bswlist.av_forw;
++ 		bswlist.av_forw = bp->av_forw;
++ 		localbuf++;
++ 	}
+  	while (bp->b_flags&B_BUSY) {
+  		bp->b_flags |= B_WANTED;
+  		sleep((caddr_t)bp, PRIBIO+1);
+***************
+*** 243,251 ****
+  	}
+  	bp->b_flags &= ~(B_BUSY|B_WANTED|B_PHYS);
+  	error = geterror(bp);
+  	/* temp kludge for tape drives */
+! 	if (bp->b_resid || error)
+  		return (error);
+  	uio->uio_iov++;
+  	uio->uio_iovcnt--;
+  	goto nextiov;
+--- 253,273 ----
+  	}
+  	bp->b_flags &= ~(B_BUSY|B_WANTED|B_PHYS);
+  	error = geterror(bp);
++ 	(void) splbio();
++ 	if (localbuf) {
++ 		bp->av_forw = bswlist.av_forw;
++ 		bswlist.av_forw = bp;
++ 		if (bswlist.b_flags & B_WANTED) {
++ 			bswlist.b_flags &= ~B_WANTED;
++ 			wakeup((caddr_t)&bswlist);
++ 		}
++ 	}
+  	/* temp kludge for tape drives */
+! 	if (bp->b_resid || error) {
+! 		splx(s);
+  		return (error);
++ 	}
++ 	splx(s);
+  	uio->uio_iov++;
+  	uio->uio_iovcnt--;
+  	goto nextiov;
+***************
+*** 260,263 ****
+--- 282,301 ----
+  
+  	if (bp->b_bcount > MAXPHYS)
+  		bp->b_bcount = MAXPHYS;
++ }
++ 
++ rawread(dev, uio)
++ 	dev_t dev;
++ 	struct uio *uio;
++ {
++ 	return (physio(cdevsw[major(dev)].d_strategy,
++ 		(struct buf *)NULL, dev, B_READ, minphys, uio));
++ }
++ 
++ rawwrite(dev, uio)
++ 	dev_t dev;
++ 	struct uio *uio;
++ {
++ 	return (physio(cdevsw[major(dev)].d_strategy,
++ 		(struct buf *)NULL, dev, B_WRITE, minphys, uio));
+  }
+
+Index: sys/vaxmba/hp.c
+
+Remove the now-unused raw I/O routines and rhpbuf[] from the hp driver.
+
+RCS file: RCS/hp.c,v
+retrieving revision 1.1
+diff -c -r1.1 hp.c
+*** /tmp/,RCSt1001486	Fri Feb 26 10:58:48 1988
+--- hp.c	Fri Feb 26 10:56:44 1988
+***************
+*** 255,261 ****
+      0, 0, 0, 0,
+  };
+  
+- struct	buf	rhpbuf[NHP];
+  struct	buf	bhpbuf[NHP];
+  struct	dkbad	hpbad[NHP];
+  
+--- 255,260 ----
+***************
+*** 776,803 ****
+  	if (i == 0)
+  		printf("hp%d: intr, not ready\n", mi->mi_unit);
+  	return (i);
+- }
+- 
+- hpread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = hpunit(dev);
+- 
+- 	if (unit >= NHP)
+- 		return (ENXIO);
+- 	return (physio(hpstrategy, &rhpbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- hpwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = hpunit(dev);
+- 
+- 	if (unit >= NHP)
+- 		return (ENXIO);
+- 	return (physio(hpstrategy, &rhpbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  /*ARGSUSED*/
+--- 775,780 ----
+
+Index: sys/vaxuba/idc.c
+
+Remove the now-unused raw I/O routines and ridcbuf[] from the idc driver.
+
+RCS file: RCS/idc.c,v
+retrieving revision 1.2
+diff -c -r1.2 idc.c
+*** /tmp/,RCSt1001710	Fri Feb 26 11:21:05 1988
+--- idc.c	Fri Feb 26 11:21:01 1988
+***************
+*** 116,123 ****
+  	512, NRB80SECT, NRB80TRK, NRB80SECT*NRB80TRK, NRB80CYL,	rb80_sizes,
+  };
+  
+- struct	buf ridcbuf[NRB];
+- 
+  #define	b_cylin	b_resid
+  
+  int	idcwstart, idcwticks, idcwatch();
+--- 116,121 ----
+***************
+*** 660,687 ****
+  		for (i = 10; i; i--)
+  			;
+  	return (n);
+- }
+- 
+- idcread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = idcunit(dev);
+- 
+- 	if (unit >= NRB)
+- 		return (ENXIO);
+- 	return (physio(idcstrategy, &ridcbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- idcwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = idcunit(dev);
+- 
+- 	if (unit >= NRB)
+- 		return (ENXIO);
+- 	return (physio(idcstrategy, &ridcbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  idcecc(ui)
+--- 658,663 ----
+
+Index: sys/vaxuba/rk.c
+
+Remove the now-unused raw I/O routines and rrkbuf[] from the rk driver.
+
+RCS file: RCS/rk.c,v
+retrieving revision 1.2
+diff -c -r1.2 rk.c
+*** /tmp/,RCSt1001718	Fri Feb 26 11:21:33 1988
+--- rk.c	Fri Feb 26 11:21:30 1988
+***************
+*** 111,118 ****
+      RKAS_M800,RKAS_P1200,RKAS_M1200,RKAS_P1200,RKAS_M1200,0,0,0,0
+    };
+  
+- struct	buf rrkbuf[NRK];
+- 
+  #define	b_cylin	b_resid
+  
+  int	rkwstart, rkwatch();
+--- 111,116 ----
+***************
+*** 526,553 ****
+  
+  	while ((addr->rkcs1 & RK_CRDY) == 0)
+  		;
+- }
+- 
+- rkread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rkunit(dev);
+- 
+- 	if (unit >= NRK)
+- 		return (ENXIO);
+- 	return (physio(rkstrategy, &rrkbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- rkwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rkunit(dev);
+- 
+- 	if (unit >= NRK)
+- 		return (ENXIO);
+- 	return (physio(rkstrategy, &rrkbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  rkecc(ui, flag)
+--- 524,529 ----
+
+Index: sys/vaxuba/rl.c
+
+Remove the now-unused raw I/O routines and rrlbuf[] from the rl driver.
+
+RCS file: RCS/rl.c,v
+retrieving revision 1.2
+diff -c -r1.2 rl.c
+*** /tmp/,RCSt1001726	Fri Feb 26 11:21:56 1988
+--- rl.c	Fri Feb 26 11:21:53 1988
+***************
+*** 97,104 ****
+  	20,	2,	40,	512,	20*512,	rl02_sizes /* rl02/DEC*/
+  };
+  
+- struct	buf	rrlbuf[NRL];
+- 
+  #define	b_cylin b_resid		/* Last seek as CYL<<1 | HD */
+  
+  int	rlwstart, rlwatch();		/* Have started guardian */
+--- 97,102 ----
+***************
+*** 555,582 ****
+  
+  	while ((rladdr->rlcs & RL_CRDY) == 0)
+  		;
+- }
+- 
+- rlread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rlunit(dev);
+- 
+- 	if (unit >= NRL)
+- 		return (ENXIO);
+- 	return (physio(rlstrategy, &rrlbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- rlwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = rlunit(dev);
+- 
+- 	if (unit >= NRL)
+- 		return (ENXIO);
+- 	return (physio(rlstrategy, &rrlbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  /*
+--- 553,558 ----
+
+Index: sys/vaxuba/tmscp.c
+
+Remove the now-unused raw I/O routines and rtmsbuf[] from the tmscp driver.
+
+RCS file: RCS/tmscp.c,v
+retrieving revision 1.2
+diff -c -r1.2 tmscp.c
+*** /tmp/,RCSt1001734	Fri Feb 26 11:22:30 1988
+--- tmscp.c	Fri Feb 26 11:22:24 1988
+***************
+*** 200,206 ****
+   * ifdef other tmscp devices here if they allow more than 1 unit/controller
+   */
+  struct uba_device *tmscpip[NTMSCP][1];
+- struct buf rtmsbuf[NTMS];		/* raw i/o buffer */
+  struct buf ctmscpbuf[NTMSCP];		/* internal cmd buffer (for ioctls) */
+  struct buf tmsutab[NTMS];		/* Drive queue */
+  struct buf tmscpwtab[NTMSCP];		/* I/O wait queue, per controller */
+--- 200,205 ----
+***************
+*** 1873,1910 ****
+  		return(0);
+  		}
+  	return(1);
+- }
+- 
+- 
+- /*
+-  * Perform raw read
+-  */
+- 
+- tmscpread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = TMSUNIT(dev);
+- 
+- 	if (unit >= NTMS)
+- 		return (ENXIO);
+- 	return (physio(tmscpstrategy, &rtmsbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- 
+- /*
+-  * Perform raw write
+-  */
+- 
+- tmscpwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = TMSUNIT(dev);
+- 
+- 	if (unit >= NTMS)
+- 		return (ENXIO);
+- 	return (physio(tmscpstrategy, &rtmsbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  
+--- 1872,1877 ----
+
+Index: sys/vaxuba/uda.c
+
+Remove the now-unused raw I/O routines and rudbuf[] from the uda driver.
+
+RCS file: RCS/uda.c,v
+retrieving revision 1.2
+retrieving revision 1.5
+diff -c -r1.2 -r1.5
+*** /tmp/,RCSt1001617	Fri Feb 26 11:02:26 1988
+--- /tmp/,RCSt2001617	Fri Feb 26 11:02:34 1988
+***************
+*** 177,183 ****
+  struct  uba_ctlr *udminfo[NUDA];
+  struct  uba_device *uddinfo[NRA];
+  struct  uba_device *udip[NUDA][8];      /* 8 == max number of drives */
+- struct  buf rudbuf[NRA];
+  struct  buf udutab[NRA];
+  struct  buf udwtab[NUDA];               /* I/O wait queue, per controller */
+  
+--- 177,182 ----
+***************
+*** 1192,1219 ****
+  	}
+  	(void) splx(s);
+  	return(NULL);
+- }
+- 
+- udread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = udunit(dev);
+- 
+- 	if (unit >= NRA)
+- 		return (ENXIO);
+- 	return (physio(udstrategy, &rudbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- udwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = udunit(dev);
+- 
+- 	if (unit >= NRA)
+- 		return (ENXIO);
+- 	return (physio(udstrategy, &rudbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  udreset(uban)
+--- 1191,1196 ----
+
+Index: sys/vaxuba/up.c
+
+Remove the now-unused raw I/O routines and rupbuf[] from the up driver.
+
+RCS file: RCS/up.c,v
+retrieving revision 1.2
+diff -c -r1.2 up.c
+*** /tmp/,RCSt1001742	Fri Feb 26 11:23:02 1988
+--- up.c	Fri Feb 26 11:22:58 1988
+***************
+*** 147,153 ****
+  	0, 0, 0, 0
+  };
+  
+- struct	buf	rupbuf[NUP];
+  struct 	buf	bupbuf[NUP];
+  struct	dkbad	upbad[NUP];
+  
+--- 147,152 ----
+***************
+*** 736,763 ****
+  			needie = 0;
+  	if (needie)
+  		upaddr->upcs1 = UP_IE;
+- }
+- 
+- upread(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = upunit(dev);
+- 
+- 	if (unit >= NUP)
+- 		return (ENXIO);
+- 	return (physio(upstrategy, &rupbuf[unit], dev, B_READ, minphys, uio));
+- }
+- 
+- upwrite(dev, uio)
+- 	dev_t dev;
+- 	struct uio *uio;
+- {
+- 	register int unit = upunit(dev);
+- 
+- 	if (unit >= NUP)
+- 		return (ENXIO);
+- 	return (physio(upstrategy, &rupbuf[unit], dev, B_WRITE, minphys, uio));
+  }
+  
+  /*
+--- 735,740 ----

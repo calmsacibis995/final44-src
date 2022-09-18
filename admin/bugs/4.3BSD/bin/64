@@ -1,0 +1,198 @@
+Path: seismo!lll-lcc!pyramid!prls!mips!dce
+From: dce@mips.UUCP (David Elliott)
+Newsgroups: comp.bugs.4bsd
+Subject: 4.3BSD sed bug - only allows 9 w files
+Index:	bin/sed 4.3BSD
+
+Description:
+	The manual page for sed says that up to 10 distinct files
+	may be given with 'w' commands, but only 9 are actually
+	allowed.
+
+Repeat-By:
+	Put the following in the file 'sf':
+		1,3w ff1
+		2,5w ff2
+		3,7w ff3
+		4,9w ff4
+		5,11w ff5
+		6,13w ff6
+		7,15w ff7
+		8,17w ff8
+		9,19w ff9
+		10,21w ff10
+
+	and execute the command
+
+		sed -f sf /etc/passwd > /dev/null
+
+	The result is that files ff1-ff9 are created as expected, but
+	ff10 is not, and the message
+
+		Too many files in w commands
+
+	is printed.
+
+	This also shows up when rn is run the first time by a new user.
+
+Fix:
+	The fix is to change the test of number of files from >= to >.
+	The following patch does this. I defined the constant MAXFILES
+	to be used instead of 10 and 12 (so if you want to increase
+	the number of files, it takes only 1 change).
+	Also, the filenames were being kept in 40 byte arrays. This is
+	enough for general use, but they should still allow for
+	MAXPATHLEN characters. Of course, changing 40 to MAXPATHLEN
+	would result in 11Kbytes of space being taken up for something
+	that isn't used a lot (and 1K of that is never used). So, to
+	avoid wasted space, I changed the code to malloc() the strings
+	as needed.
+
+	Apply the following patch to get all of these fixes:
+
+*** sed.h.orig	Wed Apr  8 16:00:41 1987
+--- sed.h	Fri Apr 10 13:36:17 1987
+***************
+*** 30,35 ****
+--- 30,37 ----
+  #define	LABSIZE	50
+  #define NBRA	9
++ #define MAXFILES	10	/* Max number of files for w commands */
++ 
+  FILE	*fin;
+  union reptr	*abuf[ABUFSIZE];
+  union reptr **aptr;
+***************
+*** 64,71 ****
+  char	*braslist[NBRA];
+  long	tlno[NLINES];
+  int	nlno;
+! char	fname[12][40];
+! FILE	*fcode[12];
+  int	nfiles;
+  #define ACOM	01
+--- 66,73 ----
+  char	*braslist[NBRA];
+  long	tlno[NLINES];
+  int	nlno;
+! char	*fname[MAXFILES + 1];
+! FILE	*fcode[MAXFILES + 1];
+  int	nfiles;
+  #define ACOM	01
+*** sed0.c.orig	Fri Apr 10 14:18:56 1987
+--- sed0.c	Fri Apr 10 14:03:25 1987
+***************
+*** 1,8 ****
+--- 1,11 ----
+  /*	sed0.c	4.2	85/06/19	*/
+  #include <stdio.h>
++ #include <sys/param.h>
+  #include "sed.h"
++ static char *newstr();
++ 
+  struct label	*labtab = ltab;
+  char	CGMES[]	= "command garbled: %s\n";
+  char	TMMES[]	= "Too much text: %s\n";
+***************
+*** 122,127 ****
+--- 125,131 ----
+  	union reptr	*pt, *pt1;
+  	int	i;
+  	struct label	*lpt;
++ 	char tempbuf[MAXPATHLEN + 1];
+  	compfl = 1;
+  	op = lastre;
+***************
+*** 483,496 ****
+  						fprintf(stderr, CGMES, linebuf);
+  						exit(2);
+  					}
+! 					if(nfiles >= 10) {
+  						fprintf(stderr, "Too many files in w commands\n");
+  						exit(2);
+  					}
+! 					text(fname[nfiles]);
+  					for(i = nfiles - 1; i >= 0; i--)
+! 						if(cmp(fname[nfiles],fname[i]) == 0) {
+  							rep->fcode = fcode[i];
+  							goto done;
+  						}
+--- 487,501 ----
+  						fprintf(stderr, CGMES, linebuf);
+  						exit(2);
+  					}
+! 					if(nfiles > MAXFILES) {
+  						fprintf(stderr, "Too many files in w commands\n");
+  						exit(2);
+  					}
+! 					text(tempbuf);
+! 					fname[nfiles] = newstr(tempbuf);
+  					for(i = nfiles - 1; i >= 0; i--)
+! 						if(fname[i] && cmp(fname[nfiles],fname[i]) == 0) {
+  							rep->fcode = fcode[i];
+  							goto done;
+  						}
+***************
+*** 508,521 ****
+  					fprintf(stderr, CGMES, linebuf);
+  					exit(2);
+  				}
+! 				if(nfiles >= 10){
+  					fprintf(stderr, "Too many files in w commands\n");
+  					exit(2);
+  				}
+! 				text(fname[nfiles]);
+  				for(i = nfiles - 1; i >= 0; i--)
+! 					if(cmp(fname[nfiles], fname[i]) == 0) {
+  						rep->fcode = fcode[i];
+  						goto done;
+  					}
+--- 513,527 ----
+  					fprintf(stderr, CGMES, linebuf);
+  					exit(2);
+  				}
+! 				if(nfiles > MAXFILES){
+  					fprintf(stderr, "Too many files in w commands\n");
+  					exit(2);
+  				}
+! 				text(tempbuf);
+! 				fname[nfiles] = newstr(tempbuf);
+  				for(i = nfiles - 1; i >= 0; i--)
+! 					if(fname[i] && cmp(fname[nfiles], fname[i]) == 0) {
+  						rep->fcode = fcode[i];
+  						goto done;
+  					}
+***************
+*** 973,976 ****
+--- 979,1008 ----
+  			ep[c] = c;
+  	return(ep + 0200);
++ }
++ 
++ /*
++  * The subroutine newstr() takes a string and returns a pointer to
++  * a new copy of the string. This pointer points to malloc'ed space.
++  */
++ 
++ static char *
++ newstr(str)
++ 	char *str;
++ {
++ 	
++ 	register int len;	/* length of string including null */
++ 	register char *new;	/* new string */
++ 
++ 	len = strlen(str) + 1;
++ 
++ 	new = (char *) malloc(len);
++ 	if (new == NULL) {
++ 		fprintf(stderr, "Out of memory.\n");
++ 		exit(2);
++ 	}
++ 
++ 	bcopy(str, new, len);
++ 
++ 	return new;
+  }
+-- 
+David Elliott		{decvax,ucbvax,ihnp4}!decwrl!mips!dce

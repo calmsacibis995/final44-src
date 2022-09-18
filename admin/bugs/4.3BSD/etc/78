@@ -1,0 +1,152 @@
+From chris@gyre.umd.edu  Tue Aug 18 23:58:12 1987
+Date: Wed, 19 Aug 87 02:55:45 EDT
+From: Chris Torek <chris@gyre.umd.edu>
+Subject: flcopy does not check write status
+Index: etc/flcopy.c 4.3BSD Fix
+
+Description:
+	flcopy silently ignores I/O errors.  It will pretend to
+	copy an entire floppy even if one or two sectors are bad
+	on the destination floppy.  This is really quite dreadful.
+
+Repeat-by:
+	Get a bad floppy.  An unformatted one will do nicely.
+
+Fix:
+	Below.  (Untested!)
+
+	We could just replace flcopy with a shell script, given that dd
+	can do everything that flcopy does except the funny sectoring.
+	But this was easier.
+
+Chris
+
+RCS file: RCS/flcopy.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 flcopy.c
+*** /tmp/,RCSt1004297	Wed Aug 19 02:46:09 1987
+--- flcopy.c	Wed Aug 19 02:45:49 1987
+***************
+*** 15,18 ****
+--- 15,19 ----
+  #endif not lint
+  
++ #include <stdio.h>
+  #include <sys/file.h>
+  
+***************
+*** 23,26 ****
+--- 24,29 ----
+  int	rflag;
+  
++ long	lseek();
++ 
+  main(argc, argv)
+  	register char **argv;
+***************
+*** 88,92 ****
+  			n = count > 512 ? 512 : count;
+  			lread(startad, n, buff);
+! 			write(file, buff, n);
+  			startad += 512;
+  		}
+--- 91,96 ----
+  			n = count > 512 ? 512 : count;
+  			lread(startad, n, buff);
+! 			if (write(file, buff, n) != n)
+! 				ioerror("writing temp file");
+  			startad += 512;
+  		}
+***************
+*** 95,100 ****
+  		exit(0);
+  	printf("Change Floppy, Hit return when done.\n");
+! 	gets(buff);
+! 	lseek(file, 0, 0);
+  	count = dsize;
+  	startad = -26 * 128;
+--- 99,104 ----
+  		exit(0);
+  	printf("Change Floppy, Hit return when done.\n");
+! 	(void) gets(buff);
+! 	(void) lseek(file, 0L, 0);
+  	count = dsize;
+  	startad = -26 * 128;
+***************
+*** 101,105 ****
+  	for ( ; count > 0 ; count -= 512) {
+  		n = count > 512 ? 512 : count;
+! 		read(file, buff, n);
+  		lwrite(startad, n, buff);
+  		startad += 512;
+--- 105,110 ----
+  	for ( ; count > 0 ; count -= 512) {
+  		n = count > 512 ? 512 : count;
+! 		if (read(file, buff, n) != n)
+! 			ioerror("reading temp file");
+  		lwrite(startad, n, buff);
+  		startad += 512;
+***************
+*** 143,147 ****
+  	sector += 26 + ((track = (logical / 26)) - 1) * 6;
+  	sector %= 26;
+! 	return ((((track *26) + sector) << 7) + bytes);
+  }
+  
+--- 148,152 ----
+  	sector += 26 + ((track = (logical / 26)) - 1) * 6;
+  	sector %= 26;
+! 	return ((((track * 26) + sector) << 7) + bytes);
+  }
+  
+***************
+*** 155,160 ****
+  	rt_init();
+  	while ((count -= 128) >= 0) {
+! 		lseek(floppydes, trans(startad), 0);
+! 		read(floppydes, obuff, 128);
+  		obuff += 128;
+  		startad += 128;
+--- 160,166 ----
+  	rt_init();
+  	while ((count -= 128) >= 0) {
+! 		(void) lseek(floppydes, trans(startad), 0);
+! 		if (read(floppydes, obuff, 128) != 128)
+! 			ioerror("reading floppy");
+  		obuff += 128;
+  		startad += 128;
+***************
+*** 171,178 ****
+  	rt_init();
+  	while ((count -= 128) >= 0) {
+! 		lseek(floppydes, trans(startad), 0);
+! 		write(floppydes, obuff, 128);
+  		obuff += 128;
+  		startad += 128;
+  	}
+  }
+--- 177,200 ----
+  	rt_init();
+  	while ((count -= 128) >= 0) {
+! 		(void) lseek(floppydes, trans(startad), 0);
+! 		if (write(floppydes, obuff, 128) != 128)
+! 			ioerror("writing floppy");
+  		obuff += 128;
+  		startad += 128;
+  	}
++ }
++ 
++ ioerror(when)
++ 	char *when;
++ {
++ 	char inbuf[32];
++ 
++ 	fprintf(stderr, "flcopy: i/o error while %s\n", when);
++ 	if (!isatty(0))
++ 		exit(1);
++ 	printf("continue? (y/n) ");
++ 	if (fgets(inbuf, sizeof(inbuf), stdin) == NULL)
++ 		exit(1);
++ 	if (*inbuf != 'y' && *inbuf != 'Y')
++ 		exit(2);
+  }

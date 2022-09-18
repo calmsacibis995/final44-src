@@ -1,0 +1,90 @@
+From local@nelslab.Berkeley.EDU  Sat Apr  4 20:18:08 1992
+Date: Sat, 4 Apr 92 12:49:14 EST
+From: local@pitt.edu (Jack Nelson)
+Subject: tcsh dumps core sometimes when login directory is a symbolic link
+Index: 	contrib/tcsh 2.11BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	If one's home directory is a symbolic link to another directory,
+	and either tcsh is run from sh after the directory has been
+	changed (from home or other place sh was first invoked), tcsh
+	will dump core (alloc debugging on: botched free()).  This seems
+	obscure, but happens when sh script changes directory then
+	pushes an instance of tcsh for interactive use.
+Repeat-By:
+	set up a home directory which is a symbolic link: your files
+	are in a disk mounted on /local_home, but your login directory is
+	/user/local and:
+		ln -s /local_home /user/local
+	[Tcsh should be compiled with debugging of alloc.c turned on so
+	errors can be seen and to cause core dumps.]
+	Then login (using tcsh as shell), and:
+		sh
+		$ cd subdir
+		$ tcsh
+		[watch assertion botch and core dump]
+		[adb shows free() error]
+Fix:
+	The getwd(path) call returns a pointer to an automatic array
+	char path[MAXPATHLEN];  the code tries to free this pointer at
+	the end of dcanon(), which doesn't work in BSD 2.11 pdp-11 
+	compiler.
+
+	From tcsh source directory, apply this patch:
+	patch -N < thisfile
+
+Cut:---------
+*** sh.dir.c.org	Sat Apr  4 12:04:48 1992
+--- sh.dir.c	Sat Apr  4 12:04:17 1992
+***************
+*** 73,78 ****
+--- 73,86 ----
+  
+      /* Don't believe the login shell home, because it may be a symlink */
+      tcp = getwd(path);		/* see ngetwd.c for System V version */
++ #ifdef BSD2_10
++ /*
++  * jpn: avoid xfree of ptr to path[]
++  */
++     cp = (Char *) xmalloc((size_t)(MAXPATHLEN * sizeof(Char)));
++     (void) Strcpy(cp, tcp);
++     tcp = cp;
++ #endif
+      if (tcp == NULL || *tcp == '\0') {
+  	(void) xprintf("tcsh: %s\n", path);
+  	if (hp && *hp) {
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From local@nelslab.Berkeley.EDU  Sat Apr  4 20:38:50 1992
+Date: Sat, 4 Apr 92 12:55:10 EST
+From: local@pitt.edu (Jack Nelson)
+Subject: better version of tcsh fix
+Index: 	contrib/tcsh 2.11BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	see other fix posted by me today
+Repeat-By:
+	see other fix posted by me today
+Fix:
+This is a better fix: as it is done below in a section of code
+specific for apollo.
+
+UUCP: pitt!nelslab!jack
+ARPA: jack@nelslab.wpic.pitt.edu jack@cadre.dsl.pitt.edu | jpn@med.pitt.edu
+John P. Nelson, M.D., 3811 O'Hara St, Pittsburgh, PA 15213, t:412-624-1769
+Dept. of Psychiatry, U. of Pittsburgh
+*** sh.dir.c.org	Sat Apr  4 12:04:48 1992
+--- sh.dir.c	Sat Apr  4 12:28:37 1992
+***************
+*** 73,78 ****
+--- 73,80 ----
+  
+      /* Don't believe the login shell home, because it may be a symlink */
+      tcp = getwd(path);		/* see ngetwd.c for System V version */
++     cp = Strsave(str2short(tcp));
++     tcp = cp;
+      if (tcp == NULL || *tcp == '\0') {
+  	(void) xprintf("tcsh: %s\n", path);
+  	if (hp && *hp) {

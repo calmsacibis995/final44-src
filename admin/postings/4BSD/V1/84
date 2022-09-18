@@ -1,0 +1,82 @@
+Subject: Fsck may not convert filesystem types correctly
+Index: etc/fsck/setup.c 4.3BSD-tahoe
+
+Description:
+	Note: this bug report applies to the 4.3BSD-tahoe release ONLY.
+
+	When converting between old and new filesystem formats, fsck 
+	fails to recalculate the cylinder group size. If the size 
+	increases, the filesystem will panic with a consistency
+	check when trying to allocate blocks for a file.
+
+Repeat-By:
+	Create a new filesystem with eight cylinders per group.
+	Convert it from new to old format and notice that dumpfs
+	still reports it as having a cgsize of 1024 when it should 
+	have a cgsize of 2048. Mount the filesystem and try to copy
+	data into it. The system will eventually panic.
+
+Fix:
+	*** setup.5.19	Tue Jun 27 17:11:52 1989
+	--- setup.5.20	Tue Jun 27 17:11:45 1989
+	***************
+	*** 5,11 ****
+	   */
+	  
+	  #ifndef lint
+	! static char sccsid[] = "@(#)setup.c	5.19 (Berkeley) 5/7/88";
+	  #endif not lint
+	  
+	  #define DKTYPENAMES
+	--- 5,11 ----
+	   */
+	  
+	  #ifndef lint
+	! static char sccsid[] = "@(#)setup.c	5.20 (Berkeley) 6/26/89";
+	  #endif not lint
+	  
+	  #define DKTYPENAMES
+	***************
+	*** 24,29 ****
+	--- 24,42 ----
+	  #define altsblock (*asblk.b_un.b_fs)
+	  #define POWEROF2(num)	(((num) & ((num) - 1)) == 0)
+	  
+	+ /*
+	+  * The size of a cylinder group is calculated by CGSIZE. The maximum size
+	+  * is limited by the fact that cylinder groups are at most one block.
+	+  * Its size is derived from the size of the maps maintained in the 
+	+  * cylinder group and the (struct cg) size.
+	+  */
+	+ #define CGSIZE(fs) \
+	+     /* base cg */	(sizeof(struct cg) + \
+	+     /* blktot size */	(fs)->fs_cpg * sizeof(long) + \
+	+     /* blks size */	(fs)->fs_cpg * (fs)->fs_nrpos * sizeof(short) + \
+	+     /* inode map */	howmany((fs)->fs_ipg, NBBY) + \
+	+     /* block map */	howmany((fs)->fs_cpg * (fs)->fs_spc / NSPF(fs), NBBY))
+	+ 
+	  char	*calloc();
+	  char	*index();
+	  
+	***************
+	*** 166,171 ****
+	--- 179,186 ----
+				    (char *)(&sblock.fs_link);
+				sblock.fs_rotbloff = &sblock.fs_space[0] -
+				    (u_char *)(&sblock.fs_link);
+	+ 			sblock.fs_cgsize =
+	+ 				fragroundup(&sblock, CGSIZE(&sblock));
+				/*
+				 * Planning now for future expansion.
+				 */
+	***************
+	*** 199,204 ****
+	--- 214,221 ----
+				else if (!reply("CONVERT TO OLD FILE SYSTEM FORMAT"))
+					return(0);
+				sblock.fs_postblformat = FS_42POSTBLFMT;
+	+ 			sblock.fs_cgsize = fragroundup(&sblock,
+	+ 			    sizeof(struct ocg) + howmany(sblock.fs_fpg, NBBY));
+				sbdirty();
+				dirty(&asblk);
+			} else {

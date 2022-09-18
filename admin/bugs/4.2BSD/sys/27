@@ -1,0 +1,88 @@
+Return-Path: <allegra!watmath!arwhite>
+Date: Tue, 21 Feb 84 02:55:13 est
+From: watmath!arwhite (Alex White)
+
+Subject: Loss of mbufs - or - system hang
+Index:	sys/uipc_usrreq.c 4.2BSD
+
+Description:
+	Tearing down queued connections in the Unix domain upon a soclose
+	is done incorrectly.  As distributed, it will cause a hang while
+	things loop in the kernel; the fix distributed:
+		From: madden@sdccsu3.UUCP (Jim Madden)
+		Newsgroups: net.bugs.4bsd
+		Subject: 4.2 IPC machine hang
+		Article-I.D.: sdccsu3.1238
+		Posted: Mon Nov  7 03:09:21 1983
+		Organization: U.C. San Diego, Computer Center
+	will fix the hang, but will cause you to loose 3 mbuf's every
+	time you have a queued connection which hasn't yet been accepted
+	when you do the soclose.
+Repeat-By:
+	First do a netstat -m. Run the following in the background:
+	#include <stdio.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <sys/un.h>
+
+	main()
+	{
+		struct sockaddr_un address;
+		int s;
+
+		s = socket(AF_UNIX, SOCK_STREAM, 0);
+		address.sun_family = AF_UNIX;
+		strcpy(address.sun_path, "xxx");
+		if(bind(s, &address, sizeof(address.sun_family) + strlen(address.sun_path)) < 0) {
+			perror("bin");
+			exit(1);
+		}
+		listen(s, 5);
+		pause();
+	}
+	Then run as many instances of the following as you want - 8 seems
+	to be the max.
+	#include <stdio.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <sys/un.h>
+
+	main()
+	{
+		struct sockaddr_un address;
+		int s, i;
+
+		s = socket(AF_UNIX, SOCK_STREAM, 0);
+		address.sun_family = AF_UNIX;
+		strcpy(address.sun_path, "xxx");
+		if((i = connect(s, &address, sizeof(address.sun_family) + 
+			strlen(address.sun_path))) < 0) {
+			perror("connect");
+			exit(1);
+		}
+	}
+	Kill the first process.  Do a netstat -m and compare, you will find that
+	there are 8 extra mbuf's allocated to socket structures, 8
+	to protocol control blocks, and 8 to socket addresses.
+	(Note - if you didn't put in the fix from madden@sdccsu3
+	you will loop in the kernel)
+Fix:
+	madden's fix was totally wrong - the other protocols all free up
+	the socket in their cleanup routines - some to a disastrous extent
+	such as udp_usrreq, which in PRU_ABORT it does a sofree right
+	after invoking in_pcbdetach which also does one; and before doing
+	a soisdisconnected on the socket it just freed!
+	(I suspect you should delete the sofree call).
+	However, for the above described problem first take out the
+	fix from madden@sdccsu3.
+	Then in uipc_usrreq.c, unp_drop change
+		unp_disconnect(unp);
+	to
+		unp_detach(unp);
+		sofree(unp->unp_socket);
+	**DISCLAIMER: This works and fixes the above bug.  I haven't the
+	foggiest idea if it'll not break various other things; for example
+	the flow of control it different in the above various routines
+	for datagram service and has a different set of queues and I really
+	don't know if it will blow it for them.  If somebody has a better
+	fix please send it to me.

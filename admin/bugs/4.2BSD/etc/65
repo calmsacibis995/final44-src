@@ -1,0 +1,292 @@
+Return-Path: <jsq@ut-sally.ARPA>
+Date: Sun, 12 Feb 84 20:17:08 cst
+From: jsq@ut-sally.ARPA (John Quarterman)
+Subject: gettable doesn't allow fetching version numbers
+Index: 	etc/gettable.c 4.2BSD
+
+Description:
+	The method recommended by the DARPA Internet Network Information
+	Center for updating host tables from the master on sri-nic
+	is to fetch the version number regularly and then get the
+	whole table when the version changes.  Gettable only allows
+	fetching the whole table, not the version number.
+Repeat-By:
+	Look at the gettable man page or the source.
+	Can't repeat something that can't be done.
+Fix:
+	Add a -v option to gettable that fetches the version.
+	Supply a shell program to use it.
+
+	The following diff is from the originally distributed gettable.c,
+	i.e., it also includes the nicname/hostnames bug fix.
+	After the diff is a Cshell script called newtable
+	to be called by cron.
+
+*** gettable.c.dist	Sun Feb 12 19:59:51 1984
+--- gettable.c	Sat Feb  4 03:31:54 1984
+***************
+*** 11,16
+  #include <netdb.h>
+  
+  #define	OUTFILE		"hosts.txt"	/* default output file */
+  #define	QUERY		"ALL\r\n"	/* query to hostname server */
+  
+  #define	equaln(s1, s2, n)	(!strncmp(s1, s2, n))
+
+--- 11,17 -----
+  #include <netdb.h>
+  
+  #define	OUTFILE		"hosts.txt"	/* default output file */
++ #define VERFILE		"hosts.ver"	/* default version file */
+  #define	QUERY		"ALL\r\n"	/* query to hostname server */
+  #define VERSION		"VERSION\r\n"	/* get version number */
+  
+***************
+*** 12,17
+  
+  #define	OUTFILE		"hosts.txt"	/* default output file */
+  #define	QUERY		"ALL\r\n"	/* query to hostname server */
+  
+  #define	equaln(s1, s2, n)	(!strncmp(s1, s2, n))
+  
+
+--- 13,19 -----
+  #define	OUTFILE		"hosts.txt"	/* default output file */
+  #define VERFILE		"hosts.ver"	/* default version file */
+  #define	QUERY		"ALL\r\n"	/* query to hostname server */
++ #define VERSION		"VERSION\r\n"	/* get version number */
+  
+  #define	equaln(s1, s2, n)	(!strncmp(s1, s2, n))
+  
+***************
+*** 30,35
+  	char *host;
+  	register struct hostent *hp;
+  	struct servent *sp;
+  
+  	argv++, argc--;
+  	if (argc < 1 || argc > 2) {
+
+--- 32,38 -----
+  	char *host;
+  	register struct hostent *hp;
+  	struct servent *sp;
++ 	int version = 0;
+  
+  	argv++, argc--;
+  	if (**argv == '-') {
+***************
+*** 32,37
+  	struct servent *sp;
+  
+  	argv++, argc--;
+  	if (argc < 1 || argc > 2) {
+  		fprintf(stderr, "usage: gettable host [ file ]\n");
+  		exit(1);
+
+--- 35,47 -----
+  	int version = 0;
+  
+  	argv++, argc--;
++ 	if (**argv == '-') {
++ 		if (argv[0][1] != 'v')
++ 			fprintf(stderr, "unknown option %s ignored\n", *argv);
++ 		else
++ 			version++, outfile = VERFILE;
++ 		argv++, argc--;
++ 	}
+  	if (argc < 1 || argc > 2) {
+  		fprintf(stderr, "usage: gettable [-v] host [ file ]\n");
+  		exit(1);
+***************
+*** 33,39
+  
+  	argv++, argc--;
+  	if (argc < 1 || argc > 2) {
+! 		fprintf(stderr, "usage: gettable host [ file ]\n");
+  		exit(1);
+  	}
+  	sp = getservbyname("nicname", "tcp");
+
+--- 43,49 -----
+  		argv++, argc--;
+  	}
+  	if (argc < 1 || argc > 2) {
+! 		fprintf(stderr, "usage: gettable [-v] host [ file ]\n");
+  		exit(1);
+  	}
+  	sp = getservbyname("hostnames", "tcp");
+***************
+*** 36,42
+  		fprintf(stderr, "usage: gettable host [ file ]\n");
+  		exit(1);
+  	}
+! 	sp = getservbyname("nicname", "tcp");
+  	if (sp == NULL) {
+  		fprintf(stderr, "gettable: nicname/tcp: unknown service\n");
+  		exit(3);
+
+--- 46,52 -----
+  		fprintf(stderr, "usage: gettable [-v] host [ file ]\n");
+  		exit(1);
+  	}
+! 	sp = getservbyname("hostnames", "tcp");
+  	if (sp == NULL) {
+  		fprintf(stderr, "gettable: hostnames/tcp: unknown service\n");
+  		exit(3);
+***************
+*** 38,44
+  	}
+  	sp = getservbyname("nicname", "tcp");
+  	if (sp == NULL) {
+! 		fprintf(stderr, "gettable: nicname/tcp: unknown service\n");
+  		exit(3);
+  	}
+  	host = *argv;
+
+--- 48,54 -----
+  	}
+  	sp = getservbyname("hostnames", "tcp");
+  	if (sp == NULL) {
+! 		fprintf(stderr, "gettable: hostnames/tcp: unknown service\n");
+  		exit(3);
+  	}
+  	host = *argv;
+***************
+*** 81,87
+  		close(s);
+  		exit(1);
+  	}
+! 	fprintf(sfo, QUERY);
+  	fflush(sfo);
+  	while (fgets(buf, sizeof(buf), sfi) != NULL) {
+  		len = strlen(buf);
+
+--- 91,97 -----
+  		close(s);
+  		exit(1);
+  	}
+! 	fprintf(sfo, version ? VERSION : QUERY);
+  	fflush(sfo);
+  	while (fgets(buf, sizeof(buf), sfi) != NULL) {
+  		len = strlen(buf);
+***************
+*** 90,96
+  			continue;
+  		}
+  		if (equaln(buf, "ERR", 3)) {
+! 			fprintf(stderr, "gettable: nicname error: %s", buf);
+  			continue;
+  		}
+  		fprintf(hf, "%s\n", buf);
+
+--- 100,106 -----
+  			continue;
+  		}
+  		if (equaln(buf, "ERR", 3)) {
+! 			fprintf(stderr, "gettable: hostnames error: %s", buf);
+  			continue;
+  		}
+  		fprintf(hf, "%s\n", buf);
+***************
+*** 96,102
+  		fprintf(hf, "%s\n", buf);
+  	}
+  	fclose(hf);
+! 	fprintf(stderr, "Host table received.\n");
+  	close(s);
+  	fprintf(stderr, "Connection to %s closed\n", host);
+  }
+
+--- 106,115 -----
+  		fprintf(hf, "%s\n", buf);
+  	}
+  	fclose(hf);
+! 	if (version)
+! 		fprintf(stderr, "Version number received.\n");
+! 	else
+! 		fprintf(stderr, "Host table received.\n");
+  	close(s);
+  	fprintf(stderr, "Connection to %s closed\n", host);
+  	exit(0);
+***************
+*** 99,102
+  	fprintf(stderr, "Host table received.\n");
+  	close(s);
+  	fprintf(stderr, "Connection to %s closed\n", host);
+  }
+
+--- 112,116 -----
+  		fprintf(stderr, "Host table received.\n");
+  	close(s);
+  	fprintf(stderr, "Connection to %s closed\n", host);
++ 	exit(0);
+  }
+
+
+
+#! /bin/csh -f
+#
+# Update Internet name tables if there is a new version available.
+#
+# In /usr/lib/crontab:
+# 55 4 * * * su bin < /usr/local/lib/newtable > /dev/console 2>&1
+
+# The networks this host is connected to:
+set networks =	'arpanet,utccnet'
+# Once we have a new set of tables, rcp them to these hosts:
+set download =	(ratliff)
+
+# The host from which to get Internet tables:
+set host =	sri-nic
+# Where the previous locally known version number is kept:
+set version =	hosts.ver
+# Where to save the old tables when new ones are gotten.
+set old =	/usr/preserve/oldhosts	# mode 775 group bin
+
+# Names of the files containing the tables to copy:
+set txt =	(hosts.txt $version)
+set hosts =	(hosts networks)
+set local =	(localhosts localnetworks )
+set gateways =	(gateways localgateways)
+set files =	( $txt $hosts $local $gateways )
+
+setenv PATH :/usr/local:/usr/ucb:/bin:/usr/bin
+cd /etc
+umask 002
+
+rm /tmp/$version
+/etc/gettable -v $host /tmp/$version
+if ($status) then
+#	echo 'Failed to get version number from '$host'.'
+	exit 1
+endif
+cmp $version /tmp/$version
+if ($status == 0) then
+	echo 'Version from '$host' same as local:  '`cat $version`.
+	rm /tmp/$version
+	exit 0
+endif
+cp $files $old
+cp $local $hosts $gateways /tmp
+cd /tmp
+/etc/gettable $host hosts.txt
+if ($status) then
+#	echo 'Failed to get host table from '$host'.'
+	exit 1
+endif
+/etc/htable -c $networks hosts.txt
+cp $hosts /etc		# almost as narrow a window as can be managed
+# cp $gateways /etc	# htable doesn't create gateways correctly
+cd /etc
+cp /tmp/$version /etc
+set loaded = `hostname`
+foreach h ( $download )
+	rcp $hosts $h':'/etc	# gateways differ on different hosts
+	if ($status == 0) then
+		set loaded = ($loaded $h)
+	endif
+end
+echo 'installed on these hosts:  '$loaded | cat $version - | \
+	mail -s 'new Internet tables' staff
+rm /tmp/{$files}

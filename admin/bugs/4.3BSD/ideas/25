@@ -1,0 +1,149 @@
+From ksb@s.cc.purdue.edu  Tue Sep 27 10:50:01 1988
+From: ksb@s.cc.purdue.edu (Kevin Braunsdorf)
+To: 4bsd-ideas@ucbvax.Berkeley.EDU
+Subject: yacc can output reductions as they happen
+Index: ideas 4.3BSD
+Date: Tue, 27 Sep 88 12:49:40 -0500
+
+
+Here are Purdue we have a yacc post processor that causes the yacc generated
+parser to output the rule it is using to reduce as it does them.  This
+is very handy for novice yacc users...
+
+Enclosed is a the shell script that makes the changes, I'd much rather see
+yacc do this as an option!  (If y'all change the yacc parser this kludge
+will break.)
+
+kayessbee, Kevin S Braunsdorf
+--
+#	This is a shell archive.
+#	Remove everything above and including the cut line.
+#	Then run the rest of the file through sh.
+#----cut here-----cut here-----cut here-----cut here----#
+#!/bin/sh
+# shar:	Shell Archiver
+#	Run the following text with /bin/sh to create:
+#	Makefile
+#	rules.awk
+#	rules.sed
+#	yydebug.ed
+#	yyreduce.ed
+#	yyreduce.sh
+# This archive created: Tue Sep 27 12:46:41 1988
+# By:	Kevin Braunsdorf (Purdue UNIX Group)
+cat << \SHAR_EOF > Makefile
+# Makefile for yyreduce
+#		Kevin Braunsdorf, PUCC
+
+LIB = ${DESTDIR}/usr/unsup/lib
+BIN = ${DESTDIR}/usr/unsup/bin
+
+SRCl=	rules.awk rules.sed yydebug.ed yyreduce.ed
+SRCs=	yyreduce.sh
+SOURCE=	Makefile ${SRCl} ${SRCs}
+
+all: ${SRCl} yyreduce
+
+yyreduce: yyreduce.sh
+	sed -e "s@ZZLIBZZ@${LIB}@" -e '/^#[^!]/d' yyreduce.sh > $@
+	chmod 755 $@
+
+clean: FRC
+	rm -f Makefile.bak yyreduce *.o a.out core errs tags
+
+depend: FRC
+
+install: all FRC
+	install -c -m 644 -o binary -g system rules.awk ${LIB}
+	install -c -m 644 -o binary -g system rules.sed ${LIB}
+	install -c -m 644 -o binary -g system yydebug.ed ${LIB}
+	install -c -m 644 -o binary -g system yyreduce.ed ${LIB}
+	install -c -m 755 -o binary -g system yyreduce ${BIN}
+
+lint: FRC
+
+print: source FRC
+	lpr -J'yyreduce source' ${SOURCE}
+
+source: ${SOURCE}
+
+spotless: clean
+	rcsclean ${SOURCE}
+
+tags: FRC
+
+${SOURCE}:
+	co $@
+
+FRC:
+
+SHAR_EOF
+cat << \SHAR_EOF > rules.awk
+BEGIN {
+	printf "static char *mprnsb[] = { \"\""
+	rn = 1
+	}
+{
+	while ($1 > rn++)
+		printf ",\n \"\""
+	printf ",\n	\"%s\"", substr ($0, index ($0, "\t") + 1)
+}
+END {
+	printf " };\n"
+	}
+SHAR_EOF
+cat << \SHAR_EOF > rules.sed
+s/:/->/
+s/\\/\\\\/g
+/^	\(.*\)_ *(\([0-9]*\))/s//\2	\1/p
+/^/d
+SHAR_EOF
+cat << \SHAR_EOF > yydebug.ed
+1i
+# define YYDEBUG
+# include "yyrules.h"
+# include "yytokens.h"
+.
+/if( yydebug/s/char 0%o/token %s/
+s/yychar/(yychar == -1)? "NULL": mptnsb[yychar]/
+/if( yydebug/
+/if( yydebug/s/char %d/token %s/
+s/yychar/(yychar == -1)? "NULL": mptnsb[yychar]/
+/if( yydebug/s/%d/%s/
+s/yyn/mprnsb[yyn]/
+w
+SHAR_EOF
+cat << \SHAR_EOF > yyreduce.ed
+1i
+# define YYDEBUG
+# include "yyrules.h"
+.
+/if( yydebug/d
+/if( yydebug/
+/if( yydebug/
+/if( yydebug/s/%d/%s/
+s/yyn/mprnsb[yyn]/
+w
+SHAR_EOF
+cat << \SHAR_EOF > yyreduce.sh
+#!/bin/sh
+# a shell script by Tim Korb at Purdue CS Dept. to create
+# a maping of reduction numbers to strings
+PATH=/bin:/usr/bin:/usr/ucb
+# the string below is replaced by the Makefile (ksb)
+LIB=ZZLIBZZ
+IFILE=${1-y.tab.c}
+if [ "`/usr/ucb/head -1 $IFILE`" = "# define YYDEBUG" ] ; then
+	echo $IFILE already contains symbolic tracing.
+	exit 1
+elif [ -r y.output ] ; then
+	sed -f $LIB/rules.sed y.output | /usr/bin/sort -n | /usr/bin/uniq | awk -f $LIB/rules.awk > yyrules.h
+	ed $IFILE < $LIB/yyreduce.ed > /dev/null
+else
+	echo Must run yacc with "-v" options.
+	exit 1
+fi
+exit 0
+SHAR_EOF
+#	End of shell archive
+exit 0

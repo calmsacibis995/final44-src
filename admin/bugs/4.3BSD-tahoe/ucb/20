@@ -1,0 +1,162 @@
+From jerry@csd4.milw.wisc.edu  Tue Feb 23 15:49:55 1988
+Date: Tue, 23 Feb 88 17:47:51 CST
+From: Jerry Lieberthal <jerry@csd4.milw.wisc.edu>
+Subject: Real constant causes floating exception
+Index: ucb/pascal tahoe
+
+Description:
+	A user specifies in a program const section a constant of the
+	form MAXZ = 9.9e+99.  The conversion fails in "atof" because
+	overflow is not properly handled by atof.
+Repeat-By:
+	Compile the following short program.  It will cause a floating
+	exception in pc and pi.
+Fix:
+	The fix is to add code to "const.c" to check the size of the
+	exponents before allowing atof conversion.  although the supplied
+	code seems to work, it is somewhat clumsy and could be improved.
+
+program:
+	
+program Floater (output) ;
+
+{ This program will cause a floating exception in the routine atof by
+  declaring a real constant greater than the magnitude of the machine. }
+
+const
+	MAXREAL			= 9.9999e+52 ; { ERROR }
+	MAXSMASL		= 9.999e-57 ;  { small error }
+
+begin
+	writeln ('passed compiler test')
+end.
+
+The code to fix const.c:
+
+	
+*** const.c	Tue Feb 23 17:30:55 1988
+--- const.c.old	Wed Feb 10 15:12:25 1988
+***************
+*** 5,29 ****
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)const.c	5.2 (Berkeley/uwm) 2/10/88" ;
+  #endif not lint
+  
+- /*  modification history - UWM
+-  *
+-  *  jnl001 - signed constants are not stored in the symbol table with the
+-  *	     correct sign (code generates a very large number).
+-  *  jnl002 - real constants greater than e+50 or smaller than e-55 cause a
+-  *	     floating exception in atof.  Check the size of the exponent
+-  *	     before conversion.
+-  */
+  #include "whoami.h"
+  #include "0.h"
+  #include "tree.h"
+  #include "tree_ty.h"
+  
+- # ifdef tahoe || vax
+- double	Expatof () ;
+- # endif
+  /*
+   * Const enters the definitions
+   * of the constant declaration
+--- 5,18 ----
+   */
+  
+  #ifndef lint
+! static char sccsid[] = "@(#)const.c	5.2 (Berkeley) 6/21/85";
+  #endif not lint
+  
+  #include "whoami.h"
+  #include "0.h"
+  #include "tree.h"
+  #include "tree_ty.h"
+  
+  /*
+   * Const enters the definitions
+   * of the constant declaration
+***************
+*** 157,163 ****
+  loop:
+  	if (cn == TR_NIL || cn->sign_const.number == TR_NIL)
+  		return;
+- 	/*fprintf (stderr, "negd: %d\nsgnd: %d\n", negd, sgnd); */
+  	switch (cn->tag) {
+  		default:
+  			panic("gconst");
+--- 146,151 ----
+***************
+*** 219,229 ****
+  			break;
+  		case T_CFINT:
+  			con.ctype = nl+TDOUBLE;
+- # ifdef tahoe || vax
+- 			con.crval = Expatof (cn->char_const.cptr) ;
+- # else
+  			con.crval = atof(cn->char_const.cptr);
+- # endif
+  			break;
+  		case T_CSTRNG:
+  			cp = cn->char_const.cptr;
+--- 207,213 ----
+***************
+*** 297,350 ****
+  	}
+  	return (0);
+  }
+- 
+- # ifdef tahoe || vax
+- double
+- Expatof (exp_string)
+- char	*exp_string ;
+- {
+- # define	HUGE	50
+- # define	SMALL	-55
+- 
+- int	digits;
+- int	i ;
+- int	j ;
+- int	k ;
+- bool	examine ;
+- char	stuff [10];
+- 
+- 	/* check the exponent before attempting to call atof, since
+- 	 * atof doesn't check the size of the exponent (causing a floating
+- 	 * exception if too large/small) 
+- 	 */
+- 
+- 	 examine = FALSE ;
+- 	 k = 0 ;
+- 	 j = strlen (exp_string) ;
+- 	 bzero (stuff, sizeof stuff) ;
+- 	 for (i = 0; (i < j) && (k < sizeof stuff) ; i++) {
+- 		if (examine) stuff [k++] = exp_string [i] ;
+- 		if (exp_string [i] == 'e' || exp_string [i] == 'E') 
+- 			examine = TRUE ;
+- 	}
+- 
+- 	if (!examine) return (atof (exp_string)) ;
+- 
+- 	/*  If we got this far, there is an exponent, and we must
+- 	 *  check for the size of the exponent before converting the
+- 	 *  entire string..
+- 	 */
+- 	digits = atoi (stuff) ;
+- 
+- 	if (digits > HUGE || digits < SMALL) {
+- 		derror("Constant too large for this implementation");
+- 		return (0) ;
+- 	}
+- 
+- 	/*  everything checked out.  returned the converted number */
+- 	 return (atof (exp_string)) ;
+- }
+- 
+- # endif
+  #endif
+- 
+--- 281,284 ----
+

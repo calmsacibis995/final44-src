@@ -1,0 +1,90 @@
+From steve@cs.UMD.EDU  Thu Sep 14 16:28:09 1989
+Date: Thu, 14 Sep 89 19:26:25 -0400
+From: steve@cs.UMD.EDU (Steve D. Miller)
+To: 4bsd-bugs@okeeffe.Berkeley.EDU
+Subject: More sendmail core dumps
+Subject: Sendmail core dumps under certain conditions when connection dies
+Index: usr.lib/sendmail/src/usersmtp.c 4.3BSD
+
+Description:
+	Sendmail can core dump (on architectures where fflush(NULL) is a
+	no-no) when a SMTP connection has been established, and the
+	transactions are partially completed, and the connection triggers
+	the read timeout.
+
+Repeat-By:
+	Wait for a mailing list you run to exhibit just the right set of
+	problems.  Alternatively, hack a sendmail.cf to set option r to
+	something short (I like five seconds).  Log into another machine
+	(which we'll call 'foo'), and become root.
+
+	Then do:
+
+	/usr/lib/sendmail -t -v -Cmysendmail.cf
+	To: validuser1@foo, validuser2@foo
+	Subject: crash
+
+	blablabla
+	.
+
+	Let the transaction make it through the MAIL FROM, then hit ^Z.
+	(This can be tricky.  An alternative is to use dbx and set breakpoints
+	around to stop at convenient times.  The reply function is a good
+	place...)  Go over to your root shell on foo, find the sendmail
+	processes that are dealing with this connection, and kill -STOP
+	them.  Then continue sendmail.  The transaction will continue:
+
+	RCPT TO:<validuser1@foo>
+	validuser1@foo... timeout waiting for input
+	validuser1@foo... reply: read error
+	validuser1@foo... Deferred: Bad file number
+	>>> RCPT To:<validuser2@foo>
+	Segmentation fault (core dumped)
+
+	The problem is that the first timeout makes sendmail close the
+	SMTP connection.  However, the code in deliver.c that looks like:
+
+		for (to = tochain; to; to = to->q_tchain) {
+			e->e_to = to->q_paddr;
+			if ((i = smtprcpt(to, m)) != EX_OK) {
+				markfailure(e, to, i);
+				giveresponse(i, m, e);
+			}
+			else {
+			...
+
+	This code keeps running through the rest of the recipient addresses.
+	Each time it does a smtprcpt, which realizes that it can't actually
+	send anything, and then a reply...  which tries to fflush(SmtpOut).
+	At this point, SmtpOut is null, and we core dump.
+
+Fix:
+	Cheat.  Make smtprcpt know when its effort will be futile, and fake
+	up an error appropriately.  One could jump out of the loop in
+	deliver.c, but I'm not sure that all the addresses would be
+	correctly marked as not having been delivered.
+
+	As usual, your line numbers may vary.
+
+	-Steve
+
+Spoken: Steve Miller    Domain: steve@umiacs.umd.edu   UUCP: mimsy!umiacs!steve
+Phone: +1-301-454-1516  USPS: UMIACS, Univ. of Maryland, College Park, MD 20742
+
+
+*** /tmp/,RCSt1016532	Thu Sep 14 19:10:56 1989
+--- /tmp/,RCSt2016532	Thu Sep 14 19:10:58 1989
+***************
+*** 239,244 ****
+--- 239,249 ----
+  	register int r;
+  	extern char *remotename();
+  
++ 	/* if the connection is closed, don't bother */
++ 	if (SmtpOut == NULL || SmtpIn == NULL) {
++ 		errno = EBADF;		/* guess */
++ 		return(EX_TEMPFAIL);
++ 	}
+  	smtpmessage("RCPT To:<%s>", m, remotename(to->q_user, m, FALSE, TRUE));
+  
+  	SmtpPhase = "RCPT wait";

@@ -1,0 +1,83 @@
+From trinkle@purdue.edu  Wed Feb  4 07:49:49 1987
+Date: Wed, 4 Feb 87 10:15:09 EST
+From: "Daniel G Trinkle" <trinkle@purdue.edu>
+Received: by arthur.cs.purdue.edu; Wed, 4 Feb 87 10:15:09 EST
+Subject: chgrp prints bogus error messages when using multiple logins per uid
+Index: bin/chgrp.c 4.3BSD
+
+Description:
+	Chgrp(1) does not correctly detect group membership for the second,
+	third, etc. login name associated with a given uid (when using
+	multiple logins per uid).  This is because it searches the membership
+	list of a group for the login name based on the return value of
+	getpwuid(getuid()).  This will always result in looking for the first
+	login name, not second, third, etc.
+
+	Consequently the kernel (in chown(2)) catches the mistake and returns
+	EPERM which results in the bogus message "Not owner"
+
+Repeat-By:
+	Duplicate an entry in /etc/passswd, change the login name on the
+	second, log in as that user and try to chgrp files belonging to the
+	initial login.
+
+Fix:
+	Chgrp(1) should check membership in a group the same was the kernel
+	does, by looking at the groups returned by getgroups(2).  The necessary
+	changes follow, ifdef'ed PURDUE_CS.  Note that groups[] should really
+	be of type gid_t but the getgroups(2) system call, like most of the
+	kernel and utilities, does not correctly use uid_t and gid_t.
+
+RCS file: /usr/src/bin/RCS/chgrp.c,v
+retrieving revision 1.1
+diff -c -r1.1 /usr/src/bin/chgrp.c
+*** /tmp/,RCSt1012416	Wed Feb  4 10:06:06 1987
+--- /usr/src/bin/chgrp.c	Wed Feb  4 09:56:55 1987
+***************
+*** 16,27 ****
+--- 16,34 ----
+  #include <ctype.h>
+  #include <sys/types.h>
+  #include <sys/stat.h>
++ #ifdef PURDUE_CS
++ #include <sys/param.h>
++ #endif
+  #include <grp.h>
+  #include <pwd.h>
+  #include <sys/dir.h>
+  
+  struct	group *gr, *getgrnam(), *getgrgid();
++ #ifdef PURDUE_CS
++ int	ngroups, groups[NGROUPS];
++ #else
+  struct	passwd *getpwuid(), *pwd;
++ #endif
+  struct	stat stbuf;
+  int	gid, uid;
+  int	status;
+***************
+*** 70,75 ****
+--- 77,89 ----
+  			fatal(255, "%s: unknown group", argv[0]);
+  		gid = gr->gr_gid;
+  	}
++ #ifdef PURDUE_CS
++ 	if (uid) {
++ 		ngroups = getgroups(NGROUPS, groups);
++ 		for (i = 0; i < ngroups; i++)
++ 			if (gid == groups[i])
++ 				goto ok;
++ #else
+  	pwd = getpwuid(uid);
+  	if (pwd == NULL)
+  		fatal(255, "Who are you?");
+***************
+*** 77,82 ****
+--- 91,97 ----
+  		for (i=0; gr->gr_mem[i]; i++)
+  			if (!(strcmp(pwd->pw_name, gr->gr_mem[i])))
+  				goto ok;
++ #endif
+  		if (fflag)
+  			exit(0);
+  		fatal(255, "You are not a member of the %s group", argv[0]);

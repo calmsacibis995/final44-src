@@ -1,0 +1,15 @@
+h10985
+s 00004/00000/00000
+d D 5.1 88/10/20 18:36:14 bostic 1 0
+c from UUNET; applied patches 1-3
+e
+u
+U
+t
+T
+I 1
+C
+C PUZZLE ROOM STATE
+C
+	COMMON /PUZZLE/ CPDR(16),CPWL(8),CPVEC(64)
+E 1

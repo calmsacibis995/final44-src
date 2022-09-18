@@ -1,0 +1,67 @@
+From schoch@orioevarpa  Tue Dec 16 08:46:46 1986
+Date: Tue, 16 Dec 86 08:46:00 PST
+From: Steve Schoch <schoch@orion.arpa>
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: Builtin udp chargen function of inetd generates garbage
+Index: etc/inetd.c 4.3BSD
+
+Description:
+	The internal chargen function of inetd is supposed to generate
+	a shifting pattern everytime it sends a packet.  This works until
+	the pattern starts to wrap around.  Then the same pattern gets
+	generated.
+	The stream version of chargen will send a couple of garbage bytes
+	(usually a null and a space) and doesn't send a full line (72).
+	There is also a small problem with the daytime functions: they
+	send the internet standard newline as \n\r instead of \r\n as it
+	should be.
+Repeat-By:
+	Write a little program to send and receive datagram packets to the
+	chargen/udp port.  Then send and receive about 17 packets.
+	To test daytime and the stream version of chargen, do:
+	"telnet localhost 13 | cat -v" (or 19 instead of 13).
+Fix:
+	Here is a diff of the fixes to make:
+
+------- inetd.c -------
+15c15
+< static char sccsid[] = "%W% (Ames) %G%";
+---
+> static char sccsid[] = "@(#)inetd.c	1.3 (Ames) 12/16/86";
+775c775
+< 	setproctitle("discard", s);
+---
+> 	setproctitle("chargen", s);
+812c812
+< 	register char *rp;
+---
+> 	char *rp;
+824c824
+< 	if (rs++ >= endring)
+---
+> 	if (++rs >= endring)
+826c826
+< 	i = MIN(LINESIZ - 2, endring - rp);
+---
+> 	i = MIN(LINESIZ, endring - rp);
+830,836c830,833
+< 	if (i < LINESIZ - 2) {
+< 		bcopy(rp, text, i);
+< 		if ((rp += i) >= endring)
+< 			rp = ring;
+< 	}
+< 	text[LINESIZ - 2] = '\r';
+< 	text[LINESIZ - 1] = '\n';
+---
+> 	if (i < LINESIZ)
+> 		bcopy(rp, text+i, LINESIZ-i);
+> 	text[LINESIZ] = '\r';
+> 	text[LINESIZ+1] = '\n';
+899c896
+< 	sprintf(buffer, "%s\r", ctime(&clock));
+---
+> 	sprintf(buffer, "%.24s\r\n", ctime(&clock));
+919c916
+< 	sprintf(buffer, "%s\r", ctime(&clock));
+---
+> 	sprintf(buffer, "%.24s\r\n", ctime(&clock));

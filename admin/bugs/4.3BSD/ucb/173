@@ -1,0 +1,625 @@
+Path: seismo!uunet!husc6!cmcl2!nrl-cmf!ames!umd5!mimsy!chris
+From: chris@mimsy.UUCP (Chris Torek)
+Newsgroups: comp.bugs.4bsd
+Subject: several fixes for rlogin
+Index: ucb/rlogin.c 4.3BSD Fix
+
+Description:
+	Rlogin's window size information propagation is unreliable.
+	(I thought I had got this fixed before the 4.3 release, but
+	my RCS file says otherwise.)
+
+	rlogin is full of lint.
+
+	If the peer drops the connexion immediately after accepting it,
+	rlogin botches the tty settings.
+
+Repeat-by:
+	The first and last are difficult.  The middle is easy.
+
+Fix:
+	Below.  As a free bonus, this allows disabling the command
+	character entirely (via -enone).  Some lint remains (I ran
+	out of energy).
+
+RCS file: RCS/rlogin.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 rlogin.c
+*** /tmp/,RCSt1003990	Tue Mar 15 11:27:57 1988
+--- rlogin.c	Tue Mar 15 11:22:18 1988
+***************
+*** 12,16 ****
+  #ifndef lint
+! static char sccsid[] = "@(#)rlogin.c	5.10 (Berkeley) 3/30/86";
+  #endif not lint
+--- 12,16 ----
+  #ifndef lint
+! static char sccsid[] = "@(#)rlogin.c	5.11 (Berkeley) 8/7/86";
+  #endif not lint
+***************
+*** 22,25 ****
+--- 22,27 ----
+  #include <sys/file.h>
+  #include <sys/socket.h>
++ #include <sys/time.h>
++ #include <sys/resource.h>
+  #include <sys/wait.h>
+***************
+*** 38,46 ****
+  # endif TIOCPKT_WINDOW
+! char	*index(), *rindex(), *malloc(), *getenv();
+  struct	passwd *getpwuid();
+  char	*name;
+  int	rem;
+! char	cmdchar = '~';
+  int	eight;
+  int	litout;
+--- 40,53 ----
+  # endif TIOCPKT_WINDOW
+! /* concession to sun */
+! # ifndef SIGUSR1
+! # define SIGUSR1 30
+! # endif SIGUSR1
+! 
+! char	*index(), *rindex(), *malloc(), *getenv(), *strcat(), *strcpy();
+  struct	passwd *getpwuid();
+  char	*name;
+  int	rem;
+! int	cmdchar = '~';
+  int	eight;
+  int	litout;
+***************
+*** 56,60 ****
+  #endif
+  #ifdef sun
+- struct	ttysize winsize;
+  struct winsize {
+  	unsigned short ws_row, ws_col;
+--- 63,66 ----
+***************
+*** 61,69 ****
+  	unsigned short ws_xpixel, ws_ypixel;
+  };
+- #else sun
+- struct	winsize winsize;
+  #endif sun
+  int	sigwinch(), oob();
+  main(argc, argv)
+  	int argc;
+--- 67,111 ----
+  	unsigned short ws_xpixel, ws_ypixel;
+  };
+  #endif sun
++ struct	winsize winsize;
+  int	sigwinch(), oob();
++ /*
++  * tty mode information.
++  */
++ int	defflags, tabflag;
++ int	deflflags;
++ char	deferase, defkill;
++ struct	tchars deftc;
++ struct	ltchars defltc;
++ struct	tchars notc =	{ -1, -1, -1, -1, -1, -1 };
++ struct	ltchars noltc =	{ -1, -1, -1, -1, -1, -1 };
++ 
++ /*
++  * The following routine provides compatibility (such as it is)
++  * between 4.2BSD Suns and others.  Suns have only a `ttysize',
++  * so we convert it to a winsize.
++  */
++ #ifdef sun
++ int
++ get_window_size(fd, wp)
++ 	int fd;
++ 	struct winsize *wp;
++ {
++ 	struct ttysize ts;
++ 	int error;
++ 
++ 	if ((error = ioctl(0, TIOCGSIZE, &ts)) != 0)
++ 		return (error);
++ 	wp->ws_row = ts.ts_lines;
++ 	wp->ws_col = ts.ts_cols;
++ 	wp->ws_xpixel = 0;
++ 	wp->ws_ypixel = 0;
++ 	return (0);
++ }
++ #else sun
++ #define get_window_size(fd, wp)	ioctl(fd, TIOCGWINSZ, wp)
++ #endif sun
++ 
+  main(argc, argv)
+  	int argc;
+***************
+*** 99,103 ****
+  	}
+  	if (argc > 0 && !strncmp(*argv, "-e", 2)) {
+! 		cmdchar = argv[0][2];
+  		argv++, argc--;
+  		goto another;
+--- 141,145 ----
+  	}
+  	if (argc > 0 && !strncmp(*argv, "-e", 2)) {
+! 		cmdchar = strcmp(*argv, "-enone") ? argv[0][2] : -1;
+  		argv++, argc--;
+  		goto another;
+***************
+*** 129,145 ****
+  	cp = getenv("TERM");
+  	if (cp)
+! 		strcpy(term, cp);
+  	if (ioctl(0, TIOCGETP, &ttyb) == 0) {
+! 		strcat(term, "/");
+! 		strcat(term, speeds[ttyb.sg_ospeed]);
+  	}
+! #ifdef sun
+! 	(void) ioctl(0, TIOCGSIZE, &winsize);
+! #else sun
+! 	(void) ioctl(0, TIOCGWINSZ, &winsize);
+! #endif sun
+! 	signal(SIGPIPE, lostpeer);
+! 	signal(SIGURG, oob);
+! 	oldmask = sigblock(sigmask(SIGURG));
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    name ? name : pwd->pw_name, term, 0);
+--- 171,196 ----
+  	cp = getenv("TERM");
+  	if (cp)
+! 		(void) strcpy(term, cp);
+  	if (ioctl(0, TIOCGETP, &ttyb) == 0) {
+! 		(void) strcat(term, "/");
+! 		(void) strcat(term, speeds[ttyb.sg_ospeed]);
+  	}
+! 
+! 	/* set up the state, in case we lose peer early */
+! 	defflags = ttyb.sg_flags;
+! 	tabflag = defflags & TBDELAY;
+! 	defflags &= ECHO | CRMOD;
+! 	deferase = ttyb.sg_erase;
+! 	defkill = ttyb.sg_kill;
+! 	(void) ioctl(0, TIOCLGET, (char *)&deflflags);
+! 	(void) ioctl(0, TIOCGETC, (char *)&deftc);
+! 	notc.t_startc = deftc.t_startc;
+! 	notc.t_stopc = deftc.t_stopc;
+! 	(void) ioctl(0, TIOCGLTC, (char *)&defltc);
+! 
+! 	(void) get_window_size(0, &winsize);
+! 	(void) signal(SIGPIPE, lostpeer);
+! 	/* will use SIGUSR1 for window size hack, so hold it off */
+! 	oldmask = sigblock(sigmask(SIGURG) | sigmask(SIGUSR1));
+          rem = rcmd(&host, sp->s_port, pwd->pw_name,
+  	    name ? name : pwd->pw_name, term, 0);
+***************
+*** 166,198 ****
+  int	child;
+  int	catchild();
+! int	writeroob();
+- int	defflags, tabflag;
+- int	deflflags;
+- char	deferase, defkill;
+- struct	tchars deftc;
+- struct	ltchars defltc;
+- struct	tchars notc =	{ -1, -1, -1, -1, -1, -1 };
+- struct	ltchars noltc =	{ -1, -1, -1, -1, -1, -1 };
+- 
+  doit(oldmask)
+  {
+  	int exit();
+- 	struct sgttyb sb;
+! 	ioctl(0, TIOCGETP, (char *)&sb);
+! 	defflags = sb.sg_flags;
+! 	tabflag = defflags & TBDELAY;
+! 	defflags &= ECHO | CRMOD;
+! 	deferase = sb.sg_erase;
+! 	defkill = sb.sg_kill;
+! 	ioctl(0, TIOCLGET, (char *)&deflflags);
+! 	ioctl(0, TIOCGETC, (char *)&deftc);
+! 	notc.t_startc = deftc.t_startc;
+! 	notc.t_stopc = deftc.t_stopc;
+! 	ioctl(0, TIOCGLTC, (char *)&defltc);
+! 	signal(SIGINT, SIG_IGN);
+! 	signal(SIGHUP, exit);
+! 	signal(SIGQUIT, exit);
+  	child = fork();
+  	if (child == -1) {
+--- 217,229 ----
+  int	child;
+  int	catchild();
+! int	copytochild(), writeroob();
+  doit(oldmask)
+  {
+  	int exit();
+! 	(void) signal(SIGINT, SIG_IGN);
+! 	setsignal(SIGHUP, exit);
+! 	setsignal(SIGQUIT, exit);
+  	child = fork();
+  	if (child == -1) {
+***************
+*** 202,207 ****
+  	if (child == 0) {
+  		mode(1);
+! 		sigsetmask(oldmask);
+! 		if (reader() == 0) {
+  			prf("Connection closed.");
+  			exit(0);
+--- 233,237 ----
+  	if (child == 0) {
+  		mode(1);
+! 		if (reader(oldmask) == 0) {
+  			prf("Connection closed.");
+  			exit(0);
+***************
+*** 211,217 ****
+  		exit(3);
+  	}
+! 	signal(SIGURG, writeroob);
+! 	sigsetmask(oldmask);
+! 	signal(SIGCHLD, catchild);
+  	writer();
+  	prf("Closed connection.");
+--- 241,255 ----
+  		exit(3);
+  	}
+! 
+! 	/*
+! 	 * We may still own the socket, and may have a pending SIGURG
+! 	 * (or might receive one soon) that we really want to send to
+! 	 * the reader.  Set a trap that simply copies such signals to
+! 	 * the child.
+! 	 */
+! 	(void) signal(SIGURG, copytochild);
+! 	(void) signal(SIGUSR1, writeroob);
+! 	(void) sigsetmask(oldmask);
+! 	(void) signal(SIGCHLD, catchild);
+  	writer();
+  	prf("Closed connection.");
+***************
+*** 219,229 ****
+  }
+  done(status)
+  	int status;
+  {
+  	mode(0);
+! 	if (child > 0 && kill(child, SIGKILL) >= 0)
+! 		wait((int *)0);
+  	exit(status);
+  }
+--- 257,286 ----
+  }
++ /*
++  * Trap a signal, unless it is being ignored.
++  */
++ setsignal(sig, act)
++ 	int sig, (*act)();
++ {
++ 	int omask = sigblock(sigmask(sig));
++ 
++ 	if (signal(sig, act) == SIG_IGN)
++ 		(void) signal(sig, SIG_IGN);
++ 	(void) sigsetmask(omask);
++ }
++ 
+  done(status)
+  	int status;
+  {
++ 	int w;
+  	mode(0);
+! 	if (child > 0) {
+! 		/* make sure catchild does not snap it up */
+! 		(void) signal(SIGCHLD, SIG_DFL);
+! 		if (kill(child, SIGKILL) >= 0)
+! 			while ((w = wait((union wait *)0)) > 0 && w != child)
+! 				/*void*/;
+! 	}
+  	exit(status);
+  }
+***************
+*** 230,233 ****
+--- 287,299 ----
+  /*
++  * Copy SIGURGs to the child process.
++  */
++ copytochild()
++ {
++ 
++ 	(void) kill(child, SIGURG);
++ }
++ 
++ /*
+   * This is called when the reader process gets the out-of-band (urgent)
+   * request to turn on the window-changing protocol.
+***************
+*** 238,242 ****
+  	if (dosigwinch == 0) {
+  		sendwindow();
+! 		signal(SIGWINCH, sigwinch);
+  	}
+  	dosigwinch = 1;
+--- 304,308 ----
+  	if (dosigwinch == 0) {
+  		sendwindow();
+! 		(void) signal(SIGWINCH, sigwinch);
+  	}
+  	dosigwinch = 1;
+***************
+*** 249,253 ****
+  again:
+! 	pid = wait3(&status, WNOHANG|WUNTRACED, 0);
+  	if (pid == 0)
+  		return;
+--- 315,319 ----
+  again:
+! 	pid = wait3(&status, WNOHANG|WUNTRACED, (struct rusage *)0);
+  	if (pid == 0)
+  		return;
+***************
+*** 256,260 ****
+  	 */
+  	if (pid < 0 || pid == child && !WIFSTOPPED(status))
+! 		done(status.w_termsig | status.w_retcode);
+  	goto again;
+  }
+--- 322,326 ----
+  	 */
+  	if (pid < 0 || pid == child && !WIFSTOPPED(status))
+! 		done((int)(status.w_termsig | status.w_retcode));
+  	goto again;
+  }
+***************
+*** 307,312 ****
+  				continue;
+  			}
+! 			if (c != cmdchar)
+! 				write(rem, &cmdchar, 1);
+  		}
+  		if (write(rem, &c, 1) == 0) {
+--- 373,380 ----
+  				continue;
+  			}
+! 			if (c != cmdchar) {
+! 				char cch = cmdchar;
+! 				(void) write(rem, &cch, 1);
+! 			}
+  		}
+  		if (write(rem, &c, 1) == 0) {
+***************
+*** 338,342 ****
+  	*p++ = '\r';
+  	*p++ = '\n';
+! 	write(1, buf, p - buf);
+  }
+--- 406,410 ----
+  	*p++ = '\r';
+  	*p++ = '\n';
+! 	(void) write(1, buf, p - buf);
+  }
+***************
+*** 345,351 ****
+  {
+  	mode(0);
+! 	signal(SIGCHLD, SIG_IGN);
+! 	kill(cmdc == defltc.t_suspc ? 0 : getpid(), SIGTSTP);
+! 	signal(SIGCHLD, catchild);
+  	mode(1);
+  	sigwinch();			/* check for size changes */
+--- 413,419 ----
+  {
+  	mode(0);
+! 	(void) signal(SIGCHLD, SIG_IGN);
+! 	(void) kill(cmdc == defltc.t_suspc ? 0 : getpid(), SIGTSTP);
+! 	(void) signal(SIGCHLD, catchild);
+  	mode(1);
+  	sigwinch();			/* check for size changes */
+***************
+*** 352,373 ****
+  }
+- #ifdef sun
+  sigwinch()
+  {
+- 	struct ttysize ws;
+- 
+- 	if (dosigwinch && ioctl(0, TIOCGSIZE, &ws) == 0 &&
+- 	    bcmp(&ws, &winsize, sizeof (ws))) {
+- 		winsize = ws;
+- 		sendwindow();
+- 	}
+- }
+- 
+- #else sun
+- sigwinch()
+- {
+  	struct winsize ws;
+! 	if (dosigwinch && ioctl(0, TIOCGWINSZ, &ws) == 0 &&
+  	    bcmp(&ws, &winsize, sizeof (ws))) {
+  		winsize = ws;
+--- 420,428 ----
+  }
+  sigwinch()
+  {
+  	struct winsize ws;
+! 	if (dosigwinch && get_window_size(0, &ws) == 0 &&
+  	    bcmp(&ws, &winsize, sizeof (ws))) {
+  		winsize = ws;
+***************
+*** 375,379 ****
+  	}
+  }
+- #endif
+  /*
+--- 430,433 ----
+***************
+*** 389,398 ****
+  	obuf[2] = 's';
+  	obuf[3] = 's';
+- #ifdef sun
+- 	wp->ws_row = htons(winsize.ts_lines);
+- 	wp->ws_col = htons(winsize.ts_cols);
+- 	wp->ws_xpixel = 0;
+- 	wp->ws_ypixel = 0;
+- #else sun
+  	wp->ws_row = htons(winsize.ws_row);
+  	wp->ws_col = htons(winsize.ws_col);
+--- 443,446 ----
+***************
+*** 399,403 ****
+  	wp->ws_xpixel = htons(winsize.ws_xpixel);
+  	wp->ws_ypixel = htons(winsize.ws_ypixel);
+- #endif sun
+  	(void) write(rem, obuf, sizeof(obuf));
+  }
+--- 447,450 ----
+***************
+*** 452,477 ****
+  		 * Let server know about window size changes
+  		 */
+! 		kill(ppid, SIGURG);
+  	}
+  	if (!eight && (mark & TIOCPKT_NOSTOP)) {
+! 		ioctl(0, TIOCGETP, (char *)&sb);
+  		sb.sg_flags &= ~CBREAK;
+  		sb.sg_flags |= RAW;
+! 		ioctl(0, TIOCSETN, (char *)&sb);
+  		notc.t_stopc = -1;
+  		notc.t_startc = -1;
+! 		ioctl(0, TIOCSETC, (char *)&notc);
+  	}
+  	if (!eight && (mark & TIOCPKT_DOSTOP)) {
+! 		ioctl(0, TIOCGETP, (char *)&sb);
+  		sb.sg_flags &= ~RAW;
+  		sb.sg_flags |= CBREAK;
+! 		ioctl(0, TIOCSETN, (char *)&sb);
+  		notc.t_stopc = deftc.t_stopc;
+  		notc.t_startc = deftc.t_startc;
+! 		ioctl(0, TIOCSETC, (char *)&notc);
+  	}
+  	if (mark & TIOCPKT_FLUSHWRITE) {
+! 		ioctl(1, TIOCFLUSH, (char *)&out);
+  		for (;;) {
+  			if (ioctl(rem, SIOCATMARK, &atmark) < 0) {
+--- 499,524 ----
+  		 * Let server know about window size changes
+  		 */
+! 		(void) kill(ppid, SIGUSR1);
+  	}
+  	if (!eight && (mark & TIOCPKT_NOSTOP)) {
+! 		(void) ioctl(0, TIOCGETP, (char *)&sb);
+  		sb.sg_flags &= ~CBREAK;
+  		sb.sg_flags |= RAW;
+! 		(void) ioctl(0, TIOCSETN, (char *)&sb);
+  		notc.t_stopc = -1;
+  		notc.t_startc = -1;
+! 		(void) ioctl(0, TIOCSETC, (char *)&notc);
+  	}
+  	if (!eight && (mark & TIOCPKT_DOSTOP)) {
+! 		(void) ioctl(0, TIOCGETP, (char *)&sb);
+  		sb.sg_flags &= ~RAW;
+  		sb.sg_flags |= CBREAK;
+! 		(void) ioctl(0, TIOCSETN, (char *)&sb);
+  		notc.t_stopc = deftc.t_stopc;
+  		notc.t_startc = deftc.t_startc;
+! 		(void) ioctl(0, TIOCSETC, (char *)&notc);
+  	}
+  	if (mark & TIOCPKT_FLUSHWRITE) {
+! 		(void) ioctl(1, TIOCFLUSH, (char *)&out);
+  		for (;;) {
+  			if (ioctl(rem, SIOCATMARK, &atmark) < 0) {
+***************
+*** 495,499 ****
+--- 542,551 ----
+  		longjmp(rcvtop, 1);
+  	}
++ 
+  	/*
++ 	 * oob does not do FLUSHREAD (alas!)
++ 	 */
++ 
++ 	/*
+  	 * If we filled the receive buffer while a read was pending,
+  	 * longjmp to the top to restart appropriately.  Don't abort
+***************
+*** 507,511 ****
+   * reader: read from remote: line -> 1
+   */
+! reader()
+  {
+  #if !defined(BSD) || BSD < 43
+--- 559,564 ----
+   * reader: read from remote: line -> 1
+   */
+! reader(oldmask)
+! 	int oldmask;
+  {
+  #if !defined(BSD) || BSD < 43
+***************
+*** 517,524 ****
+  	char *bufp = rcvbuf;
+! 	signal(SIGTTOU, SIG_IGN);
+! 	fcntl(rem, F_SETOWN, pid);
+  	ppid = getppid();
+  	(void) setjmp(rcvtop);
+  	for (;;) {
+  		while ((remaining = rcvcnt - (bufp - rcvbuf)) > 0) {
+--- 570,579 ----
+  	char *bufp = rcvbuf;
+! 	(void) signal(SIGTTOU, SIG_IGN);
+! 	(void) signal(SIGURG, oob);
+  	ppid = getppid();
++ 	(void) fcntl(rem, F_SETOWN, pid);
+  	(void) setjmp(rcvtop);
++ 	(void) sigsetmask(oldmask);
+  	for (;;) {
+  		while ((remaining = rcvcnt - (bufp - rcvbuf)) > 0) {
+***************
+*** 554,559 ****
+  	int	lflags;
+! 	ioctl(0, TIOCGETP, (char *)&sb);
+! 	ioctl(0, TIOCLGET, (char *)&lflags);
+  	switch (f) {
+--- 609,614 ----
+  	int	lflags;
+! 	(void) ioctl(0, TIOCGETP, (char *)&sb);
+! 	(void) ioctl(0, TIOCLGET, (char *)&lflags);
+  	switch (f) {
+***************
+*** 584,591 ****
+  		return;
+  	}
+! 	ioctl(0, TIOCSLTC, (char *)ltc);
+! 	ioctl(0, TIOCSETC, (char *)tc);
+! 	ioctl(0, TIOCSETN, (char *)&sb);
+! 	ioctl(0, TIOCLSET, (char *)&lflags);
+  }
+--- 639,646 ----
+  		return;
+  	}
+! 	(void) ioctl(0, TIOCSLTC, (char *)ltc);
+! 	(void) ioctl(0, TIOCSETC, (char *)tc);
+! 	(void) ioctl(0, TIOCSETN, (char *)&sb);
+! 	(void) ioctl(0, TIOCLSET, (char *)&lflags);
+  }
+***************
+*** 594,597 ****
+--- 649,653 ----
+  	char *f;
+  {
++ 
+  	fprintf(stderr, f, a1, a2, a3, a4, a5);
+  	fprintf(stderr, CRLF);
+***************
+*** 600,604 ****
+  lostpeer()
+  {
+! 	signal(SIGPIPE, SIG_IGN);
+  	prf("\007Connection closed.");
+  	done(1);
+--- 656,661 ----
+  lostpeer()
+  {
+! 
+! 	(void) signal(SIGPIPE, SIG_IGN);
+  	prf("\007Connection closed.");
+  	done(1);
+-- 
+In-Real-Life: Chris Torek, Univ of MD Comp Sci Dept (+1 301 454 7163)
+Domain:	chris@mimsy.umd.edu	Path:	uunet!mimsy!chris

@@ -1,0 +1,125 @@
+From bsdi-users-request@bsdi.com Thu Mar  4 00:41:01 1993
+Date: Wed, 3 Mar 93 23:33:16 -0800
+From: root@eab.retix.com (Erik Forsberg)
+To: bsdi-users@bsdi.com, problems@bsdi.com
+Errors-To: bsdi-users-request@bsdi.com
+Sender: bsdi-users-request@bsdi.com
+Precedence: bulk
+Index: usr.bin/sed/compile 4.4BSD-alpha
+
+Sigh.
+
+Another problem with sed. The gamma-4 sed failed the following sed
+script found in the brand new GROFF 1.07 release (psstrip.sed)
+
+#!/bin/sed -f
+# Strip a PostScript prologue of unnecessary comments and white space.
+/^%[%!]/b
+s/^[ 	][ 	]*//
+s/[ 	][ 	]*$//
+s/%.*//
+/^$/d
+s/[ 	]*\([][}/{]\)[ 	]*/\1/g
+
+
+The last line fails to compile, sed complaining about unbalanced []'s.
+This is due to compile_delimited not really knowing the traditionally
+rules about [] expressions (namely that inside a [s] expression, the first
+character of s is allowed to be ] and that \ has no special meaning.
+
+The following patch corrects this. I have a vague nasty feeling though
+that we should run sed through a complete set of tests after this change.
+I have done a few tests, but nothing VERY extensive.
+
+*** compile.c	Mon Nov 16 11:51:59 1992
+--- /usr/src/usr.bin/sed/compile.c	Wed Mar  3 23:16:08 1993
+***************
+*** 323,328 ****
+--- 323,329 ----
+  	char *p, *d;
+  {
+  	char c;
++ 	int inbra = 0;
+  
+  	c = *p++;
+  	if (c == '\0')
+***************
+*** 332,338 ****
+  	else if (c == '\n')
+  		err(COMPILE, "newline can not be used as a string delimiter");
+  	while (*p) {
+! 		if (*p == '\\' && p[1] == c)
+  			p++;
+  		else if (*p == '\\' && p[1] == 'n') {
+  			*d++ = '\n';
+--- 333,345 ----
+  	else if (c == '\n')
+  		err(COMPILE, "newline can not be used as a string delimiter");
+  	while (*p) {
+! 		if (*p == '[' && inbra == 0)
+! 			inbra = 1;
+! 		else if (*p == ']' && inbra && p[-1] != '[')
+! 			inbra = 0;
+! 		else if (inbra)
+! 			;
+! 		else if (*p == '\\' && p[1] == c)
+  			p++;
+  		else if (*p == '\\' && p[1] == 'n') {
+  			*d++ = '\n';
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+>From henry@zoo.toronto.edu Thu Mar  4 14:07:10 1993
+Received: from zoo.toronto.edu (zoo.utoronto.ca) by vangogh.CS.Berkeley.EDU (ALPHA-6.30/6.9) id AA22963; Thu, 4 Mar 1993 14:07:09 -0800
+Message-Id: <199303042207.AA22963@vangogh.CS.Berkeley.EDU>
+From: henry@zoo.toronto.edu
+Date: Thu, 4 Mar 93 17:07:16 EST
+To: Keith Bostic <bostic@vangogh.CS.Berkeley.EDU>
+Subject: Re: Reality check, please
+Status: RO
+
+>Henry, does this bug report seem reasonable?  (I know it's in
+>sed, but it involves RE's.)
+
+This actually boils down to a fundamental problem that has typically
+been solved in a haphazard sort of way:  when you put a regular
+expression between delimiters in a command, how do you include the
+delimiter character in the regular expression?
+
+There are several possible approaches:
+
+	(a) it's forbidden
+
+	(b) you must always -- repeat always -- backslash it
+
+	(c) where it couldn't possibly end a legal RE, you don't
+	have to backslash it; elsewhere, you do
+
+Approach (a) is obviously not very satisfactory.  Approach (b) is simple
+and straightforward, but it does mean typing an extra backslash now and
+then... so people are tempted to take approach (c).  The trouble is, (c)
+intertwines RE parsing and delimiter parsing in a complex and messy way.
+In particular, it becomes very difficult to split the command line into
+pieces *before* parsing the RE... and that's what you have to do if you
+want to use a separate RE package like the POSIX.2 one.  You end up having
+a miniature version of the RE parser imbedded in the delimiter parsing.
+
+The proposed fix may not be adequate (I'd have to see more context to
+be sure).  There are *seven* different ways that "]" can appear inside
+a bracket expression without being its closing delimiter:  at the start,
+at the start but after "^", preceded by backslash, in the closing
+delimiter of [.xxx.], [:xxx:], or [=xxx=], or inside the first of those
+(that is, [.].]).  (I don't *think* you can legally put ] inside [==]
+or [::].)
+
+Historically, sed and ed have both taken approach (c).  Unfortunately,
+doing (c) right has become quite complex.  It would be a whole lot
+simpler to just say that the rule is (b).  Neither historical documents
+nor the POSIX.2 specs demand anything beyond (b) that I can find; the
+folks who have exploited (c) have always been relying on undocumented
+behavior.  Of course, this is not comforting if you have to fix one
+of their shell scripts...
+
+(Feel free to pass this on to others if you like.)
+
+Henry
+

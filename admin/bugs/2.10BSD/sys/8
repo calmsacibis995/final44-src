@@ -1,0 +1,93 @@
+From bostic@vangogh.berkeley.edu  Fri Oct 30 16:50:54 1987
+Date: Fri, 30 Oct 87 16:50:42 PST
+From: bostic@vangogh.berkeley.edu (Keith Bostic)
+Subject: soreceive() can exit without resetting spl level
+Index: sys/uipc_socket.c 2.10BSD
+
+Description:
+	The soreceive() routine fails to reset the spl level in
+	two paths.
+Repeat-By:
+	By inspection.
+Fix:
+	Apply one of the following patches; the first one is the easy
+	one, the second one makes the code a lot prettier.
+
+*** uipc_socket.c.orig	Fri Oct 30 16:47:39 1987
+--- uipc_socket.c	Fri Oct 30 16:48:50 1987
+***************
+*** 629,634 ****
+--- 629,635 ----
+  	}
+  release:
+  	sbunlock(&so->so_rcv);
++ 	splx(s);
+  	restorseg5(save5);
+  	return (error);
+  }
+
+*** uipc_socket.c.orig	Fri Oct 30 17:06:10 1987
+--- uipc_socket.c	Fri Oct 30 17:07:40 1987
+***************
+*** 484,508 ****
+  	sblock(&so->so_rcv);
+  	s = splnet();
+  
+- #define	rcverr(errno)	{ error = errno; splx(s); goto release; }
+  	if (so->so_rcv.sb_cc == 0) {
+  		if (so->so_error) {
+  			error = so->so_error;
+  			so->so_error = 0;
+- 			splx(s);
+  			goto release;
+  		}
+! 		if (so->so_state & SS_CANTRCVMORE) {
+! 			splx(s);
+  			goto release;
+- 		}
+  		if ((so->so_state & SS_ISCONNECTED) == 0 &&
+! 		    (so->so_proto->pr_flags & PR_CONNREQUIRED))
+! 			rcverr(ENOTCONN);
+  		if (u.u_count == 0)
+  			goto release;
+! 		if (so->so_state & SS_NBIO)
+! 			rcverr(EWOULDBLOCK);
+  		sbunlock(&so->so_rcv);
+  		sbwait(&so->so_rcv);
+  		splx(s);
+--- 484,508 ----
+  	sblock(&so->so_rcv);
+  	s = splnet();
+  
+  	if (so->so_rcv.sb_cc == 0) {
+  		if (so->so_error) {
+  			error = so->so_error;
+  			so->so_error = 0;
+  			goto release;
+  		}
+! 		if (so->so_state & SS_CANTRCVMORE)
+  			goto release;
+  		if ((so->so_state & SS_ISCONNECTED) == 0 &&
+! 		    (so->so_proto->pr_flags & PR_CONNREQUIRED)) {
+! 			error = ENOTCONN;
+! 			goto release;
+! 		}
+  		if (u.u_count == 0)
+  			goto release;
+! 		if (so->so_state & SS_NBIO) {
+! 			error = EWOULDBLOCK;
+! 			goto release;
+! 		}
+  		sbunlock(&so->so_rcv);
+  		sbwait(&so->so_rcv);
+  		splx(s);
+***************
+*** 629,634 ****
+--- 629,635 ----
+  	}
+  release:
+  	sbunlock(&so->so_rcv);
++ 	splx(s);
+  	restorseg5(save5);
+  	return (error);
+  }

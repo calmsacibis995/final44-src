@@ -1,0 +1,4859 @@
+From sms@WLV.IMSD.CONTEL.COM  Fri Apr 13 19:23:53 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA26772; Fri, 13 Apr 90 19:23:53 -0700
+Received: from WLV.IMSD.CONTEL.COM by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA07666; Fri, 13 Apr 90 19:20:12 -0700
+Received: by WLV.IMSD.CONTEL.COM (5.61/1.25)
+	id AA04869; Fri, 13 Apr 90 19:18:45 -0700
+Date: Fri, 13 Apr 90 19:18:45 -0700
+From: sms@WLV.IMSD.CONTEL.COM (Steven M. Schultz)
+Message-Id: <9004140218.AA04869@WLV.IMSD.CONTEL.COM>
+Subject: readv/writev/rdwri/namei-encapsulation/f_ops (part 2 of 2)
+Index: 	sys/many 2.10BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Under 2.10.1BSD the writev() and readv() functionality is provided
+	by an emulation routine using normal read(2) and write(2) syscalls.
+
+	Also, the kernel's I/O interface was still the readi()/writei()
+	from earlier versions of pdp-11 Unix rather than the rdwri()
+	method from 4.3BSD
+
+	And, the namei encapsulation of arguments into the u.u_nd structure
+	was not present.
+
+Repeat-By:
+	Examination of the sources.  Or optionally, "diff" the kernel sources
+	from a 2.10.1BSD system against those from a 4.3BSD system.
+
+Fix:
+	This is part 2 of 2
+
+	The patches below bring the 2.10.1BSD kernel sources much closer to
+	those of 4.3BSD as well as directly implementing readv and writev.
+
+diff -r -c /usr/src/oldsys/sys/tty_pty.c /usr/src/sys/sys/tty_pty.c
+*** /usr/src/oldsys/sys/tty_pty.c	Sat Apr 30 16:14:53 1988
+--- /usr/src/sys/sys/tty_pty.c	Wed Apr 11 09:49:18 1990
+***************
+*** 94,101 ****
+  	ptcwakeup(tp, FREAD|FWRITE);
+  }
+
+! ptsread(dev)
+  	dev_t dev;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	register struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+--- 94,102 ----
+  	ptcwakeup(tp, FREAD|FWRITE);
+  }
+
+! ptsread(dev, uio)
+  	dev_t dev;
++ 	register struct uio *uio;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	register struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+***************
+*** 117,124 ****
+  			sleep((caddr_t)&tp->t_canq, TTIPRI);
+  			goto again;
+  		}
+! 		while (tp->t_canq.c_cc > 1 && u.u_count > 0)
+! 			if (ureadc(getc(&tp->t_canq)) < 0) {
+  				error = EFAULT;
+  				break;
+  			}
+--- 118,125 ----
+  			sleep((caddr_t)&tp->t_canq, TTIPRI);
+  			goto again;
+  		}
+! 		while (tp->t_canq.c_cc > 1 && uio->uio_resid)
+! 			if (ureadc(getc(&tp->t_canq), uio) < 0) {
+  				error = EFAULT;
+  				break;
+  			}
+***************
+*** 128,134 ****
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+! 			error = (*linesw[tp->t_line].l_read)(tp);
+  	ptcwakeup(tp, FWRITE);
+  	return (error);
+  }
+--- 129,135 ----
+  			return (error);
+  	} else
+  		if (tp->t_oproc)
+! 			error = (*linesw[tp->t_line].l_read)(tp, uio);
+  	ptcwakeup(tp, FWRITE);
+  	return (error);
+  }
+***************
+*** 138,145 ****
+   * Wakeups of controlling tty will happen
+   * indirectly, when tty driver calls ptsstart.
+   */
+! ptswrite(dev)
+  	dev_t dev;
+  {
+  	register struct tty *tp;
+
+--- 139,147 ----
+   * Wakeups of controlling tty will happen
+   * indirectly, when tty driver calls ptsstart.
+   */
+! ptswrite(dev, uio)
+  	dev_t dev;
++ 	register struct uio *uio;
+  {
+  	register struct tty *tp;
+
+***************
+*** 146,152 ****
+  	tp = &pt_tty[minor(dev)];
+  	if (tp->t_oproc == 0)
+  		return (EIO);
+! 	return ((*linesw[tp->t_line].l_write)(tp));
+  }
+
+  /*
+--- 148,154 ----
+  	tp = &pt_tty[minor(dev)];
+  	if (tp->t_oproc == 0)
+  		return (EIO);
+! 	return ((*linesw[tp->t_line].l_write)(tp, uio));
+  }
+
+  /*
+***************
+*** 205,211 ****
+  		return (EIO);
+  	tp->t_oproc = ptsstart;
+  	(void)(*linesw[tp->t_line].l_modem)(tp, 1);
+- 	tp->t_state |= TS_CARR_ON;
+  	pti = &pt_ioctl[minor(dev)];
+  	pti->pt_flags = 0;
+  	pti->pt_send = 0;
+--- 207,212 ----
+***************
+*** 220,230 ****
+
+  	tp = &pt_tty[minor(dev)];
+  	(void)(*linesw[tp->t_line].l_modem)(tp, 0);
+  	tp->t_oproc = 0;		/* mark closed */
+  }
+
+! ptcread(dev)
+  	dev_t dev;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+--- 221,233 ----
+
+  	tp = &pt_tty[minor(dev)];
+  	(void)(*linesw[tp->t_line].l_modem)(tp, 0);
++ 	tp->t_state &= ~TS_CARR_ON;
+  	tp->t_oproc = 0;		/* mark closed */
+  }
+
+! ptcread(dev, uio)
+  	dev_t dev;
++ 	register struct uio *uio;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	struct pt_ioctl *pti = &pt_ioctl[minor(dev)];
+***************
+*** 240,246 ****
+  	for (;;) {
+  		if (tp->t_state&TS_ISOPEN) {
+  			if (pti->pt_flags&PF_PKT && pti->pt_send) {
+! 				error = ureadc((int)pti->pt_send);
+  				if (error)
+  					return (error);
+  				pti->pt_send = 0;
+--- 243,249 ----
+  	for (;;) {
+  		if (tp->t_state&TS_ISOPEN) {
+  			if (pti->pt_flags&PF_PKT && pti->pt_send) {
+! 				error = ureadc((int)pti->pt_send, uio);
+  				if (error)
+  					return (error);
+  				pti->pt_send = 0;
+***************
+*** 247,253 ****
+  				return (0);
+  			}
+  			if (pti->pt_flags&PF_UCNTL && pti->pt_ucntl) {
+! 				error = ureadc((int)pti->pt_ucntl);
+  				if (error)
+  					return (error);
+  				pti->pt_ucntl = 0;
+--- 250,256 ----
+  				return (0);
+  			}
+  			if (pti->pt_flags&PF_UCNTL && pti->pt_ucntl) {
+! 				error = ureadc((int)pti->pt_ucntl, uio);
+  				if (error)
+  					return (error);
+  				pti->pt_ucntl = 0;
+***************
+*** 263,274 ****
+  		sleep((caddr_t)&tp->t_outq.c_cf, TTIPRI);
+  	}
+  	if (pti->pt_flags & (PF_PKT|PF_UCNTL))
+! 		error = ureadc(0);
+! 	while (u.u_count > 0 && error == 0) {
+! 		cc = q_to_b(&tp->t_outq, buf, MIN(u.u_count, BUFSIZ));
+  		if (cc <= 0)
+  			break;
+! 		error = uiomove(buf, cc, UIO_READ);
+  	}
+  	if (tp->t_outq.c_cc <= TTLOWAT(tp)) {
+  		if (tp->t_state&TS_ASLEEP) {
+--- 266,277 ----
+  		sleep((caddr_t)&tp->t_outq.c_cf, TTIPRI);
+  	}
+  	if (pti->pt_flags & (PF_PKT|PF_UCNTL))
+! 		error = ureadc(0, uio);
+! 	while (uio->uio_resid && error == 0) {
+! 		cc = q_to_b(&tp->t_outq, buf, MIN(uio->uio_resid, BUFSIZ));
+  		if (cc <= 0)
+  			break;
+! 		error = uiomove(buf, cc, UIO_READ, uio);
+  	}
+  	if (tp->t_outq.c_cc <= TTLOWAT(tp)) {
+  		if (tp->t_state&TS_ASLEEP) {
+***************
+*** 368,377 ****
+  	return (0);
+  }
+
+! ptcwrite(dev)
+  	dev_t dev;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
+  	register char *cp;
+  	register int cc = 0;
+  	char locbuf[BUFSIZ];
+--- 371,382 ----
+  	return (0);
+  }
+
+! ptcwrite(dev, uio)
+  	dev_t dev;
++ 	register struct uio *uio;
+  {
+  	register struct tty *tp = &pt_tty[minor(dev)];
++ 	register struct iovec *iov;
+  	register char *cp;
+  	register int cc = 0;
+  	char locbuf[BUFSIZ];
+***************
+*** 385,396 ****
+  	if (pti->pt_flags & PF_REMOTE) {
+  		if (tp->t_canq.c_cc)
+  			goto block;
+! 		while (u.u_count > 0 && tp->t_canq.c_cc < TTYHOG - 1) {
+  			if (cc == 0) {
+! 				cc = MIN(u.u_count, BUFSIZ);
+  				cc = MIN(cc, TTYHOG - 1 - tp->t_canq.c_cc);
+  				cp = locbuf;
+! 				error = uiomove(cp, cc, UIO_WRITE);
+  				if (error)
+  					return (error);
+  				/* check again for safety */
+--- 390,407 ----
+  	if (pti->pt_flags & PF_REMOTE) {
+  		if (tp->t_canq.c_cc)
+  			goto block;
+! 		while (uio->uio_iovcnt > 0 && tp->t_canq.c_cc < TTYHOG - 1) {
+! 			iov = uio->uio_iov;
+! 			if (iov->iov_len == 0) {
+! 				uio->uio_iovcnt--;
+! 				uio->uio_iov++;
+! 				continue;
+! 			}
+  			if (cc == 0) {
+! 				cc = MIN(iov->iov_len, BUFSIZ);
+  				cc = MIN(cc, TTYHOG - 1 - tp->t_canq.c_cc);
+  				cp = locbuf;
+! 				error = uiomove(cp, cc, UIO_WRITE, uio);
+  				if (error)
+  					return (error);
+  				/* check again for safety */
+***************
+*** 406,416 ****
+  		wakeup((caddr_t)&tp->t_canq);
+  		return (0);
+  	}
+! 	while (u.u_count > 0) {
+  		if (cc == 0) {
+! 			cc = MIN(u.u_count, BUFSIZ);
+  			cp = locbuf;
+! 			error = uiomove(cp, cc, UIO_WRITE);
+  			if (error)
+  				return (error);
+  			/* check again for safety */
+--- 417,433 ----
+  		wakeup((caddr_t)&tp->t_canq);
+  		return (0);
+  	}
+! 	while (uio->uio_iovcnt > 0) {
+! 		iov = uio->uio_iov;
+  		if (cc == 0) {
+! 			if (iov->iov_len == 0) {
+! 				uio->uio_iovcnt--;
+! 				uio->uio_iov++;
+! 				continue;
+! 			}
+! 			cc = MIN(iov->iov_len, BUFSIZ);
+  			cp = locbuf;
+! 			error = uiomove(cp, cc, UIO_WRITE, uio);
+  			if (error)
+  				return (error);
+  			/* check again for safety */
+***************
+*** 439,447 ****
+  	if ((tp->t_state&TS_CARR_ON) == 0)
+  		return (EIO);
+  	if (pti->pt_flags & PF_NBIO) {
+! 		u.u_base -= cc;
+! 		u.u_count += cc;
+! 		u.u_offset -= cc;
+  		if (cnt == 0)
+  			return (EWOULDBLOCK);
+  		return (0);
+--- 456,465 ----
+  	if ((tp->t_state&TS_CARR_ON) == 0)
+  		return (EIO);
+  	if (pti->pt_flags & PF_NBIO) {
+! 		iov->iov_base -= cc;
+! 		iov->iov_len += cc;
+! 		uio->uio_resid += cc;
+! 		uio->uio_offset -= cc;
+  		if (cnt == 0)
+  			return (EWOULDBLOCK);
+  		return (0);
+diff -r -c /usr/src/oldsys/sys/tty_tb.c /usr/src/sys/sys/tty_tb.c
+*** /usr/src/oldsys/sys/tty_tb.c	Tue Jul  5 16:46:01 1988
+--- /usr/src/sys/sys/tty_tb.c	Sat Apr  7 21:42:00 1990
+***************
+*** 120,127 ****
+   * Read from a tablet line.
+   * Characters have been buffered in a buffer and decoded.
+   */
+! tbread(tp)
+  	register struct tty *tp;
+  {
+  	register struct tb *tbp = (struct tb *)tp->T_LINEP;
+  	register struct tbconf *tc = &tbconf[tbp->tbflags & TBTYPE];
+--- 120,128 ----
+   * Read from a tablet line.
+   * Characters have been buffered in a buffer and decoded.
+   */
+! tbread(tp, uio)
+  	register struct tty *tp;
++ 	struct uio *uio;
+  {
+  	register struct tb *tbp = (struct tb *)tp->T_LINEP;
+  	register struct tbconf *tc = &tbconf[tbp->tbflags & TBTYPE];
+***************
+*** 129,135 ****
+
+  	if ((tp->t_state&TS_CARR_ON) == 0)
+  		return (EIO);
+! 	ret = uiomove(&tbp->rets, tc->tbc_uiosize, UIO_READ);
+  	if (tc->tbc_flags&TBF_POL)
+  		tbp->rets.polpos.p_key = ' ';
+  	return (ret);
+--- 130,136 ----
+
+  	if ((tp->t_state&TS_CARR_ON) == 0)
+  		return (EIO);
+! 	ret = uiomove(&tbp->rets, tc->tbc_uiosize, UIO_READ, uio);
+  	if (tc->tbc_flags&TBF_POL)
+  		tbp->rets.polpos.p_key = ' ';
+  	return (ret);
+diff -r -c /usr/src/oldsys/sys/tty_tty.c /usr/src/sys/sys/tty_tty.c
+*** /usr/src/oldsys/sys/tty_tty.c	Sat Sep  5 10:04:53 1987
+--- /usr/src/sys/sys/tty_tty.c	Sat Apr  7 21:27:51 1990
+***************
+*** 28,48 ****
+  }
+
+  /*ARGSUSED*/
+! syread(dev)
+  	dev_t dev;
+  {
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_read)(u.u_ttyd));
+  }
+
+  /*ARGSUSED*/
+! sywrite(dev)
+  	dev_t dev;
+  {
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_write)(u.u_ttyd));
+  }
+
+  /*ARGSUSED*/
+--- 28,50 ----
+  }
+
+  /*ARGSUSED*/
+! syread(dev, uio)
+  	dev_t dev;
++ 	struct uio *uio;
+  {
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_read)(u.u_ttyd, uio));
+  }
+
+  /*ARGSUSED*/
+! sywrite(dev, uio)
+  	dev_t dev;
++ 	struct uio *uio;
+  {
+  	if (u.u_ttyp == NULL)
+  		return (ENXIO);
+! 	return ((*cdevsw[major(u.u_ttyd)].d_write)(u.u_ttyd, uio));
+  }
+
+  /*ARGSUSED*/
+diff -r -c /usr/src/oldsys/sys/ufs_alloc.c /usr/src/sys/sys/ufs_alloc.c
+*** /usr/src/oldsys/sys/ufs_alloc.c	Sat Apr 30 16:14:52 1988
+--- /usr/src/sys/sys/ufs_alloc.c	Sun Apr  8 03:12:13 1990
+***************
+*** 10,15 ****
+--- 10,16 ----
+  #include "../machine/seg.h"
+
+  #include "fs.h"
++ #include "dir.h"
+  #include "inode.h"
+  #include "buf.h"
+  #include "user.h"
+diff -r -c /usr/src/oldsys/sys/ufs_bmap.c /usr/src/sys/sys/ufs_bmap.c
+*** /usr/src/oldsys/sys/ufs_bmap.c	Wed May 20 05:30:35 1987
+--- /usr/src/sys/sys/ufs_bmap.c	Sun Apr  8 03:03:57 1990
+***************
+*** 11,16 ****
+--- 11,17 ----
+
+  #include "systm.h"
+  #include "conf.h"
++ #include "dir.h"
+  #include "inode.h"
+  #include "user.h"
+  #include "buf.h"
+diff -r -c /usr/src/oldsys/sys/ufs_fio.c /usr/src/sys/sys/ufs_fio.c
+*** /usr/src/oldsys/sys/ufs_fio.c	Tue Jul  5 16:21:52 1988
+--- /usr/src/sys/sys/ufs_fio.c	Sat Apr  7 18:11:43 1990
+***************
+*** 106,115 ****
+  	int follow;
+  {
+  	register struct inode *ip;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = fname;
+! 	ip = namei(LOOKUP | follow);
+  	if (ip == NULL)
+  		return (NULL);
+  	if (u.u_uid == ip->i_uid)
+--- 106,117 ----
+  	int follow;
+  {
+  	register struct inode *ip;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | follow;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return (NULL);
+  	if (u.u_uid == ip->i_uid)
+diff -r -c /usr/src/oldsys/sys/ufs_inode.c /usr/src/sys/sys/ufs_inode.c
+*** /usr/src/oldsys/sys/ufs_inode.c	Mon Jan 29 21:39:24 1990
+--- /usr/src/sys/sys/ufs_inode.c	Fri Apr  6 20:01:41 1990
+***************
+*** 21,26 ****
+--- 21,27 ----
+  #ifdef QUOTA
+  #include "quota.h"
+  #endif
++ #include "syslog.h"
+
+  #ifdef SMALL
+  #define	INOHSZ	16		/* must be power of two */
+diff -r -c /usr/src/oldsys/sys/ufs_mount.c /usr/src/sys/sys/ufs_mount.c
+*** /usr/src/oldsys/sys/ufs_mount.c	Mon Jan 29 21:32:17 1990
+--- /usr/src/sys/sys/ufs_mount.c	Sat Apr  7 18:07:25 1990
+***************
+*** 32,45 ****
+  	dev_t dev;
+  	register struct inode *ip;
+  	register struct fs *fs;
+  	u_int len;
+
+  	u.u_error = getmdev(&dev, uap->fspec);
+  	if (u.u_error)
+  		return;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = (caddr_t)uap->freg;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == NULL)
+  		return;
+  	if (ip->i_count != 1) {
+--- 32,47 ----
+  	dev_t dev;
+  	register struct inode *ip;
+  	register struct fs *fs;
++ 	register struct	nameidata *ndp = &u.u_nd;
+  	u_int len;
+
+  	u.u_error = getmdev(&dev, uap->fspec);
+  	if (u.u_error)
+  		return;
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = (caddr_t)uap->freg;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	if (ip->i_count != 1) {
+***************
+*** 201,212 ****
+  {
+  	register dev_t dev;
+  	register struct inode *ip;
+
+  	if (!suser())
+  		return (u.u_error);
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = fname;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == NULL) {
+  		if (u.u_error == ENOENT)
+  			return (ENODEV); /* needs translation */
+--- 203,216 ----
+  {
+  	register dev_t dev;
+  	register struct inode *ip;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+  	if (!suser())
+  		return (u.u_error);
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL) {
+  		if (u.u_error == ENOENT)
+  			return (ENODEV); /* needs translation */
+diff -r -c /usr/src/oldsys/sys/ufs_namei.c /usr/src/sys/sys/ufs_namei.c
+*** /usr/src/oldsys/sys/ufs_namei.c	Wed Jan 31 22:59:39 1990
+--- /usr/src/sys/sys/ufs_namei.c	Sun Apr  8 23:21:50 1990
+***************
+*** 9,14 ****
+--- 9,15 ----
+  #include "../machine/seg.h"
+
+  #include "systm.h"
++ #include "dir.h"
+  #include "inode.h"
+  #include "fs.h"
+  #include "mount.h"
+***************
+*** 81,87 ****
+   * dirloop:
+   *	check accessibility of directory
+   * dirloop2:
+!  *	copy next component of name to u.u_dent.d_name
+   *	handle degenerate case where name is null string
+   *	look for name in cache, if found, then if at end of path
+   *	  and deleting or creating, drop it, else to haveino
+--- 82,88 ----
+   * dirloop:
+   *	check accessibility of directory
+   * dirloop2:
+!  *	copy next component of name to ndp->ni_dent
+   *	handle degenerate case where name is null string
+   *	look for name in cache, if found, then if at end of path
+   *	  and deleting or creating, drop it, else to haveino
+***************
+*** 105,112 ****
+   *	 but unlocked.
+   */
+  struct inode *
+! namei(nameiop)
+! 	int nameiop;
+  {
+  	register char *cp;		/* pointer into pathname argument */
+  /* these variables refer to things which must be freed or unlocked */
+--- 106,113 ----
+   *	 but unlocked.
+   */
+  struct inode *
+! namei(ndp)
+! 	register struct nameidata *ndp;
+  {
+  	register char *cp;		/* pointer into pathname argument */
+  /* these variables refer to things which must be freed or unlocked */
+***************
+*** 122,133 ****
+  	off_t endsearch;		/* offset to end directory search */
+  	int nlink = 0;			/* number of symbolic links taken */
+  	struct inode *pdp;		/* saved dp during symlink work */
+! register int error, i;
+  	int lockparent;
+  	int docache;			/* == 0 do not cache last component */
+  	int makeentry;			/* != 0 if name to be added to cache */
+  	unsigned hash;			/* value of name hash for entry */
+! 	union nchash *nhp;		/* cace chain head for entry */
+  	int isdotdot;			/* != 0 if current name is ".." */
+  	int flag;			/* op ie, LOOKUP, CREATE, or DELETE */
+  	off_t enduseful;		/* pointer past last used dir slot */
+--- 123,135 ----
+  	off_t endsearch;		/* offset to end directory search */
+  	int nlink = 0;			/* number of symbolic links taken */
+  	struct inode *pdp;		/* saved dp during symlink work */
+! register int i;
+! 	int error;
+  	int lockparent;
+  	int docache;			/* == 0 do not cache last component */
+  	int makeentry;			/* != 0 if name to be added to cache */
+  	unsigned hash;			/* value of name hash for entry */
+! 	union nchash *nhp;		/* cache chain head for entry */
+  	int isdotdot;			/* != 0 if current name is ".." */
+  	int flag;			/* op ie, LOOKUP, CREATE, or DELETE */
+  	off_t enduseful;		/* pointer past last used dir slot */
+***************
+*** 135,153 ****
+  	int	namelen;		/* length of last component */
+  	segm	seg5;			/* save area for kernel seg5 */
+
+! 	lockparent = nameiop & LOCKPARENT;
+! 	docache = (nameiop & NOCACHE) ^ NOCACHE;
+! 	flag = nameiop &~ (LOCKPARENT|NOCACHE|FOLLOW);
+  	if (flag == DELETE || lockparent)
+  		docache = 0;
+  	/*
+  	 * Copy the name into the buffer.
+  	 */
+! 	if (u.u_segflg == UIO_SYSSPACE)
+! 		error = copystr(u.u_dirp, path, MAXPATHLEN,
+  		    (u_int *)0);
+  	else
+! 		error = copyinstr(u.u_dirp, path, MAXPATHLEN,
+  		    (u_int *)0);
+  	if (error) {
+  		u.u_error = error;
+--- 137,155 ----
+  	int	namelen;		/* length of last component */
+  	segm	seg5;			/* save area for kernel seg5 */
+
+! 	lockparent = ndp->ni_nameiop & LOCKPARENT;
+! 	docache = (ndp->ni_nameiop & NOCACHE) ^ NOCACHE;
+! 	flag = ndp->ni_nameiop &~ (LOCKPARENT|NOCACHE|FOLLOW);
+  	if (flag == DELETE || lockparent)
+  		docache = 0;
+  	/*
+  	 * Copy the name into the buffer.
+  	 */
+! 	if (ndp->ni_segflg == UIO_SYSSPACE)
+! 		error = copystr(ndp->ni_dirp, path, MAXPATHLEN,
+  		    (u_int *)0);
+  	else
+! 		error = copyinstr(ndp->ni_dirp, path, MAXPATHLEN,
+  		    (u_int *)0);
+  	if (error) {
+  		u.u_error = error;
+***************
+*** 168,174 ****
+  	fs = dp->i_fs;
+  	ILOCK(dp);
+  	dp->i_count++;
+! 	u.ni_endoff = 0;
+
+  	/*
+  	 * We come to dirloop to search a new directory.
+--- 170,176 ----
+  	fs = dp->i_fs;
+  	ILOCK(dp);
+  	dp->i_count++;
+! 	ndp->ni_endoff = 0;
+
+  	/*
+  	 * We come to dirloop to search a new directory.
+***************
+*** 188,198 ****
+
+  dirloop2:
+  	/*
+! 	 * Copy next component of name to u.u_dent.d_name.
+  	 */
+  	hash = 0;
+  	for (i = 0; *cp != 0 && *cp != '/'; cp++) {
+! 		if (i == MAXNAMLEN) {
+  #ifdef NO_FILE_NAME_MAPPING
+  			u.u_error = ENAMETOOLONG;
+  			goto bad;
+--- 190,200 ----
+
+  dirloop2:
+  	/*
+! 	 * Copy next component of name to ndp->ni_dent.
+  	 */
+  	hash = 0;
+  	for (i = 0; *cp != 0 && *cp != '/'; cp++) {
+! 		if (i >= MAXNAMLEN) {
+  #ifdef NO_FILE_NAME_MAPPING
+  			u.u_error = ENAMETOOLONG;
+  			goto bad;
+***************
+*** 206,219 ****
+  				u.u_error = EINVAL;
+  				goto bad;
+  			}
+! 		u.u_dent.d_name[i++] = *cp;
+  		hash += (unsigned char)*cp * i;
+  	}
+  	namelen = i;
+  	while (i < MAXNAMLEN)
+! 		u.u_dent.d_name[i++] = '\0';
+! 	isdotdot = (u.u_dent.d_name[0] == '.' &&
+! 		u.u_dent.d_name[1] == '.' && u.u_dent.d_name[2] == '\0');
+  	makeentry = 1;
+  	if (*cp == '\0' && docache == 0)
+  		makeentry = 0;
+--- 208,221 ----
+  				u.u_error = EINVAL;
+  				goto bad;
+  			}
+! 		ndp->ni_dent.d_name[i++] = *cp;
+  		hash += (unsigned char)*cp * i;
+  	}
+  	namelen = i;
+  	while (i < MAXNAMLEN)
+! 		ndp->ni_dent.d_name[i++] = '\0';
+! 	isdotdot = (ndp->ni_dent.d_name[0] == '.' &&
+! 		ndp->ni_dent.d_name[1] == '.' && ndp->ni_dent.d_name[2] == '\0');
+  	makeentry = 1;
+  	if (*cp == '\0' && docache == 0)
+  		makeentry = 0;
+***************
+*** 223,229 ****
+  	 * which is a way of talking about a directory,
+  	 * e.g. like "/." or ".".
+  	 */
+! 	 if (u.u_dent.d_name[0] == '\0') {
+  		if (flag != LOOKUP || lockparent) {
+  			u.u_error = EISDIR;
+  			goto bad;
+--- 225,231 ----
+  	 * which is a way of talking about a directory,
+  	 * e.g. like "/." or ".".
+  	 */
+! 	 if (ndp->ni_dent.d_name[0] == '\0') {
+  		if (flag != LOOKUP || lockparent) {
+  			u.u_error = EISDIR;
+  			goto bad;
+***************
+*** 253,259 ****
+  			if (ncp->nc_ino == dp->i_number &&
+  			    ncp->nc_dev == dp->i_dev &&
+  			    ncp->nc_nlen == namelen &&
+! 			    !bcmp(ncp->nc_name, u.u_dent.d_name,
+  				(unsigned)ncp->nc_nlen))
+  				break;
+  		}
+--- 255,261 ----
+  			if (ncp->nc_ino == dp->i_number &&
+  			    ncp->nc_dev == dp->i_dev &&
+  			    ncp->nc_nlen == namelen &&
+! 			    !bcmp(ncp->nc_name, ndp->ni_dent.d_name,
+  				(unsigned)ncp->nc_nlen))
+  				break;
+  		}
+***************
+*** 319,325 ****
+  					dp = pdp;
+  					nchstats.ncs_falsehits++;
+  				} else {
+! 					u.u_dent.d_ino = dp->i_number;
+  					/* ni_dent.d_reclen is garbage ... */
+  					nchstats.ncs_goodhits++;
+  					restorseg5(seg5);
+--- 321,327 ----
+  					dp = pdp;
+  					nchstats.ncs_falsehits++;
+  				} else {
+! 					ndp->ni_dent.d_ino = dp->i_number;
+  					/* ni_dent.d_reclen is garbage ... */
+  					nchstats.ncs_goodhits++;
+  					restorseg5(seg5);
+***************
+*** 364,370 ****
+  	 */
+  	if (flag != LOOKUP || dp->i_number != u.u_ncache.nc_inumber ||
+  		dp->i_dev != u.u_ncache.nc_dev) {
+! 			u.u_offset = 0;
+  			numdirpasses = 1;
+  	} else {
+  		register int entryoffsetinblock;
+--- 366,372 ----
+  	 */
+  	if (flag != LOOKUP || dp->i_number != u.u_ncache.nc_inumber ||
+  		dp->i_dev != u.u_ncache.nc_dev) {
+! 			ndp->ni_offset = 0;
+  			numdirpasses = 1;
+  	} else {
+  		register int entryoffsetinblock;
+***************
+*** 371,381 ****
+
+  		if (u.u_ncache.nc_prevoffset > dp->i_size)
+  			u.u_ncache.nc_prevoffset = 0;
+! 		u.u_offset = u.u_ncache.nc_prevoffset;
+! 		entryoffsetinblock = blkoff(u.u_offset);
+  		if (entryoffsetinblock != 0) {
+  			bp = bread(dp->i_dev,
+! 			   bmap(dp,lblkno(u.u_offset),B_READ,0));
+  			if (bp->b_flags & B_ERROR) {
+  				brelse(bp);
+  				bp = NULL;
+--- 373,383 ----
+
+  		if (u.u_ncache.nc_prevoffset > dp->i_size)
+  			u.u_ncache.nc_prevoffset = 0;
+! 		ndp->ni_offset = u.u_ncache.nc_prevoffset;
+! 		entryoffsetinblock = blkoff(ndp->ni_offset);
+  		if (entryoffsetinblock != 0) {
+  			bp = bread(dp->i_dev,
+! 			   bmap(dp,lblkno(ndp->ni_offset),B_READ,0));
+  			if (bp->b_flags & B_ERROR) {
+  				brelse(bp);
+  				bp = NULL;
+***************
+*** 392,410 ****
+  	slotoffset = -1;
+
+  searchloop:
+! 	while (u.u_offset < endsearch) {
+  		/*
+  		 * If offset is on a block boundary,
+  		 * read the next directory block.
+  		 * Release previous if it exists.
+  		 */
+! 		if (blkoff(u.u_offset) == 0) {
+  			if (bp != NULL) {
+  				mapout(bp);
+  				brelse(bp);
+  			}
+  			bp = bread(dp->i_dev,
+! 			    bmap(dp,lblkno(u.u_offset),B_READ,0));
+  			if (bp->b_flags & B_ERROR) {
+  				brelse(bp);
+  				bp = NULL;
+--- 394,412 ----
+  	slotoffset = -1;
+
+  searchloop:
+! 	while (ndp->ni_offset < endsearch) {
+  		/*
+  		 * If offset is on a block boundary,
+  		 * read the next directory block.
+  		 * Release previous if it exists.
+  		 */
+! 		if (blkoff(ndp->ni_offset) == 0) {
+  			if (bp != NULL) {
+  				mapout(bp);
+  				brelse(bp);
+  			}
+  			bp = bread(dp->i_dev,
+! 			    bmap(dp,lblkno(ndp->ni_offset),B_READ,0));
+  			if (bp->b_flags & B_ERROR) {
+  				brelse(bp);
+  				bp = NULL;
+***************
+*** 419,425 ****
+  		 * slotoffset for possible create.
+  		 */
+  		if (ep->d_ino) {
+! 			register short	*p1 = (short *)u.u_dent.d_name,
+  					*p2 = (short *)ep->d_name;
+
+  			if (*p1++ == *p2++ && *p1++ == *p2++ &&
+--- 421,427 ----
+  		 * slotoffset for possible create.
+  		 */
+  		if (ep->d_ino) {
+! 			register short	*p1 = (short *)ndp->ni_dent.d_name,
+  					*p2 = (short *)ep->d_name;
+
+  			if (*p1++ == *p2++ && *p1++ == *p2++ &&
+***************
+*** 429,438 ****
+  				goto found;
+  		}
+  		else if (slotoffset == -1)
+! 			slotoffset = u.u_offset;
+! 		u.u_offset += sizeof(struct v7direct);
+  		if (ep->d_ino)
+! 			enduseful = u.u_offset;
+  		++ep;
+  	}
+  /* notfound: */
+--- 431,440 ----
+  				goto found;
+  		}
+  		else if (slotoffset == -1)
+! 			slotoffset = ndp->ni_offset;
+! 		ndp->ni_offset += sizeof(struct v7direct);
+  		if (ep->d_ino)
+! 			enduseful = ndp->ni_offset;
+  		++ep;
+  	}
+  /* notfound: */
+***************
+*** 442,448 ****
+  	 */
+  	if (numdirpasses == 2) {
+  		numdirpasses--;
+! 		u.u_offset = 0;
+  		endsearch = u.u_ncache.nc_prevoffset;
+  		goto searchloop;
+  	}
+--- 444,450 ----
+  	 */
+  	if (numdirpasses == 2) {
+  		numdirpasses--;
+! 		ndp->ni_offset = 0;
+  		endsearch = u.u_ncache.nc_prevoffset;
+  		goto searchloop;
+  	}
+***************
+*** 451,457 ****
+  	 * directory has not been removed, then can consider
+  	 * allowing file to be created.
+  	 */
+! 	if (flag == CREATE && *cp == '\0' && dp->i_nlink != 0) {
+  		/*
+  		 * Access for write is interpreted as allowing
+  		 * creation of files in the directory.
+--- 453,459 ----
+  	 * directory has not been removed, then can consider
+  	 * allowing file to be created.
+  	 */
+! 	if (flag == CREATE && *cp == 0 && dp->i_nlink != 0) {
+  		/*
+  		 * Access for write is interpreted as allowing
+  		 * creation of files in the directory.
+***************
+*** 461,478 ****
+  		/*
+  		 * Return an indication of where the new directory
+  		 * entry should be put.  If we didn't find a slot,
+! 		 * then u.u_offset is already correct.  If we found
+! 		 * a slot, then set u.u_offset to reflect it.
+  		 */
+  		if (slotoffset == -1)
+! 			u.ni_endoff = 0;
+  		else {
+! 			u.u_offset = slotoffset;
+  			if (enduseful < slotoffset + sizeof(struct v7direct))
+! 				u.ni_endoff =
+  				    slotoffset + sizeof(struct v7direct);
+  			else
+! 				u.ni_endoff = enduseful;
+  		}
+  		dp->i_flag |= IUPD|ICHG;
+  		if (bp) {
+--- 463,480 ----
+  		/*
+  		 * Return an indication of where the new directory
+  		 * entry should be put.  If we didn't find a slot,
+! 		 * then ndp->ni_offset is already correct.  If we found
+! 		 * a slot, then set ndp->ni_offset to reflect it.
+  		 */
+  		if (slotoffset == -1)
+! 			ndp->ni_endoff = 0;
+  		else {
+! 			ndp->ni_offset = slotoffset;
+  			if (enduseful < slotoffset + sizeof(struct v7direct))
+! 				ndp->ni_endoff =
+  				    slotoffset + sizeof(struct v7direct);
+  			else
+! 				ndp->ni_endoff = enduseful;
+  		}
+  		dp->i_flag |= IUPD|ICHG;
+  		if (bp) {
+***************
+*** 485,493 ****
+  		 * valid if we actually decide to do a direnter().
+  		 * We return NULL to indicate that the entry doesn't
+  		 * currently exist, leaving a pointer to the (locked)
+! 		 * directory inode in u.u_pdir.
+  		 */
+! 		u.u_pdir = dp;
+  		return (NULL);
+  	}
+  	u.u_error = ENOENT;
+--- 487,495 ----
+  		 * valid if we actually decide to do a direnter().
+  		 * We return NULL to indicate that the entry doesn't
+  		 * currently exist, leaving a pointer to the (locked)
+! 		 * directory inode in ndp->ni_pdir.
+  		 */
+! 		ndp->ni_pdir = dp;
+  		return (NULL);
+  	}
+  	u.u_error = ENOENT;
+***************
+*** 501,511 ****
+  	 * in the cache as to where the entry was found.
+  	 */
+  	if (*cp == '\0' && flag == LOOKUP) {
+! 		u.u_ncache.nc_prevoffset = u.u_offset;
+  		u.u_ncache.nc_inumber = dp->i_number;
+  		u.u_ncache.nc_dev = dp->i_dev;
+  	}
+! 	u.u_dent.d_ino = ep->d_ino;
+  	mapout(bp);
+  	brelse(bp);
+  	bp = NULL;
+--- 503,513 ----
+  	 * in the cache as to where the entry was found.
+  	 */
+  	if (*cp == '\0' && flag == LOOKUP) {
+! 		u.u_ncache.nc_prevoffset = ndp->ni_offset;
+  		u.u_ncache.nc_inumber = dp->i_number;
+  		u.u_ncache.nc_dev = dp->i_dev;
+  	}
+! 	ndp->ni_dent.d_ino = ep->d_ino;
+  	mapout(bp);
+  	brelse(bp);
+  	bp = NULL;
+***************
+*** 514,520 ****
+  	 * If deleting, and at end of pathname, return
+  	 * parameters which can be used to remove file.
+  	 * If the lockparent flag isn't set, we return only
+! 	 * the directory (in u.u_pdir), otherwise we go
+  	 * on and lock the inode, being careful with ".".
+  	 */
+  	if (flag == DELETE && *cp == 0) {
+--- 516,522 ----
+  	 * If deleting, and at end of pathname, return
+  	 * parameters which can be used to remove file.
+  	 * If the lockparent flag isn't set, we return only
+! 	 * the directory (in ndp->ni_pdir), otherwise we go
+  	 * on and lock the inode, being careful with ".".
+  	 */
+  	if (flag == DELETE && *cp == 0) {
+***************
+*** 523,540 ****
+  		 */
+  		if (access(dp, IWRITE))
+  			goto bad;
+! 		u.u_pdir = dp;		/* for dirremove() */
+  		/*
+! 		 * Return pointer to current entry in u.u_offset.
+! 		 * Save directory inode pointer in u.u_pdir for dirremove().
+  		 */
+  		if (lockparent) {
+! 			if (dp->i_number == u.u_dent.d_ino)
+  				dp->i_count++;
+  			else {
+! 				dp = iget(dp->i_dev, fs, u.u_dent.d_ino);
+  				if (dp == NULL) {
+! 					iput(u.u_pdir);
+  					goto bad;
+  				}
+  				/*
+--- 525,542 ----
+  		 */
+  		if (access(dp, IWRITE))
+  			goto bad;
+! 		ndp->ni_pdir = dp;		/* for dirremove() */
+  		/*
+! 		 * Return pointer to current entry in ndp->ni_offset.
+! 		 * Save directory inode pointer in ndp->ni_pdir for dirremove().
+  		 */
+  		if (lockparent) {
+! 			if (dp->i_number == ndp->ni_dent.d_ino)
+  				dp->i_count++;
+  			else {
+! 				dp = iget(dp->i_dev, fs, ndp->ni_dent.d_ino);
+  				if (dp == NULL) {
+! 					iput(ndp->ni_pdir);
+  					goto bad;
+  				}
+  				/*
+***************
+*** 543,553 ****
+  				 * may not delete it (unless he's root). This
+  				 * implements append-only directories.
+  				 */
+! 				if ((u.u_pdir->i_mode & ISVTX) &&
+  				    u.u_uid != 0 &&
+! 				    u.u_uid != u.u_pdir->i_uid &&
+  				    dp->i_uid != u.u_uid) {
+! 					iput(u.u_pdir);
+  					u.u_error = EPERM;
+  					goto bad;
+  				}
+--- 545,555 ----
+  				 * may not delete it (unless he's root). This
+  				 * implements append-only directories.
+  				 */
+! 				if ((ndp->ni_pdir->i_mode & ISVTX) &&
+  				    u.u_uid != 0 &&
+! 				    u.u_uid != ndp->ni_pdir->i_uid &&
+  				    dp->i_uid != u.u_uid) {
+! 					iput(ndp->ni_pdir);
+  					u.u_error = EPERM;
+  					goto bad;
+  				}
+***************
+*** 563,571 ****
+  	 */
+  	if (isdotdot) {
+  		if (dp == u.u_rdir) {
+! 			u.u_dent.d_ino = dp->i_number;
+  			makeentry = 0;
+! 		} else if (u.u_dent.d_ino == ROOTINO &&
+  		    dp->i_number == ROOTINO) {
+  			register struct mount *mp;
+  			register dev_t d;
+--- 565,573 ----
+  	 */
+  	if (isdotdot) {
+  		if (dp == u.u_rdir) {
+! 			ndp->ni_dent.d_ino = dp->i_number;
+  			makeentry = 0;
+! 		} else if (ndp->ni_dent.d_ino == ROOTINO &&
+  		    dp->i_number == ROOTINO) {
+  			register struct mount *mp;
+  			register dev_t d;
+***************
+*** 593,610 ****
+  	if ((flag == CREATE && lockparent) && *cp == 0) {
+  		if (access(dp, IWRITE))
+  			goto bad;
+! 		u.u_pdir = dp;		/* for dirrewrite() */
+  		/*
+  		 * Careful about locking second inode.
+  		 * This can only occur if the target is ".".
+  		 */
+! 		if (dp->i_number == u.u_dent.d_ino) {
+  			u.u_error = EISDIR;		/* XXX */
+  			goto bad;
+  		}
+! 		dp = iget(dp->i_dev, fs, u.u_dent.d_ino);
+  		if (dp == NULL) {
+! 			iput(u.u_pdir);
+  			goto bad;
+  		}
+  		return (dp);
+--- 595,612 ----
+  	if ((flag == CREATE && lockparent) && *cp == 0) {
+  		if (access(dp, IWRITE))
+  			goto bad;
+! 		ndp->ni_pdir = dp;		/* for dirrewrite() */
+  		/*
+  		 * Careful about locking second inode.
+  		 * This can only occur if the target is ".".
+  		 */
+! 		if (dp->i_number == ndp->ni_dent.d_ino) {
+  			u.u_error = EISDIR;		/* XXX */
+  			goto bad;
+  		}
+! 		dp = iget(dp->i_dev, fs, ndp->ni_dent.d_ino);
+  		if (dp == NULL) {
+! 			iput(ndp->ni_pdir);
+  			goto bad;
+  		}
+  		return (dp);
+***************
+*** 633,645 ****
+  	pdp = dp;
+  	if (isdotdot) {
+  		IUNLOCK(pdp);	/* race to get the inode */
+! 		dp = iget(dp->i_dev, dp->i_fs, u.u_dent.d_ino);
+  		if (dp == NULL)
+  			goto bad2;
+! 	} else if (dp->i_number == u.u_dent.d_ino) {
+  		dp->i_count++;	/* we want ourself, ie "." */
+  	} else {
+! 		dp = iget(dp->i_dev, dp->i_fs, u.u_dent.d_ino);
+  		IUNLOCK(pdp);
+  		if (dp == NULL)
+  			goto bad2;
+--- 635,647 ----
+  	pdp = dp;
+  	if (isdotdot) {
+  		IUNLOCK(pdp);	/* race to get the inode */
+! 		dp = iget(dp->i_dev, dp->i_fs, ndp->ni_dent.d_ino);
+  		if (dp == NULL)
+  			goto bad2;
+! 	} else if (dp->i_number == ndp->ni_dent.d_ino) {
+  		dp->i_count++;	/* we want ourself, ie "." */
+  	} else {
+! 		dp = iget(dp->i_dev, dp->i_fs, ndp->ni_dent.d_ino);
+  		IUNLOCK(pdp);
+  		if (dp == NULL)
+  			goto bad2;
+***************
+*** 672,678 ****
+  			ncp->nc_idev = dp->i_dev;	/* our device */
+  			ncp->nc_id = nmi_i_id[dp - inode];	/* identifier */
+  			ncp->nc_nlen = namelen;
+! 			bcopy(u.u_dent.d_name, ncp->nc_name,
+  			    (unsigned)ncp->nc_nlen);
+  			/* link at end of lru chain */
+  			ncp->nc_nxt = NULL;
+--- 674,680 ----
+  			ncp->nc_idev = dp->i_dev;	/* our device */
+  			ncp->nc_id = nmi_i_id[dp - inode];	/* identifier */
+  			ncp->nc_nlen = namelen;
+! 			bcopy(ndp->ni_dent.d_name, ncp->nc_name,
+  			    (unsigned)ncp->nc_nlen);
+  			/* link at end of lru chain */
+  			ncp->nc_nxt = NULL;
+***************
+*** 692,698 ****
+  	 * Check for symbolic link
+  	 */
+  	if ((dp->i_mode & IFMT) == IFLNK &&
+! 	    ((nameiop & FOLLOW) || *cp == '/')) {
+  		register int pathlen = strlen(cp) + 1;
+
+  		if (dp->i_size + pathlen >= MAXPATHLEN - 1) {
+--- 694,700 ----
+  	 * Check for symbolic link
+  	 */
+  	if ((dp->i_mode & IFMT) == IFLNK &&
+! 	    ((ndp->ni_nameiop & FOLLOW) || *cp == '/')) {
+  		register int pathlen = strlen(cp) + 1;
+
+  		if (dp->i_size + pathlen >= MAXPATHLEN - 1) {
+***************
+*** 748,754 ****
+  		goto dirloop;
+  	}
+  	if (lockparent)
+! 		u.u_pdir = pdp;
+  	else
+  		irele(pdp);
+  	return (dp);
+--- 750,756 ----
+  		goto dirloop;
+  	}
+  	if (lockparent)
+! 		ndp->ni_pdir = pdp;
+  	else
+  		irele(pdp);
+  	return (dp);
+***************
+*** 768,786 ****
+   * Write a directory entry with parameters left as side effects
+   * to a call to namei.
+   */
+! direnter(ip)
+! 	struct inode *ip;
+  {
+
+! 	u.u_dent.d_ino = ip->i_number;
+! 	u.u_count = sizeof(struct v7direct);
+! 	u.u_segflg = UIO_SYSSPACE;
+! 	u.u_base = (caddr_t)&u.u_dent;
+! 	writei(u.u_pdir);
+! 	if (u.ni_endoff &&
+! 	    u.u_pdir->i_size - u.ni_endoff > sizeof(struct v7direct) * 10)
+! 		itrunc(u.u_pdir, (u_long)u.ni_endoff);
+! 	iput(u.u_pdir);
+  	return(u.u_error);
+  }
+
+--- 770,788 ----
+   * Write a directory entry with parameters left as side effects
+   * to a call to namei.
+   */
+! direnter(ip, ndp)
+! register struct inode *ip;
+! register struct nameidata *ndp;
+  {
+
+! 	ndp->ni_dent.d_ino = ip->i_number;
+! 	u.u_error = rdwri(UIO_WRITE, ndp->ni_pdir, &ndp->ni_dent,
+! 			sizeof(struct v7direct), ndp->ni_offset,
+! 			UIO_SYSSPACE, (int *)0);
+! 	if (ndp->ni_endoff &&
+! 	    ndp->ni_pdir->i_size - ndp->ni_endoff > sizeof(struct v7direct) * 10)
+! 		itrunc(ndp->ni_pdir, (u_long)ndp->ni_endoff);
+! 	iput(ndp->ni_pdir);
+  	return(u.u_error);
+  }
+
+***************
+*** 787,802 ****
+  /*
+   * Remove a directory entry after a call to namei, using the
+   * parameters which it left in the u. area.  The u. entry
+!  * u_offset contains the offset into the directory of the
+   * entry to be eliminated.
+   */
+! dirremove()
+  {
+! 	u.u_dent.d_ino = 0;
+! 	u.u_count = sizeof(struct v7direct);
+! 	u.u_segflg = UIO_SYSSPACE;
+! 	u.u_base = (caddr_t)&u.u_dent;
+! 	writei(u.u_pdir);
+  	return(u.u_error);
+  }
+
+--- 789,804 ----
+  /*
+   * Remove a directory entry after a call to namei, using the
+   * parameters which it left in the u. area.  The u. entry
+!  * ni_offset contains the offset into the directory of the
+   * entry to be eliminated.
+   */
+! dirremove(ndp)
+! register struct nameidata *ndp;
+  {
+! 	ndp->ni_dent.d_ino = 0;
+! 	u.u_error = rdwri(UIO_WRITE, ndp->ni_pdir, &ndp->ni_dent,
+! 			sizeof(struct v7direct), ndp->ni_offset,
+! 			UIO_SYSSPACE, (int *)0);
+  	return(u.u_error);
+  }
+
+***************
+*** 805,819 ****
+   * supplied.  The parameters describing the directory entry are
+   * set up by a call to namei.
+   */
+! dirrewrite(dp, ip)
+  	register struct inode *dp;
+  	struct inode *ip;
+  {
+! 	u.u_dent.d_ino = ip->i_number;
+! 	u.u_count = sizeof(struct v7direct);
+! 	u.u_segflg = UIO_SYSSPACE;
+! 	u.u_base = (caddr_t)&u.u_dent;
+! 	writei(dp);
+  	iput(dp);
+  }
+
+--- 807,820 ----
+   * supplied.  The parameters describing the directory entry are
+   * set up by a call to namei.
+   */
+! dirrewrite(dp, ip, ndp)
+  	register struct inode *dp;
+  	struct inode *ip;
++ 	register struct nameidata *ndp;
+  {
+! 	ndp->ni_dent.d_ino = ip->i_number;
+! 	u.u_error = rdwri(UIO_WRITE, dp, &ndp->ni_dent, sizeof(struct v7direct),
+! 			ndp->ni_offset, UIO_SYSSPACE, (int *)0);
+  	iput(dp);
+  }
+
+***************
+*** 886,901 ****
+  	if (ip->i_number == ROOTINO)
+  		goto out;
+
+- 	u.u_segflg = UIO_SYSSPACE;
+  	for (;;) {
+  		if ((ip->i_mode&IFMT) != IFDIR) {
+  			error = ENOTDIR;
+  			break;
+  		}
+! 		u.u_base = (caddr_t)&dirbuf;
+! 		u.u_count = sizeof(struct dirtemplate);
+! 		u.u_offset = 0;
+! 		readi(ip);
+  		if (u.u_error != 0) {
+  			error = u.u_error;
+  			break;
+--- 887,899 ----
+  	if (ip->i_number == ROOTINO)
+  		goto out;
+
+  	for (;;) {
+  		if ((ip->i_mode&IFMT) != IFDIR) {
+  			error = ENOTDIR;
+  			break;
+  		}
+! 		u.u_error = rdwri(UIO_READ, ip, &dirbuf,
+! 			sizeof(struct dirtemplate), (off_t)0, UIO_SYSSPACE,0);
+  		if (u.u_error != 0) {
+  			error = u.u_error;
+  			break;
+diff -r -c /usr/src/oldsys/sys/ufs_syscalls.c /usr/src/sys/sys/ufs_syscalls.c
+*** /usr/src/oldsys/sys/ufs_syscalls.c	Mon Jan 29 21:22:25 1990
+--- /usr/src/sys/sys/ufs_syscalls.c	Sun Apr  8 01:32:01 1990
+***************
+*** 50,59 ****
+  	register struct a {
+  		char	*fname;
+  	} *uap = (struct a *)u.u_ap;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) != IFDIR) {
+--- 50,61 ----
+  	register struct a {
+  		char	*fname;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) != IFDIR) {
+***************
+*** 111,116 ****
+--- 113,119 ----
+  {
+  	register struct inode *ip;
+  	register struct file *fp;
++ 	register struct	nameidata *ndp = &u.u_nd;
+  	int indx;
+
+  	fp = falloc();
+***************
+*** 117,130 ****
+  	if (fp == NULL)
+  		return;
+  	indx = u.u_r.r_val1;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = fname;
+  	if (mode&FCREAT) {
+! 		ip = namei(mode & FEXCL ? CREATE : CREATE | FOLLOW);
+  		if (ip == NULL) {
+  			if (u.u_error)
+  				goto bad1;
+! 			ip = maknode(arg&07777&(~ISVTX));
+  			if (ip == NULL)
+  				goto bad1;
+  			mode &= ~FTRUNC;
+--- 120,137 ----
+  	if (fp == NULL)
+  		return;
+  	indx = u.u_r.r_val1;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = fname;
+  	if (mode&FCREAT) {
+! 		if (mode & FEXCL)
+! 			ndp->ni_nameiop = CREATE;
+! 		else
+! 			ndp->ni_nameiop = CREATE | FOLLOW;
+! 		ip = namei(ndp);
+  		if (ip == NULL) {
+  			if (u.u_error)
+  				goto bad1;
+! 			ip = maknode(arg&07777&(~ISVTX), ndp);
+  			if (ip == NULL)
+  				goto bad1;
+  			mode &= ~FTRUNC;
+***************
+*** 136,142 ****
+  			mode &= ~FCREAT;
+  		}
+  	} else {
+! 		ip = namei(LOOKUP | FOLLOW);
+  		if (ip == NULL)
+  			goto bad1;
+  	}
+--- 143,150 ----
+  			mode &= ~FCREAT;
+  		}
+  	} else {
+! 		ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 		ip = namei(ndp);
+  		if (ip == NULL)
+  			goto bad1;
+  	}
+***************
+*** 167,173 ****
+  		if (u.u_error == 0)
+  			u.u_error = EINTR;
+  		u.u_ofile[indx] = NULL;
+! 		closef(fp,0);
+  		return;
+  	}
+  	u.u_error = openi(ip, mode);
+--- 175,181 ----
+  		if (u.u_error == 0)
+  			u.u_error = EINTR;
+  		u.u_ofile[indx] = NULL;
+! 		closef(fp);
+  		return;
+  	}
+  	u.u_error = openi(ip, mode);
+***************
+*** 192,203 ****
+  		int	fmode;
+  		u_int	dev;
+  	} *uap = (struct a *)u.u_ap;
+
+  	if (!suser())
+  		return;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(CREATE | NOFOLLOW);
+  	if (ip != NULL) {
+  		u.u_error = EEXIST;
+  		goto out;
+--- 200,213 ----
+  		int	fmode;
+  		u_int	dev;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+  	if (!suser())
+  		return;
+! 	ndp->ni_nameiop = CREATE;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip != NULL) {
+  		u.u_error = EEXIST;
+  		goto out;
+***************
+*** 204,210 ****
+  	}
+  	if (u.u_error)
+  		return;
+! 	ip = maknode(uap->fmode);
+  	if (ip == NULL)
+  		return;
+  	switch (ip->i_mode & IFMT) {
+--- 214,220 ----
+  	}
+  	if (u.u_error)
+  		return;
+! 	ip = maknode(uap->fmode, ndp);
+  	if (ip == NULL)
+  		return;
+  	switch (ip->i_mode & IFMT) {
+***************
+*** 237,246 ****
+  		char	*target;
+  		char	*linkname;
+  	} *uap = (struct a *)u.u_ap;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->target;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser()) {
+--- 247,258 ----
+  		char	*target;
+  		char	*linkname;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->target;
+! 	ip = namei(ndp);	/* well, this routine is doomed anyhow */
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser()) {
+***************
+*** 251,259 ****
+  	ip->i_flag |= ICHG;
+  	iupdat(ip, &time, &time, 1);
+  	IUNLOCK(ip);
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = (caddr_t)uap->linkname;
+! 	xp = namei(CREATE | NOFOLLOW);
+  	if (xp != NULL) {
+  		u.u_error = EEXIST;
+  		iput(xp);
+--- 263,272 ----
+  	ip->i_flag |= ICHG;
+  	iupdat(ip, &time, &time, 1);
+  	IUNLOCK(ip);
+! 	ndp->ni_nameiop = CREATE;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = (caddr_t)uap->linkname;
+! 	xp = namei(ndp);
+  	if (xp != NULL) {
+  		u.u_error = EEXIST;
+  		iput(xp);
+***************
+*** 261,272 ****
+  	}
+  	if (u.u_error)
+  		goto out;
+! 	if (u.u_pdir->i_dev != ip->i_dev) {
+! 		iput(u.u_pdir);
+  		u.u_error = EXDEV;
+  		goto out;
+  	}
+! 	u.u_error = direnter(ip);
+  out:
+  	if (u.u_error) {
+  		ip->i_nlink--;
+--- 274,285 ----
+  	}
+  	if (u.u_error)
+  		goto out;
+! 	if (ndp->ni_pdir->i_dev != ip->i_dev) {
+! 		iput(ndp->ni_pdir);
+  		u.u_error = EXDEV;
+  		goto out;
+  	}
+! 	u.u_error = direnter(ip, ndp);
+  out:
+  	if (u.u_error) {
+  		ip->i_nlink--;
+***************
+*** 287,292 ****
+--- 300,306 ----
+  	register struct inode *ip;
+  	register char *tp;
+  	register c, nc;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+  	tp = uap->target;
+  	nc = 0;
+***************
+*** 298,306 ****
+  		tp++;
+  		nc++;
+  	}
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->linkname;
+! 	ip = namei(CREATE);
+  	if (ip) {
+  		iput(ip);
+  		u.u_error = EEXIST;
+--- 312,321 ----
+  		tp++;
+  		nc++;
+  	}
+! 	ndp->ni_nameiop = CREATE;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->linkname;
+! 	ip = namei(ndp);
+  	if (ip) {
+  		iput(ip);
+  		u.u_error = EEXIST;
+***************
+*** 308,321 ****
+  	}
+  	if (u.u_error)
+  		return;
+! 	ip = maknode(IFLNK | 0777);
+  	if (ip == NULL)
+  		return;
+! 	u.u_base = uap->target;
+! 	u.u_count = nc;
+! 	u.u_offset = 0;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	writei(ip);
+  	iput(ip);
+  }
+
+--- 323,333 ----
+  	}
+  	if (u.u_error)
+  		return;
+! 	ip = maknode(IFLNK | 0777, ndp);
+  	if (ip == NULL)
+  		return;
+! 	u.u_error = rdwri(UIO_WRITE, ip, uap->target, nc, (off_t)0,
+! 			UIO_USERSPACE, (int *)0);
+  	iput(ip);
+  }
+
+***************
+*** 330,342 ****
+  		char	*fname;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(DELETE | LOCKPARENT);
+  	if (ip == NULL)
+  		return;
+! 	dp = u.u_pdir;
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser())
+  		goto out;
+  	/*
+--- 342,356 ----
+  		char	*fname;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = DELETE | LOCKPARENT;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+! 	dp = ndp->ni_pdir;
+  	if ((ip->i_mode&IFMT) == IFDIR && !suser())
+  		goto out;
+  	/*
+***************
+*** 348,354 ****
+  	}
+  	if (ip->i_flag&ITEXT)
+  		xuntext(ip->i_text);	/* try once to free text */
+! 	if (!dirremove()) {
+  		ip->i_nlink--;
+  		ip->i_flag |= ICHG;
+  	}
+--- 362,368 ----
+  	}
+  	if (ip->i_flag&ITEXT)
+  		xuntext(ip->i_text);	/* try once to free text */
+! 	if (!dirremove(ndp)) {
+  		ip->i_nlink--;
+  		ip->i_flag |= ICHG;
+  	}
+***************
+*** 409,422 ****
+  		char	*fname;
+  		int	fmode;
+  	} *uap = (struct a *)u.u_ap;
+
+  	svuid = u.u_uid;
+  	svgid = u.u_gid;
+  	u.u_uid = u.u_ruid;
+  	u.u_gid = u.u_rgid;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip != NULL) {
+  		if ((uap->fmode&R_OK) && access(ip, IREAD))
+  			goto done;
+--- 423,438 ----
+  		char	*fname;
+  		int	fmode;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+  	svuid = u.u_uid;
+  	svgid = u.u_gid;
+  	u.u_uid = u.u_ruid;
+  	u.u_gid = u.u_rgid;
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip != NULL) {
+  		if ((uap->fmode&R_OK) && access(ip, IREAD))
+  			goto done;
+***************
+*** 458,467 ****
+  		struct stat *ub;
+  	} *uap = (struct a *)u.u_ap;
+  	struct stat sb;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | follow);
+  	if (ip == NULL)
+  		return;
+  	(void) ino_stat(ip, &sb);
+--- 474,485 ----
+  		struct stat *ub;
+  	} *uap = (struct a *)u.u_ap;
+  	struct stat sb;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | follow;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	(void) ino_stat(ip, &sb);
+***************
+*** 480,489 ****
+  		char	*buf;
+  		int	count;
+  	} *uap = (struct a *)u.u_ap;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->name;
+! 	ip = namei(LOOKUP | NOFOLLOW);
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) != IFLNK) {
+--- 498,510 ----
+  		char	*buf;
+  		int	count;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
++ 	int resid;
+
+! 	ndp->ni_nameiop = LOOKUP;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->name;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	if ((ip->i_mode&IFMT) != IFLNK) {
+***************
+*** 490,503 ****
+  		u.u_error = EINVAL;
+  		goto out;
+  	}
+! 	u.u_offset = 0;
+! 	u.u_base = uap->buf;
+! 	u.u_count = uap->count;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	readi(ip);
+  out:
+  	iput(ip);
+! 	u.u_r.r_val1 = uap->count - u.u_count;
+  }
+
+  /*
+--- 511,521 ----
+  		u.u_error = EINVAL;
+  		goto out;
+  	}
+! 	u.u_error = rdwri(UIO_READ, ip, uap->buf, uap->count, (off_t)0,
+! 			UIO_USERSPACE, &resid);
+  out:
+  	iput(ip);
+! 	u.u_r.r_val1 = uap->count - resid;
+  }
+
+  /*
+***************
+*** 576,585 ****
+  		int	uid;
+  		int	gid;
+  	} *uap = (struct a *)u.u_ap;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | NOFOLLOW);
+  	if (ip == NULL)
+  		return;
+  	u.u_error = chown1(ip, uap->uid, uap->gid);
+--- 594,605 ----
+  		int	uid;
+  		int	gid;
+  	} *uap = (struct a *)u.u_ap;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | NOFOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	u.u_error = chown1(ip, uap->uid, uap->gid);
+***************
+*** 702,711 ****
+  		off_t	length;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->fname;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == NULL)
+  		return;
+  	if (access(ip, IWRITE))
+--- 722,733 ----
+  		off_t	length;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->fname;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+  	if (access(ip, IWRITE))
+***************
+*** 800,817 ****
+  	register struct inode *ip, *xp, *dp;
+  	struct dirtemplate dirbuf;
+  	int doingdirectory = 0, oldparent = 0, newparent = 0;
+  	int error = 0;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->from;
+! 	ip = namei(DELETE | LOCKPARENT);
+  	if (ip == NULL)
+  		return;
+! 	dp = u.u_pdir;
+  	if ((ip->i_mode&IFMT) == IFDIR) {
+  		register struct v7direct *d;
+
+! 		d = &u.u_dent;
+  		/*
+  		 * Avoid ".", "..", and aliases of "." for obvious reasons.
+  		 */
+--- 822,841 ----
+  	register struct inode *ip, *xp, *dp;
+  	struct dirtemplate dirbuf;
+  	int doingdirectory = 0, oldparent = 0, newparent = 0;
++ 	register struct nameidata *ndp = &u.u_nd;
+  	int error = 0;
+
+! 	ndp->ni_nameiop = DELETE | LOCKPARENT;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->from;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+! 	dp = ndp->ni_pdir;
+  	if ((ip->i_mode&IFMT) == IFDIR) {
+  		register struct v7direct *d;
+
+! 		d = &ndp->ni_dent;
+  		/*
+  		 * Avoid ".", "..", and aliases of "." for obvious reasons.
+  		 */
+***************
+*** 847,859 ****
+  	 * When the target exists, both the directory
+  	 * and target inodes are returned locked.
+  	 */
+! 	u.u_dirp = (caddr_t)uap->to;
+! 	xp = namei(CREATE | LOCKPARENT | NOCACHE);
+  	if (u.u_error) {
+  		error = u.u_error;
+  		goto out;
+  	}
+! 	dp = u.u_pdir;
+  	/*
+  	 * If ".." must be changed (ie the directory gets a new
+  	 * parent) then the source directory must not be in the
+--- 871,884 ----
+  	 * When the target exists, both the directory
+  	 * and target inodes are returned locked.
+  	 */
+! 	ndp->ni_nameiop = CREATE | LOCKPARENT | NOCACHE;
+! 	ndp->ni_dirp = (caddr_t)uap->to;
+! 	xp = namei(ndp);
+  	if (u.u_error) {
+  		error = u.u_error;
+  		goto out;
+  	}
+! 	dp = ndp->ni_pdir;
+  	/*
+  	 * If ".." must be changed (ie the directory gets a new
+  	 * parent) then the source directory must not be in the
+***************
+*** 869,895 ****
+  	if (doingdirectory && newparent) {
+  		if (access(ip, IWRITE))
+  			goto bad;
+! 		for (;;) {
+! 			dev_t	sdev;
+! 			ino_t	sino;
+!
+! 			sdev = u.u_pdir->i_dev;
+! 			sino = u.u_pdir->i_number;
+  			if (xp != NULL)
+  				iput(xp);
+! 			u.u_error = checkpath(ip, u.u_pdir);
+  			if (u.u_error)
+  				goto out;
+! 			u.u_segflg = UIO_USERSPACE;
+! 			xp = namei(CREATE | LOCKPARENT);
+  			if (u.u_error) {
+  				error = u.u_error;
+  				goto out;
+  			}
+! 			dp = u.u_pdir;
+! 			if (sdev == dp->i_dev && sino == dp->i_number)
+! 				break;
+! 		}
+  	}
+  	/*
+  	 * 2) If target doesn't exist, link the target
+--- 894,912 ----
+  	if (doingdirectory && newparent) {
+  		if (access(ip, IWRITE))
+  			goto bad;
+! 		do {
+! 			dp = ndp->ni_pdir;
+  			if (xp != NULL)
+  				iput(xp);
+! 			u.u_error = checkpath(ip, dp);
+  			if (u.u_error)
+  				goto out;
+! 			xp = namei(ndp);
+  			if (u.u_error) {
+  				error = u.u_error;
+  				goto out;
+  			}
+! 		} while (dp != ndp->ni_pdir);
+  	}
+  	/*
+  	 * 2) If target doesn't exist, link the target
+***************
+*** 913,919 ****
+  			dp->i_flag |= ICHG;
+  			iupdat(dp, &time, &time, 1);
+  		}
+! 		error = direnter(ip);
+  		if (error)
+  			goto out;
+  	} else {
+--- 930,936 ----
+  			dp->i_flag |= ICHG;
+  			iupdat(dp, &time, &time, 1);
+  		}
+! 		error = direnter(ip, ndp);
+  		if (error)
+  			goto out;
+  	} else {
+***************
+*** 958,964 ****
+  			error = EISDIR;
+  			goto bad;
+  		}
+! 		dirrewrite(dp, ip);
+  		if (u.u_error) {
+  			error = u.u_error;
+  			goto bad1;
+--- 975,981 ----
+  			error = EISDIR;
+  			goto bad;
+  		}
+! 		dirrewrite(dp, ip, ndp);
+  		if (u.u_error) {
+  			error = u.u_error;
+  			goto bad1;
+***************
+*** 987,997 ****
+  	/*
+  	 * 3) Unlink the source.
+  	 */
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->from;
+! 	xp = namei(DELETE | LOCKPARENT);
+  	if (xp != NULL)
+! 		dp = u.u_pdir;
+  	else
+  		dp = NULL;
+  	/*
+--- 1004,1015 ----
+  	/*
+  	 * 3) Unlink the source.
+  	 */
+! 	ndp->ni_nameiop = DELETE | LOCKPARENT;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->from;
+! 	xp = namei(ndp);
+  	if (xp != NULL)
+! 		dp = ndp->ni_pdir;
+  	else
+  		dp = NULL;
+  	/*
+***************
+*** 1015,1030 ****
+  		 * and ".." set to point to the new parent.
+  		 */
+  		if (doingdirectory && newparent) {
+- 			off_t saved_offset;
+-
+- 			saved_offset = u.u_offset;
+  			dp->i_nlink--;
+  			dp->i_flag |= ICHG;
+! 			u.u_base = (caddr_t)&dirbuf;
+! 			u.u_count = sizeof(struct dirtemplate);
+! 			u.u_offset = 0;
+! 			u.u_segflg = UIO_SYSSPACE;
+! 			readi(xp);
+  			if (u.u_error == 0) {
+  				if (dirbuf.dotdot_name[2] ||
+  				    dirbuf.dotdot_name[0] != '.' ||
+--- 1033,1044 ----
+  		 * and ".." set to point to the new parent.
+  		 */
+  		if (doingdirectory && newparent) {
+  			dp->i_nlink--;
+  			dp->i_flag |= ICHG;
+! 			u.u_error = rdwri(UIO_READ, xp, &dirbuf,
+! 					sizeof(struct dirtemplate),
+! 					(off_t)0, UIO_SYSSPACE, (int *)0);
+!
+  			if (u.u_error == 0) {
+  				if (dirbuf.dotdot_name[2] ||
+  				    dirbuf.dotdot_name[0] != '.' ||
+***************
+*** 1031,1047 ****
+  				    dirbuf.dotdot_name[1] != '.') {
+  					printf("rename: mangled dir\n");
+  				} else {
+- 					u.u_base = (caddr_t)&dirbuf;
+- 					u.u_count = sizeof(struct dirtemplate);
+- 					u.u_offset = 0;
+  					dirbuf.dotdot_ino = newparent;
+! 					(void) writei(xp);
+  					cacheinval(dp);
+  				}
+  			}
+- 			u.u_offset = saved_offset;
+  		}
+! 		if (!dirremove()) {
+  			xp->i_nlink--;
+  			xp->i_flag |= ICHG;
+  		}
+--- 1045,1059 ----
+  				    dirbuf.dotdot_name[1] != '.') {
+  					printf("rename: mangled dir\n");
+  				} else {
+  					dirbuf.dotdot_ino = newparent;
+! 					rdwri(UIO_WRITE, xp, &dirbuf,
+! 					       sizeof(struct dirtemplate),
+! 					       (off_t)0, UIO_SYSSPACE,(int *)0);
+  					cacheinval(dp);
+  				}
+  			}
+  		}
+! 		if (!dirremove(ndp)) {
+  			xp->i_nlink--;
+  			xp->i_flag |= ICHG;
+  		}
+***************
+*** 1075,1085 ****
+   * Make a new file.
+   */
+  struct inode *
+! maknode(mode)
+  	int mode;
+  {
+  	register struct inode *ip;
+! 	register struct inode *pdir = u.u_pdir;
+
+  	ip = ialloc(pdir);
+  	if (ip == NULL) {
+--- 1087,1098 ----
+   * Make a new file.
+   */
+  struct inode *
+! maknode(mode, ndp)
+  	int mode;
++ register struct nameidata *ndp;
+  {
+  	register struct inode *ip;
+! 	register struct inode *pdir = ndp->ni_pdir;
+
+  	ip = ialloc(pdir);
+  	if (ip == NULL) {
+***************
+*** 1109,1115 ****
+  	 * Make sure inode goes to disk before directory entry.
+  	 */
+  	iupdat(ip, &time, &time, 1);
+! 	u.u_error = direnter(ip);
+  	if (u.u_error) {
+  		/*
+  		 * Write error occurred trying to update directory
+--- 1122,1128 ----
+  	 * Make sure inode goes to disk before directory entry.
+  	 */
+  	iupdat(ip, &time, &time, 1);
+! 	u.u_error = direnter(ip, ndp);
+  	if (u.u_error) {
+  		/*
+  		 * Write error occurred trying to update directory
+***************
+*** 1142,1151 ****
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
+  	struct dirtemplate dirtemplate;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->name;
+! 	ip = namei(CREATE);
+  	if (u.u_error)
+  		return;
+  	if (ip != NULL) {
+--- 1155,1166 ----
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
+  	struct dirtemplate dirtemplate;
++ 	register struct nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = CREATE;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->name;
+! 	ip = namei(ndp);
+  	if (u.u_error)
+  		return;
+  	if (ip != NULL) {
+***************
+*** 1153,1159 ****
+  		u.u_error = EEXIST;
+  		return;
+  	}
+! 	dp = u.u_pdir;
+  	uap->dmode &= 0777;
+  	uap->dmode |= IFDIR;
+  	/*
+--- 1168,1174 ----
+  		u.u_error = EEXIST;
+  		return;
+  	}
+! 	dp = ndp->ni_pdir;
+  	uap->dmode &= 0777;
+  	uap->dmode |= IFDIR;
+  	/*
+***************
+*** 1201,1217 ****
+  	dirtemplate = mastertemplate;
+  	dirtemplate.dot_ino = ip->i_number;
+  	dirtemplate.dotdot_ino = dp->i_number;
+! 	{
+! 		off_t saved_offset;
+!
+! 		u.u_base = (caddr_t)&dirtemplate;
+! 		u.u_count = sizeof(struct dirtemplate);
+! 		u.u_segflg = UIO_SYSSPACE;
+! 		saved_offset = u.u_offset;
+! 		u.u_offset = 0;
+! 		writei(ip);
+! 		u.u_offset = saved_offset;
+! 	}
+  	if (u.u_error) {
+  		dp->i_nlink--;
+  		dp->i_flag |= ICHG;
+--- 1216,1224 ----
+  	dirtemplate = mastertemplate;
+  	dirtemplate.dot_ino = ip->i_number;
+  	dirtemplate.dotdot_ino = dp->i_number;
+! 	u.u_error = rdwri(UIO_WRITE, ip, &dirtemplate,
+! 			sizeof(struct dirtemplate), (off_t)0,
+! 			UIO_SYSSPACE, (int *)0);
+  	if (u.u_error) {
+  		dp->i_nlink--;
+  		dp->i_flag |= ICHG;
+***************
+*** 1222,1233 ****
+  	 * install the entry for it in
+  	 * the parent directory.
+  	 */
+! 	u.u_error = direnter(ip);
+  	dp = NULL;
+  	if (u.u_error) {
+! 		u.u_segflg = UIO_USERSPACE;
+! 		u.u_dirp = uap->name;
+! 		dp = namei(LOOKUP | NOCACHE);
+  		if (dp) {
+  			dp->i_nlink--;
+  			dp->i_flag |= ICHG;
+--- 1229,1241 ----
+  	 * install the entry for it in
+  	 * the parent directory.
+  	 */
+! 	u.u_error = direnter(ip, ndp);
+  	dp = NULL;
+  	if (u.u_error) {
+! 		ndp->ni_nameiop = LOOKUP | NOCACHE;
+! 		ndp->ni_segflg = UIO_USERSPACE;
+! 		ndp->ni_dirp = uap->name;
+! 		dp = namei(ndp);
+  		if (dp) {
+  			dp->i_nlink--;
+  			dp->i_flag |= ICHG;
+***************
+*** 1257,1269 ****
+  		char	*name;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
+
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_dirp = uap->name;
+! 	ip = namei(DELETE | LOCKPARENT);
+  	if (ip == NULL)
+  		return;
+! 	dp = u.u_pdir;
+  	/*
+  	 * No rmdir "." please.
+  	 */
+--- 1265,1279 ----
+  		char	*name;
+  	} *uap = (struct a *)u.u_ap;
+  	register struct inode *ip, *dp;
++ 	register struct	nameidata *ndp = &u.u_nd;
+
+! 	ndp->ni_nameiop = DELETE | LOCKPARENT;
+! 	ndp->ni_segflg = UIO_USERSPACE;
+! 	ndp->ni_dirp = uap->name;
+! 	ip = namei(ndp);
+  	if (ip == NULL)
+  		return;
+! 	dp = ndp->ni_pdir;
+  	/*
+  	 * No rmdir "." please.
+  	 */
+***************
+*** 1300,1306 ****
+  	 * inode.  If we crash in between, the directory
+  	 * will be reattached to lost+found,
+  	 */
+! 	if (dirremove())
+  		goto out;
+  	dp->i_nlink--;
+  	dp->i_flag |= ICHG;
+--- 1310,1316 ----
+  	 * inode.  If we crash in between, the directory
+  	 * will be reattached to lost+found,
+  	 */
+! 	if (dirremove(ndp))
+  		goto out;
+  	dp->i_nlink--;
+  	dp->i_flag |= ICHG;
+diff -r -c /usr/src/oldsys/sys/uipc_socket.c /usr/src/sys/sys/uipc_socket.c
+*** /usr/src/oldsys/sys/uipc_socket.c	Sat Apr 30 16:14:39 1988
+--- /usr/src/sys/sys/uipc_socket.c	Sat Apr  7 20:14:18 1990
+***************
+*** 177,183 ****
+  	so->so_state |= SS_NOFDREF;
+  	sofree(so);
+  	splx(s);
+! 	return(u.u_error = error);
+  }
+
+  /*
+--- 177,183 ----
+  	so->so_state |= SS_NOFDREF;
+  	sofree(so);
+  	splx(s);
+! 	return(error);
+  }
+
+  /*
+***************
+*** 300,308 ****
+   * inform user that this would block and do nothing.
+   * Otherwise, if nonblocking, send as much as possible.
+   */
+! sosend(so, nam, flags, rights)
+  	register struct socket *so;
+  	struct mbuf *nam;
+  	int flags;
+  	struct mbuf *rights;
+  {
+--- 300,309 ----
+   * inform user that this would block and do nothing.
+   * Otherwise, if nonblocking, send as much as possible.
+   */
+! sosend(so, nam, uio, flags, rights)
+  	register struct socket *so;
+  	struct mbuf *nam;
++ 	register struct uio *uio;
+  	int flags;
+  	struct mbuf *rights;
+  {
+***************
+*** 311,317 ****
+  	register int space;
+  	int len, rlen = 0, error = 0, s, dontroute, first = 1;
+
+! 	if (sosendallatonce(so) && u.u_count > so->so_snd.sb_hiwat)
+  		return (EMSGSIZE);
+  	dontroute =
+  	    (flags & MSG_DONTROUTE) && (so->so_options & SO_DONTROUTE) == 0 &&
+--- 312,318 ----
+  	register int space;
+  	int len, rlen = 0, error = 0, s, dontroute, first = 1;
+
+! 	if (sosendallatonce(so) && uio->uio_resid > so->so_snd.sb_hiwat)
+  		return (EMSGSIZE);
+  	dontroute =
+  	    (flags & MSG_DONTROUTE) && (so->so_options & SO_DONTROUTE) == 0 &&
+***************
+*** 345,352 ****
+  			space = sbspace(&so->so_snd);
+  			if (space <= rlen ||
+  			   (sosendallatonce(so) &&
+! 				space < u.u_count + rlen) ||
+! 			   (u.u_count >= CLBYTES && space < CLBYTES &&
+  			   so->so_snd.sb_cc >= CLBYTES &&
+  			   (so->so_state & SS_NBIO) == 0)) {
+  				if (so->so_state & SS_NBIO) {
+--- 346,353 ----
+  			space = sbspace(&so->so_snd);
+  			if (space <= rlen ||
+  			   (sosendallatonce(so) &&
+! 				space < uio->uio_resid + rlen) ||
+! 			   (uio->uio_resid >= CLBYTES && space < CLBYTES &&
+  			   so->so_snd.sb_cc >= CLBYTES &&
+  			   (so->so_state & SS_NBIO) == 0)) {
+  				if (so->so_state & SS_NBIO) {
+***************
+*** 366,389 ****
+  		space -= rlen;
+  		while (space > 0) {
+  			MGET(m, M_WAIT, MT_DATA);
+! 			if (u.u_count >= CLBYTES / 2 && space >= CLBYTES) {
+  				MCLGET(m);
+  				if (m->m_len != CLBYTES)
+  					goto nopages;
+! 				len = MIN(CLBYTES, u.u_count);
+  				space -= CLBYTES;
+  			} else {
+  nopages:
+! 				len = MIN(MIN(MLEN, u.u_count), space);
+  				space -= len;
+  			}
+! 			error = uiomove(mtod(m, caddr_t), len, UIO_WRITE);
+  			m->m_len = len;
+  			*mp = m;
+  			if (error)
+  				goto release;
+  			mp = &m->m_next;
+! 			if (u.u_count <= 0)
+  				break;
+  		}
+  		if (dontroute)
+--- 367,390 ----
+  		space -= rlen;
+  		while (space > 0) {
+  			MGET(m, M_WAIT, MT_DATA);
+! 			if (uio->uio_resid >= CLBYTES / 2 && space >= CLBYTES) {
+  				MCLGET(m);
+  				if (m->m_len != CLBYTES)
+  					goto nopages;
+! 				len = MIN(CLBYTES, uio->uio_resid);
+  				space -= CLBYTES;
+  			} else {
+  nopages:
+! 				len = MIN(MIN(MLEN, uio->uio_resid), space);
+  				space -= len;
+  			}
+! 			error = uiomove(mtod(m, caddr_t), len, UIO_WRITE, uio);
+  			m->m_len = len;
+  			*mp = m;
+  			if (error)
+  				goto release;
+  			mp = &m->m_next;
+! 			if (uio->uio_resid == 0)
+  				break;
+  		}
+  		if (dontroute)
+***************
+*** 401,407 ****
+  		first = 0;
+  		if (error)
+  			break;
+! 	} while (u.u_count);
+
+  release:
+  	sbunlock(&so->so_snd);
+--- 402,408 ----
+  		first = 0;
+  		if (error)
+  			break;
+! 	} while (uio->uio_resid);
+
+  release:
+  	sbunlock(&so->so_snd);
+***************
+*** 424,432 ****
+   * Although the sockbuf is locked, new data may still be appended,
+   * and thus we must maintain consistency of the sockbuf during that time.
+   */
+! soreceive(so, aname, flags, rightsp)
+  	register struct socket *so;
+  	struct mbuf **aname;
+  	int flags;
+  	struct mbuf **rightsp;
+  {
+--- 425,434 ----
+   * Although the sockbuf is locked, new data may still be appended,
+   * and thus we must maintain consistency of the sockbuf during that time.
+   */
+! soreceive(so, aname, uio, flags, rightsp)
+  	register struct socket *so;
+  	struct mbuf **aname;
++ 	register struct uio *uio;
+  	int flags;
+  	struct mbuf **rightsp;
+  {
+***************
+*** 447,459 ****
+  		if (error)
+  			goto bad;
+  		do {
+! 			len = u.u_count;
+  			if (len > m->m_len)
+  				len = m->m_len;
+  			error =
+! 			    uiomove(mtod(m, caddr_t), (int)len, UIO_READ);
+  			m = m_free(m);
+! 		} while (u.u_count && error == 0 && m);
+  bad:
+  		if (m)
+  			m_freem(m);
+--- 449,461 ----
+  		if (error)
+  			goto bad;
+  		do {
+! 			len = uio->uio_resid;
+  			if (len > m->m_len)
+  				len = m->m_len;
+  			error =
+! 			    uiomove(mtod(m, caddr_t), (int)len, UIO_READ, uio);
+  			m = m_free(m);
+! 		} while (uio->uio_resid && error == 0 && m);
+  bad:
+  		if (m)
+  			m_freem(m);
+***************
+*** 477,483 ****
+  			error = ENOTCONN;
+  			goto release;
+  		}
+! 		if (u.u_count == 0)
+  			goto release;
+  		if (so->so_state & SS_NBIO) {
+  			error = EWOULDBLOCK;
+--- 479,485 ----
+  			error = ENOTCONN;
+  			goto release;
+  		}
+! 		if (uio->uio_resid == 0)
+  			goto release;
+  		if (so->so_state & SS_NBIO) {
+  			error = EWOULDBLOCK;
+***************
+*** 539,548 ****
+  	}
+  	moff = 0;
+  	offset = 0;
+! 	while (m && u.u_count > 0 && error == 0) {
+  		if (m->m_type != MT_DATA && m->m_type != MT_HEADER)
+  			panic("receive 3");
+! 		len = u.u_count;
+  		so->so_state &= ~SS_RCVATMARK;
+  		if (so->so_oobmark && len > so->so_oobmark - offset)
+  			len = so->so_oobmark - offset;
+--- 541,550 ----
+  	}
+  	moff = 0;
+  	offset = 0;
+! 	while (m && uio->uio_resid && error == 0) {
+  		if (m->m_type != MT_DATA && m->m_type != MT_HEADER)
+  			panic("receive 3");
+! 		len = uio->uio_resid;
+  		so->so_state &= ~SS_RCVATMARK;
+  		if (so->so_oobmark && len > so->so_oobmark - offset)
+  			len = so->so_oobmark - offset;
+***************
+*** 550,556 ****
+  			len = m->m_len - moff;
+  		splx(s);
+  		error =
+! 		    uiomove(mtod(m, caddr_t) + moff, (int)len, UIO_READ);
+  		s = splnet();
+  		if (len == m->m_len - moff) {
+  			if (flags & MSG_PEEK) {
+--- 552,558 ----
+  			len = m->m_len - moff;
+  		splx(s);
+  		error =
+! 		    uiomove(mtod(m, caddr_t) + moff, (int)len, UIO_READ, uio);
+  		s = splnet();
+  		if (len == m->m_len - moff) {
+  			if (flags & MSG_PEEK) {
+***************
+*** 813,819 ****
+  sohasoutofband(so)
+  	register struct socket *so;
+  {
+! 	struct proc *p;
+
+  	if (so->so_pgrp < 0)
+  		GSIGNAL(-so->so_pgrp, SIGURG);
+--- 815,821 ----
+  sohasoutofband(so)
+  	register struct socket *so;
+  {
+! register struct proc *p;
+
+  	if (so->so_pgrp < 0)
+  		GSIGNAL(-so->so_pgrp, SIGURG);
+***************
+*** 836,842 ****
+  */
+
+  soacc1(so)
+! 	struct	socket	*so;
+  	{
+
+  	if	((so->so_options & SO_ACCEPTCONN) == 0)
+--- 838,844 ----
+  */
+
+  soacc1(so)
+! register struct	socket	*so;
+  	{
+
+  	if	((so->so_options & SO_ACCEPTCONN) == 0)
+***************
+*** 871,877 ****
+  	struct	socket	*so;
+  	int	n;
+  	{
+! 	struct	socket	*aso;
+
+  	aso = so->so_q;
+  	if	(soqremque(aso, n) == 0)
+--- 873,879 ----
+  	struct	socket	*so;
+  	int	n;
+  	{
+! register struct	socket	*aso;
+
+  	aso = so->so_q;
+  	if	(soqremque(aso, n) == 0)
+***************
+*** 885,891 ****
+  */
+
+  connwhile(so)
+! 	struct	socket	*so;
+  	{
+
+  	while	((so->so_state & SS_ISCONNECTING) && so->so_error == 0)
+--- 887,893 ----
+  */
+
+  connwhile(so)
+! register struct	socket	*so;
+  	{
+
+  	while	((so->so_state & SS_ISCONNECTING) && so->so_error == 0)
+diff -r -c /usr/src/oldsys/sys/uipc_sys.c /usr/src/sys/sys/uipc_sys.c
+*** /usr/src/oldsys/sys/uipc_sys.c	Wed Jul 26 16:23:06 1989
+--- /usr/src/sys/sys/uipc_sys.c	Sat Apr  7 21:21:28 1990
+***************
+*** 303,313 ****
+  		int	tolen;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+
+  	msg.msg_name = uap->to;
+  	msg.msg_namelen = uap->tolen;
+! 	u.u_base = uap->buf;
+! 	u.u_count = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	sendit(uap->s, &msg, uap->flags);
+--- 303,316 ----
+  		int	tolen;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
++ 	struct iovec aiov;
+
+  	msg.msg_name = uap->to;
+  	msg.msg_namelen = uap->tolen;
+! 	msg.msg_iov = &aiov;
+! 	msg.msg_iovlen = 1;
+! 	aiov.iov_base = uap->buf;
+! 	aiov.iov_len = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	sendit(uap->s, &msg, uap->flags);
+***************
+*** 322,332 ****
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+
+  	msg.msg_name = 0;
+  	msg.msg_namelen = 0;
+! 	u.u_base = uap->buf;
+! 	u.u_count = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	sendit(uap->s, &msg, uap->flags);
+--- 325,338 ----
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
++ 	struct iovec aiov;
+
+  	msg.msg_name = 0;
+  	msg.msg_namelen = 0;
+! 	msg.msg_iov = &aiov;
+! 	msg.msg_iovlen = 1;
+! 	aiov.iov_base = uap->buf;
+! 	aiov.iov_len = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	sendit(uap->s, &msg, uap->flags);
+***************
+*** 340,361 ****
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+! 	struct iovec aiov;
+
+  	u.u_error = copyin(uap->msg, (caddr_t)&msg, sizeof (msg));
+  	if (u.u_error)
+  		return;
+! 	if ((u_int)msg.msg_iovlen > 1) {
+  		u.u_error = EMSGSIZE;
+  		return;
+  	}
+  	u.u_error =
+! 	    copyin((caddr_t)msg.msg_iov, (caddr_t)&aiov,
+! 		sizeof(aiov));
+  	if (u.u_error)
+  		return;
+! 	u.u_base = aiov.iov_base;
+! 	u.u_count = aiov.iov_len;
+  	sendit(uap->s, &msg, uap->flags);
+  }
+
+--- 346,366 ----
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+! 	struct iovec aiov[MSG_MAXIOVLEN];
+
+  	u.u_error = copyin(uap->msg, (caddr_t)&msg, sizeof (msg));
+  	if (u.u_error)
+  		return;
+! 	if ((u_int)msg.msg_iovlen >= sizeof (aiov) / sizeof (aiov[0])) {
+  		u.u_error = EMSGSIZE;
+  		return;
+  	}
+  	u.u_error =
+! 	    copyin((caddr_t)msg.msg_iov, (caddr_t)aiov,
+! 		(unsigned)(msg.msg_iovlen * sizeof (aiov[0])));
+  	if (u.u_error)
+  		return;
+! 	msg.msg_iov = aiov;
+  	sendit(uap->s, &msg, uap->flags);
+  }
+
+***************
+*** 365,370 ****
+--- 370,376 ----
+  	int flags;
+  {
+  	register struct file *fp;
++ 	struct uio auio;
+  	register struct iovec *iov;
+  	register int i;
+  	struct mbuf *to, *rights;
+***************
+*** 376,383 ****
+  	fp = gtsockf(s);
+  	if (fp == 0)
+  		return;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_offset = 0;				/* XXX */
+  	if (mp->msg_name) {
+  		to = (struct mbuf *)sabuf;
+  		MBZAP(to, mp->msg_namelen, MT_SONAME);
+--- 382,410 ----
+  	fp = gtsockf(s);
+  	if (fp == 0)
+  		return;
+! 	auio.uio_iov = mp->msg_iov;
+! 	auio.uio_iovcnt = mp->msg_iovlen;
+! 	auio.uio_segflg = UIO_USERSPACE;
+! 	auio.uio_offset = 0;				/* XXX */
+! 	auio.uio_resid = 0;
+! 	iov = mp->msg_iov;
+! 	for (i = 0; i < mp->msg_iovlen; i++, iov++) {
+! #ifndef	BSD2_10
+! 		if (iov->iov_len < 0) {
+! 			u.u_error = EINVAL;
+! 			return;
+! 		}
+! #endif
+! 		if (iov->iov_len == 0)
+! 			continue;
+! #ifndef	BSD2_10
+! 		if (useracc(iov->iov_base, (u_int)iov->iov_len, B_READ) == 0) {
+! 			u.u_error = EFAULT;
+! 			return;
+! 		}
+! #endif
+! 		auio.uio_resid += iov->iov_len;
+! 	}
+  	if (mp->msg_name) {
+  		to = (struct mbuf *)sabuf;
+  		MBZAP(to, mp->msg_namelen, MT_SONAME);
+***************
+*** 398,406 ****
+  			return;
+  	} else
+  		rights = 0;
+! 	len = u.u_count;
+! 	u.u_error = SOSEND(fp->f_socket, to, flags, rights);
+! 	u.u_r.r_val1 = len - u.u_count;
+  }
+
+  recvfrom()
+--- 425,433 ----
+  			return;
+  	} else
+  		rights = 0;
+! 	len = auio.uio_resid;
+! 	u.u_error = SOSEND(fp->f_socket, to, &auio, flags, rights);
+! 	u.u_r.r_val1 = len - auio.uio_resid;
+  }
+
+  recvfrom()
+***************
+*** 414,419 ****
+--- 441,447 ----
+  		int	*fromlenaddr;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
++ 	struct iovec aiov;
+  	int len;
+
+  	u.u_error = copyin((caddr_t)uap->fromlenaddr, (caddr_t)&len,
+***************
+*** 422,429 ****
+  		return;
+  	msg.msg_name = uap->from;
+  	msg.msg_namelen = len;
+! 	u.u_base = uap->buf;
+! 	u.u_count = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	recvit(uap->s, &msg, uap->flags, (caddr_t)uap->fromlenaddr, (caddr_t)0);
+--- 450,459 ----
+  		return;
+  	msg.msg_name = uap->from;
+  	msg.msg_namelen = len;
+! 	msg.msg_iov = &aiov;
+! 	msg.msg_iovlen = 1;
+! 	aiov.iov_base = uap->buf;
+! 	aiov.iov_len = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	recvit(uap->s, &msg, uap->flags, (caddr_t)uap->fromlenaddr, (caddr_t)0);
+***************
+*** 438,448 ****
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+
+  	msg.msg_name = 0;
+  	msg.msg_namelen = 0;
+! 	u.u_base = uap->buf;
+! 	u.u_count = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	recvit(uap->s, &msg, uap->flags, (caddr_t)0, (caddr_t)0);
+--- 468,481 ----
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
++ 	struct iovec aiov;
+
+  	msg.msg_name = 0;
+  	msg.msg_namelen = 0;
+! 	msg.msg_iov = &aiov;
+! 	msg.msg_iovlen = 1;
+! 	aiov.iov_base = uap->buf;
+! 	aiov.iov_len = uap->len;
+  	msg.msg_accrights = 0;
+  	msg.msg_accrightslen = 0;
+  	recvit(uap->s, &msg, uap->flags, (caddr_t)0, (caddr_t)0);
+***************
+*** 456,473 ****
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+! 	struct iovec aiov;
+
+  	u.u_error = copyin((caddr_t)uap->msg, (caddr_t)&msg, sizeof (msg));
+  	if (u.u_error)
+  		return;
+! 	if ((u_int)msg.msg_iovlen > 1) {
+  		u.u_error = EMSGSIZE;
+  		return;
+  	}
+  	u.u_error =
+! 	    copyin((caddr_t)msg.msg_iov, (caddr_t)&aiov,
+! 		sizeof(aiov));
+  	if (u.u_error)
+  		return;
+  	recvit(uap->s, &msg, uap->flags,
+--- 489,506 ----
+  		int	flags;
+  	} *uap = (struct a *)u.u_ap;
+  	struct msghdr msg;
+! 	struct iovec aiov[MSG_MAXIOVLEN];
+
+  	u.u_error = copyin((caddr_t)uap->msg, (caddr_t)&msg, sizeof (msg));
+  	if (u.u_error)
+  		return;
+! 	if ((u_int)msg.msg_iovlen >= sizeof (aiov) / sizeof (aiov[0])) {
+  		u.u_error = EMSGSIZE;
+  		return;
+  	}
+  	u.u_error =
+! 	    copyin((caddr_t)msg.msg_iov, (caddr_t)aiov,
+! 		(unsigned)(msg.msg_iovlen * sizeof(aiov[0])));
+  	if (u.u_error)
+  		return;
+  	recvit(uap->s, &msg, uap->flags,
+***************
+*** 482,487 ****
+--- 515,521 ----
+  	caddr_t namelenp, rightslenp;
+  {
+  	register struct file *fp;
++ 	struct uio auio;
+  	register struct iovec *iov;
+  	register int i;
+  	struct mbuf *from, *rights;
+***************
+*** 492,502 ****
+  	fp = gtsockf(s);
+  	if (fp == 0)
+  		return;
+! 	u.u_segflg = UIO_USERSPACE;
+! 	u.u_offset = 0;				/* XXX */
+! 	len = u.u_count;
+! 	u.u_error = SORECEIVE(fp->f_socket, &from, flags, &rights);
+! 	u.u_r.r_val1 = len - u.u_count;
+  	if (mp->msg_name) {
+  		len = mp->msg_namelen;
+  		if (len <= 0 || from == 0)
+--- 526,558 ----
+  	fp = gtsockf(s);
+  	if (fp == 0)
+  		return;
+! 	auio.uio_iov = mp->msg_iov;
+! 	auio.uio_iovcnt = mp->msg_iovlen;
+! 	auio.uio_segflg = UIO_USERSPACE;
+! 	auio.uio_offset = 0;				/* XXX */
+! 	auio.uio_resid = 0;
+! 	iov = mp->msg_iov;
+! 	for (i = 0; i < mp->msg_iovlen; i++, iov++) {
+! #ifndef	BSD2_10
+! 		if (iov->iov_len < 0) {
+! 			u.u_error = EINVAL;
+! 			return;
+! 		}
+! #endif
+! 		if (iov->iov_len == 0)
+! 			continue;
+! #ifndef	BSD2_10
+! 		if (useracc(iov->iov_base, (u_int)iov->iov_len, B_WRITE) == 0) {
+! 			u.u_error = EFAULT;
+! 			return;
+! 		}
+! #endif
+! 		auio.uio_resid += iov->iov_len;
+! 	}
+! 	len = auio.uio_resid;
+! 	u.u_error =
+! 	    SORECEIVE((struct socket *)fp->f_data, &from, &auio,flags, &rights);
+! 	u.u_r.r_val1 = len - auio.uio_resid;
+  	if (mp->msg_name) {
+  		len = mp->msg_namelen;
+  		if (len <= 0 || from == 0)
+diff -r -c /usr/src/oldsys/sys/uipc_usrreq.c /usr/src/sys/sys/uipc_usrreq.c
+*** /usr/src/oldsys/sys/uipc_usrreq.c	Sat Apr 30 16:14:42 1988
+--- /usr/src/sys/sys/uipc_usrreq.c	Sun Apr  8 03:26:52 1990
+***************
+*** 354,363 ****
+  	unp->unp_inode = ip;
+  	unp->unp_addr = m_copy(nam, 0, M_COPYALL);
+  #else
+! 	u.u_segflg = UIO_SYSSPACE;
+! 	u.u_dirp = soun->sun_path;
+! 	u.u_dirp[nam->m_len-2] = 0;
+! 	ip = namei(CREATE | FOLLOW);
+  	if (ip) {
+  		iput(ip);
+  		return (EADDRINUSE);
+--- 354,364 ----
+  	unp->unp_inode = ip;
+  	unp->unp_addr = m_copy(nam, 0, M_COPYALL);
+  #else
+! 	ndp->ni_nameiop = CREATE | FOLLOW;
+! 	ndp->ni_segflg = UIO_SYSSPACE;
+! 	ndp->ni_dirp = soun->sun_path;
+! 	ndp->ni_dirp[nam->m_len-2] = 0;
+! 	ip = namei(ndp);
+  	if (ip) {
+  		iput(ip);
+  		return (EADDRINUSE);
+***************
+*** 366,372 ****
+  		u.u_error = 0;			/* XXX */
+  		return (error);
+  	}
+! 	ip = maknode(IFSOCK | 0777);
+  	if (ip == NULL) {
+  		error = u.u_error;		/* XXX */
+  		u.u_error = 0;			/* XXX */
+--- 367,373 ----
+  		u.u_error = 0;			/* XXX */
+  		return (error);
+  	}
+! 	ip = maknode(IFSOCK | 0777, ndp);
+  	if (ip == NULL) {
+  		error = u.u_error;		/* XXX */
+  		u.u_error = 0;			/* XXX */
+***************
+*** 411,420 ****
+  	if (ip)
+  		IPUT(ip);
+  #else
+! 	u.u_segflg = UIO_SYSSPACE;
+! 	u.u_dirp = soun->sun_path;
+! 	u.u_dirp[nam->m_len-2] = 0;
+! 	ip = namei(LOOKUP | FOLLOW);
+  	if (ip == 0) {
+  		error = u.u_error;
+  		u.u_error = 0;
+--- 412,422 ----
+  	if (ip)
+  		IPUT(ip);
+  #else
+! 	ndp->ni_nameiop = LOOKUP | FOLLOW;
+! 	ndp->ni_segflg = UIO_SYSSPACE;
+! 	ndp->ni_dirp = soun->sun_path;
+! 	ndp->ni_dirp[nam->m_len-2] = 0;
+! 	ip = namei(ndp);
+  	if (ip == 0) {
+  		error = u.u_error;
+  		u.u_error = 0;
+diff -r -c /usr/src/oldsys/sys/vm_swp.c /usr/src/sys/sys/vm_swp.c
+*** /usr/src/oldsys/sys/vm_swp.c	Thu Sep  3 11:49:30 1987
+--- /usr/src/sys/sys/vm_swp.c	Wed Apr 11 09:49:09 1990
+***************
+*** 16,21 ****
+--- 16,22 ----
+  #include "systm.h"
+  #include "vm.h"
+  #include "trace.h"
++ #include "uio.h"
+
+  /*
+   * swap IO headers.  They are filled in to point
+***************
+*** 66,76 ****
+  		bp->b_un.b_addr = (caddr_t)(coreaddr<<6);
+  		bp->b_xmem = (coreaddr>>10) & 077;
+  		trace(TR_SWAPIO);
+! 		(*bdevsw[major(swapdev)].d_strategy)(bp);
+! 		s = splbio();
+! 		while((bp->b_flags&B_DONE)==0)
+! 			sleep((caddr_t)bp, PSWP);
+! 		splx(s);
+  		if ((bp->b_flags & B_ERROR) || bp->b_resid)
+  			panic("hard IO err in swap");
+  		count -= tcount;
+--- 67,73 ----
+  		bp->b_un.b_addr = (caddr_t)(coreaddr<<6);
+  		bp->b_xmem = (coreaddr>>10) & 077;
+  		trace(TR_SWAPIO);
+! 		physstrat(bp, bdevsw[major(swapdev)].d_strategy, PSWP);
+  		if ((bp->b_flags & B_ERROR) || bp->b_resid)
+  			panic("hard IO err in swap");
+  		count -= tcount;
+***************
+*** 130,161 ****
+   *	to the argument list, adjusted all calls to physio/bphysio
+   *	to pass the correct argument themselves.
+   *		5/86 kb
+   */
+! physio(strat, bp, dev, rw, kind)
+  	int (*strat)();
+  	register struct buf *bp;
+  	dev_t dev;
+  	int rw, kind;
+  {
+! 	register int error, s;
+
+! 	error = chkphys(kind);
+! 	if (error)
+! 		return(error);
+! 	physbuf(bp, dev, rw);
+  	u.u_procp->p_flag |= SLOCK;
+! 	(*strat)(bp);
+  	s = splbio();
+! 	while ((bp->b_flags&B_DONE)==0)
+! 		sleep((caddr_t)bp, PRIBIO);
+  	splx(s);
+! 	error = geterror(bp);
+! 	u.u_procp->p_flag &= ~SLOCK;
+! 	if (bp->b_flags&B_WANTED)
+  		wakeup((caddr_t)bp);
+! 	bp->b_flags &= ~(B_BUSY|B_WANTED);
+! 	u.u_count = bp->b_resid;
+! 	return(error);
+  }
+
+  /*
+--- 127,198 ----
+   *	to the argument list, adjusted all calls to physio/bphysio
+   *	to pass the correct argument themselves.
+   *		5/86 kb
++  *
++  * rewritten to use the iov/uio mechanism from 4.3bsd.  the physbuf routine
++  * was inlined.  essentially the chkphys routine performs the same task
++  * as the useracc routine on a 4.3 system. 3/90 sms
+   */
+! physio(strat, bp, dev, rw, kind, uio)
+  	int (*strat)();
+  	register struct buf *bp;
+  	dev_t dev;
+  	int rw, kind;
++ 	register struct uio *uio;
+  {
+! 	int error, s, nb, ts, c;
+! 	register struct iovec *iov;
+
+! nextiov:
+  	u.u_procp->p_flag |= SLOCK;
+! 	if (uio->uio_iovcnt == 0) {
+! 		u.u_procp->p_flag &= ~SLOCK;
+! 		return (0);
+! 	}
+! 	iov = uio->uio_iov;
+! 	error = chkphys(kind, iov);
+! 	if (error) {
+! 		u.u_procp->p_flag &= ~SLOCK;
+! 		return(error);
+! 	}
+  	s = splbio();
+! 	while (bp->b_flags & B_BUSY) {
+! 		bp->b_flags |= B_WANTED;
+! 		sleep((caddr_t)bp, PRIBIO+1);
+! 	}
+  	splx(s);
+! 	while (iov->iov_len) {
+! 		bp->b_flags = B_BUSY|B_PHYS|rw;
+! 		bp->b_dev = dev;
+! 		nb = ((int)iov->iov_base >> 6) & 01777;
+! 		ts = (u.u_sep ? UDSA : UISA)[nb >> 7] + (nb & 0177);
+! 		bp->b_un.b_addr = (caddr_t)((ts << 6) + ((int)iov->iov_base & 077));
+! 		bp->b_xmem = (ts >> 10) & 077;
+! 		bp->b_blkno = uio->uio_offset >> PGSHIFT;
+! 		bp->b_bcount = iov->iov_len;
+! 		c = bp->b_bcount;
+! 		bp->b_error = 0;
+! 		physstrat(bp, strat, PRIBIO);
+! 		c -= bp->b_resid;
+! 		iov->iov_base += c;
+! 		iov->iov_len -= c;
+! 		uio->uio_resid -= c;
+! 		uio->uio_offset += c;
+! 		/* temp kludge for tape drives */
+! 		if (bp->b_resid || (bp->b_flags & B_ERROR))
+! 			break;
+! 	}
+! 	if (bp->b_flags & B_WANTED)
+  		wakeup((caddr_t)bp);
+! 	bp->b_flags &= ~(B_BUSY|B_WANTED|B_PHYS);
+! 	error = geterror(bp);
+! 	/* temp kludge for tape drives */
+! 	if (bp->b_resid || error) {
+! 		u.u_procp->p_flag &= ~SLOCK;
+! 		return (error);
+! 	}
+! 	uio->uio_iov++;
+! 	uio->uio_iovcnt--;
+! 	goto nextiov;
+  }
+
+  /*
+***************
+*** 162,188 ****
+   * check for validity of physical I/O area
+   * (modified from physio to use flag for BYTE-oriented transfers)
+   */
+! chkphys(flag)
+  	int flag;
+  {
+- 	register u_int base;
+  	register int nb, ts;
+
+- 	base = (u_int)u.u_base;
+  	/*
+  	 * Check odd base, odd count, and address wraparound
+  	 * Odd base and count not allowed if flag = WORD,
+  	 * allowed if flag = BYTE.
+  	 */
+! 	if (flag == WORD && ((base|u.u_count) & 01))
+  		return(EFAULT);
+! 	if (base >= base + u.u_count)
+  		return(EFAULT);
+  	if (u.u_sep)
+  		ts = 0;
+  	else
+  		ts = (u.u_tsize + 127) & ~0177;
+! 	nb = (base >> 6) & 01777;
+  	/*
+  	 * Check overlap with text. (ts and nb now
+  	 * in 64-byte clicks)
+--- 199,224 ----
+   * check for validity of physical I/O area
+   * (modified from physio to use flag for BYTE-oriented transfers)
+   */
+! chkphys(flag, iov)
+  	int flag;
++ 	register struct iovec *iov;
+  {
+  	register int nb, ts;
+
+  	/*
+  	 * Check odd base, odd count, and address wraparound
+  	 * Odd base and count not allowed if flag = WORD,
+  	 * allowed if flag = BYTE.
+  	 */
+! 	if (flag == WORD && (((int)iov->iov_base|iov->iov_len) & 01))
+  		return(EFAULT);
+! 	if (iov->iov_base >= iov->iov_base + iov->iov_len)
+  		return(EFAULT);
+  	if (u.u_sep)
+  		ts = 0;
+  	else
+  		ts = (u.u_tsize + 127) & ~0177;
+! 	nb = ((int)iov->iov_base >> 6) & 01777;
+  	/*
+  	 * Check overlap with text. (ts and nb now
+  	 * in 64-byte clicks)
+***************
+*** 195,242 ****
+  	 * the end is in the data or the start is in the stack
+  	 * (remember wraparound was already checked).
+  	 */
+! 	if ((((base + u.u_count) >> 6) & 01777) >= ts + u.u_dsize &&
+  	    nb < 1024 - u.u_ssize)
+  		return(EFAULT);
+  	return(0);
+- }
+-
+- /*
+-  * wait for buffer header, then fill it in to do physical I/O.
+-  */
+- physbuf(bp,dev,rw)
+- 	register struct buf *bp;
+- 	dev_t dev;
+- 	int rw;
+- {
+- 	{
+- 		register int s;
+-
+- 		s = splbio();
+- 		while (bp->b_flags&B_BUSY) {
+- 			bp->b_flags |= B_WANTED;
+- 			sleep((caddr_t)bp, PRIBIO+1);
+- 		}
+- 		splx(s);
+- 	}
+- 	bp->b_flags = B_BUSY | B_PHYS | rw;
+- 	bp->b_dev = dev;
+- 	/*
+- 	 * Compute physical address by simulating
+- 	 * the segmentation hardware.
+- 	 */
+- 	{
+- 		register u_int base;
+- 		register int ts;
+- 		int nb;
+-
+- 		base = (u_int)u.u_base;
+- 		nb = (base >> 6) & 01777;
+- 		ts = (u.u_sep ? UDSA: UISA)[nb >> 7] + (nb & 0177);
+- 		bp->b_un.b_addr = (caddr_t)((ts << 6) + (base & 077));
+- 		bp->b_xmem = (ts >> 10) & 077;
+- 		bp->b_blkno = u.u_offset >> PGSHIFT;
+- 		bp->b_bcount = u.u_count;
+- 		bp->b_error = 0;
+- 	}
+  }
+--- 231,238 ----
+  	 * the end is in the data or the start is in the stack
+  	 * (remember wraparound was already checked).
+  	 */
+! 	if (((((int)iov->iov_base + iov->iov_len) >> 6) & 01777) >= ts + u.u_dsize &&
+  	    nb < 1024 - u.u_ssize)
+  		return(EFAULT);
+  	return(0);
+  }
+diff -r -c /usr/src/oldsys/sys/vm_text.c /usr/src/sys/sys/vm_text.c
+*** /usr/src/oldsys/sys/vm_text.c	Mon May 29 13:44:40 1989
+--- /usr/src/sys/sys/vm_text.c	Sat Apr  7 20:00:00 1990
+***************
+*** 141,146 ****
+--- 141,148 ----
+  	register struct inode *ip;
+  {
+  	register struct text *xp;
++ 	register u_int	count;
++ 	off_t	offset;
+  	size_t ts;
+
+  	if (ep->a_text == 0)
+***************
+*** 212,242 ****
+  	u.u_procp->p_textp = xp;
+  	xexpand(xp);
+  	estabur(ts, (u_int)0, (u_int)0, 0, RW);
+! 	u.u_count = ep->a_text & ~1;	/* no odd transfers in uiomove() */
+! 	u.u_offset = sizeof(struct exec);
+  	if (u.u_ovdata.uo_ovbase)
+! 		u.u_offset += (NOVL + 1) * sizeof(u_int);
+! 	u.u_base = 0;
+! 	u.u_segflg = UIO_USERISPACE;
+  	u.u_procp->p_flag |= SLOCK;
+! 	readi(ip);
+
+  	if (u.u_ovdata.uo_ovbase) {	/* read in overlays if necessary */
+  		register int i;
+
+  		for (i = 1; i <= NOVL; i++) {
+  			u.u_ovdata.uo_curov = i;
+! 			u.u_count = ctob(u.u_ovdata.uo_ov_offst[i] - u.u_ovdata.uo_ov_offst[i-1]);
+! 			u.u_base = (caddr_t)(ctob(stoc(u.u_ovdata.uo_ovbase)));
+! 			if (u.u_count) {
+  				choverlay(RW);
+! 				readi(ip);
+  			}
+  		}
+  	}
+  	u.u_ovdata.uo_curov = 0;
+  	u.u_procp->p_flag &= ~SLOCK;
+- 	u.u_segflg = UIO_USERSPACE;
+  	xp->x_flag |= XWRIT;
+  	xp->x_flag &= ~XLOAD;
+  }
+--- 214,244 ----
+  	u.u_procp->p_textp = xp;
+  	xexpand(xp);
+  	estabur(ts, (u_int)0, (u_int)0, 0, RW);
+! 	offset = sizeof(struct exec);
+  	if (u.u_ovdata.uo_ovbase)
+! 		offset += (NOVL + 1) * sizeof(u_int);
+  	u.u_procp->p_flag |= SLOCK;
+! 	u.u_error = rdwri(UIO_READ, ip, (caddr_t)0, ep->a_text & ~1,
+! 			offset, UIO_USERISPACE, (int *)0);
+
+  	if (u.u_ovdata.uo_ovbase) {	/* read in overlays if necessary */
+  		register int i;
+
++ 		offset += (off_t)(ep->a_text & ~1);
+  		for (i = 1; i <= NOVL; i++) {
+  			u.u_ovdata.uo_curov = i;
+! 			count = ctob(u.u_ovdata.uo_ov_offst[i] - u.u_ovdata.uo_ov_offst[i-1]);
+! 			if (count) {
+  				choverlay(RW);
+! 				u.u_error = rdwri(UIO_READ, ip,
+! 				    (caddr_t)(ctob(stoc(u.u_ovdata.uo_ovbase))),
+! 					count, offset, UIO_USERISPACE,(int *)0);
+! 				offset += (off_t) count;
+  			}
+  		}
+  	}
+  	u.u_ovdata.uo_curov = 0;
+  	u.u_procp->p_flag &= ~SLOCK;
+  	xp->x_flag |= XWRIT;
+  	xp->x_flag &= ~XLOAD;
+  }
+*** /usr/src/man/man2/read.2.old	Thu Aug 20 12:32:37 1987
+--- /usr/src/man/man2/read.2	Sun Apr  8 00:10:16 1990
+***************
+*** 14,20 ****
+  cc = read(d, buf, nbytes)
+  int cc, d;
+  char *buf;
+! int nbytes;
+  .PP
+  .ft B
+  #include <sys/types.h>
+--- 14,20 ----
+  cc = read(d, buf, nbytes)
+  int cc, d;
+  char *buf;
+! unsigned short nbytes;
+  .PP
+  .ft B
+  #include <sys/types.h>
+***************
+*** 53,59 ****
+  .DT
+  struct iovec {
+  	caddr_t	iov_base;
+! 	int	iov_len;
+  };
+  .RE
+  .fi
+--- 53,59 ----
+  .DT
+  struct iovec {
+  	caddr_t	iov_base;
+! 	u_short	iov_len;
+  };
+  .RE
+  .fi
+***************
+*** 135,174 ****
+  was less than or equal to 0, or greater than 16.
+  .TP 15
+  [EINVAL]
+- One of the
+- .I iov_len
+- values in the
+- .I iov
+- array was negative.
+- .TP 15
+- [EINVAL]
+  The sum of the
+  .I iov_len
+  values in the
+  .I iov
+! array overflowed an integer.
+  .TP 15
+  [EFAULT]
+  Part of the \fIiov\fP points outside the process's allocated address space.
+  .SH "SEE ALSO"
+  dup(2), fcntl(2), open(2), pipe(2), select(2), socket(2), socketpair(2)
+- .SH BUGS
+- Under
+- .I 2.10BSD
+- .I readv
+- is implemented as a compatibility routine in the standard library and is
+- semantically identical to the 4.3BSD
+- .I readv
+- on all current descriptors, with the exception of sockets (SOCK_STREAM
+- does work identically however).  The compatibility routine implements
+- .I readv
+- non-atomically as multiple
+- .I read
+- calls.
+- .PP
+- Under
+- .I 2.10BSD
+- .I nbytes
+- is actually an
+- .B unsigned
+- value.
+--- 135,147 ----
+  was less than or equal to 0, or greater than 16.
+  .TP 15
+  [EINVAL]
+  The sum of the
+  .I iov_len
+  values in the
+  .I iov
+! array overflowed a short.
+  .TP 15
+  [EFAULT]
+  Part of the \fIiov\fP points outside the process's allocated address space.
+  .SH "SEE ALSO"
+  dup(2), fcntl(2), open(2), pipe(2), select(2), socket(2), socketpair(2)
+*** /usr/src/man/man2/write.2.old	Thu Aug 20 12:32:37 1987
+--- /usr/src/man/man2/write.2	Sun Apr  8 00:10:19 1990
+***************
+*** 14,20 ****
+  cc = write(d, buf, nbytes)
+  int cc, d;
+  char *buf;
+! int nbytes;
+  .PP
+  .ft B
+  #include <sys/types.h>
+--- 14,20 ----
+  cc = write(d, buf, nbytes)
+  int cc, d;
+  char *buf;
+! unsigned short nbytes;
+  .PP
+  .ft B
+  #include <sys/types.h>
+***************
+*** 53,59 ****
+  .DT
+  struct iovec {
+  	caddr_t	iov_base;
+! 	int	iov_len;
+  };
+  .RE
+  .fi
+--- 53,59 ----
+  .DT
+  struct iovec {
+  	caddr_t	iov_base;
+! 	u_short	iov_len;
+  };
+  .RE
+  .fi
+***************
+*** 155,191 ****
+  was less than or equal to 0, or greater than 16.
+  .TP 15
+  [EINVAL]
+- One of the
+- .I iov_len
+- values in the
+- .I iov
+- array was negative.
+- .TP 15
+- [EINVAL]
+  The sum of the
+  .I iov_len
+  values in the
+  .I iov
+! array overflowed an integer.
+  .SH "SEE ALSO"
+  fcntl(2), lseek(2), open(2), pipe(2), select(2)
+- .SH BUGS
+- Under
+- .I 2.10BSD
+- .I writev
+- is implemented as a compatibility routine in the standard library and is
+- semantically identical to the 4.3BSD
+- .I writev
+- on all current descriptors, with the exception of sockets (SOCK_STREAM
+- does work identically however).  The compatibility routine implements
+- .I writev
+- non-atomically as multiple
+- .I write
+- calls.
+- .PP
+- Under
+- .I 2.10BSD
+- .I nbytes
+- is actually an
+- .B unsigned
+- value.
+--- 155,164 ----
+  was less than or equal to 0, or greater than 16.
+  .TP 15
+  [EINVAL]
+  The sum of the
+  .I iov_len
+  values in the
+  .I iov
+! array overflowed a short.
+  .SH "SEE ALSO"
+  fcntl(2), lseek(2), open(2), pipe(2), select(2)
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	/usr/src/lib/libc/pdp/sys/readv.s
+#	/usr/src/lib/libc/pdp/sys/writev.s
+# This archive created: Wed Apr 11 21:36:20 1990
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f '/usr/src/lib/libc/pdp/sys/readv.s'
+then
+	echo shar: "will not over-write existing file '/usr/src/lib/libc/pdp/sys/readv.s'"
+else
+sed 's/^X//' << \SHAR_EOF > '/usr/src/lib/libc/pdp/sys/readv.s'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#ifdef SYSLIBC_SCCS
+X_sccsid: <@(#)readv.s	2.5 (Berkeley) 1/29/87\0>
+X	.even
+X#endif SYSLIBC_SCCS
+X
+X#include "SYS.h"
+X
+XSYSCALL(readv,norm)
+SHAR_EOF
+fi
+if test -f '/usr/src/lib/libc/pdp/sys/writev.s'
+then
+	echo shar: "will not over-write existing file '/usr/src/lib/libc/pdp/sys/writev.s'"
+else
+sed 's/^X//' << \SHAR_EOF > '/usr/src/lib/libc/pdp/sys/writev.s'
+X/*
+X * Copyright (c) 1987 Regents of the University of California.
+X * All rights reserved.  The Berkeley software License Agreement
+X * specifies the terms and conditions for redistribution.
+X */
+X
+X#ifdef SYSLIBC_SCCS
+X_sccsid: <@(#)writev.s	2.5 (Berkeley) 1/29/87\0>
+X	.even
+X#endif SYSLIBC_SCCS
+X
+X#include "SYS.h"
+X
+XSYSCALL(writev,norm)
+SHAR_EOF
+fi
+exit 0
+#	End of shell archive
+*** /usr/src/lib/libc/pdp/Makefile.old	Sun Jul  3 21:50:14 1988
+--- /usr/src/lib/libc/pdp/Makefile	Fri Apr  6 09:53:48 1990
+***************
+*** 7,13 ****
+  #
+  # Machine dependent routines for the PDP are located here
+  #
+! COMPAT=	com-2.9 com-4.1 com-4.3
+  ALL=	crt gen net stdio sys ${COMPAT}
+  TAGSFILE=tags
+
+--- 7,13 ----
+  #
+  # Machine dependent routines for the PDP are located here
+  #
+! COMPAT=	com-2.9 com-4.1
+  ALL=	crt gen net stdio sys ${COMPAT}
+  TAGSFILE=tags
+
+*** /usr/src/lib/libc/pdp/sys/Makefile.old	Wed Feb  4 21:20:29 1987
+--- /usr/src/lib/libc/pdp/sys/Makefile	Fri Apr  6 09:33:46 1990
+***************
+*** 14,20 ****
+  	getpriority.s getrlimit.s getrusage.s getsockname.s getsockopt.s \
+  	gettimeofday.s getuid.s ioctl.s kill.s killpg.s link.s listen.s \
+  	lseek.s lstat.s mkdir.s mknod.s mount.s open.s pipe.s profil.s \
+! 	ptrace.s quota.s read.s readlink.s reboot.s recv.s recvfrom.s \
+  	recvmsg.s rename.s rmdir.s sbrk.s select.s send.s sendmsg.s sendto.s \
+  	setdopt.s setgroups.s sethostid.s sethostname.s setitimer.s \
+  	setpgrp.s setpriority.s setquota.s setregid.s setreuid.s setrlimit.s \
+--- 14,20 ----
+  	getpriority.s getrlimit.s getrusage.s getsockname.s getsockopt.s \
+  	gettimeofday.s getuid.s ioctl.s kill.s killpg.s link.s listen.s \
+  	lseek.s lstat.s mkdir.s mknod.s mount.s open.s pipe.s profil.s \
+! 	ptrace.s quota.s read.s readlink.s readv.s reboot.s recv.s recvfrom.s \
+  	recvmsg.s rename.s rmdir.s sbrk.s select.s send.s sendmsg.s sendto.s \
+  	setdopt.s setgroups.s sethostid.s sethostname.s setitimer.s \
+  	setpgrp.s setpriority.s setquota.s setregid.s setreuid.s setrlimit.s \
+***************
+*** 21,27 ****
+  	setsockopt.s settimeofday.s shutdown.s sigblock.s sigpause.s \
+  	sigreturn.s sigsetmask.s sigstack.s sigvec.s socket.s socketpair.s \
+  	stat.s symlink.s sync.s truncate.s umask.s umount.s unlink.s \
+! 	utimes.s vfork.s vhangup.s wait.s wait3.s write.s
+  OBJS=	_exit.o accept.o access.o acct.o adjtime.o bind.o brk.o chdir.o \
+  	chmod.o chown.o chroot.o close.o connect.o creat.o dup.o dup2.o \
+  	execl.o execle.o execv.o execve.o fchmod.o fchown.o fcntl.o flock.o \
+--- 21,27 ----
+  	setsockopt.s settimeofday.s shutdown.s sigblock.s sigpause.s \
+  	sigreturn.s sigsetmask.s sigstack.s sigvec.s socket.s socketpair.s \
+  	stat.s symlink.s sync.s truncate.s umask.s umount.s unlink.s \
+! 	utimes.s vfork.s vhangup.s wait.s wait3.s write.s writev.s
+  OBJS=	_exit.o accept.o access.o acct.o adjtime.o bind.o brk.o chdir.o \
+  	chmod.o chown.o chroot.o close.o connect.o creat.o dup.o dup2.o \
+  	execl.o execle.o execv.o execve.o fchmod.o fchown.o fcntl.o flock.o \
+***************
+*** 31,37 ****
+  	getpriority.o getrlimit.o getrusage.o getsockname.o getsockopt.o \
+  	gettimeofday.o getuid.o ioctl.o kill.o killpg.o link.o listen.o \
+  	lseek.o lstat.o mkdir.o mknod.o mount.o open.o pipe.o profil.o \
+! 	ptrace.o quota.o read.o readlink.o reboot.o recv.o recvfrom.o \
+  	recvmsg.o rename.o rmdir.o sbrk.o select.o send.o sendmsg.o sendto.o \
+  	setdopt.o setgroups.o sethostid.o sethostname.o setitimer.o \
+  	setpgrp.o setpriority.o setquota.o setregid.o setreuid.o setrlimit.o \
+--- 31,37 ----
+  	getpriority.o getrlimit.o getrusage.o getsockname.o getsockopt.o \
+  	gettimeofday.o getuid.o ioctl.o kill.o killpg.o link.o listen.o \
+  	lseek.o lstat.o mkdir.o mknod.o mount.o open.o pipe.o profil.o \
+! 	ptrace.o quota.o read.o readlink.o readv.o reboot.o recv.o recvfrom.o \
+  	recvmsg.o rename.o rmdir.o sbrk.o select.o send.o sendmsg.o sendto.o \
+  	setdopt.o setgroups.o sethostid.o sethostname.o setitimer.o \
+  	setpgrp.o setpriority.o setquota.o setregid.o setreuid.o setrlimit.o \
+***************
+*** 38,44 ****
+  	setsockopt.o settimeofday.o shutdown.o sigblock.o sigpause.o \
+  	sigreturn.o sigsetmask.o sigstack.o sigvec.o socket.o socketpair.o \
+  	stat.o symlink.o sync.o truncate.o umask.o umount.o unlink.o \
+! 	utimes.o vfork.o vhangup.o wait.o wait3.o write.o
+  CFLAGS=	-O ${DEFS}
+  TAGSFILE=tags
+
+--- 38,44 ----
+  	setsockopt.o settimeofday.o shutdown.o sigblock.o sigpause.o \
+  	sigreturn.o sigsetmask.o sigstack.o sigvec.o socket.o socketpair.o \
+  	stat.o symlink.o sync.o truncate.o umask.o umount.o unlink.o \
+! 	utimes.o vfork.o vhangup.o wait.o wait3.o write.o writev.o
+  CFLAGS=	-O ${DEFS}
+  TAGSFILE=tags
+
+***************
+*** 158,163 ****
+--- 158,164 ----
+  quota.o: quota.s ./SYS.h /usr/include/syscall.h
+  read.o: read.s ./SYS.h /usr/include/syscall.h
+  readlink.o: readlink.s ./SYS.h /usr/include/syscall.h
++ readv.o: readv.s ./SYS.h /usr/include/syscall.h
+  reboot.o: reboot.s ./SYS.h /usr/include/syscall.h
+  recv.o: recv.s ./SYS.h /usr/include/syscall.h
+  recvfrom.o: recvfrom.s ./SYS.h /usr/include/syscall.h
+***************
+*** 204,209 ****
+--- 205,211 ----
+  wait.o: wait.s ./SYS.h /usr/include/syscall.h
+  wait3.o: wait3.s ./SYS.h /usr/include/syscall.h
+  write.o: write.s ./SYS.h /usr/include/syscall.h
++ writev.o: writev.s ./SYS.h /usr/include/syscall.h
+  # DEPENDENCIES MUST END AT END OF FILE
+  # IF YOU PUT STUFF HERE IT WILL GO AWAY
+  # see make depend above
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create:
+#	/usr/lib/adb/u
+# This archive created: Thu Apr 12 08:57:57 1990
+export PATH; PATH=/bin:/usr/bin:$PATH
+if test -f '/usr/lib/adb/u'
+then
+	echo shar: "will not over-write existing file '/usr/lib/adb/u'"
+else
+sed 's/^X//' << \SHAR_EOF > '/usr/lib/adb/u'
+X./"pcb"non"u_fpsr"ndn"u_fpregs"n6Fn"u_fpsaved"ndn"f_fec"8t"f_fea"ndon
+X+/"u_proc"non"u_ar0"non"u_comm"n15C+n"u_arg"n6on
+X+/"u_ap"non
+X+/"qsave"n
+X+$<<label
+X+/"val1"8t"val2"n2on
+X+/"u_error"8t"u_eosys"n2bn"uid"8t"ruid"8t"gid"8t"rgid"n4un"groups"n16u
+X+/"tsize"8t"dsize"8t"ssize"n3un
+X+/"ssave"n
+X+$<<label
+X+/"rsave"n
+X+$<<label
+X+/"uisa"n16on
+X+/"uisd"n16on
+X+/"u_sep"nbn+"curov"8t"ovbase"8t"dbase"n2dun"
+X+/"ov_offst"n16un"nseg"ndn64+
+X+/"sigmask"n32Dn
+X+/"sigonstack"16t"sigintr"16t"oldmask"n3Xn"code"ndn
+X+/"onstack"8t"sigsp"nodn
+X+/"ofile"n30on"pofile"n30bn
+X+/"lastfile"ndn
+X+/"cdir"8t"rdir"n2on
+X+/"tty"8t"minor"8t"major"no2bn
+X+/"cmask"nxn
+X+/"ru"n
+X+$<<rusage
+X+/"cru"n
+X+$<<rusage
+X+/"itimers"n4Dn
+X+/"start"nYn
+X+/"acflag"nbn9+
+X+/"rlimits"n12D
+X+/"quota"non
+X+/"nc_off"16t"nc_inum"8t"nc_dev"nDubbn
+X+/"ni_dirp"8t"nameiop"8t"ni_error"nouun
+X+/"ni_endoff"8t"ni_pdir"nDon
+X+/"ni_base"8t"ni_count"noun
+X+/"ni_iov"8t"ni_iovcnt"noun
+X+/"ni_offset"8t"ni_segflg"8t"ni_resid"nDuun
+X+/"d_inum"8t"d_name"nu14Cn
+SHAR_EOF
+fi
+exit 0
+#	End of shell archive
+*** /usr/src/etc/pstat.c.old	Wed Aug 10 11:39:06 1988
+--- /usr/src/etc/pstat.c	Thu Apr  5 21:42:47 1990
+***************
+*** 529,534 ****
+--- 529,535 ----
+  	struct user U;
+  	long	*ip;
+  	register i, j;
++ 	register struct nameidata *nd = &U.u_nd;
+
+  	lseek(fm, ubase << 6, 0);
+  	read(fm, &U, sizeof(U));
+***************
+*** 639,645 ****
+  	printf("lastfile\t%d\n", U.u_lastfile);
+  	printf("cdir\t%.1o\n", U.u_cdir);
+  	printf("rdir\t%.1o\n", U.u_rdir);
+! 	printf("pdir\t%.1o\n", U.u_pdir);
+  	printf("ttyp\t%.1o\n", U.u_ttyp);
+  	printf("ttyd\t%d,%d\n", major(U.u_ttyd), minor(U.u_ttyd));
+  	printf("cmask\t%.1o\n", U.u_cmask);
+--- 640,646 ----
+  	printf("lastfile\t%d\n", U.u_lastfile);
+  	printf("cdir\t%.1o\n", U.u_cdir);
+  	printf("rdir\t%.1o\n", U.u_rdir);
+! 	printf("pdir\t%.1o\n", nd->ni_pdir);
+  	printf("ttyp\t%.1o\n", U.u_ttyp);
+  	printf("ttyd\t%d,%d\n", major(U.u_ttyd), minor(U.u_ttyd));
+  	printf("cmask\t%.1o\n", U.u_cmask);
+***************
+*** 678,696 ****
+  			printf("%ld ", U.u_rlimit[i].rlim_max);
+  		}
+  	printf("\n");
+- #ifdef QUOTA
+  	printf("quota\t%.1o\n", U.u_quota);
+! #endif
+! 	printf("base\t%.1o\n", U.u_base);
+! 	printf("count\t%u\n", U.u_count);
+! 	printf("offset\t%ld\n", U.u_offset);
+! 	printf("segflg\t%d\n", U.u_segflg);
+  	printf("ncache\t%ld %u %d,%d\n", U.u_ncache.nc_prevoffset,
+  		U.u_ncache.nc_inumber, major(U.u_ncache.nc_dev),
+  		minor(U.u_ncache.nc_dev));
+! 	printf("endoff\t%ld\n", U.ni_endoff);
+! 	printf("dirp\t%.1o\n", U.u_dirp);
+! 	printf("dent\t%u %s\n", U.u_dent.d_ino, U.u_dent.d_name);
+  }
+
+  oatoi(s)
+--- 679,694 ----
+  			printf("%ld ", U.u_rlimit[i].rlim_max);
+  		}
+  	printf("\n");
+  	printf("quota\t%.1o\n", U.u_quota);
+! 	printf("base,count,offset\t%.1o %u %ld\n", nd->ni_base,
+! 		nd->ni_count, nd->ni_offset);
+! 	printf("segflg\t%d\n", nd->ni_segflg);
+  	printf("ncache\t%ld %u %d,%d\n", U.u_ncache.nc_prevoffset,
+  		U.u_ncache.nc_inumber, major(U.u_ncache.nc_dev),
+  		minor(U.u_ncache.nc_dev));
+! 	printf("endoff\t%ld\n", nd->ni_endoff);
+! 	printf("dirp\t%.1o\n", nd->ni_dirp);
+! 	printf("dent\t%u %s\n", nd->ni_dent.d_ino, nd->ni_dent.d_name);
+  }
+
+  oatoi(s)
+
+        This is a list of the system programs which will need to be
+        recompiled when the u struct is changed.   The 'crash' program
+        was never ported fully to 2.10.1BSD and nothing has been done
+        to change that.  It is unknown whether the 'builcore' program
+        works either, again, nothing has been done to change that.
+
+/usr/src/bin/adb
+/usr/src/bin/ps.c
+/usr/src/etc/fstat.c
+/usr/src/etc/pstat.c
+/usr/src/new/OLD/buildcore.c
+/usr/src/new/crash/crash.c
+/usr/src/ucb/w.c
+/usr/src/ucb/gcore.c
+
+---------------------------------------------------------------------
+
+        don't forget to
+
+                rm -r /usr/src/lib/libc/com-4.3
+                ar d /lib/libc.a rdwrv.o
+                ar d /usr/lib/libc_p.a rdwrv.o
+                rm /sys/sys/sys_inode2.c
+
+----------------------------------------------------------------------
+
+diff -r -c /usr/src/oldsys/OTHERS/berknet/bk.c /usr/src/sys/OTHERS/berknet/bk.c
+*** /usr/src/oldsys/OTHERS/berknet/bk.c	Tue Dec 16 17:01:52 1986
+--- /usr/src/sys/OTHERS/berknet/bk.c	Wed Apr 11 13:32:23 1990
+***************
+*** 105,112 ****
+   * is waiting.  Our clearing tp->t_rec here allows further input
+   * to accumulate.
+   */
+! bkread(tp)
+  register struct tty *tp;
+  {
+  	register int i;
+  	register s;
+--- 105,113 ----
+   * is waiting.  Our clearing tp->t_rec here allows further input
+   * to accumulate.
+   */
+! bkread(tp, uio)
+  register struct tty *tp;
++ 	struct uio *uio;
+  {
+  	register int i;
+  	register s;
+***************
+*** 119,132 ****
+  	splx(s);
+  	if (tp->t_line != NETLDISC)
+  		return (-1);
+! 	i = MIN(tp->t_inbuf, (int)u.u_count);
+! 	if (copyout(tp->t_bufp->b_un.b_addr, u.u_base, (unsigned)i)) {
+  		u.u_error = EFAULT;
+  		return (-1);
+  	}
+! 	u.u_count -= i;
+! 	u.u_base += i;
+! 	u.u_offset += i;
+  	tp->t_cp = (char *)tp->t_bufp->b_un.b_addr;
+  	tp->t_inbuf = 0;
+  	tp->t_rec = 0;
+--- 120,133 ----
+  	splx(s);
+  	if (tp->t_line != NETLDISC)
+  		return (-1);
+! 	i = MIN(tp->t_inbuf, (int)uio->uio_resid);
+! 	if (copyout(tp->t_bufp->b_un.b_addr, uio->uio_iov->iov_base, (unsigned)i)) {
+  		u.u_error = EFAULT;
+  		return (-1);
+  	}
+! 	uio->uio_resid -= i;
+! 	uio->uio_iov->iov_base += i;
+! 	uio->uio_offset += i;
+  	tp->t_cp = (char *)tp->t_bufp->b_un.b_addr;
+  	tp->t_inbuf = 0;
+  	tp->t_rec = 0;
+***************
+*** 186,189 ****
+  }
+  #endif UCB_NTTY
+  #endif NBK > 0
+-
+--- 187,189 ----
+diff -r -c /usr/src/oldsys/OTHERS/dig_anal/ds.c /usr/src/sys/OTHERS/dig_anal/ds.c
+*** /usr/src/oldsys/OTHERS/dig_anal/ds.c	Wed May 27 21:56:56 1987
+--- /usr/src/sys/OTHERS/dig_anal/ds.c	Wed Apr 11 15:44:25 1990
+***************
+*** 478,484 ****
+   * the user buffer should be a multiple of the track size of the disk.
+   * this is for efficiency of disk i/o.
+   *
+!  * using u.u_count, u.u_base, and f_bsize each buffer header is set up.
+   * the converters only need the base address of the buffer and the word
+   * count. the disk needs these in addition to the block number. if we
+   * are doing d/a conversions then we start the disk up to fill up the
+--- 478,484 ----
+   * the user buffer should be a multiple of the track size of the disk.
+   * this is for efficiency of disk i/o.
+   *
+!  * using uio_resid, iov_base, and f_bsize each buffer header is set up.
+   * the converters only need the base address of the buffer and the word
+   * count. the disk needs these in addition to the block number. if we
+   * are doing d/a conversions then we start the disk up to fill up the
+diff -r -c /usr/src/oldsys/OTHERS/dmc11/dmc.c /usr/src/sys/OTHERS/dmc11/dmc.c
+*** /usr/src/oldsys/OTHERS/dmc11/dmc.c	Wed Oct  9 21:31:23 1985
+--- /usr/src/sys/OTHERS/dmc11/dmc.c	Wed Apr 11 13:26:00 1990
+***************
+*** 166,173 ****
+          dp->state = 0;
+  }
+
+! dmcread(dev)
+  dev_t dev;
+  {
+          register struct buf *dp;
+          register struct buf *bp, *pbp;
+--- 166,174 ----
+          dp->state = 0;
+  }
+
+! dmcread(dev, uio)
+  dev_t dev;
++ struct uio *uio;
+  {
+          register struct buf *dp;
+          register struct buf *bp, *pbp;
+***************
+*** 177,183 ****
+          dp = &dmcutab[unit];
+
+          if ((!(dp->state & OPEN))       /* last read after NETCLOSE */
+!             || (u.u_count < bp->b_bcount)) {
+                  u.u_error = EINVAL;
+                  return;
+          }
+--- 178,184 ----
+          dp = &dmcutab[unit];
+
+          if ((!(dp->state & OPEN))       /* last read after NETCLOSE */
+!             || (uio->uio_resid < bp->b_bcount)) {
+                  u.u_error = EINVAL;
+                  return;
+          }
+***************
+*** 199,205 ****
+          (void) _spl0();
+
+          if (bp->b_bcount > 0) {
+!                 iomove(mapin(bp), bp->b_bcount, B_READ);
+                  mapout(bp);
+          }
+          dp->inbufq = bp->inbufq;
+--- 200,206 ----
+          (void) _spl0();
+
+          if (bp->b_bcount > 0) {
+!                 uiomove(mapin(bp), bp->b_bcount, B_READ, uio);
+                  mapout(bp);
+          }
+          dp->inbufq = bp->inbufq;
+***************
+*** 210,217 ****
+          dmcitrans(unit,BACC | RFLAG, bp->b_un.b_addr, bp->xcnt);
+  }
+
+! dmcwrite(dev)
+  dev_t dev;
+  {
+          register struct buf *bp, *dp, *pbp;
+          register int unit;
+--- 211,219 ----
+          dmcitrans(unit,BACC | RFLAG, bp->b_un.b_addr, bp->xcnt);
+  }
+
+! dmcwrite(dev, uio)
+  dev_t dev;
++ struct uio *uio;
+  {
+          register struct buf *bp, *dp, *pbp;
+          register int unit;
+***************
+*** 219,225 ****
+          if (chkphys(BYTE))
+                  return;
+          unit = minor(dev);
+!         if (u.u_count > BUFSIZ) {
+                  u.u_error = EINVAL;
+                  return;
+          }
+--- 221,227 ----
+          if (chkphys(BYTE))
+                  return;
+          unit = minor(dev);
+!         if (uio->uio_resid > BUFSIZ) {
+                  u.u_error = EINVAL;
+                  return;
+          }
+***************
+*** 261,267 ****
+          dmcitrans(unit, BACC|TFLAG, bp->b_un.b_addr,
+                  ((unsigned)bp->b_xmem<<EXTSHFT)|bp->b_bcount);
+          iowait(bp);
+!         u.u_count = 0;
+          bp->b_flags = 0;
+          u.u_procp->p_flag &= ~SLOCK;
+          bp->tbufq = dp->tbufq;
+--- 263,269 ----
+          dmcitrans(unit, BACC|TFLAG, bp->b_un.b_addr,
+                  ((unsigned)bp->b_xmem<<EXTSHFT)|bp->b_bcount);
+          iowait(bp);
+!         uio->uio_resid = 0;
+          bp->b_flags = 0;
+          u.u_procp->p_flag &= ~SLOCK;
+          bp->tbufq = dp->tbufq;
+diff -r -c /usr/src/oldsys/OTHERS/du11/du.c /usr/src/sys/OTHERS/du11/du.c
+*** /usr/src/oldsys/OTHERS/du11/du.c	Wed Oct  9 21:31:31 1985
+--- /usr/src/sys/OTHERS/du11/du.c	Wed Apr 11 09:55:25 1990
+***************
+*** 213,219 ****
+  	maint = 0;
+  }
+
+! duread()
+  {
+  	register nbytes;
+
+--- 213,221 ----
+  	maint = 0;
+  }
+
+! duread(dev, uio)
+! 	dev_t dev;
+! 	struct uio *uio;
+  {
+  	register nbytes;
+
+***************
+*** 248,261 ****
+  	/*
+  	 * Copy the message to the caller's buffer
+  	 */
+! 	nbytes = min(u.u_count, du11.durbufo->msgbc);
+! 	iomove(du11.durbufo->msgbufp, nbytes, B_READ);
+  	if (++du11.durbufo == du11.durbuff + MSGN)
+  		du11.durbufo = du11.durbuff;
+  	du11.durbufn--;
+  }
+
+! duwrite()
+  {
+  	register nbytes;
+
+--- 250,265 ----
+  	/*
+  	 * Copy the message to the caller's buffer
+  	 */
+! 	nbytes = min(uio->uio_resid, du11.durbufo->msgbc);
+! 	uiomove(du11.durbufo->msgbufp, nbytes, B_READ, uio);
+  	if (++du11.durbufo == du11.durbuff + MSGN)
+  		du11.durbufo = du11.durbuff;
+  	du11.durbufn--;
+  }
+
+! duwrite(dev, uio)
+! 	dev_t	dev;
+! 	struct	uio *uio;
+  {
+  	register nbytes;
+
+***************
+*** 268,276 ****
+  	/*
+  	 * Transfer  the message from the caller's buffer to ours
+  	 */
+! 	nbytes = min(u.u_count, MSGLEN);
+  	du11.dutbufi->msgbc = nbytes;
+! 	iomove(du11.dutbufi->msgbufp, nbytes, B_WRITE);
+  	if (++du11.dutbufi == du11.dutbuff + MSGN)
+  		du11.dutbufi = du11.dutbuff;
+  	du11.dutbufn++;
+--- 272,280 ----
+  	/*
+  	 * Transfer  the message from the caller's buffer to ours
+  	 */
+! 	nbytes = min(uio->uio_resid, MSGLEN);
+  	du11.dutbufi->msgbc = nbytes;
+! 	uiomove(du11.dutbufi->msgbufp, nbytes, B_WRITE, uio);
+  	if (++du11.dutbufi == du11.dutbuff + MSGN)
+  		du11.dutbufi = du11.dutbuff;
+  	du11.dutbufn++;
+diff -r -c /usr/src/oldsys/OTHERS/dv/dv.c /usr/src/sys/OTHERS/dv/dv.c
+*** /usr/src/oldsys/OTHERS/dv/dv.c	Wed Jun 25 09:58:28 1986
+--- /usr/src/sys/OTHERS/dv/dv.c	Wed Apr 11 11:10:34 1990
+***************
+*** 408,433 ****
+  	if(n==0)
+  		dvstart();
+  }
+! dvread(dev)
+  {
+
+  	if(dvphys(dev))
+! 	physio(dvstrategy, &rdvbuf, dev, B_READ, WORD);
+  }
+
+! dvwrite(dev)
+  {
+
+  	if(dvphys(dev))
+! 	physio(dvstrategy, &rdvbuf, dev, B_WRITE, WORD);
+  }
+
+! dvphys(dev)
+  {
+  	long c;
+
+! 	c = u.u_offset >> 9;
+! 	c += (u.u_count+511) / 512;
+  	if(c > dv_sizes[minor(dev) & 07].nblocks) {
+  		u.u_error = ENXIO;
+  		return(0);
+--- 408,437 ----
+  	if(n==0)
+  		dvstart();
+  }
+! dvread(dev, uio)
+! 	dev_t dev;
+! 	struct uio *uio;
+  {
+
+  	if(dvphys(dev))
+! 	physio(dvstrategy, &rdvbuf, dev, B_READ, WORD, uio);
+  }
+
+! dvwrite(dev, uio)
+! 	dev_t dev;
+! 	struct uio *uio;
+  {
+
+  	if(dvphys(dev))
+! 	physio(dvstrategy, &rdvbuf, dev, B_WRITE, WORD, uio);
+  }
+
+! dvphys(dev, uio)
+  {
+  	long c;
+
+! 	c = uio->uio_offset >> 9;
+! 	c += (uio->uio_resid+511) / 512;
+  	if(c > dv_sizes[minor(dev) & 07].nblocks) {
+  		u.u_error = ENXIO;
+  		return(0);
+***************
+*** 434,438 ****
+  	}
+  	return(1);
+  }
+-
+-
+--- 438,440 ----
+diff -r -c /usr/src/oldsys/OTHERS/ht/ht.c /usr/src/sys/OTHERS/ht/ht.c
+*** /usr/src/oldsys/OTHERS/ht/ht.c	Wed May 27 19:09:19 1987
+--- /usr/src/sys/OTHERS/ht/ht.c	Wed Apr 11 13:46:32 1990
+***************
+*** 432,444 ****
+  	physio(htstrategy, &rhtbuf, dev, B_WRITE);
+  }
+
+! htphys(dev)
+  dev_t dev;
+  {
+  	daddr_t a;
+  	register struct tu_softc *sc = &tu_softc[TUUNIT(dev)];
+
+! 	a = dbtofsb(u.u_offset >> PGSHIFT);
+  	sc->sc_blkno = a;
+  	sc->sc_nxrec = a + 1;
+  }
+--- 432,445 ----
+  	physio(htstrategy, &rhtbuf, dev, B_WRITE);
+  }
+
+! htphys(dev, uio)
+  dev_t dev;
++ struct uio *uio;
+  {
+  	daddr_t a;
+  	register struct tu_softc *sc = &tu_softc[TUUNIT(dev)];
+
+! 	a = dbtofsb(uio->uio_offset >> PGSHIFT);
+  	sc->sc_blkno = a;
+  	sc->sc_nxrec = a + 1;
+  }
+diff -r -c /usr/src/oldsys/OTHERS/multiplexor/mx2.c /usr/src/sys/OTHERS/multiplexor/mx2.c
+*** /usr/src/oldsys/OTHERS/multiplexor/mx2.c	Wed Oct  9 21:31:59 1985
+--- /usr/src/sys/OTHERS/multiplexor/mx2.c	Wed Apr 11 09:59:43 1990
+***************
+*** 211,217 ****
+   * Calls are made through linesw to handle actual
+   * data movement.
+   */
+! mxread(dev)
+  {
+  	register struct group *gp;
+  	register struct chan *cp;
+--- 211,219 ----
+   * Calls are made through linesw to handle actual
+   * data movement.
+   */
+! mxread(dev, uio)
+! 	dev_t dev;
+! 	struct uio *uio;
+  {
+  	register struct group *gp;
+  	register struct chan *cp;
+***************
+*** 228,246 ****
+
+  	fmp = FP->f_flag & FMP;
+  	if (fmp != FMP) {
+! 		if (u.u_count == 0)
+  			return;
+  		msread(fmp, FP->f_un.f_chan);
+  		return;
+  	}
+
+! 	if ((int)u.u_base & 1) {
+  		u.u_error = ENXIO;
+  		return;
+  	}
+
+  	s = spl6();
+! 	if (u.u_count == 0)
+  	{
+  		if (gp->g_datq == 0)
+  			u.u_error = ENXIO;
+--- 230,248 ----
+
+  	fmp = FP->f_flag & FMP;
+  	if (fmp != FMP) {
+! 		if (uio->uio_resid == 0)
+  			return;
+  		msread(fmp, FP->f_un.f_chan);
+  		return;
+  	}
+
+! 	if ((int)uio->uio_iov->iov_base & 1) {
+  		u.u_error = ENXIO;
+  		return;
+  	}
+
+  	s = spl6();
+! 	if (uio->uio_resid == 0)
+  	{
+  		if (gp->g_datq == 0)
+  			u.u_error = ENXIO;
+***************
+*** 252,258 ****
+  	}
+  	splx(s);
+
+! 	while (gp->g_datq && u.u_count >= CNTLSIZ + 2) {
+  		esc = 0;
+  		cp = nextcp(gp);
+  		if (cp==NULL) {
+--- 254,260 ----
+  	}
+  	splx(s);
+
+! 	while (gp->g_datq && uio->uio_resid >= CNTLSIZ + 2) {
+  		esc = 0;
+  		cp = nextcp(gp);
+  		if (cp==NULL) {
+***************
+*** 263,279 ****
+  			count += CNTLSIZ;
+  			if (cp->c_flags&NMBUF)
+  				count += nmsize;
+! 			if (count > u.u_count) {
+  				(void) sdata(cp);
+  				return;
+  			}
+  			esc++;
+  		}
+! 		base = u.u_base;
+! 		count = u.u_count;
+! 		u.u_base += sizeof h;
+! 		u.u_count -= sizeof h;
+! 		xfr = u.u_count;
+  		if (esc) {
+  			more = mcread(cp);
+  		} else {
+--- 265,282 ----
+  			count += CNTLSIZ;
+  			if (cp->c_flags&NMBUF)
+  				count += nmsize;
+! 			if (count > uio->uio_resid) {
+  				(void) sdata(cp);
+  				return;
+  			}
+  			esc++;
+  		}
+! 		base = uio->uio_iov->iov_base;
+! 		count = uio->uio_iov->iov_len;
+! 		uio->uio_iov->iov_base += sizeof h;
+! 		uio->uio_iov->iov_len -= sizeof h;
+! 		uio->uio_resid -= sizeof h;
+! 		xfr = uio->uio_resid;
+  		if (esc) {
+  			more = mcread(cp);
+  		} else {
+***************
+*** 284,294 ****
+  		if (more < 0)
+  			scontrol(cp, M_CLOSE, 0);
+  		(void) _spl0();
+! 		if (xfr == u.u_count) {
+  			esc++;
+  			IOMOVE((caddr_t)m_eot, sizeof m_eot, B_READ);
+  		}
+! 		xfr -= u.u_count;
+  		if (esc) {
+  			h.count = 0;
+  			h.ccount = xfr;
+--- 287,297 ----
+  		if (more < 0)
+  			scontrol(cp, M_CLOSE, 0);
+  		(void) _spl0();
+! 		if (xfr == uio->uio_resid) {
+  			esc++;
+  			IOMOVE((caddr_t)m_eot, sizeof m_eot, B_READ);
+  		}
+! 		xfr -= uio->uio_resid;
+  		if (esc) {
+  			h.count = 0;
+  			h.ccount = xfr;
+***************
+*** 297,305 ****
+  			h.ccount = 0;
+  			mxrstrt(cp, &cp->cx.datq, BLOCK|ALT);
+  		}
+! 		if (u.u_count && (xfr&1)) {
+! 			u.u_base++;
+! 			u.u_count--;
+  		}
+  		(void) copyout((caddr_t)&h, base, sizeof h);
+
+--- 300,309 ----
+  			h.ccount = 0;
+  			mxrstrt(cp, &cp->cx.datq, BLOCK|ALT);
+  		}
+! 		if (uio->uio_resid && (xfr&1)) {
+! 			uio->uio_iov->iov_base++;
+! 			uio->uio_iov->iov_len--;
+! 			uio->uio_resid--;
+  		}
+  		(void) copyout((caddr_t)&h, base, sizeof h);
+
+***************
+*** 307,313 ****
+  }
+
+
+! mxwrite(dev)
+  {
+  register struct chan *cp;
+  struct	wh h;
+--- 311,319 ----
+  }
+
+
+! mxwrite(dev, uio)
+! 	dev_t dev;
+! 	struct uio *uio;
+  {
+  register struct chan *cp;
+  struct	wh h;
+***************
+*** 325,332 ****
+  	}
+
+  	burpcount = 0;
+! 	while (u.u_count >= sizeof h) {
+! 		hbase = u.u_base;
+  		IOMOVE((caddr_t)&h, sizeof h, B_WRITE);
+  		if (u.u_error)
+  			return;
+--- 331,338 ----
+  	}
+
+  	burpcount = 0;
+! 	while (uio->uio_resid >= sizeof h) {
+! 		hbase = uio->uio_iov->iov_base;
+  		IOMOVE((caddr_t)&h, sizeof h, B_WRITE);
+  		if (u.u_error)
+  			return;
+***************
+*** 340,349 ****
+  			u.u_error = ENXIO;
+  			return;
+  		}
+! 		ucount = u.u_count;
+! 		ubase = u.u_base;
+! 		u.u_count = h.count;
+! 		u.u_base = h.data;
+
+  		if (esc==0) {
+  			struct tty *tp;
+--- 346,355 ----
+  			u.u_error = ENXIO;
+  			return;
+  		}
+! 		ucount = uio->uio_resid;
+! 		ubase = uio->uio_iov->iov_base;
+! 		uio->uio_resid = uio->uio_iov->iov_len = h.count;
+! 		uio->uio_iov->iov_base = h.data;
+
+  		if (esc==0) {
+  			struct tty *tp;
+***************
+*** 359,374 ****
+  			}
+  		loop:
+  			waddr = (caddr_t)(*linesw[line].l_write)(tp);
+! 			if (u.u_count) {
+  				if (gp->g_state&ENAMSG) {
+  					burpcount++;
+  					cp->c_flags |= BLKMSG;
+  /*
+! 					scontrol(cp, M_BLK, u.u_count);
+  */
+  					h.ccount = -1;
+! 					h.count = u.u_count;
+! 					h.data = u.u_base;
+  					(void) copyout((caddr_t)&h, hbase, sizeof h);
+  				} else {
+  					if(waddr == 0) {
+--- 365,380 ----
+  			}
+  		loop:
+  			waddr = (caddr_t)(*linesw[line].l_write)(tp);
+! 			if (uio->uio_resid) {
+  				if (gp->g_state&ENAMSG) {
+  					burpcount++;
+  					cp->c_flags |= BLKMSG;
+  /*
+! 					scontrol(cp, M_BLK, uio->uio_resid);
+  */
+  					h.ccount = -1;
+! 					h.count = uio->uio_resid;
+! 					h.data = uio->uio_iov->iov_base;
+  					(void) copyout((caddr_t)&h, hbase, sizeof h);
+  				} else {
+  					if(waddr == 0) {
+***************
+*** 382,391 ****
+  		} else {
+  			mxwcontrol(cp);
+  		}
+! 		u.u_count = ucount;
+! 		u.u_base = ubase;
+  	}
+! 	u.u_count = burpcount;
+  }
+
+
+--- 388,397 ----
+  		} else {
+  			mxwcontrol(cp);
+  		}
+! 		uio->uio_resid = uio->uio_iov->iov_len = ucount;
+! 		uio->uio_iov->iov_base = ubase;
+  	}
+! 	uio->uio_resid = uio->uio_iov->iov_len = burpcount;
+  }
+
+
+***************
+*** 396,403 ****
+   * Kernel-to-Kernel and other special transfers are not
+   * yet in.
+   */
+! mcread(cp)
+  register struct chan *cp;
+  {
+  register struct clist *q;
+  register char *np;
+--- 402,410 ----
+   * Kernel-to-Kernel and other special transfers are not
+   * yet in.
+   */
+! mcread(cp, uio)
+  register struct chan *cp;
++ 	struct uio *uio;
+  {
+  register struct clist *q;
+  register char *np;
+***************
+*** 421,434 ****
+
+
+  caddr_t
+! mcwrite(cp)
+  register struct chan *cp;
+  {
+  register struct clist *q;
+  int	s;
+
+  	q = &cp->cy.datq;
+! 	while (u.u_count) {
+  		s = spl6();
+  		if (q->c_cc > HIQ || (cp->c_flags&EOTMARK)) {
+  			cp->c_flags |= SIGBLK;
+--- 428,442 ----
+
+
+  caddr_t
+! mcwrite(cp, uio)
+  register struct chan *cp;
++ 	struct	uio *uio;
+  {
+  register struct clist *q;
+  int	s;
+
+  	q = &cp->cy.datq;
+! 	while (uio->uio_resid) {
+  		s = spl6();
+  		if (q->c_cc > HIQ || (cp->c_flags&EOTMARK)) {
+  			cp->c_flags |= SIGBLK;
+***************
+*** 447,454 ****
+   * Msread and mswrite move bytes
+   * between user and non-multiplexed channel.
+   */
+! msread(fmp, cp)
+  register struct chan *cp;
+  {
+  register struct clist *q;
+  int s;
+--- 455,463 ----
+   * Msread and mswrite move bytes
+   * between user and non-multiplexed channel.
+   */
+! msread(fmp, cp, uio)
+  register struct chan *cp;
++ 	struct	uio *uio;
+  {
+  register struct clist *q;
+  int s;
+***************
+*** 486,499 ****
+  }
+
+
+! mswrite(fmp, cp)
+  register struct chan *cp;
+  {
+  	register struct clist *q;
+  	register int cc;
+
+  	q = (fmp&FMPX) ? &cp->cy.datq : &cp->cx.datq;
+! 	while (u.u_count) {
+  		(void) _spl6();
+  		if (cp->c_flags&WCLOSE) {
+  			gsignal(cp->c_pgrp, SIGPIPE);
+--- 495,509 ----
+  }
+
+
+! mswrite(fmp, cp, uio)
+  register struct chan *cp;
++ 	struct	uio *uio;
+  {
+  	register struct clist *q;
+  	register int cc;
+
+  	q = (fmp&FMPX) ? &cp->cy.datq : &cp->cx.datq;
+! 	while (uio->uio_resid) {
+  		(void) _spl6();
+  		if (cp->c_flags&WCLOSE) {
+  			gsignal(cp->c_pgrp, SIGPIPE);
+***************
+*** 531,544 ****
+   * move chars between clist and user space.
+   */
+
+! mxmove(q, dir)
+  register struct clist *q;
+  register dir;
+  {
+  register cc;
+  char cbuf[HIQ];
+
+! 	cc = MIN(u.u_count, sizeof cbuf);
+  	if (dir == B_READ)
+  		cc = q_to_b(q, cbuf, cc);
+  	if (cc <= 0)
+--- 541,555 ----
+   * move chars between clist and user space.
+   */
+
+! mxmove(q, dir, uio)
+  register struct clist *q;
+  register dir;
++ 	struct uio *uio;
+  {
+  register cc;
+  char cbuf[HIQ];
+
+! 	cc = MIN(uio->uio_resid, sizeof cbuf);
+  	if (dir == B_READ)
+  		cc = q_to_b(q, cbuf, cc);
+  	if (cc <= 0)
+diff -r -c /usr/src/oldsys/OTHERS/rc/rc.c /usr/src/sys/OTHERS/rc/rc.c
+*** /usr/src/oldsys/OTHERS/rc/rc.c	Wed Oct  9 21:32:09 1985
+--- /usr/src/sys/OTHERS/rc/rc.c	Wed Apr 11 09:48:00 1990
+***************
+*** 13,24 ****
+
+  extern	struct rcdevice *RCADDR;
+
+! rcread(dev)
+  dev_t	dev;
+  {
+  	struct tm t;
+
+! 	if(u.u_count != sizeof(t)) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+--- 13,25 ----
+
+  extern	struct rcdevice *RCADDR;
+
+! rcread(dev, uio)
+  dev_t	dev;
++ struct uio *uio;
+  {
+  	struct tm t;
+
+! 	if(uio->uio_resid != sizeof(t)) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+***************
+*** 32,44 ****
+  	t.tm_yday = -1;
+  	t.tm_isdst = -1;
+
+! 	if (copyout((caddr_t) &t, (caddr_t) u.u_base, sizeof t) < 0)
+  		  u.u_error = EFAULT;
+! 	u.u_count -= sizeof t;
+  }
+
+! rcwrite(dev)
+  dev_t	dev;
+  {
+  	register ymd;
+  	register hm;
+--- 33,46 ----
+  	t.tm_yday = -1;
+  	t.tm_isdst = -1;
+
+! 	if (copyout((caddr_t)&t, (caddr_t)uio->uio_iov->iov_base, sizeof t) < 0)
+  		  u.u_error = EFAULT;
+! 	uio->uio_resid -= sizeof t;
+  }
+
+! rcwrite(dev, uio)
+  dev_t	dev;
++ struct uio *uio;
+  {
+  	register ymd;
+  	register hm;
+***************
+*** 45,55 ****
+  	struct	tm t;
+
+
+! 	if(u.u_count != sizeof(t)) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+! 	if (copyin((caddr_t) u.u_base, (caddr_t) &t, sizeof(t)) < 0) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+--- 47,57 ----
+  	struct	tm t;
+
+
+! 	if(uio->uio_resid != sizeof(t)) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+! 	if (copyin((caddr_t)uio->uio_iov->iov_base,(caddr_t)&t,sizeof(t)) < 0) {
+  		u.u_error = EINVAL;
+  		return;
+  	}
+diff -r -c /usr/src/oldsys/OTHERS/versatec/vp.c /usr/src/sys/OTHERS/versatec/vp.c
+*** /usr/src/oldsys/OTHERS/versatec/vp.c	Sat Jan 10 15:35:25 1987
+--- /usr/src/sys/OTHERS/versatec/vp.c	Wed Apr 11 14:44:30 1990
+***************
+*** 125,142 ****
+  	*vpp = vp11.state = 0;
+  }
+
+! vpwrite(dev)
+  dev_t dev;
+  {
+  	int vpstart();
+
+! 	if ((vp11.bytecount=u.u_count) == 0)	/* true byte count */
+  		return;
+! 	if (u.u_count&01)	/* avoid EFAULT error in physio() */
+! 		u.u_count++;
+  	if (vperror())
+  		return;
+! 	return (physio(vpstart, &vpbuf, dev, B_WRITE, WORD));
+  	/* note that newer 1200A's print @ 1000 lines/min = 2.2kbytes/sec */
+  }
+
+--- 125,143 ----
+  	*vpp = vp11.state = 0;
+  }
+
+! vpwrite(dev, uio)
+  dev_t dev;
++ struct uio *uio;
+  {
+  	int vpstart();
+
+! 	if ((vp11.bytecount=uio->uio_resid) == 0)	/* true byte count */
+  		return;
+! 	if (uio->uio_resid&01)	/* avoid EFAULT error in physio() */
+! 		uio->uio_resid++;
+  	if (vperror())
+  		return;
+! 	return (physio(vpstart, &vpbuf, dev, B_WRITE, WORD, uio));
+  	/* note that newer 1200A's print @ 1000 lines/min = 2.2kbytes/sec */
+  }
+
+***************
+*** 182,187 ****
+--- 183,190 ----
+  	register int ctrl;
+  	register short *vpp;
+  	register struct buf *bp;
++ 	struct	uio	uio;
++ 	struct	iovec	iov;
+
+  	switch (cmd) {
+
+***************
+*** 211,219 ****
+
+  #ifdef THIS_IS_NOT_USEABLE
+  	case BUFWRITE:
+! 		u.u_base = fuword(addr);
+! 		u.u_count = fuword(addr+NBPW);
+! 		if ((int)u.u_base == -1 || (int)u.u_count == -1) {
+  			u.u_error = EFAULT;
+  			return;
+  		}
+--- 214,224 ----
+
+  #ifdef THIS_IS_NOT_USEABLE
+  	case BUFWRITE:
+! 		uio.uio_iovcnt = 1;
+! 		uio.uio_iov = &iov;
+! 		iov.iov_base = fuword(addr);
+! 		iov.iov_len = uio.uio_resid = fuword(addr+NBPW);
+! 		if ((int)iov.iov_base == -1 || iov.iov_len == -1) {
+  			u.u_error = EFAULT;
+  			return;
+  		}
+***************
+*** 229,235 ****
+  			(void) _spl0();
+  			return(geterror(bp));
+  		}
+! 		if (u.u_count == 0)
+  			return;
+  		/* simulate a write without starting i/o */
+  		(void) _spl4();
+--- 234,240 ----
+  			(void) _spl0();
+  			return(geterror(bp));
+  		}
+! 		if (uio.uio_resid == 0)
+  			return;
+  		/* simulate a write without starting i/o */
+  		(void) _spl4();

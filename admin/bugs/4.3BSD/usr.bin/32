@@ -1,0 +1,236 @@
+From voder!root@ucbvax.Berkeley.EDU  Wed Nov 12 17:14:45 1986
+Received: by ucbarpa.Berkeley.EDU (5.57/1.18)
+	id AA02269; Wed, 12 Nov 86 17:14:45 PST
+Received: by ucbvax.Berkeley.EDU (5.53/1.18)
+	id AA02617; Wed, 12 Nov 86 17:14:14 PST
+Received: by voder.UUCP (5.51/4.7)
+	id AA29543; Wed, 12 Nov 86 17:10:44 PST
+Date: Wed, 12 Nov 86 17:10:44 PST
+From: voder!root@ucbvax.Berkeley.EDU (The System Manager)
+Message-Id: <8611130110.AA29543@voder.UUCP>
+Subject: hayes dialer code for tip is a mess
+Index: 	usr.bin/tip/aculib/hayes.c 4.3BSD +FIX
+Apparently-To: ucbvax!4bsd-bugs
+
+Description:
+	The Hayes autodialer code doesn't work.
+Repeat-By:
+	Try to use tip with a Hayes Smartmodem.
+Fix:
+
+
+RCS file: RCS/hayes.c,v
+retrieving revision 1.1
+retrieving revision 1.2
+diff -c -r1.1 -r1.2
+*** /tmp/,RCSt1029531	Wed Nov 12 17:09:30 1986
+--- /tmp/,RCSt2029531	Wed Nov 12 17:09:32 1986
+***************
+*** 48,58 ****
+  #define	FAILED		4
+  static	int state = IDLE;
+  
+  hay_dialer(num, acu)
+  	register char *num;
+  	char *acu;
+  {
+- 	register char *cp;
+  	register int connected = 0;
+  	char dummy;
+  #ifdef ACULOG
+--- 48,58 ----
+  #define	FAILED		4
+  static	int state = IDLE;
+  
++ /*ARGSUSED*/
+  hay_dialer(num, acu)
+  	register char *num;
+  	char *acu;
+  {
+  	register int connected = 0;
+  	char dummy;
+  #ifdef ACULOG
+***************
+*** 65,84 ****
+  	fflush(stdout);
+  	ioctl(FD, TIOCHPCL, 0);
+  	ioctl(FD, TIOCFLUSH, 0);	/* get rid of garbage */
+! 	write(FD, "ATv0\r", 5);	/* tell modem to use short status codes */
+  	gobble("\r");
+! 	gobble("\r");
+! 	write(FD, "ATTD", 4);	/* send dial command */
+  	write(FD, num, strlen(num));
+  	state = DIALING;
+  	write(FD, "\r", 1);
+  	connected = 0;
+! 	if (gobble("\r")) {
+! 		if ((dummy = gobble("01234")) != '1')
+! 			error_rep(dummy);
+! 		else
+! 			connected = 1;
+! 	}
+  	if (connected)
+  		state = CONNECTED;
+  	else {
+--- 65,82 ----
+  	fflush(stdout);
+  	ioctl(FD, TIOCHPCL, 0);
+  	ioctl(FD, TIOCFLUSH, 0);	/* get rid of garbage */
+! 	write(FD, "ATV0E0\r", 7);	/* use short status codes */
+! 	gobble("0");
+  	gobble("\r");
+! 	write(FD, "ATDT", 4);	/* send dial command */
+  	write(FD, num, strlen(num));
+  	state = DIALING;
+  	write(FD, "\r", 1);
+  	connected = 0;
+! 	if ((dummy = gobble("01234")) != '1')
+! 		error_rep(dummy);
+! 	else
+! 		connected = 1;
+  	if (connected)
+  		state = CONNECTED;
+  	else {
+***************
+*** 101,110 ****
+  
+  hay_disconnect()
+  {
+- 	char c;
+- 	int len, rlen;
+- 
+- 	/* first hang up the modem*/
+  #ifdef DEBUG
+  	printf("\rdisconnecting modem....\n\r");
+  #endif
+--- 99,104 ----
+***************
+*** 116,124 ****
+  
+  hay_abort()
+  {
+- 
+- 	char c;
+- 
+  	write(FD, "\r", 1);	/* send anything to abort the call */
+  	hay_disconnect();
+  }
+--- 110,115 ----
+***************
+*** 126,132 ****
+  static int
+  sigALRM()
+  {
+- 
+  	printf("\07timeout waiting for reply\n\r");
+  	timeout = 1;
+  	longjmp(timeoutbuf, 1);
+--- 117,122 ----
+***************
+*** 138,146 ****
+  {
+  	char c;
+  	int (*f)();
+! 	int i, status = 0;
+  
+! 	signal(SIGALRM, sigALRM);
+  	timeout = 0;
+  #ifdef DEBUG
+  	printf("\ngobble: waiting for %s\n", match);
+--- 128,136 ----
+  {
+  	char c;
+  	int (*f)();
+! 	int status = 0;
+  
+! 	f = signal(SIGALRM, sigALRM);
+  	timeout = 0;
+  #ifdef DEBUG
+  	printf("\ngobble: waiting for %s\n", match);
+***************
+*** 157,165 ****
+  #ifdef DEBUG
+  		printf("%c 0x%x ", c, c);
+  #endif
+! 		for (i = 0; i < strlen(match); i++)
+! 			if (c == match[i])
+! 				status = c;
+  	} while (status == 0);
+  	signal(SIGALRM, SIG_DFL);
+  #ifdef DEBUG
+--- 147,154 ----
+  #ifdef DEBUG
+  		printf("%c 0x%x ", c, c);
+  #endif
+! 		if (index(match, c) != NULL)
+! 			status = c;
+  	} while (status == 0);
+  	signal(SIGALRM, SIG_DFL);
+  #ifdef DEBUG
+***************
+*** 210,223 ****
+   */
+  goodbye()
+  {
+! 	int len, rlen;
+  	char c;
+  
+  	ioctl(FD, TIOCFLUSH, &len);	/* get rid of trash */
+  	if (hay_sync()) {
+- 		sleep(1);
+  #ifndef DEBUG
+! 		ioctl(FD, TIOCFLUSH, 0);
+  #endif
+  		write(FD, "ATH0\r", 5);		/* insurance */
+  #ifndef DEBUG
+--- 199,214 ----
+   */
+  goodbye()
+  {
+! 	int len = 0;
+! #ifdef DEBUG
+! 	int rlen;
+! #endif
+  	char c;
+  
+  	ioctl(FD, TIOCFLUSH, &len);	/* get rid of trash */
+  	if (hay_sync()) {
+  #ifndef DEBUG
+! 		ioctl(FD, TIOCFLUSH, &len);
+  #endif
+  		write(FD, "ATH0\r", 5);		/* insurance */
+  #ifndef DEBUG
+***************
+*** 226,243 ****
+  			printf("cannot hang up modem\n\r");
+  			printf("please use 'tip dialer' to make sure the line is hung up\n\r");
+  		}
+! #endif
+  		sleep(1);
+  		ioctl(FD, FIONREAD, &len);
+- #ifdef DEBUG
+  		printf("goodbye1: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+  		dumbuf[rlen] = '\0';
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+- #endif
+- 		write(FD, "ATv1\r", 5);
+- 		sleep(1);
+- #ifdef DEBUG
+  		ioctl(FD, FIONREAD, &len);
+  		printf("goodbye2: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+--- 217,229 ----
+  			printf("cannot hang up modem\n\r");
+  			printf("please use 'tip dialer' to make sure the line is hung up\n\r");
+  		}
+! #else
+  		sleep(1);
+  		ioctl(FD, FIONREAD, &len);
+  		printf("goodbye1: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));
+  		dumbuf[rlen] = '\0';
+  		printf("read (%d): %s\r\n", rlen, dumbuf);
+  		ioctl(FD, FIONREAD, &len);
+  		printf("goodbye2: len=%d -- ", len);
+  		rlen = read(FD, dumbuf, min(len, DUMBUFLEN));

@@ -1,0 +1,98 @@
+From mjb@j.cc.purdue.edu  Sat Mar 18 13:05:14 1989
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.29)
+	id AA07070; Sat, 18 Mar 89 13:05:14 -0800
+Received: from j.cc.purdue.edu by ucbvax.Berkeley.EDU (5.61/1.36)
+	id AA24994; Sat, 18 Mar 89 13:05:12 -0800
+Received: by j.cc.purdue.edu (5.54/1.14)
+	id AA01165; Sat, 18 Mar 89 16:04:40 EST
+Date: Sat, 18 Mar 89 16:04:40 EST
+From: mjb@j.cc.purdue.edu (Matthew Bradburn)
+Message-Id: <8903182104.AA01165@j.cc.purdue.edu>
+Subject: find -follow fails
+Index: 	usr.bin/find 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Find follows symlinks down the directory tree, uses
+	chdir(".."), and incorrectly expects to be back in the same
+	place.
+
+Repeat-By:
+	% mkdir foo; cd foo
+	% ln -s /tmp bar
+	% mkdir baz
+	% find . -follow -print
+	.
+	./bar
+	./bar/x
+	[other files from /tmp]
+	find: bad status <./baz>
+
+	The "bad status" message comes because find reads the next
+	filename out of the directory and expects to be able to
+	stat() it.
+
+Fix:
+	If find is about do descend() through a symbolic link, it
+	needs to save the current working directory and chdir to
+	it (instead of "..") later.  Here's the diffs I applied to
+	our (mostly) 4.3Tahoe find:  (Line number probably aren't
+	the same, this is in the descend() function.)
+
+*** /tmp/,RCSt1029320	Sat Mar 18 13:34:45 1989
+--- find.c	Sat Mar 18 13:33:57 1989
+***************
+*** 663,673 ****
+--- 663,679 ----
+  	register char *c1;
+  	int rv = 0;
+  	char *endofname;
++ 	auto char sbkeep_dir[MAXPATHLEN+MAXNAMLEN+2];
++ 	struct stat lstatb;
+  
+  	if ((follow?stat(fname, &Statb):lstat(fname, &Statb))<0) {
+  		fprintf(stderr, "find: bad status < %s >\n", name);
+  		return(0);
+  	}
++ 	if (follow && lstat(fname, &lstatb)<0) {
++ 		fprintf(stderr, "find: bad status < %s >\n", name);
++ 		return(0);
++ 	}
+  	(*exlist->F)(exlist);
+  	if((Statb.st_mode&S_IFMT)!=S_IFDIR ||
+  	   !Xdev && Devstat.st_dev != Statb.st_dev)
+***************
+*** 682,687 ****
+--- 688,702 ----
+  		--c1;
+  	endofname = c1;
+  
++ 	if (follow && (lstatb.st_mode&S_IFLNK)) {
++ 		if (0 == getwd(sbkeep_dir)) {
++ 			fprintf(stderr, "find: getwd: %s\n", sbkeep_dir);
++ 			return(0);
++ 		}
++ 	} else {
++ 		sbkeep_dir[0] = '\000';
++ 	}
++ 
+  	if (chdir(fname) == -1)
+  		return(0);
+  	if ((dir = opendir(".")) == NULL) {
+***************
+*** 710,716 ****
+  ret:
+  	if(dir)
+  		closedir(dir);
+! 	if(chdir("..") == -1) {
+  		*endofname = '\0';
+  		fprintf(stderr, "find: bad directory <%s>\n", name);
+  		rv = 1;
+--- 725,731 ----
+  ret:
+  	if(dir)
+  		closedir(dir);
+! 	if (chdir(*sbkeep_dir ? sbkeep_dir : "..") == -1) {
+  		*endofname = '\0';
+  		fprintf(stderr, "find: bad directory <%s>\n", name);
+  		rv = 1;

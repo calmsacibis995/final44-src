@@ -1,0 +1,38 @@
+Return-Path: <nowicki@coyote>
+Date: Mon, 12 Mar 84 13:24:30 pst
+From: Bill Nowicki <nowicki@coyote>
+Subject: sendmail returns message when TCP fails
+Index: usr.lib/sendmail/src/collect.c 4.2BSD
+
+Description:
+	Recently we have been having congestion problems in our
+Arpanet gateway.  This causes packets to be dropped, and eventually
+TCP connections to time out.  The sendmail SMTP daemon will return
+a message to the sender when the TCP connection times out during
+transmission.  It should instead just discard the partially-received
+message, since the sending host will send it again the next time
+the queue is run.  This bug causes our users to get copies of their
+outgoing mail returned hourly until the evening when our gateway
+congestion disappears and the message finally gets delivered properly.
+
+Repeat-By:
+	Send a large message from host A to host B, (say, "nobody@B")
+where host B is running sendmail.  After doing netstats on either host
+to determine that a TCP connection has been made, do a ps on host A
+and kill the sendmail process quickly before it completes.  You will
+get a message back from mailer-daemon@B saying "SYSERR:unexpected close".
+The next time the queue is run, however, the message is successfully
+delivered to the user on host B.
+
+
+Fix:
+	change the line:
+		syserr("collect:unexpected close");
+
+	to the block:
+	  {
+		syserr("unexpected close, from=%s", CurEnv->e_from.q_paddr);
+		CurEnv->e_flags &= ~EF_FATALERRS;
+		finis();
+	  }
+

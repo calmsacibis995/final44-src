@@ -1,0 +1,233 @@
+
+Received: from louie.udel.edu by huey.udel.edu id aa08348; 23 Aug 94 22:24 EDT
+Received: from mri.com ([192.9.201.130]) by mri-gw.mri.com (4.1/SMI-4.1)
+	id AA18751; Tue, 23 Aug 94 19:24:30 PDT
+Received: from jlw.com by mri.com (4.1/SMI-4.0)
+	id AA20761; Tue, 23 Aug 94 19:21:21 PDT
+Received: by jlw.com (4.1/SMI-4.1/jlw-930326)
+	id AA03171; Tue, 23 Aug 94 19:01:57 PDT
+Date: Tue, 23 Aug 94 19:01:57 PDT
+From: Jeff Woolsey <woolsey@jlw.com>
+Message-Id: <9408240201.AA03171@jlw.com>
+To: Mills@huey.udel.edu
+Subject: Heathkit patches for NTP 3.4c
+Content-Type: X-sun-attachment
+
+----------
+X-Sun-Data-Type: text
+X-Sun-Data-Description: text
+X-Sun-Data-Name: text
+X-Sun-Content-Lines: 7
+
+
+Enclosed please find a patch to allow NTP to use a GC-1000 clock 
+displaying local time, and an rclk.HEATH to help configure it.
+-- 
+Jeff Woolsey			+1 408 486 5677
+woolsey@jlw.com -or- woolsey@netcom.COM -or even- woolsey@mri.com
+"Tried working once.  Didn't work out.  Too much like work."  -Steed
+----------
+X-Sun-Data-Type: default
+X-Sun-Data-Description: default
+X-Sun-Data-Name: HEATH-12HR.patch
+X-Sun-Content-Lines: 168
+
+*** xntpd/refclock_heath.c.orig	Sat Jul  2 17:32:22 1994
+--- xntpd/refclock_heath.c	Sat Aug 20 21:12:20 1994
+***************
+*** 6,11 ****
+--- 6,12 ----
+  #include <stdio.h>
+  #include <ctype.h>
+  #include <sys/time.h>
++ #include <time.h>
+  
+  #include "ntpd.h"
+  #include "ntp_io.h"
+***************
+*** 27,35 ****
+   *
+   * The internal DIPswitches should be set to operate at 1200 baud in
+   * MANUAL mode and the current year. The external DIPswitches should be
+!  * set to GMT and 24-hour format. It is very important that the year be
+   * set correctly in the DIPswitches. Otherwise, the day of year will be
+!  * incorrect after 28 April of a normal or leap year.
+   *
+   * In MANUAL mode the clock responds to a rising edge of the request to
+   * send (RTS) modem control line by sending the timecode. Therefore, it
+--- 28,40 ----
+   *
+   * The internal DIPswitches should be set to operate at 1200 baud in
+   * MANUAL mode and the current year. The external DIPswitches should be
+!  * set to GMT and 24-hour format, or to the host local time zone (with
+!  * DST) and 12-hour format. It is very important that the year be
+   * set correctly in the DIPswitches. Otherwise, the day of year will be
+!  * incorrect after 28 April of a normal or leap year.  In 12-hour mode
+!  * with DST selected the clock will be incorrect by an hour for an
+!  * indeterminate amount of time between 0000Z and 0200 on the day DST
+!  * changes.
+   *
+   * In MANUAL mode the clock responds to a rising edge of the request to
+   * send (RTS) modem control line by sending the timecode. Therefore, it
+***************
+*** 38,53 ****
+   * restrictions require the use of a POSIX-compatible programming
+   * interface, although other interfaces may work as well.
+   *
+   * The clock message consists of 23 ASCII printing characters in the
+   * following format:
+   *
+!  * hh:mm:ss.f     dd/mm/yr<cr>
+   *
+   *	hh:mm:ss.f = hours, minutes, seconds
+   *	f = deciseconds ('?' when out of spec)
+   *	dd/mm/yr = day, month, year
+   *
+!  * The alarm condition is indicated by '?', rather than a digit, at A.
+   * Note that 0?:??:??.? is displayed before synchronization is first
+   * established and hh:mm:ss.? once synchronization is established and
+   * then lost again for about a day.
+--- 43,67 ----
+   * restrictions require the use of a POSIX-compatible programming
+   * interface, although other interfaces may work as well.
+   *
++  * A simple hardware modification to the clock can be made which prevents
++  * the clock hearing the request to send (RTS) if the HI SPEC lamp is out.
++  * Route the HISPEC signal to the tone decoder board pin 19, from the
++  * display, pin 19.  Isolate pin 19 of the decoder board first, but
++  * maintain connection with pin 10.  Also isolate pin 38 of the CPU on the
++  * tone board, and use half an added 7400 to gate the original signal to
++  * pin 38 with that from pin 19.
++  *
+   * The clock message consists of 23 ASCII printing characters in the
+   * following format:
+   *
+!  * hh:mm:ss.f AM  dd/mm/yr<cr>
+   *
+   *	hh:mm:ss.f = hours, minutes, seconds
+   *	f = deciseconds ('?' when out of spec)
++  *	AM/PM/bb = blank in 24-hour mode
+   *	dd/mm/yr = day, month, year
+   *
+!  * The alarm condition is indicated by '?', rather than a digit, at f.
+   * Note that 0?:??:??.? is displayed before synchronization is first
+   * established and hh:mm:ss.? once synchronization is established and
+   * then lost again for about a day.
+***************
+*** 200,206 ****
+  	l_fp trtmp;
+  	int month, day;
+  	int i;
+! 	char dsec;
+  
+  	/*
+  	 * Initialize pointers and read the timecode and timestamp
+--- 214,220 ----
+  	l_fp trtmp;
+  	int month, day;
+  	int i;
+! 	char dsec, a[5];
+  
+  	/*
+  	 * Initialize pointers and read the timecode and timestamp
+***************
+*** 238,251 ****
+  	}
+  
+  	/*
+! 	 * Timecode format: "hh:mm:ss.f    mm/dd/yy"
+  	 */
+! 	if (sscanf(pp->lastcode, "%2d:%2d:%2d.%c %2d/%2d/%2d",
+! 	    &pp->hour, &pp->minute, &pp->second, &dsec, &month, &day,
+! 	    &pp->year) != 7) {
+  		refclock_report(peer, CEVNT_BADREPLY);
+  		return;
+  	}
+  
+  	/*
+  	 * We determine the day of the year from the DIPswitches. This
+--- 252,304 ----
+  	}
+  
+  	/*
+! 	 * Timecode format: "hh:mm:ss.f AM  mm/dd/yy"
+  	 */
+! 	if (sscanf(pp->lastcode, "%2d:%2d:%2d.%c%5c%2d/%2d/%2d",
+! 	    &pp->hour, &pp->minute, &pp->second, &dsec, &a, &month, &day,
+! 	    &pp->year) != 8) {
+  		refclock_report(peer, CEVNT_BADREPLY);
+  		return;
+  	}
++ 
++ 	/*
++ 	 * If AM or PM is received, assume the clock is displaying local
++ 	 * time.  First, convert to 24-hour.
++ 	 */
++ 
++ 	switch (a[1]) {
++ 		case 'P': if (12 > pp->hour) pp->hour += 12; break;
++ 		case 'A': if (12 == pp->hour) pp->hour -= 12; break;
++ 		case ' ':
++ 		default:
++ 	}
++ 
++ 	/*
++ 	 * Now make a struct tm out of it, convert to UTC, and
++ 	 * repopulate pp->
++ 	 */
++ 
++ 	if (' ' != a[1]) {
++ 		struct tm t, *q;
++ 		time_t l;
++ 		t.tm_sec = pp->second;
++ 		t.tm_min = pp->minute;
++ 		t.tm_hour = pp->hour;
++ 		t.tm_mday = day; /* not converted to yday yet */
++ 		t.tm_mon = month; /* ditto */
++ 		t.tm_year = pp->year;
++ 
++ 		l = timelocal(&t);
++ 		q = gmtime(&l);
++ 
++ 		pp->year = q->tm_year;
++ 		month = q->tm_mon;
++ 		day = q->tm_mday; /* still not converted */
++ 		pp->hour = q->tm_hour;
++ 		/* pp->minute = q->tm_min;  GC-1000 cannot adjust timezone */
++ 		/* pp->second = q->tm_sec;  by other than hour increments */
++ 	}
++ 
+  
+  	/*
+  	 * We determine the day of the year from the DIPswitches. This
+----------
+X-Sun-Data-Type: shell-script
+X-Sun-Data-Description: shell-script
+X-Sun-Data-Name: rclk.HEATH
+X-Sun-Content-Lines: 24
+
+#!/bin/sh -
+CMD="$1"
+shift;
+
+. refclocks/setup
+
+if check "$DEFS" '$0 ~ /SYS_SUNOS4/'; then
+  case "$CMD" in
+    info)
+  	echo "	HEATH		- HeathKit GC-1000 Most Accurate Clock"
+    	;;
+    check)
+	if check "$RCONFIG" '$0 ~ /HEATH/'; then
+	  echo "HEATH		- HeathKit GC-1000 Most Accurate Clock"
+	fi
+	;;
+    config)
+	if check "$REFCONF" '$0 ~ /HEATH/' ||
+	   ( [ ! "$REFCONF" ] && query "Include HeathKit GC-1000 Most Accurate Clock (HEATH)" n); then
+	  echo "-DHEATH" >> $RCONFIG
+	fi
+	;;
+esac
+fi
+

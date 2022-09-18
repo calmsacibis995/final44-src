@@ -1,0 +1,233 @@
+From serge@okeeffe.berkeley.edu  Tue May 24 13:44:09 1988
+Received: from ucbvax.Berkeley.EDU by okeeffe.berkeley.edu (5.59/1.28)
+	id AA01058; Tue, 24 May 88 13:44:09 PDT
+Received: from okeeffe.Berkeley.EDU by ucbvax.Berkeley.EDU (5.59/1.28)
+	id AA16738; Tue, 24 May 88 13:43:51 PDT
+Received: by okeeffe.Berkeley.EDU (5.59/1.28)
+	id AA01038; Tue, 24 May 88 13:43:33 PDT
+Date: Tue, 24 May 88 13:43:33 PDT
+From: serge@okeeffe.berkeley.edu (serge)
+Message-Id: <8805242043.AA01038@okeeffe.Berkeley.EDU>
+Subject: test is missing useful predicates
+Index: bin 4.3BSD +FIX
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	test does not have predicates to test whether a file is
+	executable, a block special device, etc.
+Fix:
+*** /usr/src/bin/test.c	Sun May 11 15:42:32 1986
+--- test.c	Tue May 24 13:34:12 1988
+***************
+*** 12,19 ****
+  #include <sys/stat.h>
+  #define EQ(a,b)	((tmp=a)==0?0:(strcmp(tmp,b)==0))
+  
+- #define DIR 1
+- #define FIL 2
+  int	ap;
+  int	ac;
+  char	**av;
+--- 12,17 ----
+***************
+*** 89,105 ****
+  	}
+  
+  	if(EQ(a, "-r"))
+! 		return(tio(nxtarg(0), 0));
+  
+  	if(EQ(a, "-w"))
+  		return(tio(nxtarg(0), 1));
+  
+  	if(EQ(a, "-d"))
+! 		return(ftype(nxtarg(0))==DIR);
+  
+  	if(EQ(a, "-f"))
+! 		return(ftype(nxtarg(0))==FIL);
+  
+  	if(EQ(a, "-s"))
+  		return(fsizep(nxtarg(0)));
+  
+--- 87,156 ----
+  	}
+  
+  	if(EQ(a, "-r"))
+! 		return(tio(nxtarg(0), 4));
+  
+  	if(EQ(a, "-w"))
++ 		return(tio(nxtarg(0), 2));
++ 
++ 	if(EQ(a, "-x"))
+  		return(tio(nxtarg(0), 1));
+  
++ 	if(EQ(a, "-c"))
++ 		return(ftype(nxtarg(0))==S_IFCHR);
++ 
++ 	if(EQ(a, "-b"))
++ 		return(ftype(nxtarg(0))==S_IFBLK);
++ 
+  	if(EQ(a, "-d"))
+! 		return(ftype(nxtarg(0))==S_IFDIR);
+  
+  	if(EQ(a, "-f"))
+! 		return(ftype(nxtarg(0))!=S_IFDIR);
+  
++ 	if(EQ(a, "-h"))
++ #ifdef	S_IFLNK
++ 	{
++ 		struct stat	statb;
++ 
++ 		return (lstat(nxtarg(0), &statb) != -1 &&
++ 			(statb.st_mode & S_IFMT) == S_IFLNK);
++ 	}
++ #else
++ 	{
++ 		nxtarg(0);
++ 		return (0);
++ 	}
++ #endif
++ 
++ 	if(EQ(a, "-i"))
++ #ifdef	S_IFSOCK
++ 		return(ftype(nxtarg(0))==S_IFSOCK);
++ #else
++ 	{
++ 		nxtarg(0);
++ 		return (0);
++ 	}
++ #endif
++ 
++ 	if(EQ(a, "-p"))
++ #ifdef	S_IFIFO
++ 		return(ftype(nxtarg(0))==S_IFIFO);
++ #else
++ 	{
++ 		nxtarg(0);
++ 		return (0);
++ 	}
++ #endif
++ 
++ 	if(EQ(a, "-u"))
++ 		return(fperm(nxtarg(0))&S_ISUID);
++ 
++ 	if(EQ(a, "-g"))
++ 		return(fperm(nxtarg(0))&S_ISGID);
++ 
++ 	if(EQ(a, "-k"))
++ 		return(fperm(nxtarg(0))&S_ISVTX);
++ 
+  	if(EQ(a, "-s"))
+  		return(fsizep(nxtarg(0)));
+  
+***************
+*** 149,161 ****
+  char *a;
+  int f;
+  {
+! 
+! 	f = open(a, f);
+! 	if (f>=0) {
+! 		(void) close(f);
+! 		return(1);
+! 	}
+! 	return(0);
+  }
+  
+  ftype(f)
+--- 200,206 ----
+  char *a;
+  int f;
+  {
+! 	return (access(a, f) == 0);
+  }
+  
+  ftype(f)
+***************
+*** 165,173 ****
+  
+  	if(stat(f,&statb)<0)
+  		return(0);
+! 	if((statb.st_mode&S_IFMT)==S_IFDIR)
+! 		return(DIR);
+! 	return(FIL);
+  }
+  
+  fsizep(f)
+--- 210,230 ----
+  
+  	if(stat(f,&statb)<0)
+  		return(0);
+! 	return (statb.st_mode & S_IFMT);
+! }
+! 
+! fperm(f)
+! char *f;
+! {
+! 	struct stat statb;
+! 
+! 	if (stat(f,&statb)<0)
+! 		return(0);
+! 	return (statb.st_mode &
+! 		( S_ISUID	|  S_ISGID	  |  S_ISVTX	   |
+! 		  S_IREAD	|  S_IWRITE	  |  S_IEXEC	   |
+! 		 (S_IREAD >> 3)	| (S_IWRITE >> 3) | (S_IEXEC >> 3) |
+! 		 (S_IREAD >> 6)	| (S_IWRITE >> 6) | (S_IEXEC >> 6)));
+  }
+  
+  fsizep(f)
+*** /usr/src/man/man1/test.1	Tue Sep 22 08:48:08 1987
+--- test.1	Tue May 24 13:30:10 1988
+***************
+*** 25,30 ****
+--- 25,39 ----
+  .BR \-w " file"
+  true if the file exists and is writable.
+  .TP 
++ .BR \-x " file"
++ true if the file exists and is executable.
++ .TP 
++ .BR \-b " file"
++ true if the file exists and is a block special device.
++ .TP 
++ .BR \-c " file"
++ true if the file exists and is a character special device.
++ .TP 
+  .BR \-f " file"
+  true if the file exists and is not a directory.
+  .TP 
+***************
+*** 31,36 ****
+--- 40,60 ----
+  .BR \-d " file"
+  true if the file exists and is a directory.
+  .TP 
++ .BR \-g " file"
++ true if the file exists and is set-group-id.
++ .TP 
++ .BR \-h " file"
++ true if the file exists and is a symbolic link.
++ .TP 
++ .BR \-i " file"
++ true if the file exists and is a socket.
++ .TP 
++ .BR \-k " file"
++ true if the file exists and is sticky.
++ .TP 
++ .BR \-p " file"
++ true if the file exists and is a named pipe (fifo).
++ .TP 
+  .BR \-s " file"
+  true if the file exists and has a size greater than zero.
+  .TP 
+***************
+*** 39,44 ****
+--- 63,71 ----
+  .I fildes
+  (1 by default)
+  is associated with a terminal device.
++ .TP 
++ .BR \-u " s1"
++ true if the file exists and is set-user-id.
+  .TP 
+  .BR \-z " s1"
+  true if the length of string

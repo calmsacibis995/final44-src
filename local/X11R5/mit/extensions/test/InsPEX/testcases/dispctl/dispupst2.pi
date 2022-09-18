@@ -1,0 +1,130 @@
+
+/* $XConsortium: dispupst2.pi,v 5.2 91/11/26 14:59:07 hersh Exp $ */
+
+/*****************************************************************
+Copyright (c) 1989, 1990, 1991,1990 by Sun Microsystems, Inc. and the X Consortium.
+
+                        All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its 
+documentation for any purpose and without fee is hereby granted, 
+provided that the above copyright notice appear in all copies and that
+both that copyright notice and this permission notice appear in 
+supporting documentation, and that the names of Sun Microsystems,
+the X Consortium, and MIT not be used in advertising or publicity 
+pertaining to distribution of the software without specific, written 
+prior permission.  
+
+SUN MICROSYSTEMS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, 
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT 
+SHALL SUN MICROSYSTEMS BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL 
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+******************************************************************/
+
+
+## dispupst2.pi -  
+## Test requirements:
+##   test display update with ws transformation modification (WAIT/NIVE,UQUM,UWOR)
+
+source macro.pi
+source dcmacro.pi
+source xpmacro.pi
+
+tbegintest("dispupst2","display update with ws xform modification (WAIT/NIVE,UQUM,UWOR)");
+
+
+# INITIALIZE: data for a line, ws window
+line = IA_Ppoint(2, 0.75,0.3, 0.75,0.7);
+line3 = IA_Ppoint3(2, 0.75,0.3,0.0, 0.75,0.7,0.0);
+pl = I_Ppoint_list(2,line);
+textstring = malloc(128);
+oldwin = I_Plimit(0.0, 1.0, 0.0, 1.0);
+newwin = I_Plimit(0.5, 1.0, 0.0, 1.0);
+vport = I_Plimit(0.0, 200.0, 0.0, 200.0);
+
+# SETUP: open phigs and a workstation, open and post a structure
+#        insert a polyline element
+
+i_open_phigs(NULL,0);
+i_open_x_ws(1,&xdisplay,&xwindow,0,0,200,200);
+popen_struct(1);
+ppost_struct(1,1,1.0);
+ppolyline(&pl);
+pinq_disp_upd_st(1, &err, &defmode, &modmode, &sur, &vis);
+dynmod = i_get_ws_dyn_mod(1,"workstation transformation modification");
+
+foreach @modmode (
+	PMODE_NIVE;PMODE_UWOR;PMODE_UQUM;
+)
+	tvprintf(2," modification mode=%d\n",@modmode);
+
+	#OPERATIONS: set deferral and modification mode,change workstation window 
+	pset_disp_upd_st(1, PDEFER_WAIT, @modmode);
+	pset_ws_win(1, &newwin);
+
+	#VERIFICATIONS: 
+
+	#  Verify the current workstation window has old values,
+	#  the requested workstation window has new values, and
+	#  update state is PUPD_PEND
+	im_confirm_wsxform(PUPD_PEND,
+		newwin,oldwin,vport,vport,"before updatews");
+
+	if (dynmod == PDYN_IRG) # if the ws xform's dynamic modification is IRG
+
+		#  Verify the state of visual representation is PVISUAL_ST_DEFER. 
+		im_confirm_visual_rep(1,PVISUAL_ST_DEFER,
+			"failed: state of visual rep=%d, expected PVISUAL_ST_DEFER\n");
+		#  Verify pixels at the expected locations. 
+		im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1, 
+		"failed: line is missing after setting ws window\n",NULL);
+	endif
+
+	if (dynmod == PDYN_CBS) # if the ws xform's dynamic modification is CBS
+		#  Verify the state of visual representation is PVISUAL_ST_SIMULATED. 
+		im_confirm_visual_rep(1,PVISUAL_ST_SIMULATED,
+			"failed: state of visual rep=%d,expected PVISUAL_ST_SIMULATED\n");
+	endif
+
+	if (dynmod == PDYN_IMM) # if the ws xform's dynamic modification is IMM
+		#  Verify the state of visual representation is PVISUAL_ST_CORRECT. 
+		im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+			"failed: state of visual rep=%d,expected PVISUAL_ST_CORRECT\n");
+		#  Verify pixels at the expected locations. 
+		im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1, 
+		"failed: line is missing after setting ws window\n",NULL);
+	endif
+	i_pause();
+
+	#OPERATIONS: update display
+
+	pupd_ws(1, PFLAG_PERFORM );
+
+	#VERIFICATIONS: 
+
+	#  Verify the state of visual representation is PVISUAL_ST_CORRECT. 
+	im_confirm_visual_rep(1,PVISUAL_ST_CORRECT,
+		"failed: state of visual rep = %d, expected PVISUAL_ST_CORRECT\n");
+
+	#  Verify the current workstation window has new values,
+	#  the requested workstation window has new values, and
+	#  update state is PUPD_NOT_PEND
+	im_confirm_wsxform(PUPD_NOT_PEND,
+		newwin,newwin,vport,vport,"after updatews");
+
+	#  Verify the picture by sampling pixels at the expected locations. 
+	im_confirm_line3(xdisplay,xwindow,1,0,line3,5,1, 
+		"failed: line is missing after display has been updated\n",NULL);
+
+	i_pause();
+	#CLEANUP: set ws window to default values
+	pset_ws_win(1, &oldwin);
+	pupd_ws(1, PFLAG_PERFORM );
+
+end
+
+tendtest();

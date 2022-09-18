@@ -1,0 +1,115 @@
+Return-Path: <sdcsvax!sdchema!donn>
+From: sdcsvax!sdchema!donn
+Date: Mon, 2 Apr 84 13:00:15 pst
+To: sdcsvax!ucbvax!4bsd-bugs
+Subject: Bug in copy propagation causes constant exponents to break in f77
+Index:	usr.bin/f77/src/f77pass1/bb.c 4.2BSD
+
+Description:
+	An f77 program that uses certain constant integer exponents
+	greater than 4 will not get the proper results if the optimizer
+	is turned on.  In general the values produced are much larger
+	than they should be.
+
+Repeat-By:
+	Compile the following program with the optimizer turned on
+	and run it:
+
+	----------------------------------------------------------------
+		program powbug
+
+		integer i
+
+		i = 10
+		i = i ** 5
+
+		print *, i
+
+		stop
+		end
+	----------------------------------------------------------------
+
+	If your f77 is broken it will print '1000000' instead of
+	'100000'.
+
+Fix:
+	F77 handles constant integer exponentiation with inline
+	multiplies.  The way that inline multiplies are implemented
+	requires two temporaries, one to hold the original value and
+	one to hold a copy which gets repeatedly squared; if the
+	exponent is not a power of two, then the first temporary is
+	multiplied into the second temporary the necessary remaining
+	number of times.  The copy propagation code notices that the
+	first temporary is initialized from the second; unfortunately
+	it misses the fact that the second copy is modified and reduces
+	the two temporaries to one, eliminating the assignment from the
+	one temporary to the other.  The reason it misses the
+	modification of the second temporary is that the squarings are
+	done with an OPSTAREQ operator instead of an ordinary
+	OPASSIGN.  The solution is to make the copy propagation code
+	know about the other assignment operators.  The changes are in
+	routine ckexpr() in bb.c:
+
+	----------------------------------------------------------------
+	rcsdiff -c -r1.1 bb.c
+	*** /tmp/,RCSt1015453	Mon Apr  2 12:47:44 1984
+	--- bb.c	Fri Mar 30 05:02:44 1984
+	***************
+	*** 343,348
+	  
+	  {
+	  Tempp	lp,rp;
+	  
+	  if (expr->exprblock.opcode == OPASSIGN)
+		{
+
+	--- 343,349 -----
+	  
+	  {
+	  Tempp	lp,rp;
+	+ int	oc = expr->exprblock.opcode;
+	  
+	  if (oc == OPASSIGN || oc == OPPLUSEQ || oc == OPSTAREQ)
+		{
+	***************
+	*** 344,350
+	  {
+	  Tempp	lp,rp;
+	  
+	! if (expr->exprblock.opcode == OPASSIGN)
+		{
+		lp = (Tempp) expr->exprblock.leftp;
+		rp = (Tempp) expr->exprblock.rightp;
+
+	--- 345,351 -----
+	  Tempp	lp,rp;
+	  int	oc = expr->exprblock.opcode;
+	  
+	! if (oc == OPASSIGN || oc == OPPLUSEQ || oc == OPSTAREQ)
+		{
+		lp = (Tempp) expr->exprblock.leftp;
+		rp = (Tempp) expr->exprblock.rightp;
+	***************
+	*** 349,355
+		lp = (Tempp) expr->exprblock.leftp;
+		rp = (Tempp) expr->exprblock.rightp;
+		if (lp->tag == TTEMP)
+	! 		if (rp->tag == TTEMP)
+				enter (lp->memalloc, rp->memalloc);
+			else
+				enter (lp->memalloc, ENULL);
+
+	--- 350,356 -----
+		lp = (Tempp) expr->exprblock.leftp;
+		rp = (Tempp) expr->exprblock.rightp;
+		if (lp->tag == TTEMP)
+	! 		if (rp->tag == TTEMP && oc == OPASSIGN)
+				enter (lp->memalloc, rp->memalloc);
+			else
+				enter (lp->memalloc, ENULL);
+	----------------------------------------------------------------
+
+	Thanks should go to Peter Gross at the High Altitude
+	Observatory for bringing this to my attention...
+
+Donn Seeley    UCSD Chemistry Dept.       ucbvax!sdcsvax!sdchema!donn

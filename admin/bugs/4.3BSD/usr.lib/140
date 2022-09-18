@@ -1,0 +1,94 @@
+From eichelbe@NADC.ARPA  Thu Apr 20 09:53:11 1989
+Date: Thu, 20 Apr 89 12:47:29 EDT
+From: eichelbe@NADC.ARPA (J. Eichelberger)
+Subject: Sendmail core dumps when host name has '[' but no ']'
+Index: usr.lib/sendmail/src/daemon.c 4.3BSD
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+	Sendmail in daemon mode (the child) core dumps, as explained
+	below.
+
+	For an unknown reason, a host name which had the character '['
+	in it, but no matching '], was sent to the routine maphostname
+	in daemon.c.  The host name send was '[D[D[D[D.army.mil'.  The
+	'[D's are correct.  I didn't type a bunch of back arrows just
+	now, but it looks like someone or something put them into the
+	host name.  This caused sendmail to core dump at line 529 of
+	daemon.c.  The line is:
+
+	*index(strcpy(ptr, hbuf), ']') = '\0';
+
+	Index evaluates to NULL if the ']' is not found, which is what
+	happens in this case.  Trying to write into a NULL address is
+	never a good idea.
+Repeat-By:
+	I couldn't repeat this except by putting the fix in and letting
+	the host again try to send its letter.  It looks like the host
+	was RIA-EMH1.ARMY.MIL.  When the letter was handled
+	and I didn't get another core file in /usr/spool/mqueue, I
+	assumed I had fixed the bug.  I don't know how someone else
+	could duplicate the bug.
+Fix:
+	I have no idea whether this fix is correct, but it stopped the
+	problem.  I don't know what happened to the letter, but the
+	core dumps stopped.  I'm sure you can figure out a better fix
+	based on my description above.  Also notice that "ptr" is 256
+	chars long, but if you look at the call to maphostname using
+	dbx, you'll see that "hbsize" is 257 and the array copied to
+	"ptr" (the subroutine argument "hbuf") is actually declared
+	with a size of MAXNAME+1 (= 257).
+
+	The part I'm really unsure about is what should be done if
+	no matching ']' is found.  I just did what is done if no
+	'[' was found.
+
+
+*** daemon.c.virgin	Fri Apr  1 18:43:22 1988
+--- daemon.c	Wed Apr 19 20:15:14 1989
+***************
+*** 513,520 ****
+  {
+  	register struct hostent *hp;
+  	u_long in_addr;
+! 	char ptr[256];
+  	struct hostent *gethostbyaddr();
+  
+  	/*
+  	 * If first character is a bracket, then it is an address
+--- 513,521 ----
+  {
+  	register struct hostent *hp;
+  	u_long in_addr;
+! 	char ptr[MAXNAME+1];
+  	struct hostent *gethostbyaddr();
++ 	char *ptmpx;
+  
+  	/*
+  	 * If first character is a bracket, then it is an address
+***************
+*** 526,532 ****
+  		getcanonname(hbuf, hbsize);
+  		return;
+  	}
+! 	*index(strcpy(ptr, hbuf), ']') = '\0';
+  	in_addr = inet_addr(&ptr[1]);
+  	hp = gethostbyaddr((char *)&in_addr, sizeof(struct in_addr), AF_INET);
+  	if (hp == NULL)
+--- 527,542 ----
+  		getcanonname(hbuf, hbsize);
+  		return;
+  	}
+! /*
+! 	*index(strncpy(ptr, hbuf, MAXNAME), ']') = '\0';
+! */
+! 	if ((ptmpx = index(strncpy(ptr, hbuf, MAXNAME), ']')) != NULL)
+! 		*ptmpx = '\0';
+! 	else
+! 	{
+! 		getcanonname(hbuf, hbsize);
+! 		return;
+! 	}
+  	in_addr = inet_addr(&ptr[1]);
+  	hp = gethostbyaddr((char *)&in_addr, sizeof(struct in_addr), AF_INET);
+  	if (hp == NULL)

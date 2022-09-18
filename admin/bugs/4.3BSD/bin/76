@@ -1,0 +1,82 @@
+From chris@mimsy.umd.edu  Mon Jul 13 02:13:16 1987
+Date: Mon, 13 Jul 87 05:11:49 EDT
+From: Chris Torek <chris@mimsy.umd.edu>
+Message-Id: <8707130911.AA12676@mimsy.umd.edu>
+To: 4bsd-bugs@ucbvax.Berkeley.EDU
+Subject: sh -ce exits too soon
+
+Index: bin/sh/xec.c 4.3BSD Fix
+
+Description:
+	The Bourne shell aborts a script too soon when the test
+	part of an `if' or `while' is false.
+
+Repeat-By:
+	% sh -ce 'if false; then :; else echo bug is fixed; fi'
+
+	This should print `bug is fixed'; since -e is set, it
+	exits because `false' is false.
+
+Fix:
+	(from someone at BRL, ages ago)  It would be prettier
+	to pass a `do not abort' flag into execute().  The fix
+	given below works, though.
+
+RCS file: RCS/xec.c,v
+retrieving revision 1.1
+diff -c2 -r1.1 xec.c
+*** /tmp/,RCSt1003727	Mon Jul 13 05:02:22 1987
+--- xec.c	Mon Jul 13 05:02:04 1987
+***************
+*** 363,371 ****
+  		case TUN:
+  			BEGIN
+! 			   INT		i=0;
+  
+  			   loopcnt++;
+! 			   WHILE execbrk==0 ANDF (execute(t->whtre,0)==0)==(type==TWH)
+! 			   DO i=execute(t->dotre,0);
+  			      IF execbrk<0 THEN execbrk=0 FI
+  			   OD
+--- 363,376 ----
+  		case TUN:
+  			BEGIN
+! 			   INT		i=0, saveflg;
+  
++ 			   saveflg = flags&errflg;
+  			   loopcnt++;
+! 			   WHILE execbrk==0
+! 			   DO flags &= ~errflg;
+! 			      i=execute(t->whtre,0);
+! 			      flags |= saveflg;
+! 			      IF (i==0)!=(type==TWH) THEN break FI
+! 			      i=execute(t->dotre,0);
+  			      IF execbrk<0 THEN execbrk=0 FI
+  			   OD
+***************
+*** 376,383 ****
+  
+  		case TIF:
+! 			IF execute(t->iftre,0)==0
+! 			THEN	execute(t->thtre,execflg);
+! 			ELSE	execute(t->eltre,execflg);
+! 			FI
+  			break;
+  
+--- 381,396 ----
+  
+  		case TIF:
+! 			BEGIN
+! 			   INT		i, saveflg;
+! 
+! 			   saveflg = flags&errflg;
+! 			   flags &= ~errflg;
+! 			   i=execute(t->iftre,0);
+! 			   flags |= saveflg;
+! 			   IF i==0
+! 			   THEN	execute(t->thtre,execflg);
+! 			   ELSE	execute(t->eltre,execflg);
+! 			   FI
+! 			END
+  			break;
+  

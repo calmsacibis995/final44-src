@@ -1,0 +1,237 @@
+From uwvax!lll-winken!uunet!watmath!onfcanim!root@ucbvax.Berkeley.EDU  Wed Dec  2 19:19:15 1987
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.26)
+	id AA00619; Wed, 2 Dec 87 19:19:15 PST
+Received: by ucbvax.Berkeley.EDU (5.58/1.26)
+	id AA04890; Wed, 2 Dec 87 19:18:28 PST
+Received: from lll-winken.UUCP by spool.wisc.edu; Wed, 2 Dec 87 20:17:40 CST
+Received: by lll-winken.arpa (smail2.3)
+	id AA02811; 2 Dec 87 18:13:33 PST (Wed)
+Received: from watmath.UUCP by uunet.UU.NET (5.54/1.14) with UUCP 
+	id AA19546; Wed, 2 Dec 87 20:17:27 EST
+Received: from onfcanim.uucp by watmath; Wed, 2 Dec 87 18:52:21 EST
+Received: by onfcanim.UUCP (5.51/5.17)
+	id AA14085; Wed, 2 Dec 87 18:50:07 EST
+Date: Wed, 2 Dec 87 18:50:07 EST
+From: uwvax!uunet!watmath!onfcanim!root@ucbvax.Berkeley.EDU (Dave Martindale)
+Message-Id: <8712022350.AA14085@onfcanim.UUCP>
+Apparently-To: watmath!ucbvax!4bsd-bugs
+
+Subject: Acuopn() has several bugs.
+Index:	usr.bin/uucp/condevs.c 4.3BSD
+
+Description:
+	Acuopn counted a locked line as part of the limit of TRYCALLS
+	attempts.  Rick Adams posted a fix for this, but his fix would
+	generate the log message "NO DEVICE" when the problem was
+	really that all lines are locked.
+
+	If the condevs table contains no entry matching the "method"
+	and "brand" of the ACU specified in the L-devices table, it
+	doesn't detect the fact that it didn't find a match.  This probably
+	dereferences a null pointer when it tries calling.
+
+	There is code to print out an unsupported ACU type in L-devices,
+	but only when it doesn't find any other supported type.  This code
+	never works anyway, due to the previous bug.
+
+Repeat-By:
+	Read the code.  Some of these conditions can be demonstrated
+	by corrupting the "brand" field in the L-devices file, and
+	by trying calls when the available lines are locked by tip or
+	other uucico's.
+
+Fix:
+	The real problem is that someone tried to be too clever, using
+	a single variable "acustatus" to keep track of whether an ACU
+	was found and how many call attempts have been made.  Changing
+	the code challenges your sanity.
+
+	Separate the functions of "acustatus" into two variables.
+	Check for unsuccessful search of condevs table.
+	Print out unsupported ACU types as found, not later sometimes.
+
+	The following patch should be applied to the original 4.3BSD code
+	as distributed.  If you've already applied Rick Adams' fix, and
+	don't use RCS or SCCS, hand examination of the diff should show
+	what to do, since Rick's change was really only 1 line.
+
+*** /tmp/,RCSt1013708	Wed Dec  2 18:34:51 1987
+--- condevs.c	Wed Dec  2 18:34:02 1987
+***************
+*** 1,9 ****
+  /*
+   * $Log:	condevs.c,v $
+   * Revision 1.2  87/05/28  16:07:30  root
+   * Added Vadic 2400 entry.
+   * 
+!  * $Header: condevs.c,v 1.2 87/05/28 16:07:30 root Exp $
+   */
+  
+  #ifndef lint
+--- 1,13 ----
+  /*
+   * $Log:	condevs.c,v $
++  * Revision 1.3  87/12/02  18:33:18  dave
++  * General cleanup of Acuopn(); several bugs fixed.
++  * A locked line no longer counts in the limit of TRYCALLS call attempts.
++  * 
+   * Revision 1.2  87/05/28  16:07:30  root
+   * Added Vadic 2400 entry.
+   * 
+!  * $Header: condevs.c,v 1.3 87/12/02 18:33:18 dave Exp $
+   */
+  
+  #ifndef lint
+***************
+*** 279,289 ****
+  {
+  	char phone[MAXPH+1];
+  	register struct condev *cd;
+! 	register int fd, acustatus;
+  	register FILE *dfp;
+  	struct Devices dev;
+  	int retval = CF_NODEV;
+! 	char nobrand[MAXPH], *line;
+  
+  	exphone(flds[F_PHONE], phone);
+  	if (snccmp(flds[F_LINE], "LOCAL") == SAME)
+--- 283,294 ----
+  {
+  	char phone[MAXPH+1];
+  	register struct condev *cd;
+! 	register int fd, ntries;
+! 	int acufound;
+  	register FILE *dfp;
+  	struct Devices dev;
+  	int retval = CF_NODEV;
+! 	char *line;
+  
+  	exphone(flds[F_PHONE], phone);
+  	if (snccmp(flds[F_LINE], "LOCAL") == SAME)
+***************
+*** 291,302 ****
+  	else
+  		line = flds[F_LINE];
+  	devSel[0] = '\0';
+- 	nobrand[0] = '\0';
+  	DEBUG(4, "Dialing %s\n", phone);
+  	dfp = fopen(DEVFILE, "r");
+  	ASSERT(dfp != NULL, "Can't open", DEVFILE, 0);
+  
+! 	acustatus = 0;	/* none found, none locked */
+  	while (rddev(dfp, &dev) != FAIL) {
+  		/*
+  		 * for each ACU L.sys line, try at most twice
+--- 296,307 ----
+  	else
+  		line = flds[F_LINE];
+  	devSel[0] = '\0';
+  	DEBUG(4, "Dialing %s\n", phone);
+  	dfp = fopen(DEVFILE, "r");
+  	ASSERT(dfp != NULL, "Can't open", DEVFILE, 0);
+  
+! 	acufound = 0;
+! 	ntries = 0;
+  	while (rddev(dfp, &dev) != FAIL) {
+  		/*
+  		 * for each ACU L.sys line, try at most twice
+***************
+*** 308,314 ****
+  		 * To try 'harder' to connect to a remote site,
+  		 * use multiple L.sys entries.
+  		 */
+! 		if (acustatus > TRYCALLS)
+  			break;
+  		if (strcmp(flds[F_CLASS], dev.D_class) != SAME)
+  			continue;
+--- 313,319 ----
+  		 * To try 'harder' to connect to a remote site,
+  		 * use multiple L.sys entries.
+  		 */
+! 		if (ntries > TRYCALLS)
+  			break;
+  		if (strcmp(flds[F_CLASS], dev.D_class) != SAME)
+  			continue;
+***************
+*** 319,337 ****
+  			continue;
+  		}
+  		for(cd = condevs; cd->CU_meth != NULL; cd++) {
+! 			if (snccmp(line, cd->CU_meth) == SAME) {
+! 				if (snccmp(dev.D_brand, cd->CU_brand) == SAME) 
+! 					break;
+! 				strncpy(nobrand, dev.D_brand, sizeof nobrand);
+! 			}
+  		}
+! 
+! 		if (mlock(dev.D_line) == FAIL) {
+! 			acustatus++;
+  			continue;
+  		}
+! 		if (acustatus < 1)
+! 			acustatus = 1;	/* has been found */
+  #ifdef DIALINOUT
+  #ifdef ALLACUINOUT
+  		if (1) {
+--- 324,342 ----
+  			continue;
+  		}
+  		for(cd = condevs; cd->CU_meth != NULL; cd++) {
+! 			if (snccmp(line, cd->CU_meth) == SAME &&
+! 			    snccmp(dev.D_brand, cd->CU_brand) == SAME) 
+! 				break;
+  		}
+! 		if (cd->CU_meth == NULL) {
+! 			logent(dev.D_brand, "unsupported ACU type");
+  			continue;
+  		}
+! 		acufound = 1;
+! 
+! 		if (mlock(dev.D_line) == FAIL)
+! 			continue;
+! 
+  #ifdef DIALINOUT
+  #ifdef ALLACUINOUT
+  		if (1) {
+***************
+*** 347,353 ****
+  #endif DIALINOUT
+  
+  		DEBUG(4, "Using %s\n", cd->CU_brand);
+! 		acustatus++;
+  		fd = (*(cd->CU_open))(phone, flds, &dev);
+  		if (fd > 0) {
+  			CU_end = cd->CU_clos;   /* point CU_end at close func */
+--- 352,358 ----
+  #endif DIALINOUT
+  
+  		DEBUG(4, "Using %s\n", cd->CU_brand);
+! 		ntries++;
+  		fd = (*(cd->CU_open))(phone, flds, &dev);
+  		if (fd > 0) {
+  			CU_end = cd->CU_clos;   /* point CU_end at close func */
+***************
+*** 359,371 ****
+  		retval = CF_DIAL;
+  	}
+  	fclose(dfp);
+! 	if (acustatus == 0) {
+! 		if (nobrand[0])
+! 			logent(nobrand, "unsupported ACU type");
+! 		else
+! 			logent("L-devices", "No appropriate ACU");
+! 	}
+! 	if (acustatus == 1)
+  		logent("DEVICE", "NO");
+  	return retval;
+  }
+--- 364,372 ----
+  		retval = CF_DIAL;
+  	}
+  	fclose(dfp);
+! 	if (!acufound)
+! 		logent("L-devices", "No appropriate ACU");
+! 	else if (ntries == 0)
+  		logent("DEVICE", "NO");
+  	return retval;
+  }

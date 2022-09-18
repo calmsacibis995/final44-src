@@ -1,0 +1,123 @@
+Return-Path: <stanonik@nprdc.arpa>
+Date: Tue, 1 Oct 85 10:34:53 pdt
+From: stanonik@nprdc.arpa (Ron Stanonik)
+Subject: tftp doesn't retransmit acks
+Index: ucb/tftp/tftp.c 4.2BSD
+
+Description:
+	A RRQ on receiving a duplicate data packet doesn't retransmit
+	the last ack.
+Repeat-By:
+	This would happen intermittently between our vax and a pc,
+	but the problem can be reproduced by hacking tftpd.c to
+	not advance its block count and then tftp'ing to yourself.
+Fix:
+	Move the retransmit code into the inner loop in recvfile().
+	This actually causes tftp to retransmit on receiving anything
+	but the next expected packet or an error packet.
+	
+	We haven't really observed the corresponding WRQ problem with
+	duplicate acks, but the logic is the same, so we fixed(?) it too.
+
+	Oh, the diff will probably only make sense if you've already
+	installed the fixes from mogul@gregorio and satz@joyce.
+
+RCS file: RCS/tftp.c,v
+retrieving revision 1.3
+diff -c -r1.3 tftp.c
+*** /tmp/,RCSt1001512	Tue Oct  1 09:43:20 1985
+--- tftp.c	Tue Oct  1 09:43:00 1985
+***************
+*** 73,85
+  		}
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+- 		if (trace)
+- 			tpacket("sent", stp, size + 4);
+- 		n = sendto(f, sbuf, size + 4, 0, (caddr_t)&sin, sizeof (sin));
+- 		if (n != size + 4) {
+- 			perror("tftp: sendto");
+- 			goto abort;
+- 		}
+  		do {
+  			alarm(rexmtval);
+  			do {
+
+--- 73,78 -----
+  		}
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+  		do {
+  			if (trace)
+  				tpacket("sent", stp, size + 4);
+***************
+*** 81,86
+  			goto abort;
+  		}
+  		do {
+  			alarm(rexmtval);
+  			do {
+  				fromlen = sizeof (from);
+
+--- 74,86 -----
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+  		do {
++ 			if (trace)
++ 				tpacket("sent", stp, size + 4);
++ 			n = sendto(f, sbuf, size + 4, 0, (caddr_t)&sin, sizeof (sin));
++ 			if (n != size + 4) {
++ 				perror("tftp: sendto");
++ 				goto abort;
++ 			}
+  			alarm(rexmtval);
+  			do {
+  				fromlen = sizeof (from);
+***************
+*** 144,157
+  		}
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+- 		if (trace)
+- 			tpacket("sent", stp, size);
+- 		if (sendto(f, sbuf, size, 0, (caddr_t)&sin,
+- 		    sizeof (sin)) != size) {
+- 			alarm(0);
+- 			perror("tftp: sendto");
+- 			goto abort;
+- 		}
+  		do {
+  			alarm(rexmtval);
+  			do
+
+--- 144,149 -----
+  		}
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+  		do {
+  			if (trace)
+  				tpacket("sent", stp, size);
+***************
+*** 153,158
+  			goto abort;
+  		}
+  		do {
+  			alarm(rexmtval);
+  			do
+  				n = recvfrom(f, rbuf, sizeof (rbuf), 0,
+
+--- 145,158 -----
+  		timeout = 0;
+  		(void) setjmp(timeoutbuf);
+  		do {
++ 			if (trace)
++ 				tpacket("sent", stp, size);
++ 			if (sendto(f, sbuf, size, 0, (caddr_t)&sin,
++ 			    sizeof (sin)) != size) {
++ 				alarm(0);
++ 				perror("tftp: sendto");
++ 				goto abort;
++ 			}
+  			alarm(rexmtval);
+  			do
+  				n = recvfrom(f, rbuf, sizeof (rbuf), 0,

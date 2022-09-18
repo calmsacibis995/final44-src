@@ -1,0 +1,51 @@
+Return-Path: <cbosgd!mark>
+Date: Sun, 30 Sep 84 12:28:56 edt
+From: cbosgd!mark (Mark Horton)
+Subject: uuxqt bug with a badly logjammed spool directory
+Index:	usr.bin/uucp/uuxqt.c 4.2
+
+Description:
+	When there are a large number of X. files with no corresponding
+	D. files, uuxqt exits without doing any work.
+Repeat-By:
+	Not easily reproduced.  It happens when the first 20 X. files
+	in /usr/spool/uucp/X. all have F lines requiring files that
+	are not present.
+Fix:
+	I don't have a fix, but can offer some insight into the bug.
+	There is a variable "rechecked" in gtxfile in uuxqt.c.  It is set the
+	first time gtwrkf returns failure, so that the second time,
+	it will assume there is nothing to do and exit.  Each gtwrkf
+	returns the first 20 files in the directory; normally each
+	time through this loop uuxqt will run 20 more programs and
+	remove them from the directory, and the next time 20 more
+	files will be found.  However, X files that need a D file,
+	if the D file isn't present, will just be left there, cutting
+	into the 20 files per batch.  If the first 20 files in the
+	directory are all X. files that need D. files that aren't there,
+	rechecked will be set and uuxqt will exit.
+
+	Just having it not set rechecked makes things worse - uuxqt
+	goes into a loop looking at the SAME 20 FILES over and over.
+
+	What I did as a temporary fix was to insert
+		unlink(subfile(file));
+	at the bottom of the routine gtxfile (right before the "goto retry"
+	at the bottom) to remove the dead X. files.  I do not recommend
+	this fix for normal situations, since this would remove files that
+	are in transit or right after a phone line burp.  An alternative
+	might be to stat the file, and if it's older than some cutoff
+	(a few hours, perhaps) unlink it.
+
+	The right fix is much harder - uuxqt has to remember all the
+	names of files it's already rejected and ignore them in
+	subsequent calls to gtwrkf.
+
+	I can think of some other possibilities as well.  Running uuclean
+	before uuxqt would help.  (This bug only appears when the spool
+	directory is badly jammed up, in this situation the filesystem had
+	been badly damaged.)  gtwrkf might return a considerably larger
+	buffer than 20 files.  Or it might just keep the directory open
+	and keep scanning, then restart when it runs off the end (with
+	some provision for stopping if a complete pass of the directory
+	is made with no work done.)

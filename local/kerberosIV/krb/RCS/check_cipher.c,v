@@ -1,0 +1,1376 @@
+head     4.3;
+branch   ;
+access   ;
+symbols  PATCH8:4.3 PATCH7:4.3 KPATCH6:4.3 ASRSNAP1001:4.3 PATCH5:4.3 KPATCH4:4.3 KPATCH3:4.3 KPATCH2:4.3 KREL1:4.3 BETA5/24/88:4.3;
+locks    ; strict;
+comment  @ * @;
+
+
+4.3
+date     87.10.28.11.27.25;  author jtkohl;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     87.10.20.17.02.56;  author jtkohl;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.09.01.15.45.46;  author steiner;  state Exp;
+branches ;
+next     3.4;
+
+3.4
+date     86.07.31.22.07.28;  author ostlund;  state Exp;
+branches ;
+next     3.3;
+
+3.3
+date     86.05.14.15.27.20;  author spm;  state Exp;
+branches ;
+next     3.2;
+
+3.2
+date     86.04.04.17.03.20;  author spm;  state Exp;
+branches ;
+next     3.1;
+
+3.1
+date     86.03.28.11.59.32;  author bcn;  state Exp;
+branches ;
+next     1.18;
+
+1.18
+date     86.03.25.15.55.16;  author spm;  state Exp;
+branches ;
+next     1.17;
+
+1.17
+date     86.03.24.10.14.34;  author spm;  state Exp;
+branches ;
+next     1.16;
+
+1.16
+date     85.11.26.14.34.06;  author bcn;  state Exp;
+branches ;
+next     1.15;
+
+1.15
+date     85.11.19.15.10.32;  author bcn;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     85.11.18.13.56.59;  author bcn;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     85.11.15.16.41.11;  author spm;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     85.11.15.12.57.14;  author bcn;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     85.11.11.15.48.30;  author spm;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     85.11.08.14.56.44;  author bcn;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     85.11.08.12.44.42;  author spm;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     85.11.05.17.01.46;  author spm;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     85.11.03.20.13.47;  author bcn;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     85.11.03.16.05.24;  author spm;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     85.10.29.11.21.42;  author bcn;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     85.10.23.17.11.36;  author spm;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     85.10.18.15.22.30;  author spm;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     85.10.16.11.55.43;  author spm;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     85.10.10.11.08.49;  author bcn;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@Initial RCS checkin
+@
+
+
+4.3
+log
+@fix debug
+@
+text
+@/* 
+ *  $Source: /u3/kerberos.new/lib/krb/RCS/check_cipher.c,v $
+ *  $Author: jtkohl $
+ *  $Locker: jtkohl $
+ *
+ * Copyright 1985,1986 by the Massachusetts Institute of Technology
+ *
+ */
+
+#ifndef lint
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 4.2 87/10/20 17:02:56 jtkohl Locked $";
+#endif  lint
+
+
+#include <krb.h>
+#include <des.h>
+
+#include <stdio.h>
+#include <errno.h>
+
+/* use the bsd time.h struct defs for PC too!                              */
+#include <sys/time.h>
+
+extern  int krb_debug;
+extern	swap_bytes;
+/*
+ * check_cipher take a copy of decrypted ciphertext (contradiction in terms), 
+ * a count of the number of tickets that are supposed to be in it and the
+ * time.  It then performs a sanity check on the ciphertext to make sure that
+ * the time is reasonable, and the number of tickets is really n.  This
+ * check is performed before attempting to extract information since the
+ * ciphertext may have been decrypted with the wrong key.
+ */
+check_cipher(c,n,t_sec)
+    KTEXT    c;			/* The decrypted ciphertext		*/
+    int     n;			/* Expected number of tickets		*/
+    unsigned long t_sec;	/* Time					*/
+{
+    int 	i = * (unsigned char *) (c->dat);	/* Ticket Count	*/
+    int j;
+    int offset;
+    unsigned char    *ptr;
+    unsigned long   time_kdc;
+    unsigned long   delta_t;
+
+    if (i >n)		/* Did we get more tickets than we asked for	*/
+        {
+        /* printf("\n\07\07Invalid Password (1)\n"); */
+        return -1;
+        }
+    
+    offset = i+1;			/* count and length array	*/
+    ptr = (c->dat) +1;
+    /* Check the lengths of all the tickets to make sure that the sum   */
+    /* of the lengths and associated information does not exceed the    */
+    /* size of the ciphertext	*/
+    for (j = 1; j<=i; j++)
+        {
+        /* add length of realm, session, lifetime, kvno and ticket */         
+        offset += strlen((char *)(c->dat+offset+10)) + 11 + *ptr++; 
+        if ((offset +sizeof (time_kdc)) > c->length) 
+            {
+            /* printf("\n\07\07Invalid Password (2)\n"); */
+            return -1;
+            }
+        }   
+    /* Check the kdc time for reasonable proximity to ours		*/
+	bcopy((char *) (offset + c->dat),
+	      (char *)&time_kdc, sizeof(time_kdc));
+	if (swap_bytes) swap_u_long(time_kdc);
+    delta_t = abs((int) (time_kdc - t_sec));
+#ifdef  BSD42
+    if (krb_debug) printf("\ntime_kdc = 0x%x time_ws = 0x%x diff = %d",
+                time_kdc,t_sec,delta_t);
+#endif
+#ifdef  PC
+    if (krb_debug) printf("\ntime_kdc = 0x%X time_ws = 0x%X diff = %d",
+                time_kdc,t_sec,delta_t);
+#endif
+    if (delta_t > 5*60) 
+        {
+        /* printf("\n\07\07Invalid Password or invalid local time\n"); */
+        return -2; /* not close enough                 */
+        }
+    
+    return KSUCCESS;
+}
+@
+
+
+4.2
+log
+@lint fixes
+@
+text
+@d3 1
+a3 1
+ *  $Author: steiner $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 4.1 87/09/01 15:45:46 jtkohl Locked $";
+d24 1
+a24 1
+extern  debug;
+d68 1
+a68 1
+	bcopy((char *) ((unsigned long *)(offset + c->dat)),
+d73 1
+a73 1
+    if (debug) printf("\ntime_kdc = 0x%x time_ws = 0x%x diff = %d",
+d77 1
+a77 1
+    if (debug) printf("\ntime_kdc = 0x%X time_ws = 0x%X diff = %d",
+@
+
+
+4.1
+log
+@No change; starting version 4.
+@
+text
+@d2 3
+a4 3
+ *  $Source: /mit/s/t/steiner/kerberos/lib/krb/RCS/check_cipher.c,v $
+ *  $Author: ostlund $
+ *  $Locker: steiner $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 3.4 86/07/31 22:07:28 steiner Locked $";
+a40 1
+    int ok;
+d60 1
+a60 1
+        offset += strlen(c->dat+offset+10) + 11 + *ptr++; 
+d68 4
+a71 3
+	bcopy( ((unsigned long *)(offset + c->dat)), &time_kdc, sizeof(time_kdc));
+	if (swap_bytes) swap_u_long(time_kdc)
+    delta_t = abs(time_kdc - t_sec);
+@
+
+
+3.4
+log
+@commented out printing of error messages -- these should be
+handled by routines making use of this function
+@
+text
+@d2 3
+a4 3
+ *  $Source: /mit/projects/auth/src/lib/krb/RCS/check_cipher.c,v $
+ *  $Author: spm $
+ *  $Locker: ostlund $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 3.3 86/05/14 15:27:20 spm Exp $";
+@
+
+
+3.3
+log
+@*** empty log message ***
+@
+text
+@d4 1
+a4 1
+ *  $Locker: spm $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 3.2 86/04/04 17:03:20 spm Exp $";
+d49 1
+a49 1
+        printf("\n\07\07Invalid Password (1)\n");
+d64 1
+a64 1
+            printf("\n\07\07Invalid Password (2)\n");
+d82 1
+a82 1
+        printf("\n\07\07Invalid Password or invalid local time\n");
+@
+
+
+3.2
+log
+@char	*ptr ---> u_char *ptr
+@
+text
+@d3 1
+a3 1
+ *  $Author: bcn $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 3.1 86/03/28 11:59:32 bcn Exp $";
+d16 1
+a16 1
+#include "/projects/auth/include/des.h"
+@
+
+
+3.1
+log
+@rev # now at 3.1. 
+@
+text
+@d3 2
+a4 2
+ *  $Author: spm $
+ *  $Locker: bcn $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 1.18 86/03/25 15:55:16 spm Exp $";
+d43 1
+a43 1
+    char    *ptr;
+@
+
+
+1.18
+log
+@add byte order and alignment
+@
+text
+@d3 1
+a3 1
+ *  $Author: bcn $
+a4 1
+ *      $Log:	check_cipher.c,v $
+d11 1
+a11 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 1.16 85/11/26 14:34:06 bcn Exp $";
+@
+
+
+1.17
+log
+@bcn mods
+@
+text
+@d26 1
+a26 1
+
+d70 2
+a71 1
+    time_kdc = *((unsigned long *) (offset + c->dat));
+@
+
+
+1.16
+log
+@Change SUCCESS to KSUCCESS.
+@
+text
+@a5 49
+ * Revision 1.15  85/11/19  15:10:32  bcn
+ * Moved into separate file to make ready for libkrb.  SOme
+ * of the code was cleaned up and commented.
+ * 
+ * Revision 1.14  85/11/18  13:56:59  bcn
+ * Add realm to arguments to store.
+ * 
+ * Revision 1.13  85/11/15  16:41:11  spm
+ * check msg type, rev, and byte order
+ * 
+ * Revision 1.12  85/11/15  12:57:14  bcn
+ * More fixes so it will work with prot version 2.
+ * 
+ * Revision 1.11  85/11/11  15:48:30  spm
+ * change printing again.
+ * 
+ * Revision 1.10  85/11/08  14:56:44  bcn
+ * Fix inconsistency with arguments in call to send_to_kdc.
+ * 
+ * Revision 1.9  85/11/08  12:44:42  spm
+ * fixup time check
+ * and messages
+ * 
+ * Revision 1.8  85/11/05  17:01:46  spm
+ * read list of tickets from file and
+ * fixup messages
+ * 
+ * Revision 1.7  85/11/03  20:13:47  bcn
+ * Cleaned up some code and changed the initial tickets requested.
+ * Fixed some bugs that were resulting in invalid tickets.
+ * 
+ * Revision 1.6  85/11/03  16:05:24  spm
+ * I don't know (bcn)
+ * 
+ * Revision 1.5  85/10/29  11:21:42  bcn
+ * Change mallocs to statics.
+ * 
+ * Revision 1.4  85/10/23  17:11:36  spm
+ * add length to fprintf
+ * 
+ * Revision 1.3  85/10/18  15:22:30  spm
+ * *** empty log message ***
+ * 
+ * Revision 1.2  85/10/16  11:55:43  spm
+ * add password prompt
+ * 
+ * Revision 1.1  85/10/10  11:08:49  bcn
+ * Initial revision
+ * 
+d7 1
+a7 1
+ * Copyright 1985 by the Massachusetts Institute of Technology
+d12 1
+a12 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 1.15 85/11/19 15:10:32 bcn Exp $";
+d54 1
+a54 3
+    offset = sizeof(C_Block) + 2; 	/* fixed ticket overhead	*/
+    offset *= i;
+    offset += i+1;			/* count and length array	*/
+d57 2
+a58 1
+    /* of the lengths does not exceed the size of the ciphertext	*/
+d61 2
+a67 1
+        offset += *ptr++; /* add ion length array*/         
+d69 1
+a69 1
+    /* Check the kdc time for reasonable proximity yo ours		*/
+@
+
+
+1.15
+log
+@Moved into separate file to make ready for libkrb.  SOme
+of the code was cleaned up and commented.
+@
+text
+@d6 4
+d61 1
+a61 1
+static char *rcsid_check_cipher_c = "$Header: check_cipher.c,v 1.14 85/11/18 13:56:59 bcn Exp $";
+d135 1
+a135 1
+    return SUCCESS;
+@
+
+
+1.14
+log
+@Add realm to arguments to store.
+@
+text
+@d2 2
+a3 2
+ *  $Source: /mit/projects/auth/src/client/RCS/client.c,v $
+ *  $Author: spm $
+d5 4
+a8 1
+ *      $Log:	client.c,v $
+d57 1
+a57 1
+static char *rcsid_client_c = "$Header: client.c,v 1.13 85/11/15 16:41:11 spm Exp $";
+d61 1
+a61 2
+#include "client.h"
+#include "../kdc/prot.h"
+d70 1
+a70 4
+#ifndef TRUE
+#define TRUE    1
+#define FALSE   0
+#endif
+d72 8
+a79 180
+extern  debug ;
+
+struct  timeval t_local = { 0, 0 };
+struct  timezone tz = { 0, 0 };
+    
+int 
+cl_get_tgt(user)
+char    *user;
+{
+
+    int             rlen;
+    PACKT           pkt;
+    static PKT_ST   rpkt_st;
+    PACKT           rpkt = &rpkt_st;
+    static TEXT_ST  cip_st;
+    TEXT            cip = &cip_st;
+    static TEXT_ST  tkt_st;
+    TEXT            tkt = &tkt_st;
+    char            ses[8];
+    int             lifetime;
+    int             kvno;
+    C_Block         key;
+    Key_schedule    key_s;
+    
+    /* Declarations used by scaffolding */
+    TEXT            x = (TEXT)malloc(sizeof(TEXT_ST));
+    char            a1[40];
+    int             a2,a3;
+    TEXT            a4 = (TEXT)malloc(sizeof(TEXT_ST));
+    long            a5;
+    /* End scaffolding */
+
+
+    /* open and read the file defining the initial ticket request          */
+
+    FILE    *fopen(),*fp;
+    char    *tfile = INIT_FILE;
+    char    s_name[63];
+    char    s_instance[63];
+    int     n = 0;
+    int     i = 0;
+    int     j =0;
+	int		msg_byte_order;
+    
+    if ( ( fp = fopen(tfile,"r")) == NULL)
+        {
+        fprintf(stderr,"cant find kerberos login init file %s",tfile);
+        exit(-1);
+        }
+
+    gettimeofday(&t_local,&tz);
+    pkt = create_packet_to_kdc(user,"",t_local.tv_sec);
+
+    /* scan the init file, adding requests                                 */
+    while ( fscanf(fp,"%s %s %d",s_name,s_instance,&lifetime) != EOF)
+        {
+        n++;
+        if (debug) printf("\n%s %s %d",s_name,s_instance,lifetime); 
+        /* see if we want to substitute users login name                   */
+        if (!strcmp("~",s_instance)) strcpy(s_instance,user);
+        /* see if we want to substitute host name * TODO                   */
+        add_request(pkt,lifetime,s_name,s_instance);
+        }
+    if (debug)  printf("\nEOF\n");
+    
+    rpkt->length = 0;
+
+    if (send_to_kdc(pkt, rpkt)) exit(-1); 
+
+    /* check packet version                                                */
+    if (pkt_version(rpkt) != KRB_PROT_VERSION )
+        {
+        /*  send an error reply                                */
+        fprintf(stderr,"Bad reply protocol version %d",pkt_version(rpkt));
+		exit(-1);
+        }
+        
+	msg_byte_order = pkt_msg_type(rpkt) & 1;
+
+	if (msg_byte_order != HOST_BYTE_ORDER )
+		{
+		/* not supported yet
+		 */
+		fprintf(stderr,"Alternate byte %d order not supported yet ",
+		msg_byte_order);
+		exit(-1);
+		}
+	
+	switch (pkt_msg_type(rpkt) & ~1)
+		{
+		case AUTH_MSG_KDC_REPLY: break;
+		case AUTH_MSG_ERR_REPLY:
+		default:
+			{
+			printf("\nWrong msg type received %d",pkt_msg_type(rpkt));
+			exit(-1);
+			}
+		}
+	
+    cip->length = pkt_clen(rpkt);
+    bcopy(pkt_cipher(rpkt),cip->dat,cip->length);
+
+    read_password(key,"\Password: ",FALSE);
+    set_key(key,key_s);
+    if (debug)  printf("About to do decryption ...");
+    cbc_encrypt(cip->dat,cip->dat,cip->length,key_s,key,0);
+    bzero(key,sizeof(key));
+    bzero(key_s,sizeof(key_s));
+    if (debug) printf(" Done.\n");
+
+    if (debug) printf("Initializing ticket store ...");
+    in_tkt();
+
+    /*  sanity check the decrypted cipher                                  */
+    if (check_cipher(cip,n,t_local.tv_sec)) 
+        {
+        return -1;
+        }
+    else
+        {
+        printf("\nOK - received tickets for:");
+        }   
+
+    
+    if (debug)
+        {
+        printf(" Done.\n");
+        printf("Storing tickets ...");
+        fflush(stdout);
+        }
+    
+    /* re-scan the init file, extract tickets                              */
+    n =0;
+    rewind(fp);
+    while ( fscanf(fp,"%s %s %d",s_name,s_instance,&lifetime) != EOF)
+        {
+        /* see if we want to substitute users login name                   */
+        if (!strcmp("~",s_instance)) strcpy(s_instance,user);
+        /* see if we want to substitute host name * TODO                   */
+        n++;
+        bzero(ses,sizeof(ses));
+        lifetime = 0;
+        kvno = 0;
+        tkt->length = 0;
+        extract_ticket(cip,n,ses,&lifetime,&kvno,tkt);
+        store(s_name,s_instance,"",ses,lifetime,kvno,tkt,t_local.tv_sec); 
+#ifdef  BSD42
+        printf("\n    %-10s %-10s life %d, key ver %d, tick len %d ",
+                s_name,s_instance, lifetime, kvno,tkt->length);
+#endif
+#ifdef  PC
+        printf("\n    %s %s life %d, key ver %d, tick len %d ",
+                s_name,s_instance, lifetime, kvno,tkt->length);
+#endif
+        if (tkt->length)
+            {
+            if (debug)
+                {
+#ifdef  BSD42
+                printf("Key 0x%08x%08x",*((long *) ses),*((long *) &ses[1]));
+#endif
+#ifdef  PC
+                printf("Key 0x%08X%08X",*((long *) ses),*((long *) &ses[1]));
+#endif
+                }
+            else printf("Sess key ok");
+            }
+        else
+            {
+            printf("Null ticket returned");
+            }
+        }
+
+    if (debug) printf("\nEOF\nDone.");
+    printf("\n");
+    fclose(fp); 
+    return 0;
+}
+
+
+d81 3
+a83 3
+    TEXT    c;
+    int     n;
+    unsigned long t_sec;
+d85 1
+a85 1
+    int i;
+d93 1
+a93 2
+    i = * (unsigned char *) (c->dat);
+    if (i >n) 
+d99 1
+a99 1
+    offset = sizeof(C_Block) + 2; /* fixed ticket overhead                 */
+d101 1
+a101 1
+    offset += i+1;          /* count and length array                  */
+d103 2
+d114 1
+d131 1
+a131 1
+    return 0;
+@
+
+
+1.13
+log
+@check msg type, rev, and byte order
+@
+text
+@d3 2
+a4 2
+ *  $Author: bcn $
+ *  $Locker: spm $
+d6 3
+d54 1
+a54 1
+static char *rcsid_client_c = "$Header: client.c,v 1.12 85/11/15 12:57:14 bcn Exp $";
+d218 1
+a218 1
+        store(s_name,s_instance,ses,lifetime,kvno,tkt,t_local.tv_sec); 
+@
+
+
+1.12
+log
+@More fixes so it will work with prot version 2.
+@
+text
+@d3 6
+a8 3
+ *  $Author: spm $
+ *  $Locker:  $
+ *      $Log:   client.c,v $
+d51 1
+a51 1
+static char *rcsid_client_c = "$Header: client.c,v 1.11 85/11/11 15:48:30 spm Exp $";
+d112 1
+d139 30
+@
+
+
+1.11
+log
+@change printing again.
+@
+text
+@d2 7
+a8 4
+ * 	$Source: /mit/projects/auth/src/client/RCS/client.c,v $
+ * 	$Author: bcn $
+ * 	$Locker:  $
+ *    	$Log:	client.c,v $
+d48 2
+a49 2
+static char *rcsid_client_c = "$Header: client.c,v 1.10 85/11/08 14:56:44 bcn Exp $";
+#endif	lint
+d59 1
+a59 1
+/* use the bsd time.h struct defs for PC too!							   */
+d62 3
+a64 3
+#ifndef	TRUE
+#define	TRUE	1
+#define	FALSE	0
+d67 1
+a67 1
+extern	debug ;
+d69 3
+a71 3
+struct	timeval	t_local = { 0, 0 };
+struct	timezone tz = {	0, 0 };
+	
+d74 1
+a74 1
+char	*user;
+d77 21
+a97 21
+	int			rlen;
+	PACKT			pkt;
+	static PKT_ST		rpkt_st;
+	PACKT			rpkt = &rpkt_st;
+	static TEXT_ST		cip_st;
+	TEXT			cip = &cip_st;
+	static TEXT_ST		tkt_st;
+	TEXT			tkt = &tkt_st;
+	char			ses[8];
+	int			lifetime;
+	int			kvno;
+	C_Block			key;
+	Key_schedule		key_s;
+	
+	/* Declarations used by scaffolding */
+	TEXT			x = (TEXT)malloc(sizeof(TEXT_ST));
+	char			a1[40];
+	int				a2,a3;
+	TEXT			a4 = (TEXT)malloc(sizeof(TEXT_ST));
+	long			a5;
+	/* End scaffolding */
+d100 1
+a100 1
+	/* open and read the file defining the initial ticket request		   */
+d102 13
+a114 13
+	FILE	*fopen(),*fp;
+	char	*tfile = INIT_FILE;
+	char	s_name[63];
+	char	s_instance[63];
+	int		n = 0;
+	int		i = 0;
+	int		j =0;
+	
+	if ( ( fp = fopen(tfile,"r")) == NULL)
+		{
+		fprintf(stderr,"cant find kerberos login init file %s",tfile);
+		exit(-1);
+		}
+d116 2
+a117 2
+	gettimeofday(&t_local,&tz);
+	pkt = create_packet_to_kdc(user,t_local.tv_sec);
+d119 13
+a131 13
+	/* scan the init file, adding requests								   */
+	while ( fscanf(fp,"%s %s %d",s_name,s_instance,&lifetime) != EOF)
+		{
+		n++;
+		if (debug) printf("\n%s %s %d",s_name,s_instance,lifetime);	
+		/* see if we want to substitute users login name				   */
+		if (!strcmp("~",s_instance)) strcpy(s_instance,user);
+		/* see if we want to substitute host name * TODO				   */
+		add_request(pkt,lifetime,s_name,s_instance);
+		}
+	if (debug)	printf("\nEOF\n");
+	
+	rpkt->length = 0;
+d133 1
+a133 1
+	if (send_to_kdc(pkt, rpkt)) exit(-1); 
+d135 2
+a136 2
+	cip->length = pkt_clen(rpkt);
+	bcopy(pkt_cipher(rpkt),cip->dat,cip->length);
+d138 7
+a144 7
+	read_password(key,"\Password: ",FALSE);
+	set_key(key,key_s);
+	if (debug)	printf("About to do decryption ...");
+   	cbc_encrypt(cip->dat,cip->dat,cip->length,key_s,key,0);
+	bzero(key,sizeof(key));
+	bzero(key_s,sizeof(key_s));
+	if (debug) printf(" Done.\n");
+d146 2
+a147 2
+	if (debug) printf("Initializing ticket store ...");
+	in_tkt();
+d149 9
+a157 9
+	/*  sanity check the decrypted cipher								   */
+	if (check_cipher(cip,n,t_local.tv_sec))	
+		{
+		return -1;
+		}
+	else
+		{
+		printf("\nOK - received tickets for:");
+		}	
+d159 26
+a184 26
+	
+	if (debug)
+		{
+		printf(" Done.\n");
+		printf("Storing tickets ...");
+		fflush(stdout);
+		}
+	
+	/* re-scan the init file, extract tickets							   */
+	n =0;
+	rewind(fp);
+	while ( fscanf(fp,"%s %s %d",s_name,s_instance,&lifetime) != EOF)
+		{
+		/* see if we want to substitute users login name				   */
+		if (!strcmp("~",s_instance)) strcpy(s_instance,user);
+		/* see if we want to substitute host name * TODO				   */
+		n++;
+		bzero(ses,sizeof(ses));
+		lifetime = 0;
+		kvno = 0;
+		tkt->length = 0;
+		extract_ticket(cip,n,ses,&lifetime,&kvno,tkt);
+		store(s_name,s_instance,ses,lifetime,kvno,tkt,t_local.tv_sec); 
+#ifdef	BSD42
+		printf("\n    %-10s %-10s life %d, key ver %d, tick len %d ",
+				s_name,s_instance, lifetime, kvno,tkt->length);
+d186 3
+a188 3
+#ifdef	PC
+		printf("\n    %s %s life %d, key ver %d, tick len %d ",
+				s_name,s_instance, lifetime, kvno,tkt->length);
+d190 6
+a195 6
+		if (tkt->length)
+			{
+			if (debug)
+				{
+#ifdef	BSD42
+				printf("Key 0x%08x%08x",*((long *) ses),*((long *) &ses[1]));
+d197 2
+a198 2
+#ifdef	PC
+				printf("Key 0x%08X%08X",*((long *) ses),*((long *) &ses[1]));
+d200 8
+a207 8
+				}
+			else printf("Sess key ok");
+			}
+		else
+			{
+			printf("Null ticket returned");
+			}
+		}
+d209 4
+a212 4
+	if (debug) printf("\nEOF\nDone.");
+	printf("\n");
+	fclose(fp);	
+	return 0;
+d217 3
+a219 3
+	TEXT	c;
+	int		n;
+	unsigned long t_sec;
+d221 7
+a227 7
+	int	i;
+	int j;
+	int ok;
+	int	offset;
+	char	*ptr;
+	unsigned long	time_kdc;
+	unsigned long	delta_t;
+d229 25
+a253 25
+	i = * (unsigned char *) (c->dat);
+	if (i >n) 
+		{
+		printf("\n\07\07Invalid Password");
+		return -1;
+		}
+	
+	offset = sizeof(C_Block) + 2; /* fixed ticket overhead				   */
+	offset *= i;
+	offset += i+1;			/* count and length array				   */
+	ptr = (c->dat) +1;
+	for (j = 1; j<=i; j++)
+		{
+		if ((offset +sizeof (time_kdc)) > c->length) 
+			{
+			printf("\n\07\07Invalid Password");
+			return -1;
+			}
+		offset += *ptr++; /* add ion length array*/			
+		}	
+	time_kdc = *((unsigned long *) (offset + c->dat));
+	delta_t = abs(time_kdc - t_sec);
+#ifdef	BSD42
+	if (debug) printf("\ntime_kdc = 0x%x time_ws = 0x%x diff = %d",
+				time_kdc,t_sec,delta_t);
+d255 3
+a257 3
+#ifdef	PC
+	if (debug) printf("\ntime_kdc = 0x%X time_ws = 0x%X diff = %d",
+				time_kdc,t_sec,delta_t);
+d259 7
+a265 7
+	if (delta_t > 5*60) 
+		{
+		printf("\n\07\07Invalid Password or invalid local time");
+		return -2; /* not close enough				   */
+		}
+	
+	return 0;
+@
+
+
+1.10
+log
+@Fix inconsistency with arguments in call to send_to_kdc.
+@
+text
+@d3 2
+a4 2
+ * 	$Author: spm $
+ * 	$Locker: bcn $
+d6 3
+d45 1
+a45 1
+static char *rcsid_client_c = "$Header: client.c,v 1.9 85/11/08 12:44:42 spm Exp $";
+d64 1
+a64 1
+int	debug = 0;
+d120 1
+a120 1
+		if (debug) fprintf(stdout,"\n%s %s %d",s_name,s_instance,lifetime);	
+d126 1
+a126 1
+	if (debug)	fprintf(stdout,"\nEOF\n");
+d180 1
+a180 1
+		printf("\n%-10s %-10s life %d, key ver %d, ticket len %d ",
+d184 1
+a184 1
+		printf("\n%s %s life %d, key ver %d, ticket len %d ",
+d198 1
+a198 1
+			else printf("Session key ok");
+d206 2
+a207 1
+	if (debug) fprintf(stdout,"\nEOF\nDone.\n");
+@
+
+
+1.9
+log
+@fixup time check
+and messages
+@
+text
+@d4 1
+a4 1
+ * 	$Locker: spm $
+d6 4
+d42 1
+a42 1
+static char *rcsid_client_c = "$Header: client.c,v 1.8 85/11/05 17:01:46 spm Exp $";
+d127 1
+a127 1
+	if (send_to_kdc(pkt, rpkt->dat, &(rpkt->length))) exit(-1); 
+@
+
+
+1.8
+log
+@read list of tickets from file and
+fixup messages
+@
+text
+@d3 1
+a3 1
+ * 	$Author: bcn $
+d6 4
+d38 1
+a38 1
+static char *rcsid_client_c = "$Header: client.c,v 1.7 85/11/03 20:13:47 bcn Exp $";
+d49 1
+a49 2
+#ifdef PC
+#else
+d51 4
+d57 1
+a57 1
+int	debug = 1;
+d59 3
+a77 1
+	long			tm;
+d106 2
+a107 2
+	time(&tm);
+	pkt = create_packet_to_kdc(user,tm);
+d114 3
+d140 1
+a140 1
+	if (check_cipher(cip,n,tm))	
+d146 1
+a146 1
+		printf("\nOK.");
+d162 3
+d171 10
+a180 3
+		store(s_name,s_instance,ses,lifetime,kvno,tkt,7); 
+		/* 7 should be issue date */
+		if (debug)
+d182 1
+a182 2
+			printf("\n%-10s %-10s ",s_name,s_instance);
+			if (tkt->length)
+d185 1
+a185 3
+				printf("Key 0x%08x%08x, life %d, kvno %d, len %d",
+					*((long *) ses),*((long *) &ses[1]), lifetime,
+				 	kvno,tkt->length);
+d188 1
+a188 3
+				printf("Key 0x%08X%08X, life %d, kvno %d, length %d",
+					*((long *) ses),*((long *) &ses[1]), lifetime,
+				 	kvno,tkt->length);
+d191 1
+a191 4
+			else
+				{
+				printf("Null ticket returned");
+				}
+d193 4
+d205 1
+a205 1
+check_cipher(c,n,tm)
+d208 1
+a208 1
+	unsigned long tm;
+d239 2
+a240 1
+	delta_t = abs(time_kdc - tm);
+d242 6
+a247 1
+				time_kdc,tm,delta_t);
+@
+
+
+1.7
+log
+@Cleaned up some code and changed the initial tickets requested.
+Fixed some bugs that were resulting in invalid tickets.
+@
+text
+@d4 1
+a4 1
+ * 	$Locker: bcn $
+d6 4
+d34 1
+a34 1
+static char *rcsid_client_c = "$Header: client.c,v 1.5 85/10/29 11:21:42 bcn Exp $";
+d50 1
+a50 2
+#define	TRUE	1
+#define	FALSE	0
+d52 1
+a52 3
+int	debug = 0;
+
+struct packet *
+d81 16
+d99 10
+a108 3
+	add_request(pkt,INITIAL_TGT_LIFETIME,TICKET_GRANTING_TICKET,KRB_TBLHST);
+/*	add_request(pkt,4,"test",user); */
+	add_request(pkt,16,"tftp","menelaus");
+d111 1
+a111 1
+	send_to_kdc(pkt, rpkt->dat, &(rpkt->length)); 
+d118 1
+a118 1
+	printf("About to do decryption ...");
+d122 1
+a122 1
+	printf(" Done.\n");
+d124 1
+a124 1
+	printf("Initializing ticket store ...");
+a125 1
+	printf(" Done.\n");
+d127 9
+a135 5
+	printf("Storing tickets ...");
+	fflush(stdout);
+	extract_ticket(cip,1,ses,&lifetime,&kvno,tkt);
+	store(TICKET_GRANTING_TICKET,"",ses,lifetime,kvno,tkt,7); 
+	/* 7 should be issue date */
+d137 26
+a162 9
+/*	extract_ticket(cip,2,ses,&lifetime,&kvno,tkt);
+	store("test","instance",ses,lifetime,kvno,tkt,13); */
+
+	extract_ticket(cip,2,ses,&lifetime,&kvno,tkt);
+	printf("Incomming ticket length: %d\n",tkt->length);
+	store("tftp","menelaus",ses,lifetime,kvno,tkt,12); 
+	printf(" Done.\n");
+
+	retrieve(TICKET_GRANTING_TICKET,"",a1,&a2,&a3,a4,&a5);
+d164 3
+a166 5
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]), a2,a3,a4->length);
+	retrieve("tftp","menelaus",a1,&a2,&a3,a4,&a5);
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->length);
+d169 3
+a171 5
+	printf("Key 0x%08X%08X, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]), a2,a3,a4->length);
+	retrieve("tftp","menelaus",a1,&a2,&a3,a4,&a5);
+	printf("Key 0x%08X%08X, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->length);
+d173 11
+a183 1
+	return(rpkt);
+d187 45
+@
+
+
+1.6
+log
+@I don't know (bcn)
+@
+text
+@d4 1
+a4 1
+ * 	$Locker: spm $
+d6 3
+d83 1
+a83 1
+	add_request(pkt,4,"test",user);
+d110 3
+d114 2
+a115 4
+	store("test","instance",ses,lifetime,kvno,tkt,7); 
+
+	extract_ticket(cip,3,ses,&lifetime,&kvno,tkt);
+	store("tftp","menelaus",ses,lifetime,kvno,tkt,7); 
+a121 3
+	retrieve("test2","inst2",a1,&a2,&a3,a4,&a5);
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->length);
+d129 1
+a129 1
+	retrieve("test2","inst2",a1,&a2,&a3,a4,&a5);
+a131 3
+	retrieve("test","instance",a1,&a2,&a3,a4,&a5);
+	printf("Key 0x%08X%08X, life %d, kvno %d, length %d\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->length,a4->dat);
+@
+
+
+1.5
+log
+@Change mallocs to statics.
+@
+text
+@d3 2
+a4 2
+ * 	$Author: spm $
+ * 	$Locker:  $
+d6 3
+d27 1
+a27 1
+static char *rcsid_client_c = "$Header: client.c,v 1.4 85/10/23 17:11:36 spm Exp $";
+d71 1
+a71 1
+	int			a2,a3;
+d81 1
+a81 1
+	add_request(pkt,16,"test2","inst2");
+a88 3
+#ifdef	notdef
+	string_to_key("test",key);
+#else
+a89 1
+#endif
+d92 1
+a92 1
+     	cbc_encrypt(cip->dat,cip->dat,cip->length,key_s,key,0);
+d94 1
+d111 1
+a111 1
+	store("test2","inst2",ses,lifetime,kvno,tkt,7); 
+d115 3
+a117 2
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d, %4s\n",*((long *) a1),
+	*((long *) &a1[4]), a2,a3,a4->length,a4->dat);
+d119 12
+a130 2
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d, %4s\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->length,a4->dat);
+d132 1
+a132 1
+	printf("Key 0x%08x%08x, life %d, kvno %d, length %d, %4s\n",*((long *) a1),
+d134 1
+@
+
+
+1.4
+log
+@add length to fprintf
+@
+text
+@d6 3
+d24 1
+a24 1
+static char *rcsid_client_c = "$Header: client.c,v 1.3 85/10/18 15:22:30 spm Exp $";
+d52 6
+a57 3
+	PACKT			rpkt;
+	TEXT			cip = (TEXT) malloc(sizeof(TEXT_ST));
+	TEXT			tkt = (TEXT) malloc(sizeof(TEXT_ST));
+d79 1
+a79 1
+	rpkt = (PACKT) malloc(sizeof(PKT_ST));
+@
+
+
+1.3
+log
+@*** empty log message ***
+@
+text
+@d6 3
+d21 1
+a21 1
+static char *rcsid_client_c = "$Header: client.c,v 1.2 85/10/16 11:55:43 spm Exp $";
+d109 2
+a110 2
+	printf("Key 0x%08x%08x, life %d, kvno %d, %4s\n",*((long *) a1),
+	*((long *) &a1[4]), a2,a3,a4->dat);
+d112 2
+a113 2
+	printf("Key 0x%08x%08x, life %d, kvno %d, %4s\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->dat);
+d115 2
+a116 2
+	printf("Key 0x%08x%08x, life %d, kvno %d, %4s\n",*((long *) a1),
+	*((long *) &a1[4]),a2,a3,a4->dat);
+@
+
+
+1.2
+log
+@add password prompt
+@
+text
+@d3 2
+a4 2
+ * 	$Author: bcn $
+ * 	$Locker: spm $
+d6 3
+d18 1
+a18 1
+static char *rcsid_client_c = "$Header: client.c,v 1.1 85/10/10 11:08:49 bcn Exp $";
+a82 1
+	bzero(key,sizeof(key));
+d85 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 7
+a8 4
+ * 	$Source: $
+ * 	$Author: $
+ * 	$Locker: $
+ *    	$Log:	 $
+d15 1
+a15 1
+static char *rcsid_client_c = "$Header: $";
+d31 3
+d74 1
+d76 3
+d80 1
+d90 1
+@

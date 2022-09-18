@@ -1,0 +1,2952 @@
+Return-Path: <cbosgd!utcs!geoff>
+Date: Sun, 20 Oct 85 04:16:15 edt
+From: utcs!geoff (Geoff Collyer)
+To: 4bsd-bugs
+Cc: fair@BERKELEY, chris@umcp-cs
+Subject: password data base design is poor and suffers from NIH syndrome.
+Index: etc 4.3BSD
+
+Description:
+ From: Chris Torek <ihnp4!ihnp1!packard!topaz!seismo!mimsy.umd.edu!umcp-cs!chris>
+ Subject: Re:  mdbm changes of late
+ To: packard!utcs!geoff
+ In-Reply-To: Your message of Tue, 15 Oct 85 20:30:25 edt,
+ 	<8510160522.AA03778@py/garage/packard.DK>
+ Date: 17 Oct 1985 2213-EDT (Thursday)
+ 
+ 	Is mdbm being included in 4.3bsd?
+ Not that I know of.
+ 
+ 	Are they using it for their hashed password file?
+ No, they are using a simpler hacked dbm (which I think is a mistake,
+ since they invariably have two keys for each datum).  They are
+ using the same dbm for the host file, only in this case it is worse:
+ there is one key for each name, all pointing at the same object.
+ Also, they are not using host name/address disambiguators, so that
+ if you have a four-character host name that just happens to be the
+ same as one of the host IDs in the host table, they will collide....
+
+Repeat-By:
+	Read the above.
+Fix:
+	Use the password data base that we have built on top of mdbm(3)
+	and used here, in production, on seven VAXes for the last year
+	with a total user population of about 10,000 students at a time.
+	It doesn't have problems with name/uid/etc. collisions and
+	uses proven technology (i.e. builds on mdbm, thus dbm(3)).
+	If you don't have mdbm and can't find it in old net.sources archives,
+	contact me; I also have one minor fix that's needed for mdbm.
+---
+: To unbundle, sh this file
+mkdir pwdbm 2>/dev/null
+mkdir pwdbm/etc 2>/dev/null
+echo pwdbm/etc/addtogroup 1>&2
+cat >pwdbm/etc/addtogroup <<'@@@ Fin de pwdbm/etc/addtogroup'
+#! /bin/sh
+
+# addtogroup user group - add user to group
+
+trap "rm -f /tmp/atg$$; exit" 0 1 2 15
+
+case $# in
+	0|1)	echo usage: $0 user group
+		exit 1
+		;;
+esac
+
+user=$1; shift
+
+for group
+do
+	if grep "^$group:" /etc/group >/tmp/atg$$; then
+		: ok
+	else
+		echo "$0: no such group as $group" >&2
+		exit 1
+	fi
+	sed 's/:[^:]*$/:'"$user"'/
+	1q
+	' </tmp/atg$$ >>/etc/group	# add user to group file on his own line
+done
+
+sort -o /etc/group -nt: +2 /etc/group	# sort the line into place
+grpclean >/tmp/atg$$		# compact and sort the members of each group
+cp /tmp/atg$$ /etc/group
+@@@ Fin de pwdbm/etc/addtogroup
+echo pwdbm/etc/chshell 1>&2
+cat >pwdbm/etc/chshell <<'@@@ Fin de pwdbm/etc/chshell'
+#!/bin/sh
+# chshell - change login shells for users
+#
+# usage chshell shell user ...
+#
+PATH=/bin:/usr/bin:/etc; export PATH
+
+case $# in
+0|1)	echo 'chshell: usage chshell shell user ...' 2>&1; exit 1 ;;
+*)	;;
+esac
+
+shell=$1; shift
+for i in $*
+do
+	pwent $i | awk -F: '{
+		printf "%s:%s:%s:%s:%s:%s:%s\n", $1, $2, $3, $4, $5, $6, "'$shell'"
+	}' | pwent -w $i
+done
+@@@ Fin de pwdbm/etc/chshell
+echo pwdbm/etc/deluser 1>&2
+cat >pwdbm/etc/deluser <<'@@@ Fin de pwdbm/etc/deluser'
+#! /bin/sh
+# deluser - remove user's files and pw entry
+PATH=/bin:/usr/bin:/etc; export PATH
+MAILDIR=/usr/spool/mail		# broken in System III
+
+case $# in
+0)	echo "usage: $0 user" >&2
+	exit 1 ;;
+*)
+	for user
+	do
+		case "$user" in
+		root|bin|daemon|uucp|u_*)
+			echo "$0: may not delete user $user" >&2 ;;
+		*)
+			# ### need better check here for non-existant user.
+			HD=`homedir $user` || exit 1
+			echo nuking files for user $user in $HD
+			rm -r $HD			# hope you were sure!
+			rm -f $MAILDIR/$user
+			rmusr $user
+			charges -u "$user" | 
+			/usr/ucb/Mail -s "deleted user - lost charges" root
+			;;
+		esac
+	done ;;
+esac
+@@@ Fin de pwdbm/etc/deluser
+echo pwdbm/etc/editusers 1>&2
+cat >pwdbm/etc/editusers <<'@@@ Fin de pwdbm/etc/editusers'
+#!/bin/sh
+# edituser - password file editor prefix command
+PATH=/bin:/usr/bin:/etc:/usr/ucb; export PATH
+: ${DIR=/etc}
+: ${PW=$DIR/passwd}
+: ${GRP=$DIR/group}
+: ${PTMP=$DIR/ptmp}
+trap '' 1 2 15	# ignore signals
+# more on traps:
+#	trap 1 2 15			resets to SIG_DFL
+#	trap '...; exit 1' 1 2 15	catches
+# lock passwd, group files
+if ln $PW $PTMP; then
+	: it worked
+else
+	echo "$0: can't lock $PW" >&2
+	exit 1
+fi
+trap continue 1 2 15	# child gets signals, parent ignores them
+PS1='ued: '; export PS1
+umask 022
+case $# in		# subcommand is to modify *.copy
+0)	sh ;;
+*)	eval "$@" ;;
+esac
+trap '' 1 2 15	# ignore signals again
+rm -f $PTMP	# unlock
+@@@ Fin de pwdbm/etc/editusers
+echo pwdbm/etc/eduser 1>&2
+cat >pwdbm/etc/eduser <<'@@@ Fin de pwdbm/etc/eduser'
+#! /bin/sh
+# eduser - edit a user's pw entry
+PATH=/bin:/usr/bin:/etc:/usr/ucb; export PATH
+for user
+do
+	trap "rm -f /tmp/edu$$; exit" 0 1 2 15
+	pwent "$user" | tr : '\12' >/tmp/edu$$
+	ed - /tmp/edu$$ <<'!'	# rip pwent apart
+1s/^/name: /
+2s/^/password: /
+3s/^/user id: /
+4s/^/group number: /
+6s/^/home directory: /
+7s/^/login shell: /
+5s/,/\n/g
+s/^/tdd: /
+-s/^/sac pin: /
+-s/^/can: /
+-s/^/expiry: /
+-s/^/privs: /
+-s/^/name: /
+w
+!
+	${EDITOR-ed} /tmp/edu$$	# allow user to fiddle with it
+	ed - /tmp/edu$$ <<'!'	# repack the (possibly modified) pwent
+g/^[^:]*: /s///
+1,4j/:/
+2,7j/,/
+1,$j/:/
+w
+!
+	# reject possible frauds
+	if awk -F: ' {
+	name=$1
+	uid=$3
+	gid=$4
+	if (name == "" || uid == 0 || uid == 1 || uid == 3 || gid == 10)
+		exit 1
+} ' </tmp/edu$$
+	then
+		pwent -w "$user" </tmp/edu$$	# install new pwent
+	else
+		echo "$0: attempt to install privileged user $user denied" >&2
+		exit 1
+	fi
+done
+@@@ Fin de pwdbm/etc/eduser
+echo pwdbm/etc/free.uid 1>&2
+cat >pwdbm/etc/free.uid <<'@@@ Fin de pwdbm/etc/free.uid'
+#! /bin/sh
+# free.uid - return the next free uid
+PATH=/bin:/usr/bin:/etc:/usr/ucb; export PATH
+lastuid=/etc/lastuid; export lastuid	# current highest uid stored here
+trap "" 1 2 15		# ignore signals during update
+
+uid=`cat $lastuid`
+
+if test ! "$uid"
+then
+	msg="$0: lastuid file trashed, please contact systems"
+	echo $msg | Mail -s "passwd problems" acctproblems &
+	echo $msg >&2
+	exit 1
+fi
+
+expr $uid + 1 >$lastuid
+echo $uid
+@@@ Fin de pwdbm/etc/free.uid
+echo pwdbm/etc/gid 1>&2
+cat >pwdbm/etc/gid <<'@@@ Fin de pwdbm/etc/gid'
+#!/bin/sh
+# gid - change login group for users
+#
+# usage gid gid user ...
+#
+# Desired future enhancement would be to allow the group name instead of the
+# group id and act accordingly
+#
+PATH=/bin:/usr/bin:/etc; export PATH
+
+case $# in
+0|1)	echo 'gid: usage gid gid user ...' 2>&1; exit 1 ;;
+*)	;;
+esac
+
+gid=$1; shift
+if expr $gid : '^[0-9]*$'
+then	: ok
+else	echo 'gid: gid is not numeric' 2>&1; exit 1
+fi
+for i in $*
+do
+	pwent $i | awk -F: '{
+		printf "%s:%s:%s:%s:%s:%s:%s\n", $1, $2, $3, "'$gid'", $5, $6, $7
+	}' | pwent -w $i
+done
+@@@ Fin de pwdbm/etc/gid
+echo pwdbm/etc/password 1>&2
+cat >pwdbm/etc/password <<'@@@ Fin de pwdbm/etc/password'
+#!/bin/sh
+# password - change password to any arbitrary string
+#
+# usage: password string user ...
+# If string starts with \ then the actual string is put in the password file
+#
+PATH=/bin:/usr/bin:/etc; export PATH
+
+case $# in
+0|1)	echo 'password: usage password string user ...' 2>&1; exit 1 ;;
+*)	;;
+esac
+
+password=$1; shift
+
+if expr $password : '^\\'
+then	password=`expr $password : '.\(.*\)'`
+else	password=`pwcrypt <<!
+$password
+!
+`
+fi
+
+for i in $*
+do
+	pwent $i | awk -F: '{
+		printf "%s:%s:%s:%s:%s:%s:%s\n", $1, "'$password'", $3, $4, $5, $6, $7
+	}' | pwent -w $i
+done
+@@@ Fin de pwdbm/etc/password
+echo pwdbm/etc/prusers 1>&2
+cat >pwdbm/etc/prusers <<'@@@ Fin de pwdbm/etc/prusers'
+#! /bin/sh
+# print users
+PATH=/bin:/usr/bin:/etc:/usr/ucb; export PATH
+sed 's/:.*//'
+@@@ Fin de pwdbm/etc/prusers
+echo pwdbm/etc/pwatodbm 1>&2
+cat >pwdbm/etc/pwatodbm <<'@@@ Fin de pwdbm/etc/pwatodbm'
+#! /bin/sh
+# convert ascii password file to dbm
+PATH=/bin:/usr/bin:/usr/ucb:/etc; export PATH
+cd /etc
+>passwd.dat	# clear database
+>passwd.map	# clear database
+pwent -w `prusers <passwd` <passwd
+@@@ Fin de pwdbm/etc/pwatodbm
+echo pwdbm/etc/pwdbmtoa 1>&2
+cat >pwdbm/etc/pwdbmtoa <<'@@@ Fin de pwdbm/etc/pwdbmtoa'
+#! /bin/sh
+# convert dbm password file to ascii
+PATH=/bin:/usr/bin:/usr/ucb:/etc; export PATH
+pwent | sort -t: +2n
+@@@ Fin de pwdbm/etc/pwdbmtoa
+echo pwdbm/etc/suspuser 1>&2
+cat >pwdbm/etc/suspuser <<'@@@ Fin de pwdbm/etc/suspuser'
+#! /bin/sh
+# suspuser - suspend user(s)
+PATH=/bin:/usr/bin:/etc; export PATH
+do=""
+F=/tmp/suspF$$
+G=/tmp/suspG$$
+trap "rm -f $F $G" 0 1 2 15
+
+case $# in
+0)	echo "usage: $0 user" >&2
+	exit 1 ;;
+*)
+	echo "suspending user(s) $*"  | /usr/ucb/Mail -s accounts root
+	for user
+	do
+		case "$user" in
+		root|bin|daemon|uucp|u_*)
+			echo "$0: may not delete user $user" >&2 ;;
+		*)
+			pwent "$user" >$F
+			sed 's/:/:*/' $F >>$G
+			do="$do $user"
+			;;
+		esac
+	done
+	pwent -w $do < $G
+	;;
+esac
+@@@ Fin de pwdbm/etc/suspuser
+mkdir pwdbm/usr 2>/dev/null
+mkdir pwdbm/usr/man 2>/dev/null
+mkdir pwdbm/usr/man/man1 2>/dev/null
+echo pwdbm/usr/man/man1/passwd.1 1>&2
+cat >pwdbm/usr/man/man1/passwd.1 <<'@@@ Fin de pwdbm/usr/man/man1/passwd.1'
+.TH PASSWD 1 "18 January 1983"
+.UC 4
+.SH NAME
+passwd \- change login password
+.SH SYNOPSIS
+.B passwd
+[
+.B \-l
+]
+[ name ]
+.SH DESCRIPTION
+This command changes (or installs) a password
+associated with the user
+.IR name
+(your own name by default).
+.PP
+The program prompts for the old password and then for the new one.
+The caller must supply both.
+The new password must be typed twice, to forestall mistakes.
+.PP
+New passwords must be at least four characters long if they use
+a sufficiently rich alphabet and at least six characters long
+if monocase.
+They must not be found in a dictionary.
+.\" These rules are relaxed if you are insistent enough.
+.PP
+Only the owner of the name or the super-user may change a password;
+the owner must prove he knows the old password.
+.PP
+Under the
+.B \-l
+option,
+.I passwd
+will allow the invoker to set a password even if the password file
+is locked,
+if the invoker is able to write the password file.
+.SH FILES
+/etc/passwd
+.br
+/etc/ptmp	lock file
+.SH "SEE ALSO"
+login(1), passwd(5), crypt(3)
+.br
+Robert Morris and Ken Thompson,
+.I UNIX password security
+@@@ Fin de pwdbm/usr/man/man1/passwd.1
+echo pwdbm/usr/man/man1/pwent.1m 1>&2
+cat >pwdbm/usr/man/man1/pwent.1m <<'@@@ Fin de pwdbm/usr/man/man1/pwent.1m'
+.TH PWENT 1M local
+.DA 2 September 1984
+.SH NAME
+pwent \- read, write or remove password file entries
+.SH SYNOPSIS
+.B /etc/pwent
+[
+.B \-u
+]
+[
+.B \-w
+]
+[
+.B \-r
+]
+[ user... ]
+.SH DESCRIPTION
+.I Pwent
+prints, updates or removes entries from the password file.
+If invoked with no
+.IR user s,
+.I pwent
+operates on all users currently in the password file.
+Under
+.BR \-w ,
+.I pwent
+reads password file entries from standard input and writes them into
+the password file for the corresponding
+.IR user .
+Under
+.BR \-r ,
+.I pwent
+removes the named
+.IR user s.
+If none of the above options are given,
+.I pwent
+prints password file entries on standard output.
+.PP
+Under
+.BR \-u ,
+.I pwent
+expects numeric user ids rather than
+.IR user s.
+.SH FILES
+/etc/passwd.map, /etc/passwd.dat	mdbm(3) password file
+.br
+/etc/passwd	ascii password file
+.SH SEE ALSO
+getpwent(3), putpwent(3), passwd(5)
+.SH HISTORY
+Written at U of T by Geoff Collyer.
+.SH BUGS
+When adding users under
+.BR \-w ,
+.I pwent
+doesn't check that the
+.I user
+matches
+.I pwp->pw_name
+and there must be as many
+.IR user s
+given as password file entries on standard input.
+@@@ Fin de pwdbm/usr/man/man1/pwent.1m
+mkdir pwdbm/usr/man/man3 2>/dev/null
+echo pwdbm/usr/man/man3/getgcosent.3 1>&2
+cat >pwdbm/usr/man/man3/getgcosent.3 <<'@@@ Fin de pwdbm/usr/man/man3/getgcosent.3'
+.TH GETGCOSENT 3 
+.SH NAME
+getgcosent, putgcosent \- get GCOS field of password file entry
+.SH SYNOPSIS
+.nf
+.B #include <gcos.h>
+.PP
+.B struct gcos_fld *getgcosent(s)
+.B char *s;
+.PP
+.B char *putgcosent(gp)
+.B struct gcos_fld *gp;
+.SH DESCRIPTION
+.I Getgcosent
+returns a pointer to an object with the
+following structure
+containing the broken-out
+subfields of a GCOS field of a line in the password file.
+.RS
+.PP
+.nf
+.so /usr/include/gcos.h
+.ft R
+.ad
+.fi
+.RE
+.PP
+Accounting privileges in gc_priv are separated by `+';
+legal privileges are
+``ts'' (may use typeset simulator)
+and
+``ty'' (may use typesetter).
+.PP
+.I Putgcosent
+reassembles the broken-out subfields into a GCOS field
+and returns a pointer to the GCOS field.
+.SH FILES
+/etc/passwd
+.SH "SEE ALSO"
+getlogin(3), getpwent(3), passwd(5)
+.SH DIAGNOSTICS
+Null pointer
+(0) returned on EOF or error.
+.SH BUGS
+All information
+is contained in a static area
+so it must be copied if it is
+to be saved.
+@@@ Fin de pwdbm/usr/man/man3/getgcosent.3
+echo pwdbm/usr/man/man3/getpwent.3 1>&2
+cat >pwdbm/usr/man/man3/getpwent.3 <<'@@@ Fin de pwdbm/usr/man/man3/getpwent.3'
+.TH GETPWENT 3  "19 January 1983"
+.SH NAME
+getpwent, getpwuid, getpwnam, setpwent, endpwent \- get password file entry
+.SH SYNOPSIS
+.nf
+.B #include <pwd.h>
+.PP
+.B struct passwd *getpwent()
+.PP
+.B struct passwd *getpwuid(uid)
+.B int uid;
+.PP
+.B struct passwd *getpwnam(name)
+.B char *name;
+.PP
+.B int setpwent()
+.PP
+.B int endpwent()
+.fi
+.SH DESCRIPTION
+.I Getpwent,
+.I getpwuid
+and
+.I getpwnam
+each return a pointer to an object with the
+following structure
+containing the broken-out
+fields of a line in the password file.
+.RS
+.PP
+.nf
+.so /usr/include/pwd.h
+.ft R
+.ad
+.fi
+.RE
+.PP
+The fields
+.I pw_quota
+and
+.I pw_comment
+are unused; the others have meanings described in
+.IR passwd (5).
+.PP
+.I Getpwent
+reads the next
+line (opening the file if necessary);
+.I setpwent
+rewinds the file;
+.I endpwent
+closes it.
+.PP
+.I Getpwuid
+and
+.I getpwnam
+search from the beginning until a matching
+.I uid
+or
+.I name
+is found
+(or until EOF is encountered).
+.SH FILES
+/etc/passwd
+.SH "SEE ALSO"
+getlogin(3), getgrent(3), passwd(5)
+.SH DIAGNOSTICS
+Null pointer
+(0) returned on EOF or error.
+.SH BUGS
+All information
+is contained in a static area
+so it must be copied if it is
+to be saved.
+.br
+@@@ Fin de pwdbm/usr/man/man3/getpwent.3
+echo pwdbm/usr/man/man3/putpwent.3 1>&2
+cat >pwdbm/usr/man/man3/putpwent.3 <<'@@@ Fin de pwdbm/usr/man/man3/putpwent.3'
+.TH PUTPWENT 3 local
+.SH NAME
+putpwent, rmpwent \- write or remove password file entry
+.SH SYNOPSIS
+.nf
+.B #include <pwd.h>
+.PP
+.B int
+.B putpwent(pwp)
+.B struct passwd *pwp;
+.PP
+.B int
+.B rmpwent(pwp)
+.B struct passwd *pwp;
+.PP
+.B cc ... -lpwdbm -lmdbm
+.SH DESCRIPTION
+.I Putpwent
+and
+.I rmpwent
+each take a pointer to an object with the
+following structure
+containing the broken-out
+fields of a line in the password file.
+.RS
+.PP
+.nf
+.so /usr/include/pwd.h
+.ft R
+.ad
+.fi
+.RE
+.PP
+The fields
+.I pw_quota
+and
+.I pw_comment
+are unused; the others have meanings described in
+.IR passwd (5).
+.PP
+.I Putpwent
+writes the password entrie(s) for
+.I pwp->pw_name
+and
+.I pwp->pw_uid
+(opening the file if necessary);
+.I rmpwent
+removes those entrie(s).
+.SH FILES
+/etc/passwd.map, /etc/passwd.dat	mdbm(3) password file
+.br
+/etc/passwd	ascii password file
+.SH "SEE ALSO"
+getpwent(3), mdbm(3), passwd(5)
+.SH DIAGNOSTICS
+Zero returned on error.
+.SH BUGS
+All information
+is contained in a static area
+so it must be copied if it is
+to be saved.
+@@@ Fin de pwdbm/usr/man/man3/putpwent.3
+mkdir pwdbm/usr/man/man5 2>/dev/null
+echo pwdbm/usr/man/man5/passwd.5 1>&2
+cat >pwdbm/usr/man/man5/passwd.5 <<'@@@ Fin de pwdbm/usr/man/man5/passwd.5'
+.TH PASSWD 5 
+.UC
+.SH NAME
+passwd \- password file
+.SH DESCRIPTION
+.I Passwd
+contains for each user the
+following information:
+.HP 10
+name (login name, contains no upper case)
+.br
+.ns
+.HP 10
+encrypted password
+.br
+.ns
+.HP 10
+numerical user ID
+.br
+.ns
+.HP 10
+numerical group ID
+.br
+.ns
+.HP 10
+user's real name, office, course, privileges
+.br
+.ns
+.HP 10
+initial working directory
+.br
+.ns
+.HP 10
+program to use as Shell
+.PP
+The name may contain `&', meaning insert the login name.
+This information is set by the
+.IR chfn (1)
+command and used by the
+.IR finger (1)
+command.
+.PP
+This is an ASCII file.  Each field within each user's entry
+is separated from the next by a colon.
+Each user is separated from the next by a new-line.
+If the password field is null, no password is demanded;
+if the Shell field is null, then
+.I /bin/sh
+is used.
+.PP
+This file resides in directory /etc.
+Because of the encrypted
+passwords, it can and does have general read
+permission and can be used, for example,
+to map numerical user ID's to names.
+.PP
+Appropriate precautions must be taken to lock the file against changes
+if it is to be edited with a text editor;
+.IR vipw (8)
+does the necessary locking.
+.SH FILES
+/etc/passwd
+.SH "SEE ALSO"
+getpwent(3), login(1), crypt(3), passwd(1), group(5), chfn(1), finger(1),
+vipw(8), adduser(8)
+.SH BUGS
+A binary indexed file format should be available for fast access.
+.PP
+User information (name, office, etc.) should be stored elsewhere.
+@@@ Fin de pwdbm/usr/man/man5/passwd.5
+mkdir pwdbm/usr/man/man8 2>/dev/null
+echo pwdbm/usr/man/man8/addtogroup.8 1>&2
+cat >pwdbm/usr/man/man8/addtogroup.8 <<'@@@ Fin de pwdbm/usr/man/man8/addtogroup.8'
+.TH ADDTOGROUP 8 local
+.DA 13 September 1984
+.SH NAME
+addtogroup \- adds a user to a group
+.SH SYNOPSIS
+.B /etc/addtogroup
+user group
+.SH DESCRIPTION
+.I Addtogroup
+adds
+.I user
+to
+.I group
+in the group file.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+/etc/group
+.SH SEE ALSO
+editusers(8)
+.SH HISTORY
+Written at U of T by Geoff Collyer.
+@@@ Fin de pwdbm/usr/man/man8/addtogroup.8
+echo pwdbm/usr/man/man8/chshell.8 1>&2
+cat >pwdbm/usr/man/man8/chshell.8 <<'@@@ Fin de pwdbm/usr/man/man8/chshell.8'
+.TH CHSHELL 8 local
+.SH NAME
+chshell \- change login shell for users
+.SH SYNOPSIS
+.B /etc/chshell
+shell user ...
+.SH DESCRIPTION
+.I Chshell
+changes the login shell of
+.I user
+to
+.I shell
+in the password file.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+/etc/passwd.*
+.SH SEE ALSO
+editusers(8)
+.SH HISTORY
+Written at U of T by Bruce Freeman.
+@@@ Fin de pwdbm/usr/man/man8/chshell.8
+echo pwdbm/usr/man/man8/deluser.8 1>&2
+cat >pwdbm/usr/man/man8/deluser.8 <<'@@@ Fin de pwdbm/usr/man/man8/deluser.8'
+.TH DELUSER 8 local
+.DA 11 September 1984
+.SH NAME
+deluser \- remove a user from UNIX
+.SH SYNOPSIS
+.B /etc/deluser
+user ...
+.SH DESCRIPTION
+.I Deluser
+removes the named user(s)'s file storage (including spooled mail)
+and password file entry.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+.nf
+/etc/passwd	password file
+/etc/group	group file
+/usr/spool/mail	spooled mail directory
+.fi
+.SH SEE ALSO
+pwent(1M),
+editusers(8)
+.SH HISTORY
+Written at U of T by Geoff Collyer.
+.SH BUGS
+Short of obnoxious
+``Are you really sure you know what you are doing and aren't
+a psychotic maniac on the loose?'' prompts,
+it's hard to be sure that the right user is being removed.
+@@@ Fin de pwdbm/usr/man/man8/deluser.8
+echo pwdbm/usr/man/man8/editusers.8 1>&2
+cat >pwdbm/usr/man/man8/editusers.8 <<'@@@ Fin de pwdbm/usr/man/man8/editusers.8'
+.TH EDITUSERS 8 local
+.DA 11 September 1984
+.SH NAME
+editusers \- lock password and group files while executing command(s)
+.SH SYNOPSIS
+.B /etc/editusers
+[
+command
+]
+.SH DESCRIPTION
+.I Editusers
+locks the password and group files to prevent simultaneous updates
+by others (if possible),
+and executes
+.I command
+(or
+.I /bin/sh
+if no
+.I command
+is given),
+then unlocks the password and group files.
+If the password and group files cannot be locked
+(e.g. because someone else has them locked),
+.I editusers
+complains and exits with bad status without executing
+.IR command .
+.PP
+.I Editusers
+should be used whenever updating the password or group files
+to prevent simultaneous updates by
+.IR passwd (1)
+or other users of
+.IR editusers .
+.SH EXAMPLES
+.nf
+/etc/editusers adduser
+.fi
+.SH FILES
+.nf
+/etc/passwd	the password file
+/etc/group	the group file
+/etc/ptmp	the lock file for both
+.fi
+.SH SEE ALSO
+adduser(8),
+free.uid(8),
+eduser(8),
+deluser(8),
+prusers(8),
+pwatodbm(8),
+pwdbmtoa(8).
+.SH HISTORY
+Written at U of T by Geoff Collyer
+@@@ Fin de pwdbm/usr/man/man8/editusers.8
+echo pwdbm/usr/man/man8/eduser.8 1>&2
+cat >pwdbm/usr/man/man8/eduser.8 <<'@@@ Fin de pwdbm/usr/man/man8/eduser.8'
+.TH EDUSER 8 local
+.DA 11 September 1984
+.SH NAME
+eduser \- edit a user's password file entry
+.SH SYNOPSIS
+.B /etc/eduser
+user ...
+.SH DESCRIPTION
+.I Eduser
+invokes $EDITOR
+(ed by default)
+on a temporary file containing a self-explanatory representation
+of each
+.IR user 's
+password file entry.
+Upon exit from the editor,
+.I eduser
+writes the modified password file entry back into the password file.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+/etc/passwd	password file
+.SH SEE ALSO
+ed(1),
+editusers(8),
+pwent(1M)
+.SH HISTORY
+Written at U of T by Geoff Collyer.
+.SH BUGS
+If the GCOS field does not contain the right number of subfields,
+.I eduser
+can become confused.
+@@@ Fin de pwdbm/usr/man/man8/eduser.8
+echo pwdbm/usr/man/man8/gid.8 1>&2
+cat >pwdbm/usr/man/man8/gid.8 <<'@@@ Fin de pwdbm/usr/man/man8/gid.8'
+.TH GID 8 local
+.SH NAME
+gid \- change login group for users
+.SH SYNOPSIS
+.B /etc/gid
+gid user ...
+.SH DESCRIPTION
+.I Gid
+changes the login group of
+.I user
+to
+.I gid
+in the password file
+where
+.I gid
+is the numeric group id of the desired group as found in the group file.
+.PP
+This command does
+.B not
+lock the password or group file.
+It is intended to be used from within the
+.I editusers
+environment.
+.SH FILES
+/etc/passwd.*
+/etc/group
+.SH SEE ALSO
+editusers(8)
+.SH HISTORY
+Written at U of T by Bruce Freeman.
+@@@ Fin de pwdbm/usr/man/man8/gid.8
+echo pwdbm/usr/man/man8/passwd.8 1>&2
+cat >pwdbm/usr/man/man8/passwd.8 <<'@@@ Fin de pwdbm/usr/man/man8/passwd.8'
+.TH PASSWD 8
+.SH NAME
+passwd \- operator procedure relating to UNIX system passwords
+.SH "POLICY"
+The password for the account
+.B root
+is the key to security on any UNIX system.
+The password for
+.B root
+should never be given out to anyone.
+The system administrator will set and change this password,
+and communicate it to those who should get it.
+Operators are not to give this password out to anybody.
+Also, the root password should not be written down 
+where it can be seen by others (including non-UNIX operators).
+.PP
+This cannot be overemphasised.
+.B "Do not give anybody the root password."
+.B "Do not write the root password down "
+except in your wallet.
+.SH "BACKGROUND"
+.I "Why we don't give the root password to anyone who walks in..."
+.PP
+Only full-time UTCS staff
+approved by the UNIX Group in UTCS Systems
+are to be given the root password for any UTCS UNIX System.
+(No students, no part-time staff).
+Only full-time UTCS staff are to be given accounts
+in the group `bin' (V7 UNIX) or `staff' (4.1BSD UNIX).
+(Again, no students and no part-time staff).
+This is because either of these allows a knowledgeable user to
+make illicit changes to the UNIX system.
+These changes can be difficult or impossible to detect,
+and can lead to security violations months or years after the
+person leaves.
+Imagine the harm which could be done in the following case.
+This is intended as a worst-case, and is not intended
+to reflect on any particular person, real or imagined, male or female.
+A part-time person is given root access, and semi-playfully
+inserts at some point a trap which allows him to gain root privilege
+from a non-root account.
+Two months later he leaves UTCS.
+Of course the root password is changed and the part-timer's account
+is revoked.
+However, the departee gets a friend's non-privileged account and log in,
+then becomes root through the trap set while he was root.
+He can now do absolutely anything with a vengeance,
+and probably will.
+Is there a moral in all this?
+Yes.
+It is that you should never
+give the root password to anybody unless you trust them 
+with your money and/or your life (or the life of the UNIX system).
+.sp
+.I "Why we don't use ``soup'' as a password"
+.PP
+You will notice that the root password is hardly ever made up of
+complete English words, common names, your phone number,
+or anything else that can easily be guessed.
+It is possible for a malicious person (`cracker') with a home computer to find 
+any UNIX password using a few weeks on a Z80 microcomputer
+if the password chosen falls into any of these categories,
+including any entry in a standard dictionary!
+But if you start with a word then add, change or drop a letter or two
+near the beginning (only the first eight count), the odds are much
+higher in favor of security.
+Important passwords must be changed monthly.
+More often is preferable. A simple password (such as ``lamprey'' or
+``reflection'') could be broken within a week.
+A complex one such as ``dolktape'' (not a real word) or ``EnVIDous''
+(mixed case)
+or ``2ixdy/dx'' (special characters)
+would likely take a very long time to break by these methods.
+Note that using mixed case or special characters makes the password
+more secure from penetration by exhaustive searching,
+since the time required to try all possibilities goes up exponentially
+as the number of characters which must be tried.
+UNIX allows almost any character which can be entered from the keyboard
+to be used in a password.
+.P
+Don't overlook the obvious: writing the password down on your
+desk where it can be seen by interlopers (as in the film
+.I "War Games" )
+defeats the value of even the most complicated password.
+.sp
+.I "When the root password changes"
+When the root password changes on your UNIX machine you will
+be notified by the UNIX group.
+If you change it yourself, you are expected to notify the UNIX group.
+Do
+.b "not"
+use normal mail.
+Communicate the new password orally, or use
+.I secretmail
+(see
+.I xsend (1)
+for details).
+Normal
+.I mail
+can be intercepted.
+Secretmail requires much more work to intercept.
+Note - the ``operator'' account must be 
+.I enroll ed
+with secretmail on each machine.
+.SH "SEE ALSO"
+passwd(1) - for information on changing passwords.
+@@@ Fin de pwdbm/usr/man/man8/passwd.8
+echo pwdbm/usr/man/man8/password.8 1>&2
+cat >pwdbm/usr/man/man8/password.8 <<'@@@ Fin de pwdbm/usr/man/man8/password.8'
+
+.TH PASSWORD 8 local
+.SH NAME
+password \- change password for users
+.SH SYNOPSIS
+.B /etc/password
+string user ...
+.SH DESCRIPTION
+.I Password
+changes the password of
+.I user
+to
+.IR string .
+This command does not force any restrictions on what
+.I string
+may contain so is useful for setting arbitrary passwords.
+If
+.I string
+starts with a backslash then
+.I string
+is assumed to be the encrypted password and is put in the password file asis.
+Note that since this command is a shell file the backslash has to be escaped.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+/etc/passwd.*
+.SH SEE ALSO
+editusers(8)
+.SH HISTORY
+Written at U of T by Bruce Freeman.
+@@@ Fin de pwdbm/usr/man/man8/password.8
+echo pwdbm/usr/man/man8/prusers.8 1>&2
+cat >pwdbm/usr/man/man8/prusers.8 <<'@@@ Fin de pwdbm/usr/man/man8/prusers.8'
+.TH PRUSERS 8 local
+.DA 11 September 1984
+.SH NAME
+prusers \- print names of users in password file
+.SH SYNOPSIS
+.B /etc/prusers
+.SH DESCRIPTION
+.I Prusers
+prints the names of the users in the password file on its standard input.
+.PP
+This command does
+.B not
+lock the password nor group file.
+.SH FILES
+/etc/passwd	password file
+.SH SEE ALSO
+pwent(1M)
+.SH HISTORY
+Written at U of T by Geoff Collyer.
+@@@ Fin de pwdbm/usr/man/man8/prusers.8
+echo pwdbm/usr/man/man8/pwatodbm.8 1>&2
+cat >pwdbm/usr/man/man8/pwatodbm.8 <<'@@@ Fin de pwdbm/usr/man/man8/pwatodbm.8'
+.TH PWATODBM 8 local
+.DA 11 September 1984
+.SH NAME
+pwatodbm \- converts ASCII password file to an mdbm data base
+.SH SYNOPSIS
+.B /etc/pwatodbm
+.SH DESCRIPTION
+.I Pwatodbm
+converts
+.I /etc/passwd
+to an
+.IR mdbm (3)
+data base.
+.SH FILES
+/etc/passwd*
+.SH SEE ALSO
+editusers(8),
+putpwent(3)
+.SH HISTORY
+Written at U of T by Geoff Collyer
+.SH BUGS
+It's slow (converts about 8 users per second).
+@@@ Fin de pwdbm/usr/man/man8/pwatodbm.8
+echo pwdbm/usr/man/man8/pwdbmtoa.8 1>&2
+cat >pwdbm/usr/man/man8/pwdbmtoa.8 <<'@@@ Fin de pwdbm/usr/man/man8/pwdbmtoa.8'
+.TH PWDBMTOA 8 local
+.DA 11 September 1984
+.SH NAME
+pwdbmtoa \- converts an mdbm data base to ASCII password file
+.SH SYNOPSIS
+.B /etc/pwdbmtoa
+.SH DESCRIPTION
+.I Pwdbmtoa
+converts
+the
+.IR mdbm (3)
+data base to an ASCII representation described in
+.IR passwd (5)
+on standard output.
+.SH FILES
+/etc/passwd*
+.SH SEE ALSO
+editusers(8),
+putpwent(3)
+.SH HISTORY
+Written at U of T by Geoff Collyer
+.SH BUGS
+It's slow (converts about 8 users per second).
+@@@ Fin de pwdbm/usr/man/man8/pwdbmtoa.8
+echo pwdbm/usr/man/man8/suspuser.8 1>&2
+cat >pwdbm/usr/man/man8/suspuser.8 <<'@@@ Fin de pwdbm/usr/man/man8/suspuser.8'
+.TH SUSPUSER 8 local
+.SH NAME
+suspuser, unsuspuser \- suspend or unsuspend user from system 
+.SH SYNOPSIS
+.B /etc/suspuser
+user ...
+.PP
+.B /etc/unsuspuser
+user ...
+.SH DESCRIPTION
+.I Suspuser
+and
+.I unsuspuser
+are used to control access to the system.
+They provide a means of locking users out of the system temporarily.
+Typically this is for not paying the bill in time or for suspicious behaviour.
+.PP
+To suspend a user from the system
+.I suspuser
+is given a list of login names to suspend on the command line.
+The accounts are suspended by putting an asterisk in front of the encrypted
+password in the password file.
+A password starting with an asterisk is recognized by
+.IR login (1)
+and an informatory message is printed indicating that the account is suspended.
+.PP
+To reinstate a user
+.I unsuspuser
+is given a list of users to reinstate on the command line.
+The asterisk in front of the encrypted password is then removed allowing the
+user(s) to login with their old password.
+.PP
+This command does
+.B not
+lock the password file.
+To do locking
+.IR editusers (8)
+should be run first.
+.SH FILES
+/etc/passwd.*
+.SH SEE ALSO
+login(1), editusers(8)
+.SH HISTORY
+Written at U of T by Ian Darwin, this manual page by Bruce Freeman.
+@@@ Fin de pwdbm/usr/man/man8/suspuser.8
+mkdir pwdbm/usr/src 2>/dev/null
+mkdir pwdbm/usr/src/bin 2>/dev/null
+echo pwdbm/usr/src/bin/passwd.c 1>&2
+cat >pwdbm/usr/src/bin/passwd.c <<'@@@ Fin de pwdbm/usr/src/bin/passwd.c'
+/*
+ * Enter a password in the password file.
+ * This program should be suid with an owner
+ * with write permission on /etc/passwd.
+ *
+ * If CDF is defined this program becomes a front end to a password server
+ * that changes a password on all machines on the student network. In this
+ * case this program must be setuid root in order to obtain a privileged
+ * port number.
+ */
+
+#include <stdio.h>
+#include <signal.h>
+#include <pwd.h>
+#include <errno.h>
+#include <sys/file.h>
+#include <sys/types.h>
+
+#ifdef CDF
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+
+#define REMOTES	"/etc/cdf.hosts"	/* names of student machines */
+#define GRPBIN	10			/* once again grubby but fast */
+
+char *hostname = NULL;		/* for changing a password on one host only */
+#endif
+
+char	passwd[] = "/etc/passwd";
+char	temp[]   = "/etc/ptmp";
+int lockok = 0;		/* if true, can set a password even if locked */
+
+struct	passwd *getpwent();
+int	endpwent();
+char	*strcpy();
+char	*crypt();
+char	*getpass();
+char	*getlogin();
+
+char	pwbuf[10];
+char *progname;
+extern	int errno;
+
+/*
+ * main - parse arguments and handle options
+ */
+main(argc, argv)
+char *argv[];
+{
+	int c, errflg = 0;
+	extern int optind;
+	extern char *optarg;
+
+	progname = argv[0];
+#ifdef CDF
+	while ((c = getopt(argc, argv, "h:l")) != EOF)
+		switch (c) {
+		case 'h':
+			hostname = optarg;
+			break;
+#else
+	while ((c = getopt(argc, argv, "l")) != EOF)
+		switch (c) {
+#endif
+		case 'l':
+			if (access(passwd, 2) == 0)	/* can write passwd */
+				lockok++;
+			break;
+		case '?':
+		default:
+			errflg++;
+			break;
+		}
+	if (errflg) {
+#ifdef CDF
+		fprintf(stderr, "Usage: %s [[-l] -h host] [user] ...\n", progname);
+#else
+		fprintf(stderr, "Usage: %s [-l] [user] ...\n", progname);
+#endif
+		exit(2);
+	}
+	if (optind >= argc) {
+		register char *uname;
+
+		if ((uname = getlogin()) == NULL)
+			error("can't determine your name", (char *)NULL);
+		printf("Changing password for %s\n", uname);
+		process(uname);
+	}
+	else
+		for (; optind < argc; optind++)
+			process(argv[optind]);
+	exit(0);
+}
+
+/*
+ * process - process user
+ */
+process(user)
+char *user;
+{
+	char *p, *pw;
+	char saltc[2];
+	time_t salt;
+	int i;
+	int u;
+	int ok, flags;
+	int c, pwlen, fd;
+	struct passwd *pwd;
+#ifdef CDF
+	int notok;
+	FILE *hf;
+	char rhost[100];
+#endif
+
+	if ((pwd = getpwnam(user)) == NULL)
+		error("unknown user %s", user);
+	u = getuid();
+#ifdef CDF
+	notok = (u != 0 && (isstudent() || isnstud(user)));
+	if (!ckuser(pwd, u, notok))
+		error("Permission denied.", (char *)NULL);
+	if (pwd->pw_passwd[0] && notok) {
+#else
+	if (u != 0 && u != pwd->pw_uid)
+		error("Permission denied.", (char *)NULL);
+	if (pwd->pw_passwd[0] && u != 0) {
+#endif
+		(void) strcpy(pwbuf, getpass("Old password:"));
+		pw = crypt(pwbuf, pwd->pw_passwd);
+		if (strcmp(pw, pwd->pw_passwd) != 0)
+			error("Sorry.", (char *)NULL);
+	}
+tryagain:
+	(void) strcpy(pwbuf, getpass("New password:"));
+	pwlen = strlen(pwbuf);
+	if (pwlen == 0)
+		error("Password unchanged.", (char *)NULL);
+	/*
+	 * Insure password is of reasonable length and
+	 * composition.  If we really wanted to make things
+	 * sticky, we could check the dictionary for common
+	 * words, but then things would really be slow.
+	 */
+	ok = 0;
+	flags = 0;
+	p = pwbuf;
+	while (c = *p++) {
+		if (c >= 'a' && c <= 'z')
+			flags |= 2;
+		else if (c >= 'A' && c <= 'Z')
+			flags |= 4;
+		else if (c >= '0' && c <= '9')
+			flags |= 1;
+		else
+			flags |= 8;
+	}
+	if (flags >= 7 && pwlen >= 4)
+		ok = 1;
+	if ((flags == 2 || flags == 4) && pwlen >= 6)
+		ok = 1;
+	if ((flags == 3 || flags == 5 || flags == 6) && pwlen >= 5)
+		ok = 1;
+	if (!ok) {
+		printf("Use %s.\n", flags == 1 ?
+			"at least one non-numeric character" :
+			"a longer password");
+		goto tryagain;
+	}
+	if (strcmp(pwbuf, getpass("Retype new password:")) != 0)
+		error("Mismatch - password unchanged.", (char *)NULL);
+	salt = time(&salt);
+	salt = 9 * getpid();
+	saltc[0] = salt & 077;
+	saltc[1] = (salt>>6) & 077;
+	for (i = 0; i < 2; i++) {
+		c = saltc[i] + '.';
+		if (c > '9')
+			c += 7;
+		if (c > 'Z')
+			c += 6;
+		saltc[i] = c;
+	}
+	pwd->pw_passwd = crypt(pwbuf, saltc);
+#ifndef CDF
+	(void) signal(SIGHUP, SIG_IGN);
+	(void) signal(SIGINT, SIG_IGN);
+	(void) signal(SIGQUIT, SIG_IGN);
+	(void) umask(0);
+	fd = open(temp, O_WRONLY|O_CREAT|O_EXCL, 0664);	/* lock passwd */
+	if (!lockok && fd < 0) {
+		if (errno == EEXIST)
+			error("password file busy - try again.", (char *)NULL);
+		else
+			error("can't open %s", temp);
+	}
+	(void) signal(SIGTSTP, SIG_IGN);
+
+	if (!putpwent(pwd))
+		warning("can't change password for %s\n", pwd->pw_name);
+	(void) endpwent();		/* force the change to disk */
+	if (!lockok && unlink(temp) < 0)	/* unlock passwd */
+		error("can't unlink %s", temp);
+#else
+	if (hostname != NULL)
+		chpass(pwd, hostname);
+	else {	/* change password on all hosts */
+		if ((hf = fopen(REMOTES, "r")) == NULL)
+			error("can't open remote hosts file %s", REMOTES);
+		while (fscanf(hf, "%s", rhost) == 1)
+			chpass(pwd, rhost);
+		(void) fclose(hf);
+	}
+#endif
+}
+
+#ifdef CDF
+ckuser(pw, u, noother)	/* check that user is not a privileged user */
+struct passwd *pw;
+int u, noother;
+{
+	/*
+	 * Carefully check permissions by doing the following:
+	 *	If we are not root we can only change another persons
+	 *		password if they are a student and we're not and
+	 *		we are in the same group
+	 *	If we are doing a network wide change we can not change
+	 *		root or anyone in group bin
+	 */
+	if (noother && u != pw->pw_uid)
+		return 0;	/* no priv to change someone else */
+	if (u != pw->pw_uid && u != 0 && !ismygrp(pw->pw_gid))
+		return 0;	/* not in same group */
+	if (hostname != NULL && localhost(hostname))
+		return 1;	/* ok if only this host */
+	lockok = 0;		/* make sure lockok off for net */
+	/* however for cross network changes ... */
+	if (pw->pw_uid == 0)
+		return 0;	/* definitely do not change root */
+	if (pw->pw_gid == GRPBIN)
+		return 0;	/* don't change anyone in group bin */
+	return 1;
+}
+
+localhost(hname)	/* returns true if hname is localhost */
+char *hname;
+{
+	char thishost[100];
+	struct hostent *hp;
+	register char **cp;
+
+	if (gethostname(thishost, sizeof(thishost)-1) < 0)
+		error("can't get name of this machine", (char *)0);
+	if (strcmp(thishost, hname) == 0)
+		return 1;
+	/* now check aliases */
+	if ((hp = gethostbyname(thishost)) == NULL) {
+		fprintf(stderr, "%s: unknown host %s\n", progname, thishost);
+		exit(1);
+	}
+	for (cp = hp->h_aliases; *cp != 0; cp++)
+		if (strcmp(hname, *cp) == 0)
+			return 1;
+	return 0;
+}
+
+chpass(pwd, host)	/* change password on host */
+struct passwd *pwd;
+char *host;
+{
+	struct hostent *hp;
+	int s, c;
+	int pport = IPPORT_RESERVED - 1;
+	struct sockaddr_in sin;
+	struct servent *sp;
+	FILE *sfi, *sfo;
+	extern int errno, sys_nerr;
+	extern char *sys_errlist[];
+
+	if ((sp = getservbyname("passwd", "tcp")) == NULL) {
+		fprintf(stderr, "%s: tcp/passwd is an unknown service\n", progname);
+		exit(1);
+	}
+	if ((hp = gethostbyname(host)) == (struct hostent *)NULL) {
+		fprintf(stderr, "%s: unknown host %s\n", progname, host);
+		return;
+	}
+	bzero((char *)&sin, sizeof sin);
+	bcopy(hp->h_addr, (char *)&sin.sin_addr, hp->h_length);
+	sin.sin_family = hp->h_addrtype;
+	sin.sin_port = sp->s_port;
+	if ((s = rresvport(&pport)) < 0) {
+		fprintf(stderr, "%s: can't get reserved port\n", progname);
+		return;
+	}
+	if (connect(s, (struct sockaddr *)&sin, sizeof sin) < 0) {
+		/* need readable message here for student benefit */
+		fprintf(stderr, "%s: connect: %s - password not changed\n", host,
+		    (errno > 0 && errno < sys_nerr) ?
+			sys_errlist[errno] :
+			"unknown error");
+		return;
+	}
+	if ((sfi = fdopen(s, "r")) == NULL || (sfo = fdopen(s, "w")) == NULL) {
+		perror("fdopen");
+		return;
+	}
+	(void) fprintf(sfo, "%s %s %d\n", pwd->pw_name, pwd->pw_passwd, lockok);
+	(void) fflush(sfo);
+	while ((c = getc(sfi)) != EOF)
+		putchar(c);
+	(void) fclose(sfi);
+	(void) fclose(sfo);
+	(void) close(s);
+}
+#endif
+@@@ Fin de pwdbm/usr/src/bin/passwd.c
+mkdir pwdbm/usr/src/etc 2>/dev/null
+echo pwdbm/usr/src/etc/addtogroup.sh 1>&2
+cat >pwdbm/usr/src/etc/addtogroup.sh <<'@@@ Fin de pwdbm/usr/src/etc/addtogroup.sh'
+#! /bin/sh
+
+# addtogroup user group - add user to group
+
+trap "rm -f /tmp/atg$$; exit" 0 1 2 15
+
+case $# in
+	0|1)	echo usage: $0 user group
+		exit 1
+		;;
+esac
+
+user=$1; shift
+
+for group
+do
+	if grep "^$group:" /etc/group >/tmp/atg$$; then
+		: ok
+	else
+		echo "$0: no such group as $group" >&2
+		exit 1
+	fi
+	sed 's/:[^:]*$/:'"$user"'/
+	1q
+	' </tmp/atg$$ >>/etc/group	# add user to group file on his own line
+done
+
+sort -o /etc/group -nt: +2 /etc/group	# sort the line into place
+grpclean >/tmp/atg$$		# compact and sort the members of each group
+cp /tmp/atg$$ /etc/group
+@@@ Fin de pwdbm/usr/src/etc/addtogroup.sh
+echo pwdbm/usr/src/etc/chshell.sh 1>&2
+cat >pwdbm/usr/src/etc/chshell.sh <<'@@@ Fin de pwdbm/usr/src/etc/chshell.sh'
+#!/bin/sh
+# chshell - change login shells for users
+#
+# usage chshell shell user ...
+#
+PATH=/bin:/usr/bin:/etc; export PATH
+
+case $# in
+0|1)	echo 'chshell: usage chshell shell user ...' 2>&1; exit 1 ;;
+*)	;;
+esac
+
+shell=$1; shift
+for i in $*
+do
+	pwent $i | awk -F: '{
+		printf "%s:%s:%s:%s:%s:%s:%s\n", $1, $2, $3, $4, $5, $6, "'$shell'"
+	}' | pwent -w $i
+done
+@@@ Fin de pwdbm/usr/src/etc/chshell.sh
+echo pwdbm/usr/src/etc/deluser.sh 1>&2
+cat >pwdbm/usr/src/etc/deluser.sh <<'@@@ Fin de pwdbm/usr/src/etc/deluser.sh'
+#! /bin/sh
+# deluser - remove user's files and pw entry
+PATH=/bin:/usr/bin:/etc; export PATH
+MAILDIR=/usr/spool/mail		# broken in System III
+
+case $# in
+0)	echo "usage: $0 user" >&2
+	exit 1 ;;
+*)
+	echo "deleting user(s) $*" | /usr/ucb/Mail -s accounts root
+	for user
+	do
+		case "$user" in
+		root|bin|daemon|uucp|u_*)
+			echo "$0: may not delete user $user" >&2 ;;
+		*)
+			# ### need better check here for non-existant user.
+			HD=`homedir $user` || exit 1
+			echo nuking files for user $user in $HD
+			rm -r $HD			# hope you were sure!
+			rm -f $MAILDIR/$user
+			rmusr $user
+			;;
+		esac
+	done ;;
+esac
+@@@ Fin de pwdbm/usr/src/etc/deluser.sh
+echo pwdbm/usr/src/etc/eduser.sh 1>&2
+cat >pwdbm/usr/src/etc/eduser.sh <<'@@@ Fin de pwdbm/usr/src/etc/eduser.sh'
+#! /bin/sh
+# eduser - edit a user's pw entry
+PATH=/bin:/usr/bin:/etc:/usr/ucb; export PATH
+for user
+do
+	trap "rm -f /tmp/edu$$; exit" 0 1 2 15
+	pwent "$user" | tr : '\12' >/tmp/edu$$
+	ed - /tmp/edu$$ <<'!'	# rip pwent apart
+1s/^/name: /
+2s/^/password: /
+3s/^/user id: /
+4s/^/group number: /
+6s/^/home directory: /
+7s/^/login shell: /
+5s/,/\n/g
+s/^/tdd: /
+-s/^/sac pin: /
+-s/^/can: /
+-s/^/expiry: /
+-s/^/privs: /
+-s/^/name: /
+w
+!
+	${EDITOR-ed} /tmp/edu$$	# allow user to fiddle with it
+	ed - /tmp/edu$$ <<'!'	# repack the (possibly modified) pwent
+g/^[^:]*: /s///
+1,4j/:/
+2,7j/,/
+1,$j/:/
+w
+!
+	# reject possible frauds
+	if awk -F: ' {
+	name=$1
+	uid=$3
+	gid=$4
+	if (name == "" || uid == 0 || uid == 1 || uid == 3 || gid == 10)
+		exit 1
+} ' </tmp/edu$$
+	then
+		pwent -w "$user" </tmp/edu$$	# install new pwent
+	else
+		echo "$0: attempt to install privileged user $user denied" >&2
+		exit 1
+	fi
+done
+@@@ Fin de pwdbm/usr/src/etc/eduser.sh
+echo pwdbm/usr/src/etc/password.sh 1>&2
+cat >pwdbm/usr/src/etc/password.sh <<'@@@ Fin de pwdbm/usr/src/etc/password.sh'
+#!/bin/sh
+# password - change password to any arbitrary string
+#
+# usage: password string user ...
+# If string starts with \ then the actual string is put in the password file
+#
+PATH=/bin:/usr/bin:/etc; export PATH
+
+case $# in
+0|1)	echo 'password: usage password string user ...' 2>&1; exit 1 ;;
+*)	;;
+esac
+
+password=$1; shift
+
+if expr $password : '^\\'
+then	password=`expr $password : '.\(.*\)'`
+else	password=`pwcrypt <<!
+$password
+!
+`
+fi
+
+for i in $*
+do
+	pwent $i | awk -F: '{
+		printf "%s:%s:%s:%s:%s:%s:%s\n", $1, "'$password'", $3, $4, $5, $6, $7
+	}' | pwent -w $i
+done
+@@@ Fin de pwdbm/usr/src/etc/password.sh
+echo pwdbm/usr/src/etc/pwent.c 1>&2
+cat >pwdbm/usr/src/etc/pwent.c <<'@@@ Fin de pwdbm/usr/src/etc/pwent.c'
+/*
+ * pwent - print, write or remove selected entries from the password file
+ */
+
+#include <stdio.h>
+#include <ctype.h>
+#include <pwd.h>
+#include <signal.h>
+
+#define MAXPWLINE 200
+#define NFIELDS 7		/* # fields in passwd */
+#define DELIM ':'		/* passwd delimiter */
+
+char *progname;
+int userids = 0;	/* -u */
+int remove = 0;		/* -r */
+int writeon = 0;	/* -w */
+int nosig = 1;		/* false if a signal has been caught */
+
+/*
+ * main - parse arguments and handle options
+ */
+main(argc, argv)
+int argc;
+char *argv[];
+{
+	int c;
+	int errflg = 0;
+	extern int optind;
+	extern char *optarg;
+	extern int sigcatch();
+
+	progname = argv[0];
+
+	while ((c = getopt(argc, argv, "ruw")) != EOF)
+		switch (c) {
+		case 'r':
+			remove++;
+			break;
+		case 'u':
+			userids++;
+			break;
+		case 'w':
+			writeon++;
+			break;
+		case '?':
+		default:
+			errflg++;
+			break;
+		}
+	if (errflg) {
+		fprintf(stderr, "Usage: %s [-ruw] [user...]\n", progname);
+		exit(2);
+	}
+	if (remove || writeon) {
+		if (signal(SIGHUP, SIG_IGN) != SIG_IGN)
+			(void) signal(SIGHUP, sigcatch);
+		if (signal(SIGINT, SIG_IGN) != SIG_IGN)
+			(void) signal(SIGINT, sigcatch);
+		if (signal(SIGTERM, SIG_IGN) != SIG_IGN)
+			(void) signal(SIGTERM, sigcatch);
+	}
+	if (optind < argc)
+		for (; nosig && optind < argc; optind++)
+			process(argv[optind]);
+	else {
+		register struct passwd *pwp;
+
+		while (nosig && (pwp = getpwent()) != NULL)
+			douser(pwp);
+	}
+	(void) endpwent();		/* essential under -w */
+	exit(0);
+}
+
+int
+sigcatch()
+{
+	nosig = 0;
+}
+
+/*
+ * process - process user
+ */
+process(user)
+char *user;
+{
+	register struct passwd *pwp;
+	extern struct passwd *getpwnam();
+
+	if (!userids && (pwp = getpwnam(user)) == NULL && !writeon ||
+	    userids &&
+	      (!numeric(*user) || (pwp = getpwuid(atoi(user))) == NULL) &&
+	      !writeon)
+		fprintf(stderr, "%s: %s: no such user\n", progname, user);
+	else
+		douser(pwp);
+}
+
+douser(pwp)	/* manipulate a password entry */
+register struct passwd *pwp;
+{
+	if (remove) {
+		if (!rmpwent(pwp))
+			warning("can't remove user %s", pwp->pw_name);
+	}
+	else if (writeon) {
+		struct passwd npw;
+		register struct passwd *npwp = &npw;
+		static char line[MAXPWLINE];
+	
+		if (fgets(line, MAXPWLINE, stdin) == NULL)
+			error("EOF", (char *)NULL);
+		line[MAXPWLINE-1] = '\0';
+		line[strlen(line) - 1] = '\0';	/* stomp on newline */
+		if (!pwparse(line, npwp))
+			warning("wrong # of fields: %s", line);
+		else if (userids && pwp != NULL &&
+		      pwp->pw_uid != npwp->pw_uid ||
+		    !userids && pwp != NULL &&
+		      strcmp(pwp->pw_name, npwp->pw_name) != 0)
+			warning("argument and input mismatched at %s",
+				pwp->pw_name);
+		else if (!putpwent(npwp))
+			warning("can't modify passwd entry for %s",
+				npwp->pw_name);
+	}
+	else
+		printf("%s:%s:%d:%d:%s:%s:%s\n",
+			pwp->pw_name, pwp->pw_passwd,
+			pwp->pw_uid, pwp->pw_gid,
+			pwp->pw_gecos, pwp->pw_dir, pwp->pw_shell);
+}
+
+static int
+pwparse(line, pwp)	/* parse passwd line into *pwp */
+register char *line;
+register struct passwd *pwp;
+{
+	register char **fdp;
+	char *fields[NFIELDS];
+	char *colon;
+	extern char *strncpy(), *index();
+
+	colon = line;
+	for (fdp = fields; fdp < &fields[NFIELDS]; fdp++) {
+		*fdp = line;		/* save addr of field start */
+		if ((colon = index(line, DELIM)) == NULL)
+			break;
+		*colon = '\0';		/* terminate the field */
+		line = colon + 1;	/* start next field */
+	}
+	if (fdp != &fields[NFIELDS - 1] || colon != NULL)
+		return 0;		/* wrong # of fields */
+	fdp = fields;
+	pwp->pw_name = *fdp++;
+	pwp->pw_passwd = *fdp++;
+	if (!numeric(**fdp))
+		return 0;	/* no uid given */
+	pwp->pw_uid = atoi(*fdp++);
+	if (!numeric(**fdp))
+		return 0;	/* no gid given */
+	pwp->pw_gid = atoi(*fdp++);
+	pwp->pw_gecos = *fdp++;
+	pwp->pw_dir = *fdp++;
+	pwp->pw_shell = *fdp++;
+	pwp->pw_quota = 0;
+	pwp->pw_comment = "";
+	return 1;
+}
+
+int
+numeric(c)
+register int c;
+{
+	return isascii(c) && isdigit(c);
+}
+@@@ Fin de pwdbm/usr/src/etc/pwent.c
+echo pwdbm/usr/src/etc/suspuser.sh 1>&2
+cat >pwdbm/usr/src/etc/suspuser.sh <<'@@@ Fin de pwdbm/usr/src/etc/suspuser.sh'
+#! /bin/sh
+# suspuser - suspend user(s)
+PATH=/bin:/usr/bin:/etc; export PATH
+do=""
+F=/tmp/suspF$$
+G=/tmp/suspG$$
+
+case $# in
+0)	echo "usage: $0 user" >&2
+	exit 1 ;;
+*)
+	echo "suspending user(s) $*" # | /usr/ucb/Mail -s accounts root
+	for user
+	do
+		case "$user" in
+		root|bin|daemon|uucp|u_*)
+			echo "$0: may not delete user $user" >&2 ;;
+		*)
+			pwent "$user" >$F
+			sed 's/:/:*/' $F >>$G
+			do="$do $user"
+			;;
+		esac
+	done
+	pwent -w "$do" < $G
+	;;
+esac
+@@@ Fin de pwdbm/usr/src/etc/suspuser.sh
+mkdir pwdbm/usr/src/lib 2>/dev/null
+mkdir pwdbm/usr/src/lib/libc 2>/dev/null
+mkdir pwdbm/usr/src/lib/libc/gen 2>/dev/null
+echo pwdbm/usr/src/lib/libc/gen/getgcosent.c 1>&2
+cat >pwdbm/usr/src/lib/libc/gen/getgcosent.c <<'@@@ Fin de pwdbm/usr/src/lib/libc/gen/getgcosent.c'
+#include <stdio.h>
+#include <gcos.h>
+
+#define MAXGCOS 256
+
+struct gcos_fld *
+getgcosent(s)	/* parse GCOS field s, return pointers to statics */
+char *s;
+{
+	static struct gcos_fld gc;
+	static char gcosf[MAXGCOS + 1];
+	register char *p;
+	register char **sp;
+	char *strcpy(), *index();
+
+	for (sp = &gc.gc_start; sp <= &gc.gc_end; sp++)
+		*sp = "";
+	if (strlen(s) > MAXGCOS)
+		return NULL;
+	p = strcpy(gcosf, s);
+	for (sp = &gc.gc_start; sp <= &gc.gc_end; sp++) {
+		*sp = p;
+		if ((p = index(p, GCOSDELIM)) == NULL)
+			return &gc;
+		*p++ = '\0';
+	}
+	return &gc;
+}
+@@@ Fin de pwdbm/usr/src/lib/libc/gen/getgcosent.c
+mkdir pwdbm/usr/src/usr.lib 2>/dev/null
+mkdir pwdbm/usr/src/usr.lib/libpwdbm 2>/dev/null
+mkdir pwdbm/usr/src/usr.lib/libpwdbm/RCS 2>/dev/null
+echo pwdbm/usr/src/usr.lib/libpwdbm/RCS/getpwent.c,v 1>&2
+cat >pwdbm/usr/src/usr.lib/libpwdbm/RCS/getpwent.c,v <<'@@@ Fin de pwdbm/usr/src/usr.lib/libpwdbm/RCS/getpwent.c,v'
+head     1.16;
+access   ;
+symbols  ;
+locks    ;
+comment  @ * @;
+
+
+1.16
+date     84.09.22.02.10.49;  author geoff;  state Exp;
+branches ;
+next     1.15;
+
+1.15
+date     84.09.13.03.16.31;  author geoff;  state Exp;
+branches ;
+next     1.14;
+
+1.14
+date     84.09.09.23.16.54;  author geoff;  state Exp;
+branches ;
+next     1.13;
+
+1.13
+date     84.09.09.23.16.15;  author geoff;  state Exp;
+branches ;
+next     1.12;
+
+1.12
+date     84.09.07.18.52.34;  author geoff;  state Exp;
+branches ;
+next     1.11;
+
+1.11
+date     84.08.31.07.17.22;  author geoff;  state Exp;
+branches ;
+next     1.10;
+
+1.10
+date     84.08.31.07.08.07;  author geoff;  state Exp;
+branches ;
+next     1.9;
+
+1.9
+date     84.08.31.06.05.39;  author geoff;  state Exp;
+branches ;
+next     1.8;
+
+1.8
+date     84.08.31.05.28.05;  author geoff;  state Exp;
+branches ;
+next     1.7;
+
+1.7
+date     84.08.29.13.54.16;  author geoff;  state Exp;
+branches ;
+next     1.6;
+
+1.6
+date     84.08.29.05.42.00;  author geoff;  state Exp;
+branches ;
+next     1.5;
+
+1.5
+date     84.08.29.05.22.57;  author geoff;  state Exp;
+branches ;
+next     1.4;
+
+1.4
+date     84.08.29.04.01.31;  author geoff;  state Exp;
+branches ;
+next     1.3;
+
+1.3
+date     84.08.29.00.19.11;  author geoff;  state Exp;
+branches ;
+next     1.2;
+
+1.2
+date     84.08.28.06.02.11;  author geoff;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     84.08.28.05.35.14;  author geoff;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@an alternate getpw??? implementation using mdbm(3)
+@
+
+
+1.16
+log
+@robustness: invent stashkey(), which now checks key length
+and aborts if >= MAXKEY, which is now 200!
+All this in aid of debugging.
+@
+text
+@/*
+ * getpwent, getpwnam, getpwuid - read next password file entry (mdbm version)
+ * putpwent, rmpwent - write or remove next password file entry (mdbm version)
+ */
+
+#include <stdio.h>
+#include <ctype.h>
+#include <pwd.h>
+#include <mdbm.h>
+
+#define MAXPWLINE 200		/* 120 should be adequate normally */
+#define MAXKEY 200		/* the longer of name & uid */
+#define NAMEKEY 'U'		/* prefix for login name keys */
+#define UIDKEY '#'		/* prefix for user id keys */
+
+#define NFIELDS 7		/* # fields in passwd */
+#define DELIM ':'		/* passwd delimiter */
+
+static char pwfile[] = "/etc/passwd";
+static struct mdbm *pwdb = NULL;
+static datum pwkey;	/* *pwkey.dptr is always a copy */
+static char savekey[MAXKEY];
+
+setpwent()
+{
+	char pwcomment[MDBM_CSIZ];
+	extern char *strncpy();
+
+	(void) strncpy(pwcomment, "password file", MDBM_CSIZ);
+	if (pwdb == NULL)	/* try read/write mode first */
+		pwdb = mdbm_open(pwfile, 2, 0, (int *)0, (int *)0, pwcomment);
+	if (pwdb == NULL)	/* if can't write, try read only mode */
+		pwdb = mdbm_open(pwfile, 0, 0, (int *)0, (int *)0, pwcomment);
+	if (pwdb != NULL) {
+		pwkey = mdbm_firstkey(pwdb);
+		stashkey(pwkey.dptr);
+	}
+}
+
+static
+stashkey(key)	/* copy key into savekey and point pwkey at it, if non-null */
+char *key;	/* pwkey.dsize is assumed to be its length */
+{
+	extern char *strncpy();
+
+	if (key != NULL) {
+		if (pwkey.dsize >= MAXKEY) {
+			fprintf(stderr, "getpwent: key too large\n");
+			abort();
+			exit(1);
+		}
+		(void) strncpy(savekey, key, MAXKEY-1);
+		savekey[MAXKEY-1] = '\0';
+		pwkey.dptr = savekey;
+	}
+}
+
+endpwent()
+{
+	if (pwdb != NULL) {
+		(void) mdbm_close(pwdb);
+		pwdb = NULL;
+	}
+}
+
+static int
+pwdbparse(pwdat, pwp)	/* parse passwd line in pwdat into *pwp */
+datum pwdat;
+struct passwd *pwp;
+{
+	int pwsize = pwdat.dsize;
+	static char pwline[MAXPWLINE];
+	extern char *strncpy();
+
+	if (pwsize < 0 || pwsize >= MAXPWLINE)
+		return 0;		/* too small or too big */
+	(void) strncpy(pwline, pwdat.dptr, pwsize);
+	pwline[pwsize] = '\0';
+	return pwparse(pwline, pwp);
+}
+
+static int
+pwparse(line, pwp)	/* parse passwd line into *pwp */
+register char *line;
+register struct passwd *pwp;
+{
+	register char **fdp;
+	char *fields[NFIELDS];
+	char *colon;
+	extern char *index();
+
+	colon = line;
+	for (fdp = fields; fdp < &fields[NFIELDS]; fdp++) {
+		*fdp = line;		/* save addr of field start */
+		if ((colon = index(line, DELIM)) == NULL)
+			break;
+		*colon = '\0';		/* terminate the field */
+		line = colon + 1;	/* start next field */
+	}
+	if (fdp != &fields[NFIELDS - 1] || colon != NULL)
+		return 0;		/* wrong # of fields */
+	fdp = fields;
+	pwp->pw_name = *fdp++;
+	pwp->pw_passwd = *fdp++;
+	if (!isascii(**fdp) || !isdigit(**fdp))
+		return 0;		/* no uid given */
+	pwp->pw_uid = atoi(*fdp++);
+	if (!isascii(**fdp) || !isdigit(**fdp))
+		return 0;		/* no gid given */
+	pwp->pw_gid = atoi(*fdp++);
+#ifdef UTS
+	fdp++;
+#else
+	pwp->pw_gecos = *fdp++;
+#endif
+	pwp->pw_dir = *fdp++;
+	pwp->pw_shell = *fdp++;
+#ifndef UTS
+	pwp->pw_quota = 0;
+	pwp->pw_comment = "";
+#endif
+	return 1;
+}
+
+struct passwd *
+getpwent()	/* return next record with a name key */
+{
+	register int namekey = 0;
+	struct passwd *pwp = NULL;
+	extern struct passwd *getpwkey();
+
+	if (pwdb == NULL)
+		setpwent();	/* set pwkey */
+	while (!namekey && pwkey.dptr != NULL) {
+		namekey = pwkey.dptr[0] == NAMEKEY;
+		if (namekey)
+			pwp = getpwkey((char *)NULL);
+		pwkey = mdbm_nextkey(pwdb, pwkey);
+		stashkey(pwkey.dptr);
+	}
+	return pwp;
+}
+
+struct passwd *
+getpwnam(name)
+char *name;
+{
+	register struct passwd *pwp;
+	char key[MAXKEY];
+	extern struct passwd *getpwkey();
+
+	(void) sprintf(key, "%c%s", NAMEKEY, name);
+	pwp = getpwkey(key);
+	(void) endpwent();	/* discard mdbm buffers */
+	return pwp;
+}
+
+struct passwd *
+getpwuid(uid)
+int uid;
+{
+	register struct passwd *pwp;
+	char key[MAXKEY];
+	extern struct passwd *getpwkey();
+
+	(void) sprintf(key, "%c%d", UIDKEY, uid);
+	pwp = getpwkey(key);
+	(void) endpwent();	/* discard mdbm buffers */
+	return pwp;
+}
+
+static struct passwd *
+getpwkey(key)
+register char *key;
+{
+	datum pwddat;
+	static struct passwd pwdent;
+
+	if (pwdb == NULL)
+		(void) setpwent();
+	if (pwdb == NULL)
+		return NULL;	/* couldn't open the data base */
+	if (key != NULL) {
+		pwkey.dsize = strlen(key);
+		stashkey(key);
+	}
+	if (pwkey.dptr == NULL)
+		return NULL;	/* keys exhausted; EOF */
+	pwddat = mdbm_fetch(pwdb, pwkey);
+	if (pwddat.dptr == NULL)
+		return NULL;	/* couldn't find that key; probably EOF */
+	if (!pwdbparse(pwddat, &pwdent))
+		return NULL;	/* passwd entry was bad */
+	return &pwdent;
+}
+
+static int
+pwassemble(pwdat, pwp)	/* assemble *pwp into passwd line in *pwdat */
+datum *pwdat;
+register struct passwd *pwp;
+{
+	static char pwline[MAXPWLINE];
+
+	(void) sprintf(pwline, "%s:%s:%d:%d:%s:%s:%s",
+		pwp->pw_name, pwp->pw_passwd, pwp->pw_uid, pwp->pw_gid,
+#ifdef UTS
+		",,,",
+#else
+		pwp->pw_gecos,
+#endif
+		pwp->pw_dir, pwp->pw_shell);
+	pwdat->dptr = pwline;
+	pwdat->dsize = strlen(pwdat->dptr);
+	return 1;
+}
+
+putpwent(pwp)
+struct passwd *pwp;
+{
+	return _putpwent(pwp, 0);
+}
+
+rmpwent(pwp)
+struct passwd *pwp;
+{
+	return _putpwent(pwp, 1);
+}
+
+static int
+_putpwent(pwp, rmflag)
+struct passwd *pwp;
+int rmflag;
+{
+	register int value = 1;
+	char key[MAXKEY];
+
+	(void) sprintf(key, "%c%s", NAMEKEY, pwp->pw_name);
+	if (!putpwkey(pwp, key, rmflag))
+		value = 0;
+	(void) sprintf(key, "%c%d", UIDKEY, pwp->pw_uid);
+	if (!putpwkey(pwp, key, rmflag))
+		value = 0;
+	return value;
+}
+
+static int
+putpwkey(pwp, key, rmflag)
+struct passwd *pwp;
+register char *key;
+int rmflag;
+{
+	datum pwddat, writekey;
+
+	if (pwdb == NULL)
+		(void) setpwent();
+	if (pwdb == NULL)
+		return 0;	/* couldn't open the data base */
+	writekey.dptr = key;
+	writekey.dsize = strlen(writekey.dptr);
+	if (rmflag) {
+		if (mdbm_delete(pwdb, writekey))
+			return 0;
+	}
+	else {
+		if (!pwassemble(&pwddat, pwp))
+			return 0;	/* passwd entry was bad */
+		if (mdbm_store(pwdb, writekey, pwddat, MDBM_REPLACE))
+			return 0;
+	}
+	return 1;
+}
+@
+
+
+1.15
+log
+@at the end of getpwuid and getpwnam, close the data base
+to discard any buffered input in case other processes update
+the data base while this program is running.
+@
+text
+@d12 1
+a12 1
+#define MAXKEY 20		/* the longer of name & uid */
+d36 15
+a50 4
+		if (pwkey.dptr != NULL) {
+			(void) strncpy(savekey, pwkey.dptr, MAXKEY-1);
+			savekey[MAXKEY-1] = '\0';
+			pwkey.dptr = savekey;
+d52 3
+d90 1
+a90 1
+	extern char *strncpy(), *index();
+a130 1
+	extern char *strncpy();
+d139 1
+a139 5
+		if (pwkey.dptr != NULL) {	/* no next key: EOF */
+			(void) strncpy(savekey, pwkey.dptr, MAXKEY-1);
+			savekey[MAXKEY-1] = '\0';
+			pwkey.dptr = savekey;
+		}
+a177 1
+	extern char *strncpy();
+d184 2
+a185 4
+		(void) strncpy(savekey, key, MAXKEY-1);	/* copy new key */
+		savekey[MAXKEY-1] = '\0';
+		pwkey.dptr = savekey;
+		pwkey.dsize = strlen(pwkey.dptr);
+a252 1
+	extern char *strncpy();
+@
+
+
+1.14
+log
+@fix typo
+@
+text
+@d139 1
+d144 3
+a146 1
+	return getpwkey(key);
+d153 1
+d155 1
+a155 1
+	struct passwd *getpwkey();
+d158 3
+a160 1
+	return getpwkey(key);
+@
+
+
+1.13
+log
+@bounce pw entries with no uid or no gid.
+@
+text
+@d95 1
+a95 1
+		retgrn 0;		/* no uid given */
+@
+
+
+1.12
+log
+@Amdahlisation.
+@
+text
+@d7 1
+d91 2
+d94 2
+@
+
+
+1.11
+log
+@must now call setpwent from getpwent if pwdb is null.
+@
+text
+@d92 3
+d96 1
+d99 1
+d102 1
+d189 6
+a194 1
+		pwp->pw_gecos, pwp->pw_dir, pwp->pw_shell);
+@
+
+
+1.10
+log
+@#define prefix characters for name and uid keys;
+getpwent skips records with uid keys (returns only those with name keys);
+prevent dereferencing null dptr's.
+@
+text
+@d108 2
+@
+
+
+1.9
+log
+@in _putpwent, always remove the record under both keys.
+@
+text
+@d12 3
+d35 5
+a39 3
+		(void) strncpy(savekey, pwkey.dptr, MAXKEY-1);	/* copy new key */
+		savekey[MAXKEY-1] = '\0';
+		pwkey.dptr = savekey;
+d101 1
+a101 1
+getpwent()
+d103 2
+a105 1
+	struct passwd *pwp = getpwkey((char *)NULL);
+d108 11
+a118 4
+	pwkey = mdbm_nextkey(pwdb, pwkey);
+	(void) strncpy(savekey, pwkey.dptr, MAXKEY-1);	/* copy new key */
+	savekey[MAXKEY-1] = '\0';
+	pwkey.dptr = savekey;
+d129 1
+a129 1
+	(void) sprintf(key, "U%s", name);
+d140 1
+a140 1
+	(void) sprintf(key, "#%d", uid);
+d207 1
+a207 1
+	(void) sprintf(key, "U%s", pwp->pw_name);
+d210 1
+a210 1
+	(void) sprintf(key, "#%d", pwp->pw_uid);
+@
+
+
+1.8
+log
+@change putpwkey to not modify savekey nor pwkey by using
+a local datum for its key.  this change prevents putpwkey
+from interfering with getpwent as it walks through a db.
+@
+text
+@d191 1
+d196 1
+a196 1
+		return 0;
+d199 2
+a200 2
+		return 0;
+	return 1;
+@
+
+
+1.7
+log
+@scanf returns a short count when it parses a null field;
+this bug is in v7 and 4.2bsd, so for portability, don't use scanf.
+@
+text
+@d208 1
+a208 1
+	datum pwddat;
+d215 2
+a216 8
+	if (key != NULL) {
+		(void) strncpy(savekey, key, MAXKEY-1);	/* copy new key */
+		savekey[MAXKEY-1] = '\0';
+		pwkey.dptr = savekey;
+		pwkey.dsize = strlen(pwkey.dptr);
+	}
+	if (pwkey.dptr == NULL)
+		return 0;	/* keys exhausted; EOF */
+d218 1
+a218 1
+		if (mdbm_delete(pwdb, pwkey))
+d224 1
+a224 1
+		if (mdbm_store(pwdb, pwkey, pwddat, MDBM_REPLACE))
+@
+
+
+1.6
+log
+@oops, I had the flags and mode arguments to mdbm_open swapped.
+@
+text
+@d12 2
+d47 1
+a47 1
+pwparse(pwdat, pwp)	/* parse passwd line in pwdat into *pwp */
+d49 1
+a49 1
+register struct passwd *pwp;
+a50 1
+	char pwline[MAXPWLINE];
+d52 1
+a52 2
+	static char login[MAXPWLINE], password[MAXPWLINE], gecos[MAXPWLINE],
+		dir[MAXPWLINE], shell[MAXPWLINE];
+d59 31
+a89 5
+	pwp->pw_name = login;
+	pwp->pw_passwd = password;
+	pwp->pw_gecos = gecos;
+	pwp->pw_dir = dir;
+	pwp->pw_shell = shell;
+d92 1
+a92 3
+	return sscanf(pwline, "%[^:\n]:%[^:\n]:%d:%d:%[^:\n]:%[^:\n]:%[^:\n]",
+		pwp->pw_name, pwp->pw_passwd, &pwp->pw_uid, &pwp->pw_gid,
+		pwp->pw_gecos, pwp->pw_dir, pwp->pw_shell) == 7;
+d154 1
+a154 1
+	if (!pwparse(pwddat, &pwdent))
+@
+
+
+1.5
+log
+@correct scanf format.
+@
+text
+@d25 1
+a25 1
+		pwdb = mdbm_open(pwfile, 0, 2, (int *)0, (int *)0, pwcomment);
+@
+
+
+1.4
+log
+@fold putpwent and rmpwent in to maximise common code and data.
+also permits mixed reading and writing of the password file.
+@
+text
+@d66 1
+a66 1
+	return sscanf(pwline, "%s:%s:%d:%d:%s:%s:%s",
+@
+
+
+1.3
+log
+@stop using malloc & free: just copy the new key into a static buffer
+to avoid relying upon (m)dbm's internal static buffer (*foo.dptr).
+This simplifies the code, is faster and cannot fail (unlike malloc).
+@
+text
+@d3 1
+d10 2
+a11 3
+#define PASSWD "/etc/passwd"
+#define MAXPWLINE 256
+#define MAXKEY 40
+d13 1
+d15 1
+a15 1
+static datum pwkey;	/* pwkey.dptr is always a copy */
+d23 5
+a27 2
+	if (pwdb == NULL)
+		pwdb = mdbm_open(PASSWD, 0, 0, (int *)0, (int *)0, pwcomment);
+d133 77
+@
+
+
+1.2
+log
+@since dptr's returned by (m)dbm functions all point at the same
+static storage, the referenced data must be copied to malloced
+storage and the dptr replaced by the address of said storage.
+This storage must be freed later, just before the next malloc.
+This is actually only true for data such as pwkey with a long lifetime.
+@
+text
+@d14 2
+a15 1
+static datum pwkey;	/* pwkey.dptr is always malloc'ed */
+d20 1
+a20 1
+	extern char *savestr();
+a24 2
+		if (pwkey.dptr != NULL)
+			free(pwkey.dptr);	/* free previous key */
+d26 3
+a28 1
+		pwkey.dptr = savestr(pwkey.dptr);	/* copy new key */
+a69 1
+	char *olddptr;
+d72 1
+a72 1
+	extern char *savestr();
+a73 1
+	olddptr = pwkey.dptr;		/* save address of old key */
+d75 3
+a77 3
+	if (olddptr != NULL)
+		free(olddptr);		/* free old key */
+	pwkey.dptr = savestr(pwkey.dptr);	/* copy new key */
+d109 1
+a109 1
+	extern char *savestr();
+d116 3
+a118 1
+		pwkey.dptr = savestr(key);
+a128 16
+}
+
+/*
+ * Find space for a string, and copy the argument string into the space found.
+ * Return a pointer to the saved string, or NULL if there is no space left.
+ */
+static char *
+savestr(s)
+char *s;
+{
+	register char *p;
+	char *emalloc(), *strcpy();
+
+	if ((p = emalloc((unsigned)strlen(s) + 1)) != NULL) /* 1 is for EOS */
+		(void) strcpy(p, s);
+	return p;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d14 1
+a14 1
+static datum pwkey;
+d19 1
+d23 3
+a25 1
+	if (pwdb != NULL)
+d27 2
+d69 2
+a70 1
+	struct passwd *getpwkey();
+d72 1
+d74 1
+d76 3
+d110 1
+d117 2
+a118 2
+		pwkey.dptr = key;
+		pwkey.dsize = strlen(key);
+d128 16
+@
+@@@ Fin de pwdbm/usr/src/usr.lib/libpwdbm/RCS/getpwent.c,v
+echo pwdbm/usr/src/usr.lib/libpwdbm/getpwent.c 1>&2
+cat >pwdbm/usr/src/usr.lib/libpwdbm/getpwent.c <<'@@@ Fin de pwdbm/usr/src/usr.lib/libpwdbm/getpwent.c'
+/*
+ * getpwent, getpwnam, getpwuid - read next password file entry (mdbm version)
+ * putpwent, rmpwent - write or remove next password file entry (mdbm version)
+ */
+
+#include <stdio.h>
+#include <ctype.h>
+#include <pwd.h>
+#include <mdbm.h>
+
+#define MAXPWLINE 200		/* 120 should be adequate normally */
+#define MAXKEY 200		/* the longer of name & uid */
+#define NAMEKEY 'U'		/* prefix for login name keys */
+#define UIDKEY '#'		/* prefix for user id keys */
+
+#define NFIELDS 7		/* # fields in passwd */
+#define DELIM ':'		/* passwd delimiter */
+
+static char pwfile[] = "/etc/passwd";
+static struct mdbm *pwdb = NULL;
+static datum pwkey;	/* *pwkey.dptr is always a copy */
+static char savekey[MAXKEY];
+
+setpwent()
+{
+	char pwcomment[MDBM_CSIZ];
+	extern char *strncpy();
+
+	(void) strncpy(pwcomment, "password file", MDBM_CSIZ);
+	if (pwdb == NULL)	/* try read/write mode first */
+		pwdb = mdbm_open(pwfile, 2, 0, (int *)0, (int *)0, pwcomment);
+	if (pwdb == NULL)	/* if can't write, try read only mode */
+		pwdb = mdbm_open(pwfile, 0, 0, (int *)0, (int *)0, pwcomment);
+	if (pwdb != NULL) {
+		pwkey = mdbm_firstkey(pwdb);
+		stashkey(pwkey.dptr);
+	}
+}
+
+static
+stashkey(key)	/* copy key into savekey and point pwkey at it, if non-null */
+char *key;	/* pwkey.dsize is assumed to be its length */
+{
+	extern char *strncpy();
+
+	if (key != NULL) {
+		if (pwkey.dsize >= MAXKEY) {
+			fprintf(stderr, "getpwent: key too large\n");
+			abort();
+			exit(1);
+		}
+		(void) strncpy(savekey, key, MAXKEY-1);
+		savekey[MAXKEY-1] = '\0';
+		pwkey.dptr = savekey;
+	}
+}
+
+endpwent()
+{
+	if (pwdb != NULL) {
+		(void) mdbm_close(pwdb);
+		pwdb = NULL;
+	}
+}
+
+static int
+pwdbparse(pwdat, pwp)	/* parse passwd line in pwdat into *pwp */
+datum pwdat;
+struct passwd *pwp;
+{
+	int pwsize = pwdat.dsize;
+	static char pwline[MAXPWLINE];
+	extern char *strncpy();
+
+	if (pwsize < 0 || pwsize >= MAXPWLINE)
+		return 0;		/* too small or too big */
+	(void) strncpy(pwline, pwdat.dptr, pwsize);
+	pwline[pwsize] = '\0';
+	return pwparse(pwline, pwp);
+}
+
+static int
+pwparse(line, pwp)	/* parse passwd line into *pwp */
+register char *line;
+register struct passwd *pwp;
+{
+	register char **fdp;
+	char *fields[NFIELDS];
+	char *colon;
+	extern char *index();
+
+	colon = line;
+	for (fdp = fields; fdp < &fields[NFIELDS]; fdp++) {
+		*fdp = line;		/* save addr of field start */
+		if ((colon = index(line, DELIM)) == NULL)
+			break;
+		*colon = '\0';		/* terminate the field */
+		line = colon + 1;	/* start next field */
+	}
+	if (fdp != &fields[NFIELDS - 1] || colon != NULL)
+		return 0;		/* wrong # of fields */
+	fdp = fields;
+	pwp->pw_name = *fdp++;
+	pwp->pw_passwd = *fdp++;
+	if (!isascii(**fdp) || !isdigit(**fdp))
+		return 0;		/* no uid given */
+	pwp->pw_uid = atoi(*fdp++);
+	if (!isascii(**fdp) || !isdigit(**fdp))
+		return 0;		/* no gid given */
+	pwp->pw_gid = atoi(*fdp++);
+#ifdef UTS
+	fdp++;
+#else
+	pwp->pw_gecos = *fdp++;
+#endif
+	pwp->pw_dir = *fdp++;
+	pwp->pw_shell = *fdp++;
+#ifndef UTS
+	pwp->pw_quota = 0;
+	pwp->pw_comment = "";
+#endif
+	return 1;
+}
+
+struct passwd *
+getpwent()	/* return next record with a name key */
+{
+	register int namekey = 0;
+	struct passwd *pwp = NULL;
+	extern struct passwd *getpwkey();
+
+	if (pwdb == NULL)
+		setpwent();	/* set pwkey */
+	while (!namekey && pwkey.dptr != NULL) {
+		namekey = pwkey.dptr[0] == NAMEKEY;
+		if (namekey)
+			pwp = getpwkey((char *)NULL);
+		pwkey = mdbm_nextkey(pwdb, pwkey);
+		stashkey(pwkey.dptr);
+	}
+	return pwp;
+}
+
+struct passwd *
+getpwnam(name)
+char *name;
+{
+	register struct passwd *pwp;
+	char key[MAXKEY];
+	extern struct passwd *getpwkey();
+
+	(void) sprintf(key, "%c%s", NAMEKEY, name);
+	pwp = getpwkey(key);
+	(void) endpwent();	/* discard mdbm buffers */
+	return pwp;
+}
+
+struct passwd *
+getpwuid(uid)
+int uid;
+{
+	register struct passwd *pwp;
+	char key[MAXKEY];
+	extern struct passwd *getpwkey();
+
+	(void) sprintf(key, "%c%d", UIDKEY, uid);
+	pwp = getpwkey(key);
+	(void) endpwent();	/* discard mdbm buffers */
+	return pwp;
+}
+
+static struct passwd *
+getpwkey(key)
+register char *key;
+{
+	datum pwddat;
+	static struct passwd pwdent;
+
+	if (pwdb == NULL)
+		(void) setpwent();
+	if (pwdb == NULL)
+		return NULL;	/* couldn't open the data base */
+	if (key != NULL) {
+		pwkey.dsize = strlen(key);
+		stashkey(key);
+	}
+	if (pwkey.dptr == NULL)
+		return NULL;	/* keys exhausted; EOF */
+	pwddat = mdbm_fetch(pwdb, pwkey);
+	if (pwddat.dptr == NULL)
+		return NULL;	/* couldn't find that key; probably EOF */
+	if (!pwdbparse(pwddat, &pwdent))
+		return NULL;	/* passwd entry was bad */
+	return &pwdent;
+}
+
+static int
+pwassemble(pwdat, pwp)	/* assemble *pwp into passwd line in *pwdat */
+datum *pwdat;
+register struct passwd *pwp;
+{
+	static char pwline[MAXPWLINE];
+
+	(void) sprintf(pwline, "%s:%s:%d:%d:%s:%s:%s",
+		pwp->pw_name, pwp->pw_passwd, pwp->pw_uid, pwp->pw_gid,
+#ifdef UTS
+		",,,",
+#else
+		pwp->pw_gecos,
+#endif
+		pwp->pw_dir, pwp->pw_shell);
+	pwdat->dptr = pwline;
+	pwdat->dsize = strlen(pwdat->dptr);
+	return 1;
+}
+
+putpwent(pwp)
+struct passwd *pwp;
+{
+	return _putpwent(pwp, 0);
+}
+
+rmpwent(pwp)
+struct passwd *pwp;
+{
+	return _putpwent(pwp, 1);
+}
+
+static int
+_putpwent(pwp, rmflag)
+struct passwd *pwp;
+int rmflag;
+{
+	register int value = 1;
+	char key[MAXKEY];
+
+	(void) sprintf(key, "%c%s", NAMEKEY, pwp->pw_name);
+	if (!putpwkey(pwp, key, rmflag))
+		value = 0;
+	(void) sprintf(key, "%c%d", UIDKEY, pwp->pw_uid);
+	if (!putpwkey(pwp, key, rmflag))
+		value = 0;
+	return value;
+}
+
+static int
+putpwkey(pwp, key, rmflag)
+struct passwd *pwp;
+register char *key;
+int rmflag;
+{
+	datum pwddat, writekey;
+
+	if (pwdb == NULL)
+		(void) setpwent();
+	if (pwdb == NULL)
+		return 0;	/* couldn't open the data base */
+	writekey.dptr = key;
+	writekey.dsize = strlen(writekey.dptr);
+	if (rmflag) {
+		if (mdbm_delete(pwdb, writekey))
+			return 0;
+	}
+	else {
+		if (!pwassemble(&pwddat, pwp))
+			return 0;	/* passwd entry was bad */
+		if (mdbm_store(pwdb, writekey, pwddat, MDBM_REPLACE))
+			return 0;
+	}
+	return 1;
+}
+@@@ Fin de pwdbm/usr/src/usr.lib/libpwdbm/getpwent.c
+---

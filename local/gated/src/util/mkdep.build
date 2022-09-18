@@ -1,0 +1,223 @@
+#! /bin/sh
+#
+#	$Id: mkdep.build,v 1.14.2.5 1995/05/01 16:05:37 jch Exp $
+#
+# %(Copyright.header)
+#
+
+#PATH=/bin:/usr/bin:/usr/ucb
+#export PATH
+
+SED=
+MAKE=../util/Depends
+case $1 in
+	# -f allows you to select a makefile name
+	-f)
+		MAKE=$2
+		shift; shift ;;
+
+	# the -p flag produces "program: program.c" style dependencies
+	# so .o's don't get produced
+	-p)
+		SED='-e s;\.o;;'
+		shift ;;
+esac
+
+TMP=/tmp/mkdep$$
+TMPDIR=mkdep.$$
+
+trap 'rm -r -f ${TMPDIR} $TMP; exit ${exit:-0}' 0 1 2 3 13 15
+
+mkdir ${TMPDIR} || (exit=$?; exit $?)
+
+cat > ${TMPDIR}/init.awk << \EOF
+function init_proto() {
+	proto["bgp"] = "PROTO_BGP" ;
+	proto["asmatch"] = "PROTO_ASPATHS" ;
+	proto["aspath"] = "PROTO_ASPATHS" ;
+	proto["dvmrp"] = "PROTO_DVMRP" ;
+	proto["egp"] = "PROTO_EGP" ;
+	proto["hello"] = "PROTO_HELLO" ;
+	proto["icmp"] = "PROTO_ICMP" ;
+	proto["igmp"] = "PROTO_IGMP" ;
+	proto["ospf"] = "PROTO_OSPF" ;
+	proto["pim"] = "PROTO_PIM" ;
+	proto["idpr"] = "PROTO_IDPR" ;
+	proto["idrp"] = "PROTO_IDRP" ;
+	proto["isis"] = "PROTO_ISIS" ;
+	proto["rdisc"] = "PROTO_RDISC" ;
+	proto["rip"] = "PROTO_RIP" ;
+	proto["ripquery"] = "PROTO_RIP" ;
+	proto["scram"] = "PROTO_SCRAM";
+	proto["slsp"] = "PROTO_SLSP";
+	proto["snmp"] = "PROTO_SNMP" ;
+	proto["isode_snmp"] = "ISODE_SNMP";
+	proto["iso"] = "PROTO_ISO";
+	proto["inet"] = "PROTO_ISO";
+	proto["scram"] = "PROTO_SCRAM" ;
+	proto["unix"] = "PROTO_UNIX" ;
+
+	proto["krt_rtread_kmem"] = "KRT_RTREAD_KMEM";
+	proto["krt_rtread_kinfo"] = "KRT_RTREAD_KINFO";
+	proto["krt_rtread_proc"] = "KRT_RTREAD_PROC";
+	proto["krt_rtread_radix"] = "KRT_RTREAD_RADIX";
+	proto["krt_rtread_sunos5"] = "KRT_RTREAD_SUNOS5";
+	proto["krt_ifread_ioctl"] = "KRT_IFREAD_IOCTL";
+	proto["krt_ifread_kinfo"] = "KRT_IFREAD_KINFO";
+	proto["krt_rt_ioctl"] = "KRT_RT_IOCTL";
+	proto["krt_rt_sock"] = "KRT_RT_SOCK";
+	proto["krt_lladdr_kmem"] = "KRT_LLADDR_KMEM";
+	proto["krt_lladdr_sunos4"] = "KRT_LLADDR_SUNOS4";
+	proto["krt_lladdr_sunos5"] = "KRT_LLADDR_SUNOS5";
+	proto["krt_symbols_nlist"] = "KRT_SYMBOLS_NLIST";
+	proto["krt_symbols_proc"] = "KRT_SYMBOLS_PROC";
+	proto["krt_symbols_sunos5"] = "KRT_SYMBOLS_SUNOS5";
+	proto["krt_symbols_sysctl"] = "KRT_SYMBOLS_SYSCTL";
+	proto["krt_netopts"] = "KRT_NETOPTS";
+	proto["krt_ipmulti_nocache"] = "KRT_IPMULTI_NOCACHE";
+	proto["krt_ipmulti_rtsock"] = "KRT_IPMULTI_RTSOCK";
+	proto["krt_ipmulti_ttl0"] = "KRT_IPMULTI_TTL0";
+}
+EOF
+
+cat > ${TMPDIR}/mkdep.awk << \EOF
+BEGIN {
+	print "#" ;
+	print "# $Id: mkdep.build,v 1.14.2.5 1995/05/01 16:05:37 jch Exp $" ;
+	print "#" ;
+	print "# This file automatically generated" ;
+	print "#" ;
+	init_proto() ;
+	target = "" ;
+	for (dep in proto) {
+		depends[dep] = "" ;
+	}
+}	
+(substr($1, 1, 1) == "/") {
+	next ;
+}
+($1 != target) {
+	for (dep in depends) {
+		if (length(depends[dep])) {
+			printf "@BEGIN:\t%s\n", proto[dep] ;
+			j = split(depends[dep], deps);
+			for (i = 1; i <= j; i++) {
+				printf "%s\t%s\n", target, deps[i] ;
+			}
+			printf "@END:\t%s\n", proto[dep] ;
+			depends[dep] = "" ;
+		}
+	}
+	if (length(begin)) {
+		file = $1 ;
+		if (c = index(file, ".")) {
+			file = substr(file, 1, c - 1);
+		}
+		if (length(proto[file]) == 0) {
+			if (c = index(file, "_")) {
+				file = substr(file, 1, c - 1);
+			}
+		}
+		if (begin != proto[file]) {
+			printf "@END:\t%s\n", begin ;
+			begin = "" ;
+		}
+	}
+	target = $1 ;
+}
+{
+	for (i = 1; i <= NF; i++) {
+		file = $i ;
+		if (substr(file, 1, 1) == "/" || file == "\\") {
+			continue;
+		}
+		if (c = index(file, ".")) {
+			file = substr(file, 1, c - 1);
+		}
+		if (length(proto[file]) == 0) {
+			if (c = index(file, "_")) {
+				file = substr(file, 1, c - 1);
+			}
+		}
+		if (length(proto[file])) {
+			if (i == 1) {
+				if (!length(begin)) {
+					printf "@BEGIN:\t%s\n", proto[file] ;
+					begin = proto[file] ;
+				}
+			} else if (begin == proto[file]) {
+				printf "%s\t%s\n", target, $i ;
+			} else {
+				depends[file] = depends[file]" "$i ;
+			}
+		} else if (i != 1) {
+			printf "%s\t%s\n", target, $i ;
+		}
+	}
+}
+END {
+	for (dep in depends) {
+		if (length(depends[dep])) {
+			printf "@BEGIN:\t%s\n", proto[dep] ;
+			j = split(depends[dep], deps);
+			for (i = 1; i <= j; i++) {
+				printf "%s\t%s\n", target, deps[i] ;
+			}
+			printf "@END:\t%s\n", proto[dep] ;
+			depends[dep] = "" ;
+		}
+	}
+	if (length(begin)) {
+		printf "@END:\t%s\n", begin ;
+		begin = "" ;
+	}
+}
+EOF
+
+cat > ${TMPDIR}/mkdef.awk << \EOF
+BEGIN {
+	init_proto();
+
+	for (p in proto) {
+		depends[proto[p]] = 1
+	}
+}
+/^#define/ {
+	depends[$2] = substr($0, index($0, $3));
+}
+END {
+	for (d in depends) {
+		printf "#define\t%s\t%s\n", d, depends[d]
+	}
+}
+EOF
+
+# Link all the files into this directory	
+(cd ${TMPDIR} ; \
+	( ls ../*.[ch] ; ls ../../*.[ch] ) | (
+		while read file; do \
+			test ! -h `basename $file` && ln -s $file .; \
+		done
+	)) || (exit=$?; exit $?)
+
+# Re-build the defines file
+(cd ${TMPDIR} ; \
+	rm -f defines.h; \
+	awk -f init.awk -f mkdef.awk < ../defines.h > defines.h)
+
+# Build the dependencies
+(cd ${TMPDIR} ; ${CC-cc} -MM $* *.c | \
+	sed -e ':repeat' \
+		-e '/\\$/{' \
+		-e 's/\\$//' \
+		-e 'N' \
+		-e 's/\n[ 	]*//;b repeat' \
+		-e '}' \
+		-e 's/[ 	]*:/:/' \
+		$SED | \
+	awk -f init.awk -f mkdep.awk >> $TMP) && mv $TMP $MAKE
+exit 0
+
+#
+# %(Copyright)
+#

@@ -1,0 +1,84 @@
+Subject: Sendmail bug for you.
+From fluke!jeff@uw-vlsi  Thu Dec 15 17:21:50 1983
+Date: Tue, 13 Dec 83 17:33:31 pst
+From: jeff@BERKELEY (Jeff Stearns)
+Index: usr.lib/sendmail 4.2BSD
+
+Description:
+	Under certain conditions, sendmail will discard mail which is to be
+	forwarded to another machine.
+
+Repeat-By:
+	Let there be two machines A and B, connected by ethernet.
+	Let there be a user U with accounts on both machines.
+	On machine A, let this user have a ~/.forward file which redirects
+	mail to "U@B"
+	Now have U log in on machine B and send mail to "U@A".
+	The mail will be discarded upon receipt at machine A.
+
+-------------------------------------------------------------------------------
+	I have some additional clues.  Here's an (electronically enhanced)
+	syslog transcript produced by the daemon sendmail which received the
+	letter at machine A.  (I added the syslog() calls beginning with `--'
+	in order to produce additional debugging information.)
+
+	Note that the letter is never passed to any outgoing mailer for
+	forwarding or delivery.
+
+		/*
+		 * Sendmail hears an incoming ethernet letter.
+		 * It forks to read and process the letter.
+		 */
+	7588 sendmail: connected, pid=7588
+	7588 sendmail: : openx
+	7588 sendmail: AA07588: assigned id
+	7589 sendmail: : openx
+		/*
+		 * The incoming letter is received via SMTP at machine A, and is
+		 * assigned a queue id.
+		 */
+	7589 sendmail: AA07589: assigned id
+	7589 sendmail: AA07589: from=<jeff@tc-jeff>, size=172, class=0
+	7589 sendmail: --sendall: e=83080 mode=b
+		/*
+		 * The received message is deposited in the mail queue.
+		 */
+	7589 sendmail: AA07589: queueup, qf=qfAA07589, df=dfAA07589
+		/*
+		 * A child is forked to deliver the message in the background.
+	 	 */
+	7593 sendmail: in background, pid=7593
+	7593 sendmail: --sendall: Run through list and send everything...
+	7593 sendmail: ----sendall: mode=b
+	7593 sendmail: ----sendall: calling deliver(83080, 163716)
+		/*
+		 * The child discovers that QDONTSEND is asserted for the
+		 * recipient, so it makes no attempt to deliver the letter.
+		 * (I don't know *why* QDONTSEND is set on this envelope.)
+		 */
+	7593 sendmail: --deliver, first user=`jeff' (QDONTSEND)
+	7593 sendmail: ----sendall: mode=b
+	7593 sendmail: ----sendall: calling deliver(83080, 163844)
+	7593 sendmail: --deliver, first user=`jeff@tc-jeff' (QDONTSEND)
+		/*
+		 * The child now REMOVES THE LETTER FROM THE MAIL QUEUE!
+		 */
+	7593 sendmail: dropenvelope, id=AA07589, flags=0, pid=7593
+	7593 sendmail: AA07589: unlink dfAA07589
+	7593 sendmail: AA07589: unlink qfAA07589
+	7589 sendmail: finis, pid=7589
+		/*
+		 * The parent removes the lock file, and everything's gone.
+		 */
+	7588 sendmail: AA07588: unlock
+	7588 sendmail: AA07588: unlink lfAA07588
+
+Fix:
+	I know of none.  Clearing the `e' (expensive mailer) flag for the ether
+	and local mailers does not help.
+
+
+	Jeff Stearns
+	John Fluke Mfg. Co.  (206) 356-5064
+	P.O. Box C9090  Everett WA  98043
+	...!decvax!microsoft!fluke!jeff

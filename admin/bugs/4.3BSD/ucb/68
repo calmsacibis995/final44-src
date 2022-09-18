@@ -1,0 +1,145 @@
+From donn@utah-cs.arpa  Thu Mar  5 21:27:07 1987
+Received: from ucbarpa.Berkeley.EDU by okeeffe.Berkeley.EDU (5.58/1.14)
+	id AA13377; Thu, 5 Mar 87 21:27:07 PST
+Received: by ucbarpa.Berkeley.EDU (5.57/1.23)
+	id AA15696; Thu, 5 Mar 87 21:28:02 PST
+Received: by utah-cs.ARPA (5.31/4.40.2)
+	id AA27794; Thu, 5 Mar 87 22:28:20 MST
+Date: Thu, 5 Mar 87 22:28:20 MST
+From: donn@utah-cs.arpa (Donn Seeley)
+Message-Id: <8703060528.AA27794@utah-cs.ARPA>
+To: 4bsd-bugs@ucbarpa.Berkeley.EDU
+Subject: dbx doesn't handle f77 BLOCK DATA subprograms
+Cc: linton@lurch.stanford.edu, philw@tekcae.tek.com
+
+Subject: dbx doesn't handle f77 BLOCK DATA subprograms
+Index:	ucb/dbx/object.c 4.3BSD
+
+Description:
+	[extract from a message by Phil White]
+	To: donn@UTAH-CS (Donn Seeley)
+	Cc: philw@tekcae.TEK.COM, daleh@tekcae.TEK.COM
+	Subject: Re: dbx and fortran common blocks
+	Date: 20 Feb 87 14:17:44 PST (Fri)
+	From: Phil White <hplabs!cae780!tektronix.TEK.COM!tekcae.TEK.COM!philw>
+
+	...
+	Basically, the problem seems to be that variables appearing in
+	certain Fortran common blocks cannot be examined using dbx (ie.
+	with the "print" command).  The troublesome common blocks are
+	those that appear in block data units.  Variables in other
+	common blocks can be examined by dbx.
+
+Repeat-By:
+	I compiled the following program with "f77 -g -w66 -Nx999 dbx.f"
+		program dbxtst
+		integer a, b,c,d
+		common /nobd/ a,b
+		common /bdata/ c,d
+		a = 44
+		b = 99
+		c = 33
+		d = 11
+		call sub(1)
+		print *,'so much for dbx'
+		end
+		subroutine sub(x)
+		integer x, a, b, c, d
+		common /nobd/ a,b
+		common /bdata/ c,d
+		print *,'so here we are in the subroutine'
+		return
+		end
+		block data ahhhhh
+		integer c,d
+		common /bdata/ c,d
+		data c,d /-1,-2/
+		end
+	--------------------------------- eof
+
+	Note that one common block is in the block data, one is not.  ...
+
+	Here is a typescript of a dbx run using the a.out file produced by f77:
+	Script started on Fri Feb 20 11:43:22 1987
+	...
+	% dbx a.out
+	dbx version 3.11 of 11/11/86 11:51 (tektools).
+	Type 'help' for help.
+	reading symbolic information ...
+	(dbx) stop at 9
+	[1] stop at 9
+	(dbx) stop at 16
+	[2] stop at 16
+	...
+	(dbx) run
+	[1] stopped in MAIN at line 9
+	    9          call sub(1)
+	(dbx) print a
+	44 
+	(dbx) p a
+	44 
+	(dbx) p b
+	99 
+	(dbx) p c
+	reference through nil pointer
+	(dbx) p d
+	-1051042096 
+	...
+	(dbx) c
+	  so here we are in the subroutine
+	  so much for dbx
+
+	execution completed
+	(dbx) quit
+	% 
+	script done on Fri Feb 20 11:44:19 1987
+	--------------------------------- eof
+
+	Note that the values of c and d, which were in the common
+	appearing in the block data, cannot be examined.  The variables
+	in the common block which did not appear in the block data, can
+	be examined.
+
+	      Phil White   Tektronix, Beaverton, OR, USA
+	USENET: {ihnp4, decvax, allegra, cbosg, ucbvax} !tektronix!tekcae!philw
+	  (using new style addresses, the name TEK.COM  appears at the end....)
+	CSnet:   philw@tek
+	ARPAnet: philw.tek@csnet-relay
+
+Fix:
+	[perpetrated by Donn Seeley]
+	BLOCK DATA subprograms in f77 produce initialized COMMON
+	blocks.  Dbx incorrectly assumes that all COMMON blocks are
+	uninitialized, hence B_COMM/E_COMM symbol groups must refer
+	to elements in bss space.  The following one-line change to
+	check_global() in object.c forces dbx to check objects in data
+	space to see if they correspond to COMMON blocks:
+
+	----------------------------------------------------------------
+	*** /tmp/,RCSt1027672	Thu Mar  5 22:17:54 1987
+	--- object.c	Thu Mar  5 21:49:25 1987
+	***************
+	*** 620,626 ****
+			    updateTextSym(t, name, np->n_value);
+			}
+		    }
+	! 	} else if ((np->n_type&N_TYPE) == N_BSS) {
+		    find(t, n) where
+			t->class == COMMON
+		    endfind(t);
+	--- 620,626 ----
+			    updateTextSym(t, name, np->n_value);
+			}
+		    }
+	! 	} else if ((np->n_type&N_TYPE) == N_BSS or (np->n_type&N_TYPE) == N_DATA) {
+		    find(t, n) where
+			t->class == COMMON
+		    endfind(t);
+	----------------------------------------------------------------
+
+	This works on Phil White's example and is almost certainly
+	harmless in general.  It will make symbol table processing
+	even slower, though...
+
+	Donn Seeley    University of Utah CS Dept    donn@cs.utah.edu
+	40 46' 6"N 111 50' 34"W    (801) 581-5668    utah-cs!donn

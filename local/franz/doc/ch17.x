@@ -1,0 +1,7 @@
+.In 17 1 makeht "'x_size ['s_test]"
+.In 17 1 hash-table-p "'H_arg"
+.In 17 2 gethash "'g_key 'H_htable ['g_default]"
+.In 17 2 remhash "'g_key 'H_htable"
+.In 17 2 maphash "'u_func 'H_htable"
+.In 17 2 clrhash "'H_htable"
+.In 17 2 hash-table-count "'H_htable"

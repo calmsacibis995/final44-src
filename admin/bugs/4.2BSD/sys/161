@@ -1,0 +1,531 @@
+Return-Path: <kwlalonde%waterloo.csnet@CSNET-RELAY.ARPA>
+Date: Mon, 21 Oct 85 09:50:26 edt
+From: Ken Lalonde <kwlalonde%waterloo.csnet@CSNET-RELAY.ARPA>
+Subject: TU-78 tape driver can't handle > 1 device  +Fix
+Index: 	sys/vaxmba/mt.c 4.2BSD
+
+Description:
+	The TU-78 driver confuses logical and physical tape transport unit
+	numbers.  Everything works fine if you have one device.
+	Extra drives will be configured correctly, but will be unusable.
+
+	The driver accesses one of four tape transport units ("mu"'s) 
+	through the "mtncs[]" device register.  The slave routine
+	correctly indexes this array with the device "slave" value
+	supplied in the config file.  The rest of the driver uses
+	the low two bits of the special file minor number.  
+
+Repeat-By:
+	Read the code (see use of mtncs register in mtslave() and mtustart()).
+
+Fix:
+	Index the mtncs register with the slave value used in mtslave().
+	A diff follows; it's long but there's not that much to it.
+	I am including code (by Alex White) to
+		- return error on attempts to write past end-of-tape.
+		  There is an ioctl to get around this (who'd want to?).
+		- announce presence of dual-port capability at config time,
+		  and disallow simultaneous access to such drives
+		  (return value is EBUSY, not EIO).
+	I think these are worthwhile additions.
+
+*** /usr/distr/4.2/sys/vaxmba/mt.c	Fri Jul 29 10:35:54 1983
+--- /sys/vaxmba/mt.c	Mon Oct 21 08:44:21 1985
+***************
+*** 65,70
+  	short	sc_dens;
+  	struct	mba_device *sc_mi;
+  	int	sc_slave;
+  } mu_softc[NMU];
+  short	mutomt[NMU];
+  
+
+--- 65,71 -----
+  	short	sc_dens;
+  	struct	mba_device *sc_mi;
+  	int	sc_slave;
++ 	char	sc_eotok;
+  } mu_softc[NMU];
+  short	mutomt[NMU];
+  #define MAXMU	4	/* maximum number of mu's per mt */
+***************
+*** 67,72
+  	int	sc_slave;
+  } mu_softc[NMU];
+  short	mutomt[NMU];
+  
+  /*
+   * Bits for sc_flags.
+
+--- 68,76 -----
+  	char	sc_eotok;
+  } mu_softc[NMU];
+  short	mutomt[NMU];
++ #define MAXMU	4	/* maximum number of mu's per mt */
++ char	mttomu[NMT][MAXMU]; /* map (mt unit, slave number) to logical mu unit */
+  char	mtds_bits[] = MTDS_BITS;
+  
+  /*
+   * Bits for sc_flags.
+***************
+*** 91,96
+  	register struct mtdevice *mtaddr = (struct mtdevice *)mi->mi_drv;
+  	int s = spl7(), rtn = 0;
+  
+  	mtaddr->mtas = -1;
+  	mtaddr->mtncs[sn] = MT_SENSE|MT_GO;
+  	while (mtaddr->mtas == 0)
+
+--- 93,103 -----
+  	register struct mtdevice *mtaddr = (struct mtdevice *)mi->mi_drv;
+  	int s = spl7(), rtn = 0;
+  
++ 	if (sn >= MAXMU) {
++ 		printf("mt%d: slave value %d > max %d\n",
++ 			mi->mi_unit, sn, MAXMU-1);
++ 		return 0;
++ 	}
+  	mtaddr->mtas = -1;
+  	mtaddr->mtncs[sn] = MT_SENSE|MT_GO;
+  	while (mtaddr->mtas == 0)
+***************
+*** 100,105
+  		sc->sc_mi = mi;
+  		sc->sc_slave = sn;
+  		mutomt[ms->ms_unit] = mi->mi_unit;
+  		rtn = 1;
+  	}
+  	mtaddr->mtas = mtaddr->mtas;
+
+--- 107,113 -----
+  		sc->sc_mi = mi;
+  		sc->sc_slave = sn;
+  		mutomt[ms->ms_unit] = mi->mi_unit;
++ 		mttomu[mi->mi_unit][sn] = ms->ms_unit;
+  		rtn = 1;
++  		if(mtaddr->mtdt & MTDT_DRQ)
++  			printf("Dual-ported ");	/* Followed by config msg */
+***************
+*** 117,123
+  	int olddens, dens;
+  
+  	muunit = MUUNIT(dev);
+! 	if (muunit >= NMU || (sc = &mu_softc[muunit])->sc_openf ||
+  	    (mi = mtinfo[MTUNIT(dev)]) == 0 || mi->mi_alive == 0)
+  		return (ENXIO);
+  	olddens = sc->sc_dens;
+
+--- 127,133 -----
+  	int olddens, dens;
+  
+  	muunit = MUUNIT(dev);
+! 	if (muunit >= NMU ||
+  	    (mi = mtinfo[MTUNIT(dev)]) == 0 || mi->mi_alive == 0)
+  		return (ENXIO);
+  	if ((sc = &mu_softc[muunit])->sc_openf)
+***************
+*** 120,125
+  	if (muunit >= NMU || (sc = &mu_softc[muunit])->sc_openf ||
+  	    (mi = mtinfo[MTUNIT(dev)]) == 0 || mi->mi_alive == 0)
+  		return (ENXIO);
+  	olddens = sc->sc_dens;
+  	dens = sc->sc_dens = (minor(dev)&H_6250BPI) ? MT_GCR : 0;
+  	mtcommand(dev, MT_SENSE, 1);
+
+--- 130,137 -----
+  	if (muunit >= NMU ||
+  	    (mi = mtinfo[MTUNIT(dev)]) == 0 || mi->mi_alive == 0)
+  		return (ENXIO);
++ 	if ((sc = &mu_softc[muunit])->sc_openf)
++ 		return (EBUSY);
+  	olddens = sc->sc_dens;
+  	dens = sc->sc_dens = (minor(dev)&H_6250BPI) ? MT_GCR : 0;
+  	mtcommand(dev, MT_SENSE, 1);
+***************
+*** 124,132
+  	dens = sc->sc_dens = (minor(dev)&H_6250BPI) ? MT_GCR : 0;
+  	mtcommand(dev, MT_SENSE, 1);
+  	sc->sc_dens = olddens;
+! 	if ((sc->sc_dsreg & MTDS_ONL) == 0) {
+! 		uprintf("mu%d: not online\n", muunit);
+! 		return (EIO);
+  	}
+  	if ((flag&FWRITE) && (sc->sc_dsreg&MTDS_FPT)) {
+  		uprintf("mu%d: no write ring\n", muunit);
+
+--- 136,148 -----
+  	dens = sc->sc_dens = (minor(dev)&H_6250BPI) ? MT_GCR : 0;
+  	mtcommand(dev, MT_SENSE, 1);
+  	sc->sc_dens = olddens;
+! 	/*
+! 	 *  Make sure drive is online, and port-select is us, and only us.
+! 	 */
+! 	if ((sc->sc_dsreg & (MTDS_ONL|MTDS_AVAIL|MTDS_SHR)) !=
+! 			    (MTDS_ONL|MTDS_AVAIL	 )) {
+! /*		uprintf("mu%d: not online\n", muunit);*/
+! 		return EIO;	/* at Waterloo, EOFFL */
+  	}
+  	if ((flag&FWRITE) && (sc->sc_dsreg&MTDS_FPT)) {
+  /*		uprintf("mu%d: no write ring\n", muunit);*/
+***************
+*** 155,160
+  		mtcommand(dev, MT_CLS|sc->sc_dens, 1);
+  	if ((minor(dev)&H_NOREWIND) == 0)
+  		mtcommand(dev, MT_REW, 0);
+  	sc->sc_openf = 0;
+  }
+  
+
+--- 171,177 -----
+  		mtcommand(dev, MT_CLS|sc->sc_dens, 1);
+  	if ((minor(dev)&H_NOREWIND) == 0)
+  		mtcommand(dev, MT_REW, 0);
++ 	sc->sc_eotok = 0;
+  	sc->sc_openf = 0;
+  }
+  
+***************
+*** 237,243
+  		if ((bp->b_flags&B_READ)==0)
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) + 1;
+  	} else {
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+  			(bp->b_repcnt<<8)|bp->b_command|MT_GO;
+  		return (MBU_STARTED);
+  	}
+
+--- 254,260 -----
+  		if ((bp->b_flags&B_READ)==0)
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) + 1;
+  	} else {
+! 		mtaddr->mtncs[sc->sc_slave] =
+  			(bp->b_repcnt<<8)|bp->b_command|MT_GO;
+  		return (MBU_STARTED);
+  	}
+***************
+*** 242,247
+  		return (MBU_STARTED);
+  	}
+  	if ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) {
+  		if (mi->mi_tab.b_errcnt == 2) {
+  			mtaddr->mtca = MUUNIT(bp->b_dev);
+  		} else {
+
+--- 259,274 -----
+  		return (MBU_STARTED);
+  	}
+  	if ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) {
++ 		/*
++ 		 *  Write operation past eot, make sure eotok is set
++ 		 */
++ 		if((bp->b_flags & B_READ) == 0  &&
++ 		   !sc->sc_eotok &&
++ 		   sc->sc_dsreg & MTDS_EOT) {
++ 			bp->b_error = EIO;	/* at Waterloo, EEOT */
++ 			bp->b_flags |= B_ERROR;
++ 			return(MBU_NEXT);
++ 		}
+  		if (mi->mi_tab.b_errcnt == 2) {
+  			mtaddr->mtca = sc->sc_slave;
+  		} else {
+***************
+*** 243,249
+  	}
+  	if ((blkno = sc->sc_blkno) == bdbtofsb(bp->b_blkno)) {
+  		if (mi->mi_tab.b_errcnt == 2) {
+! 			mtaddr->mtca = MUUNIT(bp->b_dev);
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+  			mtaddr->mtca = (1<<2)|MUUNIT(bp->b_dev);
+
+--- 270,276 -----
+  			return(MBU_NEXT);
+  		}
+  		if (mi->mi_tab.b_errcnt == 2) {
+! 			mtaddr->mtca = sc->sc_slave;
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+  			mtaddr->mtca = (1<<2)|sc->sc_slave;
+***************
+*** 246,252
+  			mtaddr->mtca = MUUNIT(bp->b_dev);
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+! 			mtaddr->mtca = (1<<2)|MUUNIT(bp->b_dev);
+  		}
+  		return (MBU_DODATA);
+  	}
+
+--- 273,279 -----
+  			mtaddr->mtca = sc->sc_slave;
+  		} else {
+  			mtaddr->mtbc = bp->b_bcount;
+! 			mtaddr->mtca = (1<<2)|sc->sc_slave;
+  		}
+  		return (MBU_DODATA);
+  	}
+***************
+*** 251,257
+  		return (MBU_DODATA);
+  	}
+  	if (blkno < bdbtofsb(bp->b_blkno))
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+  		  (min((unsigned)(bdbtofsb(bp->b_blkno) - blkno), 0377) << 8) |
+  			MT_SFORW|MT_GO;
+  	else
+
+--- 278,284 -----
+  		return (MBU_DODATA);
+  	}
+  	if (blkno < bdbtofsb(bp->b_blkno))
+! 		mtaddr->mtncs[sc->sc_slave] =
+  		  (min((unsigned)(bdbtofsb(bp->b_blkno) - blkno), 0377) << 8) |
+  			MT_SFORW|MT_GO;
+  	else
+***************
+*** 255,261
+  		  (min((unsigned)(bdbtofsb(bp->b_blkno) - blkno), 0377) << 8) |
+  			MT_SFORW|MT_GO;
+  	else
+! 		mtaddr->mtncs[MUUNIT(bp->b_dev)] =
+  		  (min((unsigned)(blkno - bdbtofsb(bp->b_blkno)), 0377) << 8) |
+  			MT_SREV|MT_GO;
+  	return (MBU_STARTED);
+
+--- 282,288 -----
+  		  (min((unsigned)(bdbtofsb(bp->b_blkno) - blkno), 0377) << 8) |
+  			MT_SFORW|MT_GO;
+  	else
+! 		mtaddr->mtncs[sc->sc_slave] =
+  		  (min((unsigned)(blkno - bdbtofsb(bp->b_blkno)), 0377) << 8) |
+  			MT_SREV|MT_GO;
+  	return (MBU_STARTED);
+***************
+*** 285,294
+  	register struct mu_softc *sc;
+  
+  	/* I'M NOT SURE IF THIS SHOULD ALWAYS BE THE CASE SO FOR NOW... */
+- 	if ((mtaddr->mtca&3) != MUUNIT(bp->b_dev)) {
+- 		printf("mt: wrong unit!\n");
+- 		mtaddr->mtca = MUUNIT(bp->b_dev);
+- 	}
+  	sc = &mu_softc[MUUNIT(bp->b_dev)];
+  	sc->sc_erreg = mtaddr->mter;
+  	if((bp->b_flags & B_READ) == 0)
+
+--- 312,317 -----
+  	register struct mu_softc *sc;
+  
+  	/* I'M NOT SURE IF THIS SHOULD ALWAYS BE THE CASE SO FOR NOW... */
+  	sc = &mu_softc[MUUNIT(bp->b_dev)];
+  	if ((mtaddr->mtca&3) != sc->sc_slave) {
+  		printf("mt%d: wrong unit!\n", mi->mi_unit);
+***************
+*** 290,295
+  		mtaddr->mtca = MUUNIT(bp->b_dev);
+  	}
+  	sc = &mu_softc[MUUNIT(bp->b_dev)];
+  	sc->sc_erreg = mtaddr->mter;
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
+
+--- 313,322 -----
+  
+  	/* I'M NOT SURE IF THIS SHOULD ALWAYS BE THE CASE SO FOR NOW... */
+  	sc = &mu_softc[MUUNIT(bp->b_dev)];
++ 	if ((mtaddr->mtca&3) != sc->sc_slave) {
++ 		printf("mt%d: wrong unit!\n", mi->mi_unit);
++ 		mtaddr->mtca = sc->sc_slave;
++ 	}
+  	sc->sc_erreg = mtaddr->mter;
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
+***************
+*** 294,299
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
+  	switch (sc->sc_erreg & MTER_INTCODE) {
+  	case MTER_DONE:
+  	case MTER_LONGREC:
+  		if (mi->mi_tab.b_errcnt != 2)
+
+--- 321,329 -----
+  	if((bp->b_flags & B_READ) == 0)
+  		sc->sc_flags |= H_WRITTEN;
+  	switch (sc->sc_erreg & MTER_INTCODE) {
++ 	case MTER_EOT:	/* this record has been written ok */
++ 		/* Blasted thing doesn't update mtds */
++ 		sc->sc_dsreg |= MTDS_EOT;
+  	case MTER_DONE:
+  	case MTER_LONGREC:
+  		if (mi->mi_tab.b_errcnt != 2)
+***************
+*** 306,312
+  		goto err;
+  
+  	case MTER_TM:
+- 	case MTER_EOT:
+  		sc->sc_blkno++;
+  	err:
+  		bp->b_resid = bp->b_bcount;
+
+--- 336,341 -----
+  		goto err;
+  
+  	case MTER_TM:
+  		sc->sc_blkno++;
+  	err:
+  		bp->b_resid = bp->b_bcount;
+***************
+*** 371,376
+  
+  	unit = (mtaddr->mtner >> 8) & 3;
+  	er = MASKREG(mtaddr->mtner);
+  	/* WILL THIS OCCUR IF ANOTHER DRIVE COMES ONLINE? */
+  	if (bp == 0 || unit != MUUNIT(bp->b_dev)) {	/* consistency check */
+  		if ((er & MTER_INTCODE) != MTER_ONLINE)
+
+--- 422,428 -----
+  
+  	unit = (mtaddr->mtner >> 8) & 3;
+  	er = MASKREG(mtaddr->mtner);
++ 	sc = &mu_softc[mttomu[mi->mi_unit][unit]];
+  	/* WILL THIS OCCUR IF ANOTHER DRIVE COMES ONLINE? */
+  	if (bp == 0 || unit != sc->sc_slave) {	/* consistency check */
+  		if ((er & MTER_INTCODE) != MTER_ONLINE) {
+***************
+*** 372,380
+  	unit = (mtaddr->mtner >> 8) & 3;
+  	er = MASKREG(mtaddr->mtner);
+  	/* WILL THIS OCCUR IF ANOTHER DRIVE COMES ONLINE? */
+! 	if (bp == 0 || unit != MUUNIT(bp->b_dev)) {	/* consistency check */
+! 		if ((er & MTER_INTCODE) != MTER_ONLINE)
+! 			printf("mt: unit %d random interrupt\n", unit);
+  		return (MBN_SKIP);
+  	}
+  	if (bp == 0)
+
+--- 424,438 -----
+  	er = MASKREG(mtaddr->mtner);
+  	sc = &mu_softc[mttomu[mi->mi_unit][unit]];
+  	/* WILL THIS OCCUR IF ANOTHER DRIVE COMES ONLINE? */
+! 	if (bp == 0 || unit != sc->sc_slave) {	/* consistency check */
+! 		if ((er & MTER_INTCODE) != MTER_ONLINE) {
+! 			printf("mu%d: random interrupt er=%o, ds=%b (issuing controller clear)\n",
+! 				unit, er, MASKREG(mtaddr->mtds), mtds_bits);
+! 			mtaddr->mtid = MTID_CLR;
+! 			DELAY(250);
+! 			while ((mtaddr->mtid & MTID_RDY) == 0)
+! 				;
+! 		}
+  		return (MBN_SKIP);
+  	}
+  
+***************
+*** 377,382
+  			printf("mt: unit %d random interrupt\n", unit);
+  		return (MBN_SKIP);
+  	}
+  	if (bp == 0)
+  		return (MBN_SKIP);
+  	fc = (mtaddr->mtncs[unit] >> 8) & 0xff;
+
+--- 435,442 -----
+  		}
+  		return (MBN_SKIP);
+  	}
++ #if 0
++	/* redundant */
+  	if (bp == 0)
+  		return (MBN_SKIP);
++ #endif
+***************
+*** 380,386
+  	if (bp == 0)
+  		return (MBN_SKIP);
+  	fc = (mtaddr->mtncs[unit] >> 8) & 0xff;
+- 	sc = &mu_softc[unit];
+  	sc->sc_erreg = er;
+  	sc->sc_resid = fc;
+  	switch (er & MTER_INTCODE) {
+
+--- 441,446 -----
+  		return (MBN_SKIP);
+  #endif
+  	fc = (mtaddr->mtncs[unit] >> 8) & 0xff;
+  	sc->sc_erreg = er;
+  	sc->sc_resid = fc;
+  	switch (er & MTER_INTCODE) {
+***************
+*** 385,390
+  	sc->sc_resid = fc;
+  	switch (er & MTER_INTCODE) {
+  	case MTER_DONE:
+  		if (bp == &cmtbuf[MTUNIT(bp->b_dev)]) {
+  	done:
+  			if (bp->b_command == MT_SENSE)
+
+--- 445,451 -----
+  	sc->sc_resid = fc;
+  	switch (er & MTER_INTCODE) {
+  	case MTER_DONE:
++ 	case MTER_EOT:		/* Returned when MT_CLS past EOT */
+  		if (bp == &cmtbuf[MTUNIT(bp->b_dev)]) {
+  	done:
+  			if (bp->b_command == MT_SENSE)
+***************
+*** 406,412
+  		printf("mu%d: blank tape\n", MUUNIT(bp->b_dev));
+  
+  	case MTER_TM:
+- 	case MTER_EOT:
+  	case MTER_LEOT:
+  		if (sc->sc_blkno > bdbtofsb(bp->b_blkno)) {
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) + fc;
+
+--- 467,472 -----
+  		printf("mu%d: blank tape\n", MUUNIT(bp->b_dev));
+  
+  	case MTER_TM:
+  	case MTER_LEOT:
+  		if (sc->sc_blkno > bdbtofsb(bp->b_blkno)) {
+  			sc->sc_nxrec = bdbtofsb(bp->b_blkno) + fc;
+***************
+*** 511,516
+  	{MT_WTM,MT_SFORWF,MT_SREVF,MT_SFORW,MT_SREV,MT_REW,MT_UNLOAD,MT_SENSE};
+  
+  	switch (cmd) {
+  
+  	case MTIOCTOP:	/* tape operation */
+  		mtop = (struct mtop *)data;
+
+--- 571,579 -----
+  	{MT_WTM,MT_SFORWF,MT_SREVF,MT_SFORW,MT_SREV,MT_REW,MT_UNLOAD,MT_SENSE};
+  
+  	switch (cmd) {
++#ifdef MTIOCEOT
++ 	case MTIOCEOT:	/* Allow crossing of eot mark */
++ 		sc->sc_eotok = 1;
++ 		return 0;
++#endif
+  
+  	case MTIOCTOP:	/* tape operation */
+  		mtop = (struct mtop *)data;
+***************
+*** 532,537
+  			break;
+  
+  		case MTREW: case MTOFFL:
+  			callcount = 1;
+  			fcount = 1;
+  			break;
+
+--- 595,602 -----
+  			break;
+  
+  		case MTREW: case MTOFFL:
++ 			sc->sc_eotok = 0;
+  			callcount = 1;
+  			fcount = 1;
+  			break;
+

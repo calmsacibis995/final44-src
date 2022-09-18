@@ -1,0 +1,217 @@
+From gnu@toad.com Wed Jul  5 20:26:25 1989
+Date: Wed, 5 Jul 89 18:54:52 PDT
+From: gnu@toad.com (John Gilmore)
+Message-Id: <8907060154.AA03294@hop.toad.com>
+To: bostic@okeeffe.Berkeley.EDU
+Subject: Re: Bug in csh (history, "!a%100s"). Report and Fix.
+In-Reply-To: your article <769@sbsvax.UUCP>
+Index: bin/csh 4.3BSD
+
+Personally I think his fix sucks -- he should leave all the other calls
+alone, and do error("%s", historystring) when he needs to.  But here
+is the whole thing...
+
+	John
+
+Path: hoptoad!pacbell!ames!lll-winken!uunet!mcvax!unido!sbsvax!greim
+From: greim@sbsvax.UUCP (Michael Greim)
+Newsgroups: comp.sources.bugs
+Subject: Bug in csh (history, "!a%100s"). Report and Fix.
+Keywords: csh history format-string bug fix
+Message-ID: <769@sbsvax.UUCP>
+Date: 3 Jul 89 13:46:20 GMT
+Organization: Universitaet des Saarlandes, Saarbruecken, W-Germany
+
+In article <192@dg.dg.com> in comp.bugs.sys5 rec@dg.dg.com (Robert Cousins)
+reported a bug in csh.
+Here is a description of it and a fix.
+
+Absorb, apply and enjoy,
+	-mg
+
+Symptoms:
+
+>I have found that there are several basic bugs in the Cshell history
+>mechanism which can be quite problematic.  These were originally called
+>to my attention by the work of a couple of researchers at the U of W in
+>Madison.  Bug 1:
+>
+>	!a%999999999f
+>
+>which causes 999999999 spaces to be output to the screen.  (Fewer on
+>16 bit machines.)  It seems that the error message in the history
+>module goes through the first argument of a printf() call and can be
+>interpreted as a format.  A second bug, which happens on fewer machines
+>takes place with:
+>
+>	!a%f%f
+>
+>which can cause csh to dump core from a floating point error.  
+[...]
+
+Diagnosis:
+
+	When printing an error message the csh function "error" passes
+	its first argument to its printf. If this string contains a "%",
+	printf tries to evaluate the following as a format accessing its
+	argument list, which is empty quite probably. This will cause
+	unpredictable behaviour, like core dumps, strange numbers, ...
+
+Therapy:
+	Apply the following context diff to your source of 43BSD csh.
+	This fix works like this:
+	- in error only a string ending in "@" is passed as format string
+		to printf.
+	- only internal error messages needing arguments need format specifiers,
+		so I add a trailing "@" to any such message
+	- any string not ending with "@" is passed to printf with "%s" as first
+		parameter.
+
+*** sh.dol.c.old	Mon Jul  3 15:18:22 1989
+--- sh.dol.c	Mon Jul  3 15:12:39 1989
+***************
+*** 159,165
+  			if (c == c1)
+  				break;
+  			if (c == '\n' || c == DEOF)
+! 				error("Unmatched %c", c1);
+  			if ((c & (QUOTE|TRIM)) == ('\n' | QUOTE))
+  				--wp, ++i;
+  			if (--i <= 0)
+
+--- 159,165 -----
+  			if (c == c1)
+  				break;
+  			if (c == '\n' || c == DEOF)
+! 				error("Unmatched %c@", c1);		/* mg 3-jul-89 */
+  			if ((c & (QUOTE|TRIM)) == ('\n' | QUOTE))
+  				--wp, ++i;
+  			if (--i <= 0)
+*** sh.err.c.old	Mon Jul  3 15:18:36 1989
+--- sh.err.c	Mon Jul  3 15:16:10 1989
+***************
+*** 34,39
+  {
+  	register char **v;
+  	register char *ep;
+  
+  	/*
+  	 * Must flush before we print as we wish output before the error
+
+--- 34,40 -----
+  {
+  	register char **v;
+  	register char *ep;
++ 	register int i;		/* mg 3-jul-89 */
+  
+  	/*
+  	 * Must flush before we print as we wish output before the error
+***************
+*** 53,58
+  	/*
+  	 * A zero arguments causes no printing, else print
+  	 * an error diagnostic here.
+  	 */
+  	if (s)
+  		printf(s, arg), printf(".\n");
+
+--- 54,65 -----
+  	/*
+  	 * A zero arguments causes no printing, else print
+  	 * an error diagnostic here.
++ 	 * mg 3-jul-89 : If error is called with s containing a part of
++ 	 * the users input, and if this contains a "%", printf tries to evaluate
++ 	 * this as a format reference. Try : "!a%100s".
++ 	 * I fixed this: internal error messages which should be processed as
++ 	 * format strings, will end in "@", all else is NOT interpreted as a
++ 	 * format string.
+  	 */
+  	if (s) {
+  		i = strlen (s) - 1;
+***************
+*** 54,61
+  	 * A zero arguments causes no printing, else print
+  	 * an error diagnostic here.
+  	 */
+! 	if (s)
+! 		printf(s, arg), printf(".\n");
+  
+  	didfds = 0;		/* Forget about 0,1,2 */
+  	if ((ep = err) && errspl) {
+
+--- 61,74 -----
+  	 * format strings, will end in "@", all else is NOT interpreted as a
+  	 * format string.
+  	 */
+! 	if (s) {
+! 		i = strlen (s) - 1;
+! 		if (s[i] == '@') {
+! 			s[i] = '\0';
+! 			printf(s, arg), printf(".\n");
+! 		} else
+! 			printf("%s\n", s);
+! 	}
+  
+  	didfds = 0;		/* Forget about 0,1,2 */
+  	if ((ep = err) && errspl) {
+*** sh.func.c.old	Mon Jul  3 15:18:55 1989
+--- sh.func.c	Mon Jul  3 15:12:55 1989
+***************
+*** 1004,1010
+  	while (*cp && *cp == *str)
+  		cp++, str++;
+  	if (*cp)
+! 		error("Bad scaling; did you mean ``%s''?", str0);
+  }
+  
+  plim(lp, hard)
+
+--- 1004,1010 -----
+  	while (*cp && *cp == *str)
+  		cp++, str++;
+  	if (*cp)
+! 		error("Bad scaling; did you mean ``%s''?@", str0); /* mg 3-jul-89 */
+  }
+  
+  plim(lp, hard)
+*** sh.glob.c.old	Mon Jul  3 15:19:06 1989
+--- sh.glob.c	Mon Jul  3 15:13:10 1989
+***************
+*** 139,145
+  			if (gpathp != gpath + 1) {
+  				*gpathp = 0;
+  				if (gethdir(gpath + 1))
+! 					error("Unknown user: %s", gpath + 1);
+  				(void) strcpy(gpath, gpath + 1);
+  			} else
+  				(void) strcpy(gpath, value("home"));
+
+--- 139,145 -----
+  			if (gpathp != gpath + 1) {
+  				*gpathp = 0;
+  				if (gethdir(gpath + 1))
+! 					error("Unknown user: %s@", gpath + 1); /* mg 3-jul-89 */
+  				(void) strcpy(gpath, gpath + 1);
+  			} else
+  				(void) strcpy(gpath, value("home"));
+*** sh.sem.c.old	Mon Jul  3 15:19:21 1989
+--- sh.sem.c	Mon Jul  3 15:13:22 1989
+***************
+*** 401,405
+  		return;
+  	if ((stb.st_mode & S_IFMT) == S_IFCHR)
+  		return;
+! 	error("%s: File exists", cp);
+  }
+
+--- 401,405 -----
+  		return;
+  	if ((stb.st_mode & S_IFMT) == S_IFCHR)
+  		return;
+! 	error("%s: File exists@", cp);	/* mg 3-jul-89 */
+  }
+-- 
+Michael Greim    Email : greim@sbsvax.informatik.uni-saarland.dbp.de
+                 or    : ...!uunet!unido!sbsvax!greim
+# include <disclaimers/std.h>
+

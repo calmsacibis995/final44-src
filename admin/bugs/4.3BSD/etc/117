@@ -1,0 +1,57 @@
+From elsie!ado@ncifcrf.gov  Mon Apr 18 11:07:52 1988
+Date: Mon, 18 Apr 88 13:26:17 EDT
+From: elsie!ado@ncifcrf.gov (Arthur David Olson)
+Subject: MORE/bsd 4.3 (10/5/87) newfs makes file systems too big on bad144 disks
+#Index: src/etc/newfs/newfs.c MORE/bsd 4.3 (10/5/87)
+Index: etc/newfs/newfs.c 4.3BSD
+
+Description:
+	If you use newfs to make a file system on the "c" partition of
+	a disk that uses "bad144"-style bad sector formating, the created file
+	system includes the sectors on the disk that are used as replacement
+	sectors and that map bad sectors to their replacements.  All hell
+	breaks loose if any of these sectors are ever actually used by the
+	file system.
+
+Repeat-By:
+	No, you really don't want to.
+
+Fix:
+	You really should be able to access the entire "c" partition using
+	/dev/rhp?c for maintenance purposes, so you don't want to change the
+	"partition size" encoded in /etc/disktab (and on the disk itself).
+	So the thing to do is have newfs look for the situation and reduce
+	the partition size when appropriate; this should be done on *all*
+	partitions, rather than just the "c" partition, since having the
+	bad sectors be part of *any* file system is a very bad idea.
+
+*** 3.1/newfs.c	Tue Nov 17 17:10:01 1987
+--- 3.4/newfs.c	Tue Nov 17 17:10:03 1987
+***************
+*** 349,354 ****
+--- 349,372 ----
+  		pp = &lp->d_partitions[*cp - 'a'];
+  	if (pp->p_size == 0)
+  		fatal("%s: `%c' partition is unavailable", argv[0], *cp);
++ #if !defined ASWAS
++ 	if ((lp->d_flags & D_BADSECT) != 0) {	/* bad144 in effect */
++ 		register long	pspt;	/* physical sectors per track */
++ 		register long	ptpc;	/* physical tracks per cylinder */
++ 		register long	pcpu;	/* physical cylinders per unit */
++ 		register long	limit;
++ 
++ 		pspt = lp->d_nsectors + lp->d_sparespertrack;
++ 		ptpc = lp->d_ntracks;
++ 		pcpu = lp->d_ncylinders + lp->d_acylinders;
++ 		limit = pspt * ptpc * pcpu - (126 + pspt);
++ 		if (pp->p_offset + pp->p_size > limit) {
++ 			(void) fprintf(stderr,
++ "Note: bad sector area reduces effective size of partition\n");
++ 			pp->p_size = limit - pp->p_offset;
++ 		}
++ 	}
++ #endif /* !defined ASWAS */
+  	if (fssize == 0)
+  		fssize = pp->p_size;
+  	if (fssize > pp->p_size)
+

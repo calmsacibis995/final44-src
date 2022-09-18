@@ -1,0 +1,229 @@
+From bigbug  Tue May 18 12:19:30 1993
+Received: from hofmann.CS.Berkeley.EDU (hofmann.CS.Berkeley.EDU [128.32.131.12]) by vangogh.CS.Berkeley.EDU (ALPHA-6.59/6.28) id MAA09548; Tue, 18 May 1993 12:19:28 -0700
+Received: from yonge.csri.toronto.edu (yonge.csri.toronto.edu [128.100.1.2]) by hofmann.CS.Berkeley.EDU (ALPHA-6.56/6.27) id MAA02574; Tue, 18 May 1993 12:19:40 -0700
+Received: from alias by yonge.csri.toronto.edu with UUCP id <14413>; Tue, 18 May 1993 15:19:29 -0400
+Received: from dino.alias.com by barney.alias.com with SMTP id AA20522
+	(5.65a/IDA-1.4.2 for cs.berkeley.edu!4bsd-bugs); Tue, 18 May 93 15:16:39 -0400
+Received: by dino.alias.com id AA00574
+	(5.65a/IDA-1.4.2 for cs.berkeley.edu!4bsd-bugs@utcsri.UUCP); Tue, 18 May 93 15:16:37 -0400
+Date: 	Tue, 18 May 1993 15:16:37 -0400
+From: mandrews@alias.com (Mark Andrews)
+Message-Id: <9305181916.AA00574@dino.alias.com>
+To: 4bsd-bugs@cs.berkeley.edu
+Subject: getsockopt man page + network ctloutput functions
+Cc: mandrews@alias.com
+
+
+I have noticed a few more typos in the Net/2 getsockopt man page
+(usr/src/lib/libc/sys/getsockopt.2). Here's a total patch including
+the fix I sent a few weeks ago:
+
+------------------------------------------------------------------------
+
+ *** getsockopt.2	Wed May  1 17:42:05 1991
+ --- getsockopt.2.new	Tue May 18 14:45:45 1993
+ ***************
+ *** 277,286 ****
+   is received, then return with smaller of the amount available or the amount
+   requested.
+   The default value for
+ ! .Dv SO_SNDLOWAT
+   is 1.
+   If 
+ ! .Dv SO_SNDLOWAT
+   is set to a larger value, blocking receive calls normally
+   wait until they have received the smaller of the low water mark value
+   or the requested amount.
+ --- 277,286 ----
+   is received, then return with smaller of the amount available or the amount
+   requested.
+   The default value for
+ ! .Dv SO_RCVLOWAT
+   is 1.
+   If 
+ ! .Dv SO_RCVLOWAT
+   is set to a larger value, blocking receive calls normally
+   wait until they have received the smaller of the low water mark value
+   or the requested amount.
+ ***************
+ *** 323,329 ****
+   and
+   .Dv SO_ERROR
+   are options used only with
+ ! .Fn setsockopt .
+   .Dv SO_TYPE
+   returns the type of the socket, such as
+   .Dv SOCK_STREAM ;
+ --- 323,329 ----
+   and
+   .Dv SO_ERROR
+   are options used only with
+ ! .Fn getsockopt .
+   .Dv SO_TYPE
+   returns the type of the socket, such as
+   .Dv SOCK_STREAM ;
+
+-----------------------------------------------------------------------
+
+I have been looking at the [set|get]sockopt calls for the posix draft and
+have found a few discrepancies. In the ctloutput routines for `raw ip', ip
+and tcp, if the protocol level is incorrect or any of the specified options
+are not supported, the error number is set to EINVAL. I believe this is
+wrong and the error number should be ENOPROTOOPT. Accordingly, here are
+the patches to the Net/2 code, all pathnames relative to the netinet source
+directory:
+
+-------------------------------------------------------------------------
+
+ *** ip_output.c	Wed May  8 17:05:54 1991
+ --- ip_output.c.new	Tue May 18 14:59:08 1993
+ ***************
+ *** 378,384 ****
+   	int error = 0;
+   
+   	if (level != IPPROTO_IP)
+ ! 		error = EINVAL;
+   	else switch (op) {
+   
+   	case PRCO_SETOPT:
+ --- 378,384 ----
+   	int error = 0;
+   
+   	if (level != IPPROTO_IP)
+ ! 		error = ENOPROTOOPT;
+   	else switch (op) {
+   
+   	case PRCO_SETOPT:
+ ***************
+ *** 432,438 ****
+   #undef OPTSET
+   
+   		default:
+ ! 			error = EINVAL;
+   			break;
+   		}
+   		if (m)
+ --- 432,438 ----
+   #undef OPTSET
+   
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			break;
+   		}
+   		if (m)
+ ***************
+ *** 487,493 ****
+   			break;
+   
+   		default:
+ ! 			error = EINVAL;
+   			break;
+   		}
+   		break;
+ --- 487,493 ----
+   			break;
+   
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			break;
+   		}
+   		break;
+
+-------------------------------------------------------------------------
+
+ *** raw_ip.c	Wed May  8 17:05:54 1991
+ --- raw_ip.c.new	Tue May 18 14:59:50 1993
+ ***************
+ *** 131,137 ****
+   	register struct raw_inpcb *rp = sotorawinpcb(so);
+   
+   	if (level != IPPROTO_IP)
+ ! 		error = EINVAL;
+   	else switch (op) {
+   
+   	case PRCO_SETOPT:
+ --- 131,137 ----
+   	register struct raw_inpcb *rp = sotorawinpcb(so);
+   
+   	if (level != IPPROTO_IP)
+ ! 		error = ENOPROTOOPT;
+   	else switch (op) {
+   
+   	case PRCO_SETOPT:
+ ***************
+ *** 152,158 ****
+   			break;
+   
+   		default:
+ ! 			error = EINVAL;
+   			break;
+   		}
+   		break;
+ --- 152,158 ----
+   			break;
+   
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			break;
+   		}
+   		break;
+ ***************
+ *** 176,182 ****
+   			break;
+   
+   		default:
+ ! 			error = EINVAL;
+   			m_freem(*m);
+   			*m = 0;
+   			break;
+ --- 176,182 ----
+   			break;
+   
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			m_freem(*m);
+   			*m = 0;
+   			break;
+
+-------------------------------------------------------------------------
+
+ *** tcp_usrreq.c	Wed May  8 17:05:59 1991
+ --- tcp_usrreq.c.new	Tue May 18 15:00:42 1993
+ ***************
+ *** 367,373 ****
+   
+   		case TCP_MAXSEG:	/* not yet */
+   		default:
+ ! 			error = EINVAL;
+   			break;
+   		}
+   		if (m)
+ --- 367,373 ----
+   
+   		case TCP_MAXSEG:	/* not yet */
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			break;
+   		}
+   		if (m)
+ ***************
+ *** 386,392 ****
+   			*mtod(m, int *) = tp->t_maxseg;
+   			break;
+   		default:
+ ! 			error = EINVAL;
+   			break;
+   		}
+   		break;
+ --- 386,392 ----
+   			*mtod(m, int *) = tp->t_maxseg;
+   			break;
+   		default:
+ ! 			error = ENOPROTOOPT;
+   			break;
+   		}
+   		break;
+
+---------------------------------------------------------------------------
+
+Mark

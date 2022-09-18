@@ -1,0 +1,429 @@
+head	1.7;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	94.11.15.22.23.37;	author margo;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	94.10.04.17.03.12;	author margo;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	94.10.04.17.01.04;	author margo;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	94.05.13.13.54.27;	author margo;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	94.04.08.16.46.17;	author margo;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	94.04.08.16.40.06;	author margo;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.09.01.20.24.56;	author margo;	state Exp;
+branches;
+next	;
+
+
+desc
+@4.4BSD inode.h
+@
+
+
+1.7
+log
+@Merge lastrec and lastlen into nextrec field.
+@
+text
+@#ifdef CLFS
+/*
+ * CLFS
+ * $Log: wnode.h,v $
+ * Revision 1.6  1994/10/04  17:03:12  margo
+ * Make 4.4Lite version compile under BSD4.4-Lite.
+ *
+ * Revision 1.2  1994/09/26  18:52:08  jat
+ * Initial WAFS checkin.
+ *
+ */
+#endif
+/*
+ * Copyright (c) 1982, 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * Copyright (c) 1994
+ *	The President and Fellows of Harvard University.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	$Id: wnode.h,v 1.6 1994/10/04 17:03:12 margo Exp margo $
+ */
+#ifndef WNODE_H
+#define WNODE_H
+
+/*
+ * WAFS log record types.
+ */
+typedef u_long wafs_type;
+typedef	struct timeval	wafs_page_header_t;
+
+struct wafs_header {
+	wafs_type	rectype;
+	size_t		length;
+};
+
+/* The wnode is used to maintain in-memory information about the log. */
+struct wnode {
+	struct wafs *w_fs;	/* associated file system */
+	struct vnode *w_vnode;	/* Vnode */
+	off_t	w_lastlsn;	/* last byte written in the log */
+				/* The next two fields provide read hints */
+	off_t	w_nextrec;	/* offset of the beginning of the next record */
+	wafs_type w_type;	/* Type of last record read */
+	ino_t	w_ino;		/* inode number */
+	off_t	w_head;		/* head of log; place where you write */
+	off_t	w_tail;		/* tail of log; oldest live record */
+	u_long	w_flag;		/* see below */
+	struct	vnode *w_devvp;	/* vnode for block I/O */
+	struct	timespec w_atime;	/* Access time */
+	struct	timespec w_mtime;	/* Modify time */
+	struct	timespec w_ctime;	/* Change time */
+	pid_t	w_lockholder;	/* Holding wnode locked */
+	pid_t	w_lockwaiter;	/* Waiting on wnode */
+	dev_t	w_dev;		/* device where wnode resides */
+#ifdef AIX
+	int	w_event;	/* for sleep/wakeup */
+#endif
+};
+
+/*
+ * Wnode flag values.
+ */
+#define	WSYNC	0x1	/* Performing log write */
+#define WCHECK	0x2	/* Performing log checkpoint */
+#define	WLOCKED	0x4	/* Locking wnode */
+#define	WWANT	0x8	/* Waiting on lock */
+
+/*
+ * ROOTINO equivalent
+ */
+#define MASTERLOG 2 /* Used to access "file" containing log */
+/*
+ * Macros to translate between vnodes and wnodes.
+ */
+#define	VTOW(vp)	((struct wnode *)(vp)->v_data)
+#define	WTOV(wp)	(wp->w_vnode)
+
+
+#define WAFS_RECTYPE	0x00000111
+#define IS_RECTYPE(N)	((N) | WAFS_RECTYPE == WAFS_RECTYPE)
+
+#define	WAFS_NORECORD	0x0
+#define	WAFS_RECORD	0x1
+#define WAFS_BEGINREC	0x2
+#define WAFS_ENDREC	0x3
+#define WAFS_CONTINUE	0x4
+#define	WAFS_COMMIT	0x5
+#define	WAFS_CHECKPOINT	0x6
+
+/*
+ * logical_to_physical:  This is the actual computation to derive a physical
+ * block number from a WAFS logical block number.  It is used by both bmap
+ * and dumpwafs. 
+ *	interval_blocks = (WFSP)->wafs_interval << (WFSP)->wafs_sbshift;
+ *	boff = (LBN) % (WFSP)->wafs_dsize;
+ *	blocks_to_skip = (boff >> interval_shift) + 1 << (WFSP)->wafs_sbshift;
+ *	physical = boff + blocks_to_skip + dbtofsb(WFSP, SBLOCK);
+ *
+ */
+#define WAFS_BLOCK_OFF(WFSP, LBN)	((LBN) % (WFSP)->wafs_dsize)
+
+#define	WAFS_INTERVAL_SHIFT(WFSP) \
+	((WFSP)->wafs_int_shift + (WFSP)->wafs_sbshift)
+
+#define	WAFS_BLOCKS_SKIP(WFSP, LBN) \
+	((WAFS_BLOCK_OFF(WFSP, LBN) >> WAFS_INTERVAL_SHIFT(WFSP)) + 1 \
+	<< (WFSP)->wafs_sbshift) \
+
+#define	logical_to_physical(WFSP, LBN) \
+	(WAFS_BLOCK_OFF(WFSP, LBN) + WAFS_BLOCKS_SKIP (WFSP, LBN) \
+	+ dbtofsb(WFSP, SBLOCK))
+
+#endif
+@
+
+
+1.6
+log
+@Make 4.4Lite version compile under BSD4.4-Lite.
+@
+text
+@d5 3
+d47 1
+a47 1
+ *	$Id$
+d69 1
+a69 3
+	off_t	w_lastrec;	/* offset of the beginning of the last
+				   record read */
+	off_t	w_lastlen;	/* Length of last record read */
+@
+
+
+1.5
+log
+@4.4Lite modifications from CLAM/Jack Test
+@
+text
+@d1 1
+d9 1
+a9 1
+
+d13 2
+d44 1
+a44 1
+ *	@@(#)wnode.h	8.1 (Berkeley) 6/11/93
+@
+
+
+1.4
+log
+@Fix macro definitions; they were wrong!
+@
+text
+@d2 8
+d78 3
+d98 1
+a98 1
+#define	VTOW(vp)	((struct wnode *)(vp->v_data))
+@
+
+
+1.3
+log
+@Mount/Unmount work!
+@
+text
+@d38 11
+d56 1
+a56 1
+				   record written */
+d58 1
+a89 5
+/*
+ * WAFS log record types.
+ */
+typedef u_long wafs_type;
+typedef	struct timeval	wafs_page_header_t;
+a90 6
+struct wafs_header {
+	wafs_type	rectype;
+	size_t		length;
+};
+
+
+d108 1
+a108 1
+ *	blocks_to_skip = (boff >> interval_blocks) + 1 << (WFSP)->wafs_sbshift;
+d114 2
+a115 2
+#define	WAFS_INTERVAL_BLOCKS(WFSP) \
+	((WFSP)->wafs_interval << (WFSP)->wafs_sbshift)
+d118 1
+a118 1
+	((WAFS_BLOCK_OFF(WFSP, LBN) >> WAFS_INTERVAL_BLOCKS(WFSP)) + 1 \
+@
+
+
+1.2
+log
+@Mount/Unmount pairs work!
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d33 1
+a33 1
+ *	@@(#)inode.h	8.1 (Berkeley) 6/11/93
+d35 2
+d38 21
+a58 1
+#include <ufs/ufs/dinode.h>
+d61 1
+a61 5
+ * Theoretically, directories can be more than 2Gb in length,
+ * however, in practice this seems unlikely. So, we define
+ * the type doff_t as a long to keep down the cost of doing
+ * lookup on a 32-bit machine. If you are porting to a 64-bit
+ * architecture, you should make doff_t the same as off_t.
+d63 4
+a66 1
+#define doff_t	long
+d69 1
+a69 9
+ * The inode is used to describe each active (or recently active)
+ * file in the UFS filesystem. It is composed of two types of
+ * information. The first part is the information that is needed
+ * only while the file is active (such as the identity of the file
+ * and linkage to speed its lookup). The second part is the 
+ * permannent meta-data associated with the file which is read
+ * in from the permanent dinode from long term storage when the
+ * file becomes active, and is put back when the file is no longer
+ * being used.
+d71 16
+a86 33
+struct inode {
+	struct	inode *i_next;	/* hash chain forward */
+	struct	inode **i_prev;	/* hash chain back */
+	struct	vnode *i_vnode;	/* vnode associated with this inode */
+	struct	vnode *i_devvp;	/* vnode for block I/O */
+	u_long	i_flag;		/* see below */
+	dev_t	i_dev;		/* device where inode resides */
+	ino_t	i_number;	/* the identity of the inode */
+	union {			/* associated filesystem */
+		struct	fs *fs;		/* FFS */
+		struct	lfs *lfs;	/* LFS */
+	} inode_u;
+#define	i_fs	inode_u.fs
+#define	i_lfs	inode_u.lfs
+	struct	dquot *i_dquot[MAXQUOTAS]; /* pointer to dquot structures */
+	u_quad_t i_modrev;	/* revision level for lease */
+	struct	lockf *i_lockf;	/* head of byte-level lock list */
+	pid_t	i_lockholder;	/* DEBUG: holder of inode lock */
+	pid_t	i_lockwaiter;	/* DEBUG: latest blocked for inode lock */
+	/*
+	 * Side effects; used during directory lookup.
+	 */
+	long	i_count;	/* size of free slot in directory */
+	doff_t	i_endoff;	/* end of useful stuff in directory */
+	doff_t	i_diroff;	/* offset in dir, where we found last entry */
+	doff_t	i_offset;	/* offset of free space in directory */
+	ino_t	i_ino;		/* inode number of found directory */
+	u_long	i_reclen;	/* size of found directory entry */
+	long	i_spare[11];	/* spares to round up to 128 bytes */
+	/*
+	 * the on-disk dinode itself.
+	 */
+	struct	dinode i_din;	/* 128 bytes of the on-disk dinode */
+a88 15
+#define	i_mode		i_din.di_mode
+#define	i_nlink		i_din.di_nlink
+#define	i_uid		i_din.di_uid
+#define	i_gid		i_din.di_gid
+#define i_size		i_din.di_size
+#define	i_db		i_din.di_db
+#define	i_ib		i_din.di_ib
+#define	i_atime		i_din.di_atime
+#define	i_mtime		i_din.di_mtime
+#define	i_ctime		i_din.di_ctime
+#define i_blocks	i_din.di_blocks
+#define	i_rdev		i_din.di_rdev
+#define	i_shortlink	i_din.di_shortlink
+#define i_flags		i_din.di_flags
+#define i_gen		i_din.di_gen
+d90 2
+a91 11
+/* flags */
+#define	ILOCKED		0x0001		/* inode is locked */
+#define	IWANT		0x0002		/* some process waiting on lock */
+#define	IRENAME		0x0004		/* inode is being renamed */
+#define	IUPD		0x0010		/* file has been modified */
+#define	IACC		0x0020		/* inode access time to be updated */
+#define	ICHG		0x0040		/* inode has been changed */
+#define	IMOD		0x0080		/* inode has been modified */
+#define	ISHLOCK		0x0100		/* file has shared lock */
+#define	IEXLOCK		0x0200		/* file has exclusive lock */
+#define	ILWAIT		0x0400		/* someone waiting on file lock */
+d93 8
+a100 1
+#ifdef KERNEL
+d102 8
+a109 2
+ * Structure used to pass around logical block paths generated by
+ * ufs_getlbns and used by truncate and bmap code.
+d111 1
+a111 5
+struct indir {
+	daddr_t	in_lbn;			/* logical block number */
+	int	in_off;			/* offset in buffer */
+	int	in_exists;		/* does this block exist yet */
+};
+d113 2
+a114 3
+/* Convert between inode pointers and vnode pointers. */
+#define VTOI(vp)	((struct inode *)(vp)->v_data)
+#define ITOV(ip)	((ip)->i_vnode)
+d116 3
+a118 14
+#define	ITIMES(ip, t1, t2) { \
+	if ((ip)->i_flag&(IUPD|IACC|ICHG)) { \
+		(ip)->i_flag |= IMOD; \
+		if ((ip)->i_flag&IACC) \
+			(ip)->i_atime.ts_sec = (t1)->tv_sec; \
+		if ((ip)->i_flag&IUPD) { \
+			(ip)->i_mtime.ts_sec = (t2)->tv_sec; \
+			(ip)->i_modrev++; \
+		} \
+		if ((ip)->i_flag&ICHG) \
+			(ip)->i_ctime.ts_sec = time.tv_sec; \
+		(ip)->i_flag &= ~(IACC|IUPD|ICHG); \
+	} \
+}
+d120 5
+a124 8
+/* This overlays the fid structure (see mount.h). */
+struct ufid {
+	u_short	ufid_len;	/* length of structure */
+	u_short	ufid_pad;	/* force long alignment */
+	ino_t	ufid_ino;	/* file number (ino) */
+	long	ufid_gen;	/* generation number */
+};
+#endif /* KERNEL */
+@

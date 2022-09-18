@@ -1,0 +1,89 @@
+Return-Path: <sdcsvax!sdccsu3!madden@Nosc>
+From: sdcsvax!sdccsu3!madden@Nosc (Jim Madden)
+Date: Wed, 26 Oct 83 02:37:03 pdt
+
+Subject: "munhash" and "memall mfind" panics
+Index:	sys/vax/vm_machdep.c, 4.2BSD
+
+Description:
+	On 4.1c and 4.2 for the VAX (and probably earlier systems),
+	attempting to use dbx to run a code file with text space disk
+	blocks with block addresses larger than 2^19 will cause a
+	"munhash" panic.
+
+Repeat-By:
+	On a file system with more than 524287 hardware disk blocks,
+	somehow create a code file with text block addresses larger
+	than 524287.  Use dbx (or another debugger which inserts check
+	points to track program execution) to run the code file.  The
+	system will perform a "munhash" panic.
+
+Fix:
+	In both sys/vax/vm_machdep.c and sys/sys/vm_mem.c there are
+	references to the cblkno bit field of a page table entry which
+	look like
+	    (daddr_t)(u_long)c->c_blkno
+
+	Despite the fairly obvious intention of the coder to inhibit
+	sign extension of the field, the released c compiler uses an
+	extv instruction to do the work.  If the 20th bit of c_blkno is
+	set, this instruction causes a negative number to be generated
+	and used in the expression.
+
+	Although a proper solution probably involves a change to the c
+	compiler, the expedient of removing the (daddr_t) cast corrects
+	the problem by by causing the compiler to produce the intended
+	extzv instruction.  Of course, this change makes lint unhappy
+	with the affected code.
+
+	A context diff of the two areas follows:
+
+
+*** /tmp/,RCSt1025113	Wed Oct 26 02:08:28 1983
+--- /sys/vax/vm_machdep.c	Tue Oct 25 16:30:43 1983
+***************
+*** 145,151
+  		c = &cmap[pgtocm(pte->pg_pfnum)];
+  		if (c->c_blkno && c->c_mdev != MSWAPX)
+  			munhash(mount[c->c_mdev].m_dev,
+! 			    (daddr_t)(u_long)c->c_blkno);
+  	}
+  	*(int *)pte &= ~PG_PROT;
+  	*(int *)pte |= tprot;
+
+--- 145,151 -----
+  		c = &cmap[pgtocm(pte->pg_pfnum)];
+  		if (c->c_blkno && c->c_mdev != MSWAPX)
+  			munhash(mount[c->c_mdev].m_dev,
+! 			    (u_long) c->c_blkno);
+  	}
+  	*(int *)pte &= ~PG_PROT;
+  	*(int *)pte |= tprot;
+
+-------------------------------------------------------------
+*** /tmp/,RCSt1025482	Wed Oct 26 02:26:19 1983
+--- /sys/sys/vm_mem.c	Wed Oct 26 02:25:55 1983
+***************
+*** 251,257
+  			}
+  			if (mfind(c->c_mdev == MSWAPX ?
+  			      swapdev : mount[c->c_mdev].m_dev,
+! 			      (daddr_t)(u_long)c->c_blkno))
+  				panic("memall mfind");
+  			c1->c_mdev = 0;
+  			c1->c_blkno = 0;
+
+--- 251,257 -----
+  			}
+  			if (mfind(c->c_mdev == MSWAPX ?
+  			      swapdev : mount[c->c_mdev].m_dev,
+! 				(u_long) c->c_blkno))
+  				panic("memall mfind");
+  			c1->c_mdev = 0;
+  			c1->c_blkno = 0;
+
+-------------------------------------------------------------
+
+				Jim Madden
+				UCSD Computer Center
+				sdcsvax!madden

@@ -1,0 +1,467 @@
+From chris@cs.UMD.EDU  Mon Aug 20 03:02:09 1990
+Date: Mon, 20 Aug 90 06:02:03 -0400
+From: chris@cs.UMD.EDU (Chris Torek)
+To: reno43-bugs@okeeffe.Berkeley.EDU
+Subject: vmstat cleanups
+Index: usr.bin/vmstat 4.3BSD-reno
+
+Description:
+	The following are random lint-type fixes for vmstat.
+
+	disks.c:
+		getw => getlong; check return values from calloc/malloc
+	fetch.c:
+		getw => getlong
+	iostat.c:
+		getw => getlong; fix rounding; simplify
+	keyboard.c:
+		use sigmask() macro instead of defining a private one
+	main.c:
+		getw => getlong; handle `no such command' return from lookup();
+		signal functions return void, not int
+	pigs.c:
+		getw => getlong
+	swap.c:
+		getw => getlong
+	systat.h:
+		include <stdlib.h> and <string.h> rather than defining
+		malloc/strncpy etc here; getw => getlong
+	vmstat.c:
+		getw => getlong
+
+	(Plenty of lint remains.  I got tired....)
+
+Repeat-by:
+	examination
+
+Fix:
+
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/disks.c ./disks.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/disks.c	Mon May 29 19:48:30 1989
+--- ./disks.c	Mon Aug 20 05:41:16 1990
+***************
+*** 40,43 ****
+--- 40,44 ----
+  	register int i;
+  	register char *cp;
++ 	long *wpms;
+  	static int once = 0;
+  	static char buf[1024];
+***************
+*** 44,85 ****
+  
+  	if (once)
+! 		return(1);
+  	nlist(_PATH_UNIX, nlst);
+  	if (nlst[X_DK_NDRIVE].n_value == 0) {
+  		error("dk_ndrive undefined in kernel");
+! 		return(0);
+  	}
+! 	dk_ndrive = getw(nlst[X_DK_NDRIVE].n_value);
+  	if (dk_ndrive <= 0) {
+  		error("dk_ndrive=%d according to %s", dk_ndrive, _PATH_UNIX);
+! 		return(0);
+  	}
+! 	dk_mspw = (float *)calloc(dk_ndrive, sizeof (float));
+! 	lseek(kmem, nlst[X_DK_WPMS].n_value, L_SET);
+! 	{
+! 		long *wpms = (long *)calloc(dk_ndrive, sizeof(long));
+! 		read(kmem, wpms, dk_ndrive * sizeof (long));
+! 		for (i = 0; i < dk_ndrive; i++)
+! 			*(dk_mspw + i) = (*(wpms + i) == 0)? 0.0:
+! 			                 (float) 1.0 / *(wpms + i);
+! 		free(wpms);
+  	}
+! 	dr_name = (char **)calloc(dk_ndrive, sizeof (char *));
+! 	dk_select = (int *)calloc(dk_ndrive, sizeof (int));
+  	for (cp = buf, i = 0; i < dk_ndrive; i++) {
+  		dr_name[i] = cp;
+! 		sprintf(dr_name[i], "dk%d", i);
+! 		cp += strlen(dr_name[i]) + 1;
+! 		if (dk_mspw[i] != 0.0)
+! 			dk_select[i] = 1;
+  	}
+  	if (!read_names()) {
+! 		free(dr_name);
+! 		free(dk_select);
+! 		free(dk_mspw);
+  		return(0);
+  	}
+  	once = 1;
+! 	return(1);
+  }
+  
+--- 45,91 ----
+  
+  	if (once)
+! 		return (1);
+  	nlist(_PATH_UNIX, nlst);
+  	if (nlst[X_DK_NDRIVE].n_value == 0) {
+  		error("dk_ndrive undefined in kernel");
+! 		return (0);
+  	}
+! 	dk_ndrive = getlong(nlst[X_DK_NDRIVE].n_value);
+  	if (dk_ndrive <= 0) {
+  		error("dk_ndrive=%d according to %s", dk_ndrive, _PATH_UNIX);
+! 		return (0);
+  	}
+! 	dk_mspw = (float *)malloc(dk_ndrive * sizeof(float));
+! 	wpms = (long *)calloc(dk_ndrive, sizeof(long));
+! 	dr_name = (char **)malloc(dk_ndrive * sizeof(char *));
+! 	dk_select = (int *)malloc(dk_ndrive * sizeof(int));
+! 	if (dk_mspw == NULL || wpms == NULL || dr_name == NULL ||
+! 	    dk_select == NULL) {
+! 		error("no memory for %d (dk_ndrive) disk stats", dk_ndrive);
+! 		/* following depends on free(NULL) being noop */
+! 		free((void *)dk_mspw);
+! 		free((void *)wpms);
+! 		free((void *)dr_name);
+! 		free((void *)dk_select);
+! 		return (0);
+  	}
+! 	(void) lseek(kmem, nlst[X_DK_WPMS].n_value, L_SET);
+! 	read(kmem, wpms, dk_ndrive * sizeof(long));	/* XXX should check */
+! 	for (i = 0; i < dk_ndrive; i++)
+! 		dk_mspw[i] = wpms[i] == 0 ? 0.0 : 1.0 / wpms[i];
+  	for (cp = buf, i = 0; i < dk_ndrive; i++) {
+  		dr_name[i] = cp;
+! 		cp += sprintf(dr_name[i], "dk%d", i) + 1;
+! 		dk_select[i] = wpms[i] != 0;
+  	}
++ 	free((void *)wpms);
+  	if (!read_names()) {
+! 		free((void *)dr_name);
+! 		free((void *)dk_select);
+! 		free((void *)dk_mspw);
+  		return(0);
+  	}
+  	once = 1;
+! 	return (1);
+  }
+  
+***************
+*** 87,90 ****
+--- 93,97 ----
+  	char *cmd, *args;
+  {
++ 
+  	if (prefix(cmd, "display") || prefix(cmd, "add")) {
+  		dkselect(args, 1, dk_select);
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/fetch.c ./fetch.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/fetch.c	Mon Feb 26 01:53:31 1990
+--- ./fetch.c	Mon Aug 20 05:32:06 1990
+***************
+*** 17,21 ****
+  
+  long
+! getw(loc)
+          int loc;
+  {
+--- 17,21 ----
+  
+  long
+! getlong(loc)
+          int loc;
+  {
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/iostat.c ./iostat.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/iostat.c	Mon May 29 19:50:54 1989
+--- ./iostat.c	Mon Aug 20 05:32:13 1990
+***************
+*** 100,104 ****
+  	if (nlst[X_DK_BUSY].n_type == 0)
+  		return;
+! 	s.dk_busy = getw(nlst[X_DK_BUSY].n_value);
+  	lseek(kmem, (long)nlst[X_DK_TIME].n_value, L_SET);
+  	read(kmem, s.dk_time, dk_ndrive * sizeof (long));
+--- 100,104 ----
+  	if (nlst[X_DK_BUSY].n_type == 0)
+  		return;
+! 	s.dk_busy = getlong(nlst[X_DK_BUSY].n_value);
+  	lseek(kmem, (long)nlst[X_DK_TIME].n_value, L_SET);
+  	read(kmem, s.dk_time, dk_ndrive * sizeof (long));
+***************
+*** 305,316 ****
+  {
+  	char buf[10];
+! 	register int k;
+! 	register int v = (int)(val * scale) + 0.5;
+  
+! 	k = MIN(v, colwidth);
+! 	if (v > colwidth) {
+  		sprintf(buf, "%4.1f", val);
+! 		k -= strlen(buf);
+! 		while (k--)
+  			waddch(wnd, 'X');
+  		waddstr(wnd, buf);
+--- 305,313 ----
+  {
+  	char buf[10];
+! 	register int k = (int)(val * scale + 0.5);
+  
+! 	if (k > colwidth) {
+  		sprintf(buf, "%4.1f", val);
+! 		for (k = colwidth - strlen(buf); --k >= 0;)
+  			waddch(wnd, 'X');
+  		waddstr(wnd, buf);
+***************
+*** 317,321 ****
+  		return;
+  	}
+! 	while (k--)
+  		waddch(wnd, 'X');
+  	wclrtoeol(wnd);
+--- 314,318 ----
+  		return;
+  	}
+! 	while (--k >= 0)
+  		waddch(wnd, 'X');
+  	wclrtoeol(wnd);
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/keyboard.c ./keyboard.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/keyboard.c	Tue Dec 22 16:47:45 1987
+--- ./keyboard.c	Mon Aug 20 05:28:09 1990
+***************
+*** 34,40 ****
+                                  ch += 'a' - 'A';
+                          if (col == 0) {
+- #define	mask(s)	(1 << ((s) - 1))
+                                  if (ch == CTRL('l')) {
+! 					oldmask = sigblock(mask(SIGALRM));
+  					wrefresh(curscr);
+  					sigsetmask(oldmask);
+--- 34,39 ----
+                                  ch += 'a' - 'A';
+                          if (col == 0) {
+                                  if (ch == CTRL('l')) {
+! 					oldmask = sigblock(sigmask(SIGALRM));
+  					wrefresh(curscr);
+  					sigsetmask(oldmask);
+***************
+*** 42,46 ****
+                                  }
+  				if (ch == CTRL('g')) {
+! 					oldmask = sigblock(mask(SIGALRM));
+  					status();
+  					sigsetmask(oldmask);
+--- 41,45 ----
+                                  }
+  				if (ch == CTRL('g')) {
+! 					oldmask = sigblock(sigmask(SIGALRM));
+  					status();
+  					sigsetmask(oldmask);
+***************
+*** 84,88 ****
+                  } while (col == 0 || (ch != '\r' && ch != '\n'));
+                  line[col] = '\0';
+! 		oldmask = sigblock(mask(SIGALRM));
+                  command(line + 1);
+  		sigsetmask(oldmask);
+--- 83,87 ----
+                  } while (col == 0 || (ch != '\r' && ch != '\n'));
+                  line[col] = '\0';
+! 		oldmask = sigblock(sigmask(SIGALRM));
+                  command(line + 1);
+  		sigsetmask(oldmask);
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/main.c ./main.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/main.c	Mon Mar 12 12:34:44 1990
+--- ./main.c	Mon Aug 20 05:32:18 1990
+***************
+*** 35,41 ****
+  int	naptime = 5;
+  
+! int     die();
+! int     display();
+! int     suspend();
+  sig_t	sigtstpdfl;
+  
+--- 35,39 ----
+  int	naptime = 5;
+  
+! void	die(), display(), suspend();
+  sig_t	sigtstpdfl;
+  
+***************
+*** 56,60 ****
+  
+  			p = lookup(&argv[0][1]);
+! 			if (p == (struct cmdtab *)-1) {
+  				fprintf(stderr, "%s: unknown request\n",
+  				    &argv[0][1]);
+--- 54,58 ----
+  
+  			p = lookup(&argv[0][1]);
+! 			if (p == (struct cmdtab *)-1 || p == NULL) {
+  				fprintf(stderr, "%s: unknown request\n",
+  				    &argv[0][1]);
+***************
+*** 116,124 ****
+  
+  	gethostname(hostname, sizeof (hostname));
+! 	ccpu = getw(nlst[X_CCPU].n_value);
+! 	fscale = getw(nlst[X_FSCALE].n_value);
+  	lccpu = log((double) ccpu / fscale);
+! 	hz = getw(nlst[X_HZ].n_value);
+! 	phz = getw(nlst[X_PHZ].n_value);
+  	(*curcmd->c_init)();
+  	curcmd->c_flags |= CF_INIT;
+--- 114,122 ----
+  
+  	gethostname(hostname, sizeof (hostname));
+! 	ccpu = getlong(nlst[X_CCPU].n_value);
+! 	fscale = getlong(nlst[X_FSCALE].n_value);
+  	lccpu = log((double) ccpu / fscale);
+! 	hz = getlong(nlst[X_HZ].n_value);
+! 	phz = getlong(nlst[X_PHZ].n_value);
+  	(*curcmd->c_init)();
+  	curcmd->c_flags |= CF_INIT;
+***************
+*** 144,147 ****
+--- 142,146 ----
+  labels()
+  {
++ 
+  	if (curcmd->c_flags & CF_LOADAV) {
+  		mvaddstr(2, 20,
+***************
+*** 156,159 ****
+--- 155,159 ----
+  }
+  
++ void
+  display()
+  {
+***************
+*** 200,205 ****
+--- 200,207 ----
+  }
+  
++ void
+  die()
+  {
++ 
+  	move(CMDLINE, 0);
+  	clrtoeol();
+***************
+*** 211,214 ****
+--- 213,217 ----
+  error(fmt, a1, a2, a3)
+  {
++ 
+  	mvprintw(CMDLINE, 0, fmt, a1, a2, a3);
+  	clrtoeol();
+Common subdirectories: /mnt/4.3reno/usr/src/usr.bin/systat/obj and ./obj
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/pigs.c ./pigs.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/pigs.c	Mon May 29 20:22:12 1989
+--- ./pigs.c	Mon Aug 20 05:32:25 1990
+***************
+*** 168,173 ****
+  	}
+  	if (procp == NULL) {
+! 		procp = getw(nlst[X_PROC].n_value);
+! 		nproc = getw(nlst[X_NPROC].n_value);
+  	}
+  	if (kprocp == NULL)
+--- 168,173 ----
+  	}
+  	if (procp == NULL) {
+! 		procp = getlong(nlst[X_PROC].n_value);
+! 		nproc = getlong(nlst[X_NPROC].n_value);
+  	}
+  	if (kprocp == NULL)
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/swap.c ./swap.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/swap.c	Fri May 18 19:58:15 1990
+--- ./swap.c	Mon Aug 20 05:32:35 1990
+***************
+*** 203,210 ****
+  	}
+  	if (nswdev == 0) {
+! 		dmmin = getw(nlst[X_DMMIN].n_value);
+! 		dmmax = getw(nlst[X_DMMAX].n_value);
+! 		dmtext = getw(nlst[X_DMTEXT].n_value);
+! 		nswdev = getw(nlst[X_NSWDEV].n_value);
+  		if (nswdev > MAXSWAPDEV)
+  			nswdev = MAXSWAPDEV;
+--- 203,210 ----
+  	}
+  	if (nswdev == 0) {
+! 		dmmin = getlong(nlst[X_DMMIN].n_value);
+! 		dmmax = getlong(nlst[X_DMMAX].n_value);
+! 		dmtext = getlong(nlst[X_DMTEXT].n_value);
+! 		nswdev = getlong(nlst[X_NSWDEV].n_value);
+  		if (nswdev > MAXSWAPDEV)
+  			nswdev = MAXSWAPDEV;
+***************
+*** 212,221 ****
+  		klseek(kmem, nlst[X_SWDEVT].n_value, L_SET);
+  		read(kmem, swdevt, nswdev * sizeof (struct swdevt));
+! 		ntext = getw(nlst[X_NTEXT].n_value);
+! 		textp = getw(nlst[X_TEXT].n_value);
+  	}
+  	if (procp == NULL) {
+! 		procp = getw(nlst[X_PROC].n_value);
+! 		nproc = getw(nlst[X_NPROC].n_value);
+  	}
+  	if (xtext == NULL)
+--- 212,221 ----
+  		klseek(kmem, nlst[X_SWDEVT].n_value, L_SET);
+  		read(kmem, swdevt, nswdev * sizeof (struct swdevt));
+! 		ntext = getlong(nlst[X_NTEXT].n_value);
+! 		textp = getlong(nlst[X_TEXT].n_value);
+  	}
+  	if (procp == NULL) {
+! 		procp = getlong(nlst[X_PROC].n_value);
+! 		nproc = getlong(nlst[X_NPROC].n_value);
+  	}
+  	if (xtext == NULL)
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/systat.h ./systat.h
+*** /mnt/4.3reno/usr/src/usr.bin/systat/systat.h	Mon Mar 12 12:27:18 1990
+--- ./systat.h	Mon Aug 20 05:48:23 1990
+***************
+*** 12,15 ****
+--- 12,17 ----
+  #include <curses.h>
+  #include <math.h>
++ #include <stdlib.h>
++ #include <string.h>
+  
+  #include <sys/param.h>
+***************
+*** 92,95 ****
+  int	CMDLINE;
+  
+! char    *malloc(), *calloc(), *strncpy();
+! long    getw();
+--- 94,96 ----
+  int	CMDLINE;
+  
+! long    getlong();
+diff -c2 -r /mnt/4.3reno/usr/src/usr.bin/systat/vmstat.c ./vmstat.c
+*** /mnt/4.3reno/usr/src/usr.bin/systat/vmstat.c	Sun Jun 24 17:51:09 1990
+--- ./vmstat.c	Mon Aug 20 05:32:41 1990
+***************
+*** 644,648 ****
+  	lseek(kmem, (long)name[X_TOTAL].n_value, L_SET);
+  	read(kmem, &s->Total, sizeof s->Total);
+! 	s->dk_busy = getw(name[X_DK_BUSY].n_value);
+   	lseek(kmem, (long)name[X_DK_TIME].n_value,  L_SET);
+   	read(kmem, s->dk_time, dk_ndrive * sizeof (long));
+--- 644,648 ----
+  	lseek(kmem, (long)name[X_TOTAL].n_value, L_SET);
+  	read(kmem, &s->Total, sizeof s->Total);
+! 	s->dk_busy = getlong(name[X_DK_BUSY].n_value);
+   	lseek(kmem, (long)name[X_DK_TIME].n_value,  L_SET);
+   	read(kmem, s->dk_time, dk_ndrive * sizeof (long));
+***************
+*** 653,658 ****
+  	lseek(kmem, (long)name[X_DK_SEEK].n_value,  L_SET);
+  	read(kmem, s->dk_seek, dk_ndrive * sizeof (long));
+! 	s->tk_nin = getw(name[X_TK_NIN].n_value);
+! 	s->tk_nout = getw(name[X_TK_NOUT].n_value);
+  	lseek(kmem, (long)name[X_NCHSTATS].n_value,  L_SET);
+  	read(kmem, &s->nchstats, sizeof s->nchstats);
+--- 653,658 ----
+  	lseek(kmem, (long)name[X_DK_SEEK].n_value,  L_SET);
+  	read(kmem, s->dk_seek, dk_ndrive * sizeof (long));
+! 	s->tk_nin = getlong(name[X_TK_NIN].n_value);
+! 	s->tk_nout = getlong(name[X_TK_NOUT].n_value);
+  	lseek(kmem, (long)name[X_NCHSTATS].n_value,  L_SET);
+  	read(kmem, &s->nchstats, sizeof s->nchstats);

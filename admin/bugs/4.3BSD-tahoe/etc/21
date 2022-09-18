@@ -1,0 +1,54 @@
+From: jtkohl@athena.mit.edu (John T Kohl)
+Subject: inetd loses track of waiting servers when reconfiguring
+Date: 3 Jun 88 16:37:13 GMT
+Index:  etc/inetd.c 4.3BSD-tahoe
+
+Description:
+        If inetd is waiting for a datagram-server to exit when it is
+        reconfigured via SIGHUP, it will lose the pid of the datagram
+        server and eventually becomes deaf to that service when the
+        server exits.
+
+Repeat-By:
+        Set up inetd to listen on behalf of a long-lived udp-based
+        service.  While the server is active, reconfigure inetd with
+        SIGHUP. Let the udp-based server exit.  inetd will be deaf to
+        that service, and packets will accumulate on the listening
+        socket (use netstat -a to take a look).
+
+Fix:
+        Install this patch: (your line numbers probably differ)
+
+*** inetd.c.old Fri Jun  3 11:29:26 1988
+--- inetd.c     Fri Jun  3 11:28:56 1988
+***************
+*** 383,390 ****
+                        int i;
+
+                        omask = sigblock(SIGBLOCK);
+!                       if (cp->se_bi == 0)
+!                               sep->se_wait = cp->se_wait;
+  #define SWAP(a, b) { char *c = a; a = b; b = c; }
+                        if (cp->se_user)
+                                SWAP(sep->se_user, cp->se_user);
+--- 383,401 ----
+                        int i;
+
+                        omask = sigblock(SIGBLOCK);
+!                       if (cp->se_bi == 0) {
+!                           /* sep->se_wait may be holding a
+!                              process ID of a running daemon we are
+!                              waiting for.  If so, don't nuke it unless
+!                              we are instructed now not to wait.
+!                              sep->se_wait == 1 if we should wait and
+!                              there is no process.
+!                              == 0 if we don't wait
+!                              == pid if we are currently waiting.
+!                              */
+!                           if ((sep->se_wait == 1) || (cp->se_wait == 0))
+!                                   sep->se_wait = cp->se_wait;
+!                       }
+  #define SWAP(a, b) { char *c = a; a = b; b = c; }
+                        if (cp->se_user)
+                                SWAP(sep->se_user, cp->se_user);
+

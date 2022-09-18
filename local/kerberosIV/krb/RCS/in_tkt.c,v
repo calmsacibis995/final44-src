@@ -1,0 +1,625 @@
+head     4.13;
+branch   ;
+access   ;
+symbols  PATCH8:4.9 PATCH7:4.9 KPATCH6:4.8 ASRSNAP1001:4.6 PATCH5:4.6 KPATCH4:4.6 KPATCH3:4.6 KPATCH2:4.6 KREL1:4.6 BETA5/24/88:4.3;
+locks    ; strict;
+comment  @ * @;
+
+
+4.13
+date     91.07.05.16.39.32;  author karels;  state Exp;
+branches ;
+next     4.12;
+
+4.12
+date     91.06.02.17.07.53;  author karels;  state Exp;
+branches ;
+next     4.11;
+
+4.11
+date     91.02.25.15.30.42;  author bostic;  state Exp;
+branches ;
+next     4.10;
+
+4.10
+date     90.06.25.20.56.26;  author kfall;  state Exp;
+branches ;
+next     4.9;
+
+4.9
+date     89.10.25.19.03.35;  author qjb;  state Exp;
+branches ;
+next     4.8;
+
+4.8
+date     89.10.02.16.23.10;  author jtkohl;  state Exp;
+branches ;
+next     4.7;
+
+4.7
+date     89.10.02.16.19.41;  author jtkohl;  state Exp;
+branches ;
+next     4.6;
+
+4.6
+date     89.01.17.15.07.21;  author rfrench;  state Exp;
+branches ;
+next     4.5;
+
+4.5
+date     89.01.11.18.29.31;  author rfrench;  state Exp;
+branches ;
+next     4.4;
+
+4.4
+date     88.12.01.14.02.54;  author jtkohl;  state Exp;
+branches ;
+next     4.3;
+
+4.3
+date     88.02.24.18.12.50;  author steiner;  state Exp;
+branches ;
+next     4.2;
+
+4.2
+date     88.01.12.21.20.52;  author steiner;  state Exp;
+branches ;
+next     4.1;
+
+4.1
+date     87.12.06.11.23.37;  author steiner;  state Exp;
+branches ;
+next     4.0;
+
+4.0
+date     87.10.29.10.40.59;  author jtkohl;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     87.10.28.11.47.03;  author jtkohl;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@initialize ticket store
+@
+
+
+4.13
+log
+@using fstat works better with the correct descriptor
+@
+text
+@/*
+ * $Source: /usr/src/kerberosIV/krb/RCS/in_tkt.c,v $
+ * $Author: karels $
+ *
+ * Copyright 1985, 1986, 1987, 1988 by the Massachusetts Institute
+ * of Technology.
+ *
+ * For copying and distribution information, please see the file
+ * <mit-copyright.h>.
+ */
+
+#ifndef lint
+static char *rcsid_in_tkt_c =
+"$Id: in_tkt.c,v 4.12 91/06/02 17:07:53 karels Exp Locker: karels $";
+#endif /* lint */
+
+#include <mit-copyright.h>
+#include <stdio.h>
+#include <des.h>
+#include <krb.h>
+#include <sys/file.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+#ifdef TKT_SHMEM
+#include <sys/param.h>
+#endif
+
+extern int krb_debug;
+
+/*
+ * in_tkt() is used to initialize the ticket store.  It creates the
+ * file to contain the tickets and writes the given user's name "pname"
+ * and instance "pinst" in the file.  in_tkt() returns KSUCCESS on
+ * success, or KFAILURE if something goes wrong.
+ */
+
+in_tkt(pname,pinst)
+    char *pname;
+    char *pinst;
+{
+    int tktfile;
+    uid_t me, metoo, getuid(), geteuid();
+    struct stat buf;
+    int count;
+    char *file = TKT_FILE;
+    int fd, remove = 0;
+    register int i;
+    char charbuf[BUFSIZ];
+#ifdef TKT_SHMEM
+    char shmidname[MAXPATHLEN];
+#endif /* TKT_SHMEM */
+
+    me = getuid();
+    metoo = geteuid();
+    if (lstat(file,&buf) == 0) {
+	/*
+	 * If called by root to set up ticket file for other user,
+	 * don't bitch, just zap the file; login/su run as root
+	 * until after authentication succeeds.
+	 */
+	if (buf.st_uid != me && me == 0) {
+		remove = 1;
+		buf.st_uid = me;
+	}
+	if (buf.st_uid != me || (buf.st_mode & S_IFMT) != S_IFREG ||
+	    buf.st_mode & 077) {
+	    if (krb_debug)
+		fprintf(stderr,"%s exists, wrong owner/mode",file);
+	    return(KFAILURE);
+	}
+	/* file already exists, and permissions appear ok, so nuke it */
+	if ((fd = open(file, O_RDWR, 0)) < 0)
+	    goto out; /* can't zero it, but we can still try truncating it */
+
+	bzero(charbuf, sizeof(charbuf));
+
+	for (i = 0; i < buf.st_size; i += sizeof(charbuf))
+	    if (write(fd, charbuf, sizeof(charbuf)) != sizeof(charbuf))
+		break;
+	
+	(void) fsync(fd);
+	(void) close(fd);
+	if (remove)
+		(void) unlink(file);
+    }
+ out:
+    /* arrange so the file is owned by the ruid
+       (seteuid or swap real & effective uid if necessary).
+       This isn't a security problem, since the ticket file, if it already
+       exists, has the right uid (== ruid) and mode. */
+    /* THIS IS HIGHLY QUESTIONABLE, though, as the current uid is probably
+       wrong; this is done from login or su, which are doing this before
+       adopting the new ID (we're called during the initial authentication). */
+    if (me != metoo) {
+#if defined(BSD) && BSD >= 199006
+	if (seteuid(me) < 0) {
+	    if (krb_debug)
+		perror("in_tkt: seteuid");
+	    return(KFAILURE);
+	} else
+	    if (krb_debug)
+		printf("switched euid %d to %d\n",metoo,me);
+#else
+	if (setreuid(metoo, me) < 0) {
+	    /* can't switch??? barf! */
+	    if (krb_debug)
+		perror("in_tkt: setreuid");
+	    return(KFAILURE);
+	} else
+	    if (krb_debug)
+		printf("swapped UID's %d and %d\n",metoo,me);
+#endif
+    }
+    if ((tktfile = creat(file,0600)) < 0) {
+	if (krb_debug)
+	    fprintf(stderr,"Error initializing %s",TKT_FILE);
+        return(KFAILURE);
+    }
+    if (me != metoo) {
+#if defined(BSD) && BSD >= 199006
+	if (seteuid(metoo) < 0) {
+	    if (krb_debug)
+		perror("in_tkt: seteuid2");
+	    return(KFAILURE);
+	} else
+	    if (krb_debug)
+		printf("switched euid back to %d\n",metoo);
+#else
+	if (setreuid(me, metoo) < 0) {
+	    /* can't switch??? barf! */
+	    if (krb_debug)
+		perror("in_tkt: setreuid2");
+	    return(KFAILURE);
+	} else
+	    if (krb_debug)
+		printf("swapped UID's %d and %d\n",me,metoo);
+#endif
+    }
+    if (fstat(tktfile,&buf) < 0) {
+	if (krb_debug)
+	    fprintf(stderr,"Error initializing %s",TKT_FILE);
+        return(KFAILURE);
+    }
+
+    if (buf.st_uid != me || (buf.st_mode & S_IFMT) != S_IFREG ||
+        buf.st_mode & 077) {
+	if (krb_debug)
+	    fprintf(stderr,"Error initializing %s",TKT_FILE);
+        return(KFAILURE);
+    }
+
+    count = strlen(pname)+1;
+    if (write(tktfile,pname,count) != count) {
+        (void) close(tktfile);
+        return(KFAILURE);
+    }
+    count = strlen(pinst)+1;
+    if (write(tktfile,pinst,count) != count) {
+        (void) close(tktfile);
+        return(KFAILURE);
+    }
+    (void) close(tktfile);
+#ifdef TKT_SHMEM
+    (void) strcpy(shmidname, file);
+    (void) strcat(shmidname, ".shm");
+    return(krb_shm_create(shmidname));
+#else /* !TKT_SHMEM */
+    return(KSUCCESS);
+#endif /* TKT_SHMEM */
+}
+@
+
+
+4.12
+log
+@cleanups: if called by root but tkfile exists owned by other (probably our
+next uid), clean up as before and unlink file.  Otherwise, we fail login/su
+once, remove the tkfile there, and succeed the second time.
+@
+text
+@d3 1
+a3 1
+ * $Author: bostic $
+d14 1
+a14 1
+"$Id: in_tkt.c,v 4.11 91/02/25 15:30:42 bostic Exp Locker: karels $";
+d139 1
+a139 1
+    if (fstat(fd,&buf) < 0) {
+@
+
+
+4.11
+log
+@creat declared in include files now
+@
+text
+@d3 1
+a3 1
+ * $Author: kfall $
+d14 1
+a14 1
+"$Id: in_tkt.c,v 4.10 90/06/25 20:56:26 kfall Exp Locker: bostic $";
+d22 1
+a22 1
+#include <sys/types.h>
+d46 1
+a46 1
+    int fd;
+d53 1
+a53 1
+    me = getuid ();
+d56 10
+a65 1
+	if (buf.st_uid != me || !(buf.st_mode & S_IFREG) ||
+d68 1
+a68 1
+		fprintf(stderr,"Error initializing %s",file);
+d78 2
+a79 5
+	    if (write(fd, charbuf, sizeof(charbuf)) != sizeof(charbuf)) {
+		(void) fsync(fd);
+		(void) close(fd);
+		goto out;
+	    }
+d83 2
+d88 1
+a88 1
+       (swap real & effective uid if necessary).
+d91 3
+d95 9
+d112 1
+d120 9
+d137 1
+d139 1
+a139 1
+    if (lstat(file,&buf) < 0) {
+d145 1
+a145 1
+    if (buf.st_uid != me || !(buf.st_mode & S_IFREG) ||
+@
+
+
+4.10
+log
+@include des.h
+@
+text
+@d2 2
+a3 2
+ * $Source: /usr/src/kerberosIV/src/lib/krb/RCS/in_tkt.c,v $
+ * $Author: qjb $
+d14 1
+a14 1
+"$Id: in_tkt.c,v 4.9 89/10/25 19:03:35 qjb Exp Locker: kfall $";
+d41 1
+a41 1
+    int tktfile, creat();
+@
+
+
+4.9
+log
+@Added code to swap real and effective uid's (if they are different) before
+and after creating ticket file.
+Author: jtkohl
+Auditor: qjb
+@
+text
+@d2 2
+a3 2
+ * $Source: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/in_tkt.c,v $
+ * $Author: jtkohl $
+d14 1
+a14 1
+"$Id: in_tkt.c,v 4.8 89/10/02 16:23:10 jtkohl Exp $";
+d19 1
+@
+
+
+4.8
+log
+@change $Header to $Id
+@
+text
+@d14 1
+a14 1
+"$Id: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/in_tkt.c,v 4.7 89/10/02 16:19:41 jtkohl Exp Locker: jtkohl $";
+d41 1
+a41 1
+    uid_t me, getuid();
+d53 1
+d78 14
+d96 10
+@
+
+
+4.7
+log
+@Programmer: Dan Kolkowitz
+Auditor: John Kohl
+add shared memory code
+@
+text
+@d3 1
+a3 1
+ * $Author: rfrench $
+d14 1
+a14 1
+"$Header: /afs/athena.mit.edu/astaff/project/kerberos/src/lib/krb/RCS/in_tkt.c,v 4.6 89/01/17 15:07:21 rfrench Exp Locker: jtkohl $";
+@
+
+
+4.6
+log
+@Programmer: jtkohl
+Auditor: rfrench
+Zeroes existing ticket file as appropriate before initializing a new one
+@
+text
+@d2 1
+a2 1
+ * $Source: /mit/kerberos/src/lib/krb/RCS/in_tkt.c,v $
+d14 1
+a14 1
+"$Header: in_tkt.c,v 4.5 89/01/11 18:29:31 jtkohl Locked $";
+d23 3
+d48 3
+d106 5
+d112 1
+@
+
+
+4.5
+log
+@Programmer: jtkohl
+Auditor: rfrench
+Conditionalized some error messages and removed the execute bit from the
+ticket file.
+@
+text
+@d3 1
+a3 1
+ * $Author: jtkohl $
+d14 1
+a14 1
+"$Header: in_tkt.c,v 4.4 88/12/01 14:02:54 jtkohl Locked $";
+d41 4
+d46 26
+a71 1
+    if ((tktfile = creat(TKT_FILE,0600)) < 0) {
+d76 1
+a76 2
+    me = getuid ();
+    if (lstat(TKT_FILE,&buf) < 0) {
+@
+
+
+4.4
+log
+@Programmer: Jennifer Steiner
+Auditor: John Kohl
+changes: improve documentation of code
+@
+text
+@d3 1
+a3 1
+ * $Author: steiner $
+d14 1
+a14 1
+"$Header: in_tkt.c,v 4.3 88/02/24 18:12:50 steiner Locked $";
+d24 2
+d42 3
+a44 2
+    if ((tktfile = creat(TKT_FILE,0700)) < 0) {
+        fprintf(stderr,"Error initializing %s",TKT_FILE);
+d49 2
+a50 1
+        fprintf(stderr,"Error initializing %s",TKT_FILE);
+d56 2
+a57 1
+        fprintf(stderr,"Error initializing %s",TKT_FILE);
+@
+
+
+4.3
+log
+@Copyright notice, etc.
+@
+text
+@d14 1
+a14 1
+"$Header: in_tkt.c,v 4.2 88/01/12 21:20:52 steiner Locked $";
+d25 4
+a28 6
+ * in_tkt is used to initialize the ticket store.  It creates the
+ * file to contain the tickets and zeroes anything that is there
+ * already.  It requires one argument which is the authentication
+ * name of the user who will be storing tickets.  This name is
+ * stored at the beginning of the file for later retrieval by
+ * krb_get_cred.  in_tkt returns 0 on success, 1 on failure.
+@
+
+
+4.2
+log
+@Formatting changes.
+Programmer: Ken.
+Auditor: Jon.
+@
+text
+@d2 2
+a3 3
+ *      $Source: /mit/kerberos/lib/krb/RCS/in_tkt.c,v $
+ *      $Author: steiner $
+ *      $Locker:  $
+d5 2
+a6 1
+ * Copyright 1985,1986 by the Massachusetts Institute of Technology
+d8 2
+d14 1
+a14 1
+    "$Header: in_tkt.c,v 4.1 87/12/06 11:23:37 steiner Exp $";
+d17 1
+@
+
+
+4.1
+log
+@Changed user routine names to krb_xxxxxxx
+@
+text
+@d1 1
+a1 1
+/* 
+d3 2
+a4 2
+ *      $Author: jtkohl $
+ *      $Locker: steiner $
+d11 3
+a13 2
+static char *rcsid_in_tkt_c = "$Header: in_tkt.c,v 4.0 87/10/29 10:40:59 steiner Locked $";
+#endif  lint
+d15 5
+a19 5
+#include        <stdio.h>
+#include        <krb.h>
+#include	<sys/file.h>
+#include	<sys/types.h>
+#include	<sys/stat.h>
+a20 1
+
+d24 1
+a24 1
+ * already.  It requires one argument which is the authentication 
+d31 2
+a32 2
+char	*pname;	
+char    *pinst;
+d34 4
+a37 4
+        int     tktfile, creat();
+	uid_t	me, getuid();
+        struct stat buf;
+	int count;
+d39 18
+a56 23
+        if ((tktfile = creat(TKT_FILE,0700)) < 0)
+                {fprintf(stderr,"Error initializing %s",TKT_FILE);
+                return(KFAILURE);}
+	me = getuid ();
+	if (lstat(TKT_FILE,&buf) < 0)
+                {fprintf(stderr,"Error initializing %s",TKT_FILE);
+                return(KFAILURE);}
+	
+	if (buf.st_uid != me || !(buf.st_mode & S_IFREG) ||
+	    buf.st_mode & 077)
+                {fprintf(stderr,"Error initializing %s",TKT_FILE);
+                return(KFAILURE);}
+	
+	count = strlen(pname)+1;
+	if (write(tktfile,pname,count) != count) {
+		(void) close(tktfile);
+		return(KFAILURE);
+	}
+	count = strlen(pinst)+1;
+	if (write(tktfile,pinst,count) != count) {
+		(void) close(tktfile);
+		return(KFAILURE);
+	}
+d58 9
+a66 1
+        return(KSUCCESS);
+a67 2
+
+
+@
+
+
+4.0
+log
+@version 4
+@
+text
+@d2 1
+a2 1
+ *      $Source: /paris/u3/kerberos.new/lib/krb/RCS/in_tkt.c,v $
+d4 1
+a4 1
+ *      $Locker: jtkohl $
+d11 1
+a11 1
+static char *rcsid_in_tkt_c = "$Header: in_tkt.c,v 1.1 87/10/28 11:47:03 jtkohl Locked $";
+d27 1
+a27 1
+ * retrieve.  in_tkt returns 0 on success, 1 on failure.
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+ *      $Source: /u3/kerberos.new/lib/krb/RCS/save_credentials.c,v $
+d11 1
+a11 1
+static char *rcsid_in_tkt_c = "$Header: save_credentials.c,v 4.2 87/10/20 17:12:44 jtkohl Locked $";
+@

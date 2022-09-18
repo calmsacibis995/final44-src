@@ -1,0 +1,131 @@
+Return-Path: <decwrl!ios!richa>
+Subject: 4.1bsd sdb bugs
+Date: 2 Aug 1983 08:47:12-??? (Tuesday)
+From: ios!richa
+Index: ucb 4.2BSD
+
+Bugs in sdb 4.1 10/9/80, 4.1bsd Unix, updated Jul  1 1983
+
+Some difficulties have been encountered in using sdb.  This debugger shows
+you the source program statements when setting breakpoints and single-stepping.
+It can get to the wrong place in the source under some conditions. This is
+very bad since you have no idea where breakpoint sets and single steps are
+really happening.
+
+The failure occurs if the c macro preprocessor elects to break long source
+lines into several lines.  There are several conditions which cause it
+to do this.
+If this happens then the line number information in the object file
+does not match the source and sdb can't behave sensibly.
+Note this problem also causes compiler (and lint) error messages to
+refer to wrong line numbers.
+
+A fix for this difficulty is to save the output of the c macro proprocessor
+as a new source program to then be compiled and read as source by sdb.
+One possible script to do this follows:
+
+#
+# csh script to compile source files to sdb-able versions.
+# invoke with NO .c extension on the source file.
+# only handles ONE file at a time.
+echo 'creating and compiling ' $1{E.c} ' from ' $1{.c}
+cc -E -C $1{.c} |grep -v '^#' >! $1{E.c}
+cc -g -c $1{E.c}
+
+This script takes the -E -C macro output (saving comments), pipes it to
+grep to remove lines beginning with #, and saves as fileE.c  Then fileE.c
+is compiled -g.
+
+After compiling with this scheme, linking is done:
+cc -g file1E.o file2E.o file3E.o ...
+Your source shown to you by sdb will now have all macros and include files
+expanded.
+
+----------
+
+sdb will not find register parameters, it looks on the stack and sees only
+the passed values.
+Register parms can be seen via x command.
+
+Undocumented command in sdb, 'x' will dump the registers and disassemble
+the current instruction.
+X (upper case) will disassemble the current instruction only.
+
+---------
+
+sdb doesn't handle non-unique structure member names.
+It expects all member names to be unique across all structure definitions.
+If a member name is re-used, references to it get whichever one it finds first.
+This is a known portability problem in C.
+
+--------
+
+sdb can't seem to find other than the 0th element of an array of
+structures.
+Referring to array[0].member is fine,
+but array[1].member acts as though the index value were still 0.
+If you ask for the address of the item via array[1].member= ,
+it shows the address of the 0th element.
+The addresses can be manually computed and examined.
+This is fixed, Feb 14 83.
+
+-------
+
+The s and S command seem to ignore the count option (actually expects
+count option to follow command).
+This is fixed, Feb 14 83.
+
+-------
+Sometimes the error 'Cannot set breakpoint' occurs when trying to
+set a breakpoint.
+This can be due to sdb having 'forgotten' what
+procedure it is in.
+If the e command doesn't show a proc name (e.g.
+e gives: () or () in xxx.c), then it won't be able to set the
+breakpoint.
+Fix by simply doing an e procname.
+---------
+When the process under debug is running, sdb is entered when the interrupt
+character is typed (often control-C).
+Normally sdb will print 'interrupt at procedure:line number' and prompt.
+Sometimes it just immediately prompts without the 'interrupt at' message.
+This is a bug and sdb is now confused, but you can recover by entering 'C'
+(prior to any other command),
+then sdb will continue, print the usual 'interrupt at' message and prompt.
+------
+
+Sometimes the step command causes sdb to go into an infinite loop, the
+step command never terminates.
+Interrupting (via control-C) will get back to prompt, but foolish sdb
+has left the bpt (breakpoint) instruction in the code and there is no
+way to continue.
+There is nothing to do but exit and re-start sdb.
+
+I think there is a case where the single step bug occurs.
+Setting a breakpoint on a statement which occupies more than one line seems
+to cause it.
+For example, an if where the condition occupies 2 lines.
+When the breakpoint occurs, some commands are entered, then a step command
+given, sdb sometimes goes into an infinite loop.
+If a step is immediately done after the breakpoint, then this doesn't happen.
+
+--------
+
+sdb cannot set char variables correctly.
+Attempting an ! command seems to always set an int at the location of
+the char to 0, no matter what the specified value.
+
+
+
+
+------- Undocumented features
+
+Both procedure names and variable names may contain the metacharacters
+`*' and/or `?', with their usual meanings: `*' matches zero or more
+characters, and `?' matches exactly one character.
+
+variable$m
+Run the program until the contents of the variable changes.
+It is very, very slow.
+
+

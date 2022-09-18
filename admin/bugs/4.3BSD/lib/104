@@ -1,0 +1,134 @@
+From ulysses!ggs@ucbvax.Berkeley.EDU  Wed Jan 13 10:48:44 1988
+From: ulysses!ggs@ucbvax.Berkeley.EDU
+To: okeeffe.berkeley.edu!tahoe-bugs@ucbvax.Berkeley.EDU
+Subject: tahoe C optimization problem
+Date: Wed, 13 Jan 88 13:39:00 EST
+Index: lib/c2 4.3BSD
+
+Description:
+	The tahoe C optimizer has a misconception about the following
+	instruction sequence:
+
+		movl	#foo,r0
+		shll	#bar,r0,r1
+		andl2	#baz,r1
+
+	It will delete the first two instructions if there are no further
+	references to r0.
+
+Repeat-By:
+
+	Compile the following program with optimization:
+
+struct foo
+{
+	unsigned int	field1:1;
+	unsigned int	field2:1;
+};
+
+bar(p)
+register struct foo*	p;
+{
+	p->field1 = p->field2 = 1;
+	return (0);
+}
+
+	The unoptimized assembly output is:
+
+LL0:
+	.data
+	.text
+	.align	1
+	.globl	_bar
+_bar:
+	.word	L12
+	jbr 	L14
+L15:
+	movl	4(fp),r12
+	andl2	$0xbfffffff,(r12)
+	orl2	$0x40000000,(r12)
+	movl	$1,r0
+	shll	$31,r0,r1
+	andl2	$0x80000000,r1
+	andl2	$0x7fffffff,(r12)
+	orl2	r1,(r12)
+	clrl	r0
+	ret#1
+	ret#1
+	.set	L12,0x1000
+L14:
+	jbr 	L15
+	.data
+
+After optimization, I get:
+
+	.data
+	.text
+LL0:	.align	1
+	.globl	_bar
+	.set	L12,0x1000
+	.data
+	.text
+_bar:	.word	L12
+	movl	4(fp),r12
+	andl2	$0xbfffffff,(r12)
+	orl2	$0x40000000,(r12)
+	andl2	$0x80000000,r1
+	andl2	$0x7fffffff,(r12)
+	orl2	r1,(r12)
+	clrl	r0
+	ret#1
+
+I suspect that the optimizer thinks "andl2" sets r1 rather than
+modifying r1.
+
+---------------------------------------------------------------------
+Date: Fri, 15 Jan 88 22:06:35 MST
+From: donn@cs.utah.edu (Donn Seeley)
+Subject: Re:  tahoe C optimization problem
+Actually, it's more interesting than that, and it's quite general --
+pretty much any three operand instruction will do for the shll, and any
+instruction that reads r1 may replace the andl2.  This bug also appears
+in the vax optimizer(!).
+
+The problem is that the shll is analyzed twice for assignment to a dead
+register.  The optimizer works backwards through the block and finds
+that the andl2 uses r1, hence r1 is alive when we examine the shll on
+the next pass through the loop.  The optimizer will delete an
+instruction if it writes to a dead register; since r1 is alive, it
+saves the shll but marks r1 dead and loops again.  This time it finds
+that the source of the movl can be substituted for the second operand
+of the shll, so it deletes the movl and performs the substitution.  It
+then goes on to examine the modified shll for assignment to a dead
+register.  Unfortunately the shll itself killed r1 on the previous loop
+by writing into it, and now when the optimizer re-examines the shll it
+finds that it's writing to a dead register, so it deletes the
+instruction.
+
+The fix I installed causes the optimizer to loop after deleting a movl
+in this situation, rather than going on to look for writes to a dead
+register.  The change is in bflow() in c21.c:
+
+***************
+*** 650,656 ****
+  				if (tempreg(src,r2))
+  					uses[r2]=uses[r], uses[r]=0;
+  				redun3(p);
+! 				newcode(p); redunm++; flow=r;
+  			} else
+  				splitrand(p);
+  		}
+--- 650,657 ----
+  				if (tempreg(src,r2))
+  					uses[r2]=uses[r], uses[r]=0;
+  				redun3(p);
+! 				newcode(p); redunm++;
+! 				return(p);	/* avoid stale uses[] data */
+  			} else
+  				splitrand(p);
+  		}
+
+I applied a similar fix to the vax c2...
+
+Donn
+

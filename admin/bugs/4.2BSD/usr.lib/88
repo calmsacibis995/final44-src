@@ -1,0 +1,92 @@
+Return-Path: <sun!gorodish!guy@ucbvax.berkeley.edu>
+Date: Fri, 11 Apr 86 13:08:03 PST
+From: sun!gorodish!guy@ucbvax.berkeley.edu (Guy Harris)
+Subject: "getch" turns on RAW, rather than CBREAK, mode
+Index: usr.lib/libcurses/getch.c 4.2BSD
+
+Description:
+	According to the documentation on "curses", "getch" and
+	"wgetch" will turn on "cbreak" mode if neither "noecho",
+	"raw", nor "cbreak" are already set, and will restore the mode
+	when the character is read.
+
+	It actually turns on "raw" mode, not "cbreak" mode.  This means,
+	for example, that if a program calls "getstr" or "wgetstr" without
+	setting "cbreak" mode, "raw" mode is set, which means that if the
+	user's terminal has a RETURN key which transmits <CR>, that key
+	will NOT act as an input terminator; they must type the LINE
+	FEED key instead.
+Repeat-By:
+	Try running the following program:
+
+	#include <curses.h>
+	
+	main()
+	{
+		char	source[80];
+		WINDOW	*win1;
+
+		initscr();	
+		win1=newwin(0,0,0,0);
+		wmove(win1,1,1);
+		waddstr(win1,"Input: ");
+		wmove(win1,1,8);
+		wrefresh(win1);
+
+		/* Terminal will hang after input if the lines containing
+		   crmode() and nocrmode() are removed. */
+		crmode();  /* Set terminal to cbreak mode */
+		wscanw(win1,"%s",source);
+		nocrmode(); /* Unset terminal from cbreak mode */
+
+		wmove(win1,2,1);
+		wprintw(win1,"You typed: %s",source);
+		wmove(win1,3,1);
+		wrefresh(win1);
+		endwin();
+		exit(0);
+	}
+
+and then try running it with the two lines in question deleted.  Try typing
+"foo<RETURN>" at it both times.  The first time, it should say
+"You typed: foo" and exit; the second time, it should still be waiting and
+only finish if you type the LINE FEED key.
+
+Fix:
+
+Fix "getch.c" like this:
+
+*** getch.c.orig	Fri Apr 11 13:06:25 1986
+--- getch.c	Fri Apr 11 13:06:47 1986
+***************
+*** 18,24 ****
+  	fprintf(outf, "WGETCH: _echoit = %c, _rawmode = %c\n", _echoit ? 'T' : 'F', _rawmode ? 'T' : 'F');
+  # endif
+  	if (_echoit && !_rawmode) {
+! 		raw();
+  		weset++;
+  	}
+  	inp = getchar();
+--- 18,24 ----
+  	fprintf(outf, "WGETCH: _echoit = %c, _rawmode = %c\n", _echoit ? 'T' : 'F', _rawmode ? 'T' : 'F');
+  # endif
+  	if (_echoit && !_rawmode) {
+! 		cbreak();
+  		weset++;
+  	}
+  	inp = getchar();
+***************
+*** 30,35 ****
+  		waddch(win, inp);
+  	}
+  	if (weset)
+! 		noraw();
+  	return inp;
+  }
+--- 30,35 ----
+  		waddch(win, inp);
+  	}
+  	if (weset)
+! 		nocbreak();
+  	return inp;
+  }

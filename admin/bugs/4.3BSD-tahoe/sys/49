@@ -1,0 +1,155 @@
+From AMIR%TECHUNIX.BITNET@jade.berkeley.edu  Mon Feb 26 12:04:22 1990
+Received: from ucbvax.Berkeley.EDU by okeeffe.Berkeley.EDU (5.61/1.37)
+	id AA01207; Mon, 26 Feb 90 12:04:22 -0800
+Received: from jade.Berkeley.EDU by ucbvax.Berkeley.EDU (5.61/1.41)
+	id AA02609; Mon, 26 Feb 90 13:23:13 -0800
+Received: from techunix.bitnet
+	by jade.berkeley.edu (5.61.1/1.16.23)
+	id AA07046; Mon, 26 Feb 90 13:23:17 PST
+Return-Path: <amir@techunix.bitnet>
+Date: Mon, 26 Feb 90 23:17:49 +0200
+From: Amir Plivatsky <amir%techunix.bitnet@jade.berkeley.edu>
+Comments:  Domain style address is "amir@techunix.technion.ac.il"
+Message-Id: <9002262117.AA20368@techunix.bitnet>
+Subject: Security hole: Any user can steal and fake input of ttys!
+Index: sys 4.3BSD-tahoe
+Apparently-To: 4bsd-bugs@BERKELEY.EDU
+
+Description:
+        Because vhangup() doesn't revoke access to the control
+        terminal via /dev/tty, a program that waits on a pty (tty
+        side) can read the login names and passwords of users
+        logging in (optionally without interfering with the logging
+        in operations, i.e., the login will succeed) even when the
+        rlogind/telnetd that you published on uunet (referred here
+        as the versions "from uunet") are installed.
+
+        Similarly, using /dev/tty, input can be faked using TIOCSTI,
+        by any user.
+
+        (Later addition:)
+        I validated that the same problem (stealing and faking
+        input) exists also in directly connected ttys.
+
+        Even if vhangup() would revoke access via a file descriptor
+        open to /dev/tty, this wouldn't help unless it would also
+        prevent reopening of /dev/tty for other processes with the
+        same control tty, in a way that is inherited by child
+        processes.
+
+        A really good fix is yet unknown to me, but revoking any
+        access via /dev/tty in vhangup() may suffice for login
+        sessions (but only when the rlogind/telnetd from uunet are
+        used).  (The severe insecurity of pty uses like "script"
+        and "window" is yet to be fixed.  I have an idea how to do
+        that.)
+
+        [ These security holes weren't discovered by me.  I found
+        that "hackers" already know about them (maybe for a long
+        time).  Regretfully I couldn't find any fix that doesn't
+        involve a kernel change.  This may say that the problem
+        cannot be eliminated from systems that we have no sources
+        for, until the vendors will send us a fix. ]
+
+Repeat-By:
+        A program that does the following (and invoked by a regular user)
+        emits login names and their passwords:
+
+        1. find a free pty
+        2. open the corresponding pty (it waits for an incoming session)
+        3. open /dev/tty and use its fd for further operations
+        4. do a read()
+        5. type the read input back using TIOCSTI
+        6. log the input (this is the login name)
+        7. repeat steps 4-7 one more time (for the password)
+        8. goto step 1
+
+        A C program that does this can be sent upon request.  This
+        program, for some reason, when used on a system which has
+        the rlogind from uunet, prints only the password (and not
+        the login name) - but I didn't try to "fix" it.  Even then
+        the corresponding login name can be found easily.  (With
+        the original 4.3 rlogind/telnetd and earlier versions, and
+        with the telnetd from uunet, it prints both the login name
+        and password).
+
+        Step 5 here is optional.  [ If it isn't used, the program
+        can prompt for password, then say "Login incorrect", and
+        then prompt for login, close the pty, and go to step 1.
+        (This wasn't actually tested.) ]
+
+        A program that does steps 3-7 on a directly connected tty
+        (the user that invokes it then logs out) can steal the
+        password of the next user logging in (in a way that is
+        totally transparent to that user, i.e. the login will
+        succeed).
+
+Fix:
+        My suggested fix has not been tested much yet.  Thus it
+        may introduces problems.  But I don't want to delay the
+        bug report due to the severity of the problem.  (The fix
+        seems to close the hole, and the system seems to function
+        normally).  If you have already fixed (or will fix) this
+        in the correct way, *please* let me know (for that matter,
+        I didn't understand the comment in front of tty_tty.c:
+        why struct inode *?).
+
+        For the fix to be effective, system programs like getty,
+        rlogind, telnetd, and certain X programs should do the
+        correct things (vhangup() after fchown() of the tty if
+        needed).  It seems getty, and the rlogind/telnetd ( from
+        uunet) are ok.  I haven't checked X yet (but it has other
+        security holes...).  Using the original 4.3 (and earlier)
+        rlogind/telnetd programs + my fix, doesn't close the hole.
+
+        I searched a way to fix the problem with minimal changes.
+        The idea of the change is that processes that have a control
+        terminal on which a vhangup() is sent (not including the
+        sending process) will not be able to use the control terminal
+        via /dev/tty any more (including re-opening /dev/tty).
+        This inability should be inherited by child processes.
+
+        My fix introduces the slight disfeature that a process that
+        received a vhangup() cannot change its controlling tty any
+        more.  Also a tty device cannot have both major and minor
+        equal to 255 (because -1 in p_ttyd means bad controlling
+        tty.)
+
+        The changes:
+        1.  proc.h: "dev_t p_ttyd;" in struct proc, after p_cpticks
+            This doesn't change sizeof(struct proc), so there is
+            no need to recompile the numerous programs that inspect
+            the process table.
+
+        2.  tty.c: ttyopen(): "pp->p_ttyd = dev;" when setting the
+            control tty.  "&& (pp->p_ttyd != -1 || !u.u_uid)" was
+            added to the "if" before it.
+
+        3.  kern_proc.c: fork1(): "rpp->p_ttyd = rip->p_ttyd".
+
+        4.  sys_inode.c: vhangup(): "badctty(u.u_ttyd);".  This
+            routine searches processes (!= current process) with
+            p_ttyd equal to  u.u_ttyd, and assigns -1 to their
+            p_ttyd.
+
+        5.  tty_tty.c: syopen(), syread(), sywrite(), syioctl(),
+            syselect(): "|| u.u_procp->p_ttyd == -1" was added to
+            each "if".  A change to allow superuser to ignore this
+            condition may be also added.
+
+            [ In the same occasion of changing this file, a possibly
+            remaining TIOCSTI security hole can be handled also:
+            "case TIOCSTI:":
+                if (u.u_uid && u.u_procp->p_ttyd == -1) /* paranoid */
+                        return (ENXIO);
+
+            But this may be redundant due to the change in syioctl(). ]
+
+        6.  Not done yet: it might be a good idea to initial
+            p_ttyd to some value (!= -1) for init.
+
+                                                Amir
+
+N.B.  What will happen if calling vhangup() will not be restricted
+   to the superuser only (but some sanity checks would be done
+   instead)?

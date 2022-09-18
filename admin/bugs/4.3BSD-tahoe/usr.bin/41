@@ -1,0 +1,65 @@
+From att!cuuxb!bambi!dlm@ucbvax.Berkeley.EDU Thu Apr  5 09:21:59 1990
+Date: Thu, 5 Apr 90 09:15:46 -0700
+From: att!cuuxb!bambi!dlm@ucbvax.Berkeley.EDU
+To: cuuxb!att!okeeffe.Berkeley.EDU!bostic
+Index: usr.bin/uucp 4.3BSD-tahoe
+Subject: UUCP MR
+
+Keith-
+
+We have found an interesting protocol problem with the g protocol
+on uucp/uucico.   I am including a copy of the MR that we sent to
+UNIX Software Organization (ATT Summit) against the porting base.
+I suspect that BSD has the same problem and you guys ought to
+take a look.  Further details can be obtained from the author of
+the MR - Rick Clark: rbc@cuuxb.att.com
+
+This is the MR I am submitting on generic unix regarding uucico.
+	- Rick
+-----------------------
+
+ABSTRACT:
+	Certain data pattern can prevent bad frame recovery in uucico.
+
+PROBLEM:
+	uucico reads a transmitted data frame in the following manner.
+	 1) Read bytes until a 0x10 is found.
+	 2) Read the remaining 5 bytes of the header.
+	    Verify the header makes sense, start over at (1) if not.
+	    Verify it is the expected frame number, starting over
+	    at (1) if not.
+	 3) Read the 64 data bytes.
+	    Verify the checksum matches the header.
+
+	The problem is, if some data is lost on the line, you could
+	be starting the scan for the synchronization character in the
+	middle of a data block.  If one window's worth (usually 3) of
+	frames have a 0x10 in the last 5 bytes of the data, the algorithm
+	never recovers.  The reason is that the 5 bytes of the (false)
+	header are discarded along with the start of the *real* header
+	when you start over at step 1.
+
+	This is more common than it sounds.  In a random 8 bit data
+	pattern (such as in a compressed or packed file), the pattern
+	occurs about once every 9 megabytes.  This means on a line
+	with a 10 percent frame rejection rate (about 0.2% data error rate),
+	they will get an unnecessary disconnect every 90 megabytes.
+
+	Of course, if it is a data file being shipped and 0x10 is a common
+	value in one field, the frequency of the pathological pattern
+	may be far higher, effectively preventing the transmission of that
+	file except on a perfectly clean line.
+
+SUGGESTED RESOLUTION:
+
+	Start the scan for the next synchronization byte immediately
+	after the previous synchronization byte, not after the discarded
+	header (or discarded data).  This will require remembering these
+	bytes and pushing them back on the read queue.
+
+--
+=Dennis L. Mumaugh
+ ATT Computer Systems, National Technical Support Center,
+ Lisle, IL  ...!{att,lll-crg,attunix}!cuuxb!dlm  OR dlm@cuuxb.att.com
+
+
